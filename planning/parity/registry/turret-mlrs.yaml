@@ -1,7 +1,7 @@
 unit: turret-mlrs
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 8
   worst_gaps:
@@ -82,7 +82,7 @@ features:
       - "common/turrets/sv_turrets.qc:turret_initialize"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:69"
-      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:232"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:240"
       - "src/XonoticGodot.Common/GameInit.cs"
     constants:
       - { name: "g_turrets master switch", base: "1 (default on)", port: "MasterSwitchEnabled(\"g_turrets\") default-on", match: true }
@@ -97,7 +97,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code_read, ref: "MapObjectsRegistry.cs:232 registers turret_mlrs -> TurretSpawnFuncs.Mlrs -> Spawn(\"mlrs\") -> Turrets.ByName + def.Spawn + Think re-armed each frame (NextThink=Now) + PerFrameThink recorded for respawn; GameInit calls RegisterAll", result: pass }
+      - { kind: code_read, ref: "MapObjectsRegistry.cs:240 registers turret_mlrs -> TurretSpawnFuncs.Mlrs:69 -> Spawn(\"mlrs\") -> Turrets.ByName + def.Spawn + Think re-armed each frame (NextThink=Now) + PerFrameThink recorded for respawn; GameInit calls RegisterAll", result: pass }
     confidence: high
     notes: "Confirmed live by code read. Not observed in an actual match (whether a loaded stock map places turret_mlrs is unconfirmed)."
   - id: turret-mlrs.combat.brain
@@ -285,4 +285,4 @@ features:
       - { kind: code_read, ref: "TurretAI.TossDeathGibs:1199-1235 + TossGib:1245-1287 + GibBoom:1294-1307 vs cl_turrets.qc turret_die/turret_gibtoss/turret_gibboom (base-gib2/3/4 OR base-gib1 + head_model, EF_FLAME explode, head-gib1..4 sub-chunks) — bit-faithful by read; ROCKET_EXPLODE/SMOKE_*/TE_SPARK/TE_EXPLOSION all registered in EffectsList.cs", result: pass }
       - { kind: visual, ref: "in-world gib/spark/smoke/head render not observed in a match (server-side emit no-ops headless; no unit coverage of TossDeathGibs/DrawFx)", result: unknown }
     confidence: high
-    notes: "FIXED vs the 2026-06-25 baseline (DRIFT — a fix landed Wave 16/17): the death gib toss (base-gibN.md3 + head_model gibs, TurretAI.TossDeathGibs) is now PORTED and on the live MLRS death path (Die -> TossDeathGibs), and DrawFx low-hp sparks/smoke now emit. The baseline still listed both as missing. Audio stays faithful (rocket_impact on every death path); HEADSHAKE logic faithful. Presentation stays PARTIAL (not faithful): the gib/spark/smoke emission is server-side+live but its visible render is unverified, and the in-world head spin / separately-attached head entity is still absent. Per the auditor rule (visible fidelity not runtime-verified = unknown, not faithful) presentation is NOT upgraded to faithful."
+    notes: "RE-VERIFIED 2026-06-28 (Phase 1/2 parity wave, commits 60d45f5/493c876): code unchanged from the 2026-06-27 post-fix state and confirmed against current source. The death gib toss (base-gibN.md3 + head_model gibs, TurretAI.TossDeathGibs:1235-1271) is PORTED + on the live MLRS death path (EventDamage -> Combat.Death -> OnAnyDeath -> Die:1138 -> TossDeathGibs), and DrawFx:1355-1373 low-hp sparks/smoke emit (RunCombat + the MlrsTurret.Think mid-burst branch). Audio faithful (rocket_impact on every death path, Die:1136); HEADSHAKE logic faithful (EventDamage:1090-1091 jolts HeadAngles.X/.Y, st.HeadShake set from Spawn headShake:true). Presentation stays PARTIAL (not faithful): the gib/spark/smoke emission is server-side+live but its visible render is still NOT runtime-verified (no in-match observation; no unit coverage of TossDeathGibs/DrawFx), and the in-world head spin / separately-attached head entity is still absent. Per the auditor rule (visible fidelity not runtime-verified = unknown, not faithful) presentation is NOT upgraded."

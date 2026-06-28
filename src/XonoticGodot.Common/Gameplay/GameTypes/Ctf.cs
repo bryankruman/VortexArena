@@ -1862,7 +1862,12 @@ public sealed class Ctf : GameType
                 // offset so it rides the craft rather than the player's back. The vehicle owns the carrier's
                 // motion, so anchor to the vehicle (origin rotated by its yaw) at the cockpit offset.
                 Entity anchor = carrier.Vehicle ?? carrier;
-                Vector3 off = carrier.Vehicle is not null ? FlagVehicleCarryOffset : FlagCarryOffset;
+                // QC vr_enter (racer parks at '-190 0 96', others at the shared VEHICLE_FLAG_OFFSET '0 0 96'):
+                // read the boarded vehicle's own cockpit offset from its descriptor; fall back to the shared
+                // VEHICLE_FLAG_OFFSET when the vehicle has no descriptor, and to FLAG_CARRY_OFFSET on foot.
+                Vector3 off = carrier.Vehicle is not null
+                    ? (carrier.Vehicle.VehicleDef?.FlagCarryOffset ?? FlagVehicleCarryOffset)
+                    : FlagCarryOffset;
                 QMath.AngleVectors(new Vector3(0f, anchor.Angles.Y, 0f), out Vector3 cf, out Vector3 cr, out Vector3 cu);
                 Vector3 pos = anchor.Origin + cf * off.X + cr * off.Y + cu * off.Z;
                 GametypeEntities.SetOrigin(cfe, pos);

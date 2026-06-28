@@ -1,28 +1,32 @@
 unit: turret-flac
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
-# Re-audited 2026-06-27 (Waves 16-17 consolidated re-verify). Re-read every port file. The Wave-8e presentation/headshake
-# work (412ca19) all still stands and re-verified clean. TWO genuine drifts closed this pass vs the 2026-06-25 baseline:
-#   (1) identity.spawn: HeadModel = "models/turrets/flac.md3" is now SET (FlacTurret.cs:75) AND consumed — TurretAI.TossDeathGibs
-#       (TurretAI.cs:1207,1225) spawns the flac.md3 head gib on death. So the head MODEL is no longer "none": the death-gib head
-#       toss is a live, visible use. The in-combat head-BONE render attachment is still absent (a whole-turret-family render gap,
-#       no client turret draw attaches any head bone). head-model constant match false->true; presentation missing->partial.
-#   (2) weapon.player_form: the player muzzleflash no longer passes except:actor (FlacTurret.cs:279 now Emit(...,1) with no except),
-#       matching Base's plain Send_Effect (networks to ALL incl. the firer). The baseline's "except:actor minor divergence" sub-gap
-#       is FIXED. Presentation stays partial only because the client hagar-trail RENDER is Godot-side/unverified; liveness STILL dead
-#       ([Weapon] registration intentionally OFF). NOT closed.
-# Line refs in port_refs drifted (MapObjectsRegistry turret_flac 209->233; FlacTurret/TurretAI offsets shifted ~+5) — refreshed.
-# Build of XonoticGodot.Common verified green this pass. No row regressed.
+last_audited: "2026-06-28"
+# Re-audited 2026-06-28 (OPUS parity-diff after the [Weapon]-registration wave). ONE genuine drift closed vs the 2026-06-27 baseline:
+#   weapon.player_form: liveness DEAD -> LIVE. The [Weapon] attribute is now ON (FlacTurret.cs:190) so FlacWeapon (netname
+#   "turret_flac") is in the live Weapon registry. The class is now reachable through the SAME dev/cheat path Base itself uses for
+#   this hidden weapon: `give turret_flac` (sv_cheats) hits the single-name give branch (GiveItems.cs:142-144 -> GiveWeapon, NO
+#   Hidden filter) and adds it to OwnedWeaponSet; then `impulse 5` group-cycle finds it (Inventory.GetCycleWeapon:467 matches
+#   wep.Impulse==5, and the Hidden-unowned skip at :474 no longer fires once OWNED); the live WeaponFireDriver then calls its
+#   WrThink every tick (WeaponFireDriver.cs:166, no Hidden/SpecialAttack gate). This matches Base, where WEP_FLAC is likewise a
+#   hidden dev weapon never in any default arena and reachable only via give+impulse. So liveness is genuinely live in the same
+#   restricted sense Base provides. Test contracts updated to match: WeaponByIdTests skipped-count 2->3 (now incl. FlacWeapon),
+#   green (25/25 weapon-registration/by-id/menu-order/sourcegen tests pass). Common build green.
+#   PRECISION on the wave's own claim: the FlacTurret.cs:184 comment says it is "impulse-selectable via `impulse 5` exactly like
+#   Base". That overstates it slightly — the port has NO by-impulse-NUMBER direct-select path (the only direct path, weapon_byid
+#   230-253, EXCLUDES SpecialAttack), and a bare `impulse 5` on an UNOWNED Hidden weapon is skipped by the group-cycle. The weapon
+#   is reachable only once OWNED (via give). End-state liveness is still faithful (Base's hidden weapon is also give+impulse only),
+#   so the row closes, but the comment's "exactly like Base" framing for the SELECTION mechanism is imprecise, not a parity defect.
+# identity.spawn unchanged (already faithful/live last pass; the head-BONE render gap is whole-family). No row regressed.
 summary:
   feature_count: 11
   worst_gaps:
-    - "hidden player FLAC weapon (FlacWeapon) implemented faithfully but [Weapon] registration intentionally OFF (impulse-5 collision w/ Raptor + WeaponById/MenuWeaponOrder test churn) -> liveness DEAD (the only non-presentation gap in the unit)"
-    - "head-BONE render attachment for the in-combat head (the 4-frame cycle + headshake jolt drive head-local angles server-side, but no client turret draw attaches/renders a head bone) -> identity.spawn + fire presentation = partial. NOTE: the head MODEL flac.md3 IS now set + IS used for the death-gib head toss (TurretAI.cs:1225)."
+    - "head-BONE render attachment for the in-combat head (the 4-frame cycle + headshake jolt drive head-local angles server-side, but no client turret draw attaches/renders a head bone) -> identity.spawn + fire presentation = partial. NOTE: the head MODEL flac.md3 IS set + IS used for the death-gib head toss (TurretAI.cs:1225). Whole-turret-family render gap, not flac-specific."
     - "client-side HAGAR shell trail RENDER + muzzleflash draw not yet verified end-to-end (server emits the correct cues; the trail/flash draw lives in the Godot client project, outside qcsrc parity scope) -> fire/player-form presentation = partial"
   notable_fixes_since_last_audit:
+    - "(2026-06-28) weapon.player_form liveness DEAD->LIVE: [Weapon] attribute now ON (FlacTurret.cs:190) -> FlacWeapon (netname 'turret_flac') is in the live registry and fires through the same dev/cheat path Base uses: `give turret_flac` (GiveItems.cs:142-144, no Hidden filter) -> OwnedWeaponSet, then `impulse 5` group-cycle selects it once owned (Inventory.GetCycleWeapon:467/474), then WeaponFireDriver.cs:166 calls WrThink each tick. Matches Base's hidden-weapon liveness (give+impulse only; never in a default arena). WeaponByIdTests skipped-count 2->3, 25/25 green. ROW CLOSED."
     - "(2026-06-27 re-verify) identity.spawn presentation missing->partial: HeadModel='models/turrets/flac.md3' now SET (FlacTurret.cs:75) and consumed by TurretAI.TossDeathGibs (TurretAI.cs:1207,1225) to spawn the flac.md3 head gib on death — the head model is no longer 'none'. Only the in-combat head-BONE render attachment remains (whole-family render gap)."
-    - "(2026-06-27 re-verify) weapon.player_form: player muzzleflash 'except:actor' sub-gap FIXED — FlacTurret.cs:279 now Emit(...,1) with no except, matching Base's plain Send_Effect (to all clients). Liveness still dead ([Weapon] off)."
+    - "(2026-06-27 re-verify) weapon.player_form: player muzzleflash 'except:actor' sub-gap FIXED — FlacTurret.cs:279 now Emit(...,1) with no except, matching Base's plain Send_Effect (to all clients)."
     - "damage.headshake logic missing->faithful, liveness dead->live (Wave 8e, 412ca19): FlacTurret.Spawn now passes headShake:true (FlacTurret.cs:79); TurretSpawn.Init sets st.HeadShake (TurretSpawn.cs:79); TurretAI.EventDamage head-jolt (TurretAI.cs:893-897) now runs for Flac (±take on head pitch+yaw), matching Base flac.qc:15 + sv_turrets.qc:228-234."
     - "fire.flak_shell presentation missing->partial (Wave 8e): BLASTER_MUZZLEFLASH emitted via EffectEmitter (FlacTurret.cs:149), shell NetName stamped 'hagar' so the client maps the HAGAR trail (FlacTurret.cs:114), 4-frame head cycle runs on turret.Frame (FlacTurret.cs:154). Server cues now faithful; only the Godot-side render is unverified (partial)."
     - "weapon.player_form presentation missing->partial (Wave 8e): BLASTER_MUZZLEFLASH emitted (FlacTurret.cs:273, except: actor). Logic/values/timing/audio remain faithful; liveness still dead ([Weapon] off)."
@@ -336,25 +340,26 @@ features:
       - { name: "player fuse tur_impacttime", base: "10 (fixed)", port: "10 (PlayerFuse = 10f)", match: true }
       - { name: "base class / ammo", base: "PortoLaunch (no ammo cost)", port: "no AmmoType (PortoLaunch-style)", match: true }
       - { name: "anim time / refire", base: "weapon_thinkf(WFRAME_FIRE1,0.5) + prepareattack attacktime 1", port: "AnimtimeFor 0.5 / RefireFor 1", match: true }
-      - { name: "[Weapon] registration", base: "REGISTER_WEAPON (live, impulse-selectable)", port: "INTENTIONALLY OFF (no [Weapon] attr) -> no live caller", match: false }
+      - { name: "[Weapon] registration", base: "REGISTER_WEAPON (hidden dev weapon; give+impulse only, no default arena)", port: "[Weapon] attr ON (FlacTurret.cs:190) -> live registry; reachable via `give turret_flac` + impulse 5 once owned, fired by WeaponFireDriver", match: true }
     status:
       logic: faithful
       values: faithful
       timing: faithful
       presentation: partial
       audio: faithful
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "FlacWeapon is implemented but its [Weapon] registration is intentionally OFF (FlacTurret.cs:178): impulse 5 collides with the Raptor bomb-mode impulse and registering shifts WeaponById/MenuWeaponOrder, which would break those test contracts. So the hidden player FLAC weapon has NO live caller (liveness dead)."
-      - "presentation partial: BLASTER_MUZZLEFLASH is emitted (FlacTurret.cs:279) and — FIXED since the baseline — now WITHOUT except, i.e. Emit(...,1) with except defaulting null, networking to ALL clients exactly like Base flac_weapon.qc:30's plain Send_Effect (the firer sees their own flash). The remaining presentation gap is only the client-side hagar trail RENDER (Godot project, outside qcsrc parity), so the partial here is driven by the same unverified-client-render reason as the turret form, not the prior except divergence."
+      - "presentation partial: BLASTER_MUZZLEFLASH is emitted (FlacTurret.cs:282) with no except, networking to ALL clients like Base flac_weapon.qc:30's plain Send_Effect. The remaining presentation gap is only the client-side hagar trail RENDER (Godot project, outside qcsrc parity) — the same unverified-client-render reason as the turret form, not a logic/value divergence."
+      - "SELECTION-mechanism nuance (NOT a parity defect, no status impact): the FlacTurret.cs:184 comment claims it is impulse-5 selectable 'exactly like Base', but the port has no by-impulse-NUMBER direct-select path (weapon_byid 230-253 excludes SpecialAttack), and a bare `impulse 5` on an UNOWNED Hidden weapon is skipped by the group-cycle. It becomes selectable only once OWNED (give turret_flac). Base's hidden FLAC is likewise give+impulse-only, so the end-state liveness matches; the comment's wording slightly overstates the selection path."
     verification:
-      - { kind: code, ref: "FlacWeapon : Weapon (FlacTurret.cs:188-289) ports the IS_PLAYER branch of wr_think: Impulse 5, SpawnFlags SpecialAttack|Hidden, PlayerFuse 10f, WrThink (SetupShot + turret_projectile + fuse-think override + hagar_fire sound + BLASTER_MUZZLEFLASH), AnimtimeFor 0.5 / RefireFor 1. Constants match flac_weapon.qh/qc", result: pass }
-      - { kind: code, ref: "[Weapon] attribute is commented OFF (FlacTurret.cs:183-187); FlacWeapon carries NO [Weapon] attr (only FlacTurret has [Turret]); no WEP_FLAC/WEP_TUR_FLAC registration in src -> the class has no live dispatch path -> liveness dead", result: fail }
-      - { kind: code, ref: "Re-verified 2026-06-27: EffectEmitter.Emit('BLASTER_MUZZLEFLASH', shot.Origin, shot.Dir*1000, 1) at FlacTurret.cs:279 — NO except arg (the EffectEmitter.Emit(string,Vector3,Vector3,int,except=null) overload defaults except to null), so it networks to ALL clients matching Base flac_weapon.qc:30's plain Send_Effect. The baseline's except:actor minor divergence is FIXED.", result: pass }
+      - { kind: code, ref: "FlacWeapon : Weapon (FlacTurret.cs:191-292) ports the IS_PLAYER branch of wr_think: Impulse 5, SpawnFlags SpecialAttack|Hidden, PlayerFuse 10f, WrThink (SetupShot + turret_projectile + fuse-think override + hagar_fire sound + BLASTER_MUZZLEFLASH), AnimtimeFor 0.5 / RefireFor 1. Constants match flac_weapon.qh/qc", result: pass }
+      - { kind: code, ref: "LIVE path: [Weapon] attr is ON (FlacTurret.cs:190) -> FlacWeapon in the live Weapon registry (Weapons.ByName('turret_flac') resolves). `give turret_flac` hits the single-name give branch (GiveItems.cs:142-144 -> GiveWeapon, NO Hidden filter) and adds it to OwnedWeaponSet; `impulse 5` group-cycle then selects it (Inventory.GetCycleWeapon:467 wep.Impulse==5; the Hidden-unowned skip at :474 no longer fires once owned); WeaponFireDriver.cs:166 calls the held weapon's WrThink each tick with no Hidden/SpecialAttack gate. So WrThink runs on the real (cheat/dev) path, matching Base's give+impulse-only hidden weapon", result: pass }
+      - { kind: code, ref: "by-id / menu order unaffected: WeaponOrder.IsImpulseSkipped (WeaponOrder.cs:263-268) skips SpecialAttack, so FlacWeapon is excluded from the impulse-reachable by-id order; WeaponByIdTests skipped-count is now 3 (ball-stealer + HunterKiller + FlacWeapon, WeaponByIdTests.cs:85). dotnet test WeaponById|MenuWeaponOrder|SourceGen = 25/25 PASS; Common build green", result: pass }
+      - { kind: code, ref: "muzzleflash: EffectEmitter.Emit('BLASTER_MUZZLEFLASH', shot.Origin, shot.Dir*1000, 1) at FlacTurret.cs:282 — NO except arg, networks to ALL clients matching Base flac_weapon.qc:30's plain Send_Effect", result: pass }
     confidence: high
-    notes: "Re-verified 2026-06-27. Logic/values/timing/audio faithful; the player muzzleflash except:actor sub-gap is now FIXED (FlacTurret.cs:279 emits with no except = networks to all, matching Base Send_Effect). The form is still DEAD (the [Weapon] registration is deliberately disabled to avoid the impulse-5/Raptor collision and WeaponById/MenuWeaponOrder test churn) -> NOT closed; liveness stays dead. Re-add [Weapon] in a future pass that updates those test contracts + makes impulse routing vehicle-context-aware. Shares balance constants with the turret via FlacTurret.Pub* aliases. Presentation stays partial only for the unverified client hagar-trail render."
+    notes: "CLOSED 2026-06-28 (liveness dead->live). The [Weapon] registration that the prior baseline deliberately kept OFF is now ON (FlacTurret.cs:190). FlacWeapon is in the live registry and is reachable + fireable through the SAME dev/cheat path Base uses for this hidden weapon: `give turret_flac` (no Hidden filter on single-name give) -> owned, then `impulse 5` group-cycle -> selected, then the live WeaponFireDriver runs WrThink every tick. This is faithful to Base, where WEP_FLAC is also a hidden dev weapon never in any default arena and reachable only via give+impulse. The impulse-5/Raptor concern the old baseline cited is moot (Raptor's vehicles_impulse only handles 1/2/10/11/12, not 5; and a seated pilot's impulse is consumed by VehicleBoarding before weapon routing), and the WeaponById/MenuWeaponOrder test contracts were updated (skipped 2->3) and pass. Logic/values/timing/audio faithful; presentation stays partial only for the unverified client hagar-trail RENDER (Godot-side, outside qcsrc parity). The FlacTurret.cs:184 'impulse-5 exactly like Base' comment slightly overstates the SELECTION mechanism (no by-impulse-number direct select; group-cycle only once owned) but does not affect parity. Shares balance constants with the turret via FlacTurret.Pub* aliases."
 
   - id: turret-flac.damage.headshake
     name: "TFL_DMG_HEADSHAKE: head flinches off-aim when the turret is hit"

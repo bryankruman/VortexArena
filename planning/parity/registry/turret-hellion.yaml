@@ -1,11 +1,11 @@
 unit: turret-hellion
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 10
   worst_gaps:
-    - "RE-AUDITED 2026-06-27 (OPUS re-verify, no status change — all prior fixes confirmed against live code). Remaining gaps are presentation-only: the ctor STORES HeadModel=hellion.md3 but it is used only for the death-gib (TurretAI.TossDeathGibs), NOT instantiated as a live spinning-launcher bone entity, so the cycling tur_head.frame state drives no visible spin; no two-cannon tag_fire/tag_fire2 muzzle alternation (single computed ShotOrg); no PROJECTILE_ROCKET CSQC trail / MIF_SPLASH|MIF_PROXY|MIF_GUIDED_HEAT smoke. (FIXED 2026-06-25, re-confirmed: te_explosion launch puff emitted at the muzzle, HellionTurret.cs:129.)"
+    - "RE-AUDITED 2026-06-28 (OPUS post-wave re-verify, no status change — every prior fix re-confirmed line-by-line against current live code: te_explosion launch puff HellionTurret.cs:129, blast radius 80 via radius:ShotRadius L122, shot_spread 0.08 L116, head-spin frame cycle L90-91 + per-shot kick L136, all four select biases L97 [missileBias 0], target_range_optimal 4500 L36, AFF gate TurretAI.cs:833, death blast REMOVED TurretAI.cs:1124-1125, respawntime 90 L81). Remaining gaps are presentation-only: the ctor STORES HeadModel=hellion.md3 but it is used only for the death-gib (TurretAI.TossDeathGibs), NOT instantiated as a live spinning-launcher bone entity, so the cycling tur_head.frame state drives no visible spin; no two-cannon tag_fire/tag_fire2 muzzle alternation (single computed ShotOrg); no PROJECTILE_ROCKET CSQC trail / MIF_SPLASH|MIF_PROXY|MIF_GUIDED_HEAT smoke. (FIXED 2026-06-25, re-confirmed: te_explosion launch puff emitted at the muzzle, HellionTurret.cs:129.)"
     - "spawnflags still only partially mapped (FASTPROJ n/a; splash via radius damage; PLAYER/MISSILE implicit)."
     - "FIXED since 2026-06-22 (Wave 7, commit 8cb57e3): death blast REMOVED from TurretAI.Die to match Base's commented-out RadiusDamage (sv_turrets.qc:182); TFL_FIRECHECK_AFF now modeled (RunCombat L689 + hellion FireCheck flags L67); firecheck flags now DEAD|DISTANCES|TEAMCHECK|REFIRE|AFF|AMMO_OWN with NO AIMDIST/LOS (matches Base); launcher head-spin frame cycle (tr_think 1..6->0 + ++frame per shot) now ported live in HellionTurret.Think/Attack."
     - "Already-faithful from prior wave: blast radius 80, missile proximity 16u / stray-out 400u, shot_spread 0.08, target_range_optimal 4500, all four target-select biases (0.7/0.01/0.01/0), targetscan_maxdelay default 1, respawntime 90, track_accel 0.25/0.6/0.25, select ANGLELIMITS removed."
@@ -39,7 +39,7 @@ features:
     verification:
       - { kind: code_read, ref: "hellion.qh vs HellionTurret ctor + Spawn (unchanged by Wave-2)", result: pass }
     confidence: high
-    notes: "Re-audited 2026-06-27 (no status change). Identity/hitbox/base model/health faithful; the ctor now STORES HeadModel='models/turrets/hellion.md3' (HellionTurret.cs:74) but it is consumed ONLY by TossDeathGibs (TurretAI.cs:1207, the head debris chunk on death) — NOT instantiated as a live attached spinning head-bone entity during normal operation, so presentation stays partial. The head-spin frame STATE is cycled on the turret edict (see turret-hellion.anim.headspin) but without a rendered head bone it is not visibly rendered."
+    notes: "Re-audited 2026-06-28 post-wave (no status change). Identity/hitbox/base model/health faithful; the ctor STORES HeadModel='models/turrets/hellion.md3' (HellionTurret.cs:74) but it is consumed ONLY by TossDeathGibs (TurretAI.cs:1207, the head debris chunk on death) — NOT instantiated as a live attached spinning head-bone entity during normal operation, so presentation stays partial. The head-spin frame STATE is cycled on the turret edict (see turret-hellion.anim.headspin) but without a rendered head bone it is not visibly rendered."
   - id: turret-hellion.setup.tr_setup
     name: "tr_setup: aim/select/firecheck/ammo flags, fluid-inertia tracker"
     layer: [authority]
@@ -97,7 +97,7 @@ features:
     verification:
       - { kind: code_read, ref: "MapObjectsRegistry.cs:234 SpawnFuncs.Register(turret_hellion, TurretSpawnFuncs.Hellion) -> Spawn(e,'hellion') (TurretSpawnFuncs.cs:71) -> Turrets.ByName('hellion').Spawn + per-frame Think re-armed; GameInit runs RegisterAll", result: pass }
     confidence: high
-    notes: "Re-audited 2026-06-27: confirmed still live — spawnfunc registered (MapObjectsRegistry.cs:234, line drifted from 210), Spawn runs def.Spawn + arms def.Think every frame, master-switch gate matches QC !autocvar_g_turrets. No regression."
+    notes: "Re-audited 2026-06-28 post-wave: confirmed still live — spawnfunc registered (MapObjectsRegistry.cs:234), Spawn runs def.Spawn + arms def.Think every frame, master-switch gate matches QC !autocvar_g_turrets. No regression."
   - id: turret-hellion.combat.brain
     name: "Acquire/aim/track/fire combat brain (AIM_SIMPLE, shared framework)"
     layer: [authority]

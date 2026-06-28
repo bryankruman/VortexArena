@@ -1,8 +1,8 @@
 unit: monster-spider
 category: monster
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
-reverify_wave: "16-17 consolidated re-verify (opus)"
+last_audited: "2026-06-28"
+reverify_wave: "post-wave opus re-audit (DPM frame-driver chain re-verified; this wave's edits — raptor pitch/roll + mage-spike ProjectileCatalog order — do not touch the spider path)"
 summary:
   feature_count: 17
   worst_gaps:
@@ -359,7 +359,7 @@ features:
     verification:
       - { kind: code, ref: "Spider.AnimFrame maps every phase to the mr_anim frame (Idle 5/Walk 10/Run 10/Attack 0/Shoot 3/Pain 7|8/Death 1|2); DriveAnimFrame (MonsterAI.cs:1464) writes it to self.Frame, called from RunThink (1455), dead branch (1406), spawn gate (1424), Move (1348). CLIENT: ClientEntityView.cs:219 routes the monster (classname 'monster' -> ServerNet.Classify Generic) as frameDriven:true; ClientWorld.OnEntityUpdate adds to _frameDriven (449); TryAttachModel resolves the DPM via EntityModelFactory (MD3 resolver null for DARKPLACESMODEL) and calls DpmFrameDriver.TryAttach when _frameDriven.Contains (1706-1707); DpmFrameDriver._Process plays _clipsByGroup[Entity.Frame]. DpmBuilder.BuildAnimations emits one clip per framegroup in order + SetMeta(FrameGroupClipsMeta) (151-158). End-to-end wiring present.", result: pass }
     confidence: medium
-    notes: "FIX since baseline (drift): the baseline marked this presentation:missing/liveness:partial claiming 'the CLIENT renders the DPM via EntityModelFactory/DpmBuilder which NEVER consumes Entity.Frame; only the MD3 morph path honours FollowEntityFrame.' That is now FALSE — DpmFrameDriver.cs (the DPM analog of ModelAnimator.FollowEntityFrame) landed in Wave 17 (2f0bfdb 'presentation consumers') and is wired in ClientWorld.cs:1707 for frame-driven DPM monsters, with DpmBuilder writing the per-group clip metadata it consumes. presentation missing->unknown, liveness partial->live. Held at unknown (confidence medium) per the 'visible fidelity not runtime-verified = unknown' rule — the chain is code-complete but not observed rendering. Shared infra: closes the same gap for all DPM monsters (golem/mage/zombie/wyvern)."
+    notes: "RE-AUDITED 2026-06-28 (this wave): end-to-end DPM frame-driver chain re-verified line-by-line and STILL code-complete — ClientEntityView.cs:226 routes the monster (NetEntityKind.Generic) frameDriven:true -> ClientWorld.OnEntityUpdate adds entity.Index to _frameDriven (488) -> the EntityModelFactory DPM branch (ClientWorld.cs:1829) calls DpmFrameDriver.TryAttach(built, entity) when _frameDriven.Contains (1839-1840); DpmFrameDriver._Process reads Entity.Frame, clamps to the framegroup count and plays _clipsByGroup[group]; DpmBuilder bakes per-framegroup clips + FrameGroupClipsMeta. This wave's uncommitted client edits (raptor pitch/roll in ClientWorld, mage-spike order in ProjectileCatalog) do NOT touch this path. presentation HELD at unknown (confidence medium) per the 'visible fidelity not runtime-verified = unknown' rule — code-complete, not observed rendering in a live match. Shared infra: same chain serves all DPM monsters (golem/mage/zombie/wyvern). [History: landed Wave 17 / 2f0bfdb; baseline's 'client never consumes Entity.Frame' note is FALSE.]"
 
   - id: monster-spider.pain.mr_pain
     name: "Pain reaction + anim (mr_pain: random pain1/pain2, pain_finished)"

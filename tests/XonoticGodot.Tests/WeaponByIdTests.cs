@@ -73,15 +73,16 @@ public class WeaponByIdTests
     {
         var order = WeaponOrder.ByIdOrder();
         // A weapon is impulse-skipped if it is SPECIALATTACK, or the Ball-Stealer (MUTATORBLOCKED + TYPE_OTHER).
-        // Two weapons hit this: the Nexball ball-stealer (MUTATORBLOCKED|TYPE_OTHER) and the hidden Hunter-Killer
-        // player weapon (WEP_HK / HunterKillerAttack, WEP_FLAG_SPECIALATTACK | WEP_FLAG_HIDDEN, impulse 9) — both
-        // are excluded from the impulse-reachable by-id order, faithfully matching QC's weaponorder skip.
+        // Three weapons hit this: the Nexball ball-stealer (MUTATORBLOCKED|TYPE_OTHER), the hidden Hunter-Killer
+        // player weapon (WEP_HK / HunterKillerAttack, WEP_FLAG_SPECIALATTACK | WEP_FLAG_HIDDEN, impulse 9), and the
+        // FLAC turret weapon (WEP_TUR_FLAC / FlacWeapon, WEP_FLAG_SPECIALATTACK | WEP_FLAG_HIDDEN) — all three are
+        // excluded from the impulse-reachable by-id order, faithfully matching QC's weaponorder skip.
         // The by-id order is therefore a permutation of the registry MINUS the skipped weapon(s).
         bool IsSkipped(Weapon w) =>
             (w.SpawnFlags & WeaponFlags.SpecialAttack) != 0
             || ((w.SpawnFlags & WeaponFlags.MutatorBlocked) != 0 && (w.SpawnFlags & WeaponFlags.TypeOther) != 0);
         int skipped = Registry<Weapon>.All.Count(IsSkipped);
-        Assert.Equal(2, skipped); // the nexball ball-stealer + the hidden Hunter-Killer (WEP_HK) special-attack
+        Assert.Equal(3, skipped); // nexball ball-stealer (MUTATORBLOCKED|TYPE_OTHER) + Hunter-Killer (WEP_HK, SPECIALATTACK) + FlacWeapon (WEP_TUR_FLAC, SPECIALATTACK|HIDDEN)
 
         Assert.Equal(Registry<Weapon>.Count - skipped, order.Count);
         Assert.Equal(order.Count, order.Select(w => w.NetName).Distinct().Count());

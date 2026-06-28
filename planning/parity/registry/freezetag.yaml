@@ -1,7 +1,7 @@
 unit: freezetag
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"  # OPUS re-audit (Waves 16-17): re-verified live call sites (PlayerRegen.Call PlayerFrameLogic.cs:56, GiveFragsForKill.Call Scores.cs:556, FireItemTouch ItemPickupRules.cs:378, SetWeaponArena.Call SpawnSystem.cs:1005/1229, FragCenterMessage.Call Scores.cs:809). FIXED since the 06-27 row was written: freezetag.notif.alone (CENTER_ALONE) is now implemented + live (FreezeTag.NotifyLastPlayerForTeam, called from OnDeath:339). freezetag.frags.center_message stays open (hook+notif now exist + fire live, but FT subscribes NO FragCenterMessage handler).
+last_audited: "2026-06-28"  # OPUS re-audit (parity-port-waves): freezetag.frags.center_message CLOSED this wave — FreezeTag.Activate now subscribes OnFragCenterMessage (FreezeTag.cs:298-299,934-948), swapping the personal frag centerprint to FRAG_FREEZE/FRAGGED_FREEZE and suppressing on an already-frozen re-kill; the producer was the sole missing piece, the rest of the chain (hook MutatorHooks.cs:616, live call Scores.cs:809 + consumer :810-814, choices NotificationsList.cs:1292-1293) was already in place. missing/dead → faithful/live. Common builds clean.
 summary:
   feature_count: 30
   worst_gaps:
@@ -10,7 +10,7 @@ summary:
     - "FIXED 2026-06-27: frozen-player regen gate (FreezeTag.OnPlayerRegen, live PlayerFrameLogic.cs:56) and frozen-pickup gate (FreezeTag.OnItemTouch, live ItemPickupRules.cs:378) are both implemented. See freezetag.frozen.no_regen / freezetag.frozen.no_pickup."
     - "STILL OPEN: no ice (MDL_ICE) entity model — only the icy player-model colormod tint (ClientWorld.FrozenColormod). The signature ice cube is absent. Also no ANIMSTATE_FROZEN frozen pose (freezetag.presentation.frozen_anim)."
     - "STILL OPEN: void/lava NEEDKILL soft-kill relocate (g_frozen_damage_trigger 0) is still missing (FT OnDamageCalculate leaves NEEDKILL deathtypes alone; the relocate-to-spawn needs the server spawn selector and is not done). Default cvar 1 = die, so dormant at stock anyway."
-    - "STILL OPEN: the per-freeze CHOICE centerprint (FragCenterMessage 'You froze X'/'You were frozen by Y') has no FT producer (freezetag.frags.center_message) — the MutatorHooks.FragCenterMessage chain + the FRAG_FREEZE/FRAGGED_FREEZE choices now exist and FragCenterMessage.Call fires live (Scores.cs:809), but FreezeTag.Activate subscribes NO handler, so the generic FRAG/FRAGGED centerprint still shows."
+    - "FIXED this wave: the per-freeze CHOICE centerprint (FragCenterMessage 'You froze X'/'You were frozen by Y') now has its FT producer (freezetag.frags.center_message) — FreezeTag.Activate subscribes OnFragCenterMessage (FreezeTag.cs:298-299) which sets FRAG_FREEZE/FRAGGED_FREEZE and suppresses both on an already-frozen re-kill; FragCenterMessage.Call (Scores.cs:809) consumes the result (Scores.cs:810-814). missing/dead → faithful/live."
     - "FIXED since the 06-27 row was written: the CENTER_ALONE 'you are now alone' last-survivor notification (freezetag.notif.alone) IS now sent — FreezeTag.NotifyLastPlayerForTeam (FreezeTag.cs:1063) is called from OnDeath (FreezeTag.cs:339, live via Combat.Death) and center-prints ALONE to a team's lone unfrozen survivor."
 features:
   - id: freezetag.mode.registration
@@ -790,27 +790,28 @@ features:
     base_refs:
       - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, FragCenterMessage)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:FragCenterMessage (chain exists)"
-      - "src/XonoticGodot.Server/Scores.cs:809 (FragCenterMessage.Call — LIVE, but no FT subscriber)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:OnFragCenterMessage"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:FragCenterMessage (chain)"
+      - "src/XonoticGodot.Server/Scores.cs:809 (FragCenterMessage.Call — LIVE; result consumed Scores.cs:810-814)"
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:1292 (CHOICE FRAG_FREEZE/FRAGGED_FREEZE)"
     constants:
-      - { name: "attacker line", base: "CHOICE_FRAG_FREEZE 'You froze X'", port: "declared (NotificationsList.cs:1292) — hook chain exists, no FT subscriber", match: false }
-      - { name: "target line", base: "CHOICE_FRAGGED_FREEZE 'You were frozen by Y'", port: "declared (FRAGGED_FREEZE) — hook chain exists, no FT subscriber", match: false }
+      - { name: "attacker line", base: "CHOICE_FRAG_FREEZE 'You froze X'", port: "args.AttackerChoice = 'FRAG_FREEZE' (FreezeTag.cs:945) → DEATH_MURDER_FRAG_FREEZE 'You froze X' (NotificationsList.cs:936)", match: true }
+      - { name: "target line", base: "CHOICE_FRAGGED_FREEZE 'You were frozen by Y'", port: "args.TargetChoice = 'FRAGGED_FREEZE' (FreezeTag.cs:946) → DEATH_MURDER_FRAGGED_FREEZE 'You were frozen by Y' (NotificationsList.cs:937)", match: true }
+      - { name: "already-frozen suppression", base: "if STAT(FROZEN, frag_target): M_ARGV(4,bool)=true (drop both)", port: "if IsFrozen(targ): args.Suppress=true (FreezeTag.cs:940-943); Scores.cs:810 gates both sends on !Suppress", match: true }
     status:
-      logic: missing
+      logic: faithful
       values: faithful
-      timing: na
-      presentation: missing
+      timing: faithful
+      presentation: faithful
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "STILL OPEN. The infrastructure now ALL exists and is live: the MutatorHooks.FragCenterMessage chain (MutatorHooks.cs:616), the FRAG_FREEZE/FRAGGED_FREEZE choices (NotificationsList.cs:1292), and FragCenterMessage.Call firing on every frag (Scores.cs:809, whose comment explicitly anticipates FreezeTag swapping in the freeze lines + suppressing when the victim was already frozen). The ONLY missing piece is the producer: FreezeTag.Activate subscribes no FragCenterMessage handler (grep across GameTypes/ → none), so fcm.AttackerChoice/TargetChoice stay the generic FRAG/FRAGGED and the personal 'You froze X' / 'You were frozen by Y' centerprint never fires. The kill-feed INFO lines (INFO_FREEZETAG_FREEZE/SELF) DO fire (covered by freezetag.presentation.notifications)."
+    gaps: []
     verification:
-      - { kind: code-read, ref: "MutatorHooks.FragCenterMessage chain (MutatorHooks.cs:616) + FRAG_FREEZE choice (NotificationsList.cs:1292) + live FragCenterMessage.Call (Scores.cs:809); but no FragCenterMessage.Add in FreezeTag.cs Activate nor anywhere in GameTypes/ → no FT producer", result: fail }
+      - { kind: code-read, ref: "FreezeTag.Activate subscribes _fragCenterMsgHandler = OnFragCenterMessage onto MutatorHooks.FragCenterMessage (FreezeTag.cs:298-299); OnFragCenterMessage (FreezeTag.cs:934-948) sets AttackerChoice='FRAG_FREEZE'/TargetChoice='FRAGGED_FREEZE' or Suppress=true when the target was already frozen, returns false on MatchEnded/non-player target. FragCenterMessage.Call fires live in the obituary path (Scores.cs:809) BEFORE FreezeTag.OnDeath (both ride Combat.Death; SubscribeToDeaths added first), so IsFrozen reads the pre-death state = QC STAT(FROZEN, frag_target). Scores.cs:810-814 consumes the result: gates both SendChoiceToOne on !Suppress and uses AttackerChoice/TargetChoice. FRAG_FREEZE/FRAGGED_FREEZE choices map to the 'You froze X'/'You were frozen by Y' center notifications (NotificationsList.cs:936-937,1292-1293). Common builds clean.", result: pass }
     confidence: high
-    notes: "Re-audited (Waves 16-17): the hook + choice notifications + live call site landed, so the gap narrowed from 'no hook at all' to 'FT subscribes no handler'. Status unchanged (missing/dead) — the player-visible result is still the generic frag centerprint, not the freeze line. A one-line OnFragCenterMessage subscriber (set choices to FRAG_FREEZE/FRAGGED_FREEZE, Suppress when victim already frozen) would close it."
+    notes: "FIX this wave (missing→faithful, dead→live). FreezeTag now subscribes OnFragCenterMessage, swapping the personal frag centerprint to the freeze lines ('You froze X' / 'You were frozen by Y') and suppressing both on an already-frozen re-kill — bit-for-bit the QC ft FragCenterMessage hook. The producer that was the sole missing piece in the prior audit is wired; the full hook→choice→live-call→consumer chain is now closed."
 
   - id: freezetag.presentation.frozen_anim
     name: "Frozen-pose player animation (PlayerAnim ANIMSTATE_FROZEN)"

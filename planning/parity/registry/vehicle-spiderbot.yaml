@@ -1,7 +1,7 @@
 unit: vehicle-spiderbot
 category: vehicle
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 16
   worst_gaps:

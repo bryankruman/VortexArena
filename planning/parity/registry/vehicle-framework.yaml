@@ -1,7 +1,31 @@
 unit: vehicle-framework
 category: vehicle
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
+# DRIFT RE-AUDIT after the WaypointSprite/wepent/view-primitives wave (working tree on branch claude/parity-port-waves,
+# HEAD cb7102c). The wave's COMMITTED Phase-1/Phase-2 work touched NO vehicle files (git diff 44252f3..HEAD over
+# Vehicles/ + VehicleHud.cs is EMPTY; the NetGame.cs/EffectsList.cs hunks have zero vehicle-relevant lines). The
+# vehicle edits are UNCOMMITTED working-tree changes to Racer.cs + VehicleCommon.cs. 0 regressions. 1 FIX lands:
+#   (1) init.initialize values partial->faithful: the dphitcontentsmask PLAYERCLIP gate — the SOLE remaining
+#       values:partial driver — is now PORTED. VehicleCommon.SpawnVehicle:383 sets DpHitContentsMask = SOLID|BODY
+#       with `=`, :385 |= PLAYERCLIP when g_playerclip_collisions!=0 (default 1). The DP-supercontents values
+#       (0x1/0x02000000/0x100) match engine Brush.SuperContents + Nexball's 256; SpawnVehicle runs FIRST in every
+#       descriptor Spawn (Raptor:109 before :136 |= LiquidsMask) so the base `=` + descriptor `|=` liquid layering
+#       is bit-faithful to vehicle_initialize+vr_setup; TraceService.cs:562 honors Entity.DpHitContentsMask, so the
+#       vehicle move-trace now settles on/collides against mapper PLAYERCLIP brushes — LIVE. With this, ALL
+#       init.initialize constants match. The map-scripted targetname/ACTIVE_NOT controller (vehicle_use) remains the
+#       row's one logic-level deferral (no numeric constant; does not downgrade values).
+# NON-DRIFT (NOT framework rows): the same uncommitted diff adds Vehicle.FlagCarryOffset (VehicleCommon.cs virtual,
+# default '0 0 96' = VEHICLE_FLAG_OFFSET; Racer overrides to '-190 0 96' per vr_enter, Racer.cs) — a CTF carried-flag
+# cockpit-offset read by Ctf.Tick; it belongs to the ctf unit, NOT vehicle-framework (no framework row covers carried-
+# flag placement). Racer.cs also refactors LoadCvars to a presence-aware Get (GetString-length probe) so an explicit
+# `set g_vehicle_racer_bouncestop/rocket_locktarget 0` is now honoured vs an unloaded store — descriptor-level
+# (vehicle-racer row), not a framework row.
+# STILL OPEN (re-verified at HEAD cb7102c + working tree): the in-vehicle cockpit/chase camera (no SVC_SETVIEWPORT
+# client reader — grep confirms no p.Vehicle viewport read in game/), the CSQC steal/return waypoints + radar icons,
+# the vehicle_shieldent hit flash, the map-scripted targetname/ACTIVE_NOT controller (vehicle_use), and cross-client
+# VEHICLESTAT_* networking for a pure-remote pilot (UpdateVehicleHud reads LocalServerPlayer / host path).
+# ---- prior pass (Waves 16-17 @ 44252f3) ----
 # DRIFT RE-AUDIT after Waves 16-17 (HEAD 44252f3; Wave 17 vehicle edits @ 2f0bfdb; prior audit was Waves 13-15
 # @ 322fc26). 0 regressions. Wave 16 (b3a9c06) touched NO vehicle files; Wave 17 (2f0bfdb) edited Raptor.cs,
 # VehicleCommon.cs, VehicleSpawnFuncs.cs (+ the test). 2 FIXES land this pass, both narrowing previously-open rows:
@@ -132,10 +156,13 @@ summary:
   feature_count: 23
   worst_gaps:
     - "In-vehicle cockpit/chase camera remains DEAD: no client reads p.Vehicle to apply SVC_SETVIEWPORT (vehicle_viewport), so the pilot keeps the normal player view (grep confirms NO p.Vehicle viewport read anywhere in game/). (The HUD panel + aux crosshair + the per-mode reticles for Raptor/Spiderbot/Bumblebee + the Raptor bomb dropmark are now all LIVE; the framework low-health/shield HUD alarm is LIVE; the Raptor's incoming-missile alarm is live.)"
-    - "init.initialize STILL omits the targetname/ACTIVE_NOT map-scripted controller (vehicle_use, sv_vehicles.qc:1178-1201/1276-1277) and the dphitcontentsmask PLAYERCLIP gate. (The drop-to-floor tracebox, the g_vehicles_teams clear-branch, AND — Wave 17 — the g_vehicles_delayspawn first-think stagger are now all ported + live; only the map-scripted-activation subsystem and the playerclip mask remain.)"
+    - "init.initialize STILL omits ONLY the targetname/ACTIVE_NOT map-scripted controller (vehicle_use, sv_vehicles.qc:1178-1201/1276-1277) — a logic-level deferral with no numeric constant. (The drop-to-floor tracebox, the g_vehicles_teams clear-branch, the g_vehicles_delayspawn first-think stagger, AND now the dphitcontentsmask PLAYERCLIP gate are all ported + live; init.initialize values is now FAITHFUL.)"
     - "Presentation deferrals persist (all CSQC): steal WP_VehicleIntruder waypoint + steal centerprints, the WP_Vehicle return-waypoint/radar icon, the vehicle_shieldent hit flash. (The painframe EFFECT_SMOKE_SMALL is now EMITTED — no longer a gap.)"
     - "Cross-client VEHICLESTAT_* networking for a pure-remote pilot is still unwired: UpdateVehicleHud reads LocalServerPlayer (host path)."
     - "death.gibs body-gib divergence: the Bumblebee's 3 GUN gibs are tossed (vehicle_tossgib live), but the 4th Base gib — the BODY tossgib (bumblebee.qc:821) — is not; the port keeps the diethink/blowup/respawn on the original body (functionally equivalent, documented). Minor."
+  fixes_landed_waypointsprite_wave:
+    - "init.initialize values partial->faithful: the dphitcontentsmask PLAYERCLIP gate (the sole remaining values:partial driver) is now ported. VehicleCommon.SpawnVehicle:383 sets DpHitContentsMask = SOLID(0x1)|BODY(0x02000000) with `=`, :385 |= PLAYERCLIP(0x100) when g_playerclip_collisions!=0 (default 1). Values match engine Brush.SuperContents + Nexball's DpContentsPlayerClip=256; SpawnVehicle runs FIRST in every descriptor Spawn (Raptor:109 before :136 |= LiquidsMask) so the base `=` + descriptor `|=` liquid layering is bit-faithful to vehicle_initialize+vr_setup; TraceService.cs:562 honors Entity.DpHitContentsMask -> the vehicle move-trace now collides against mapper PLAYERCLIP brushes (LIVE). ALL init.initialize constants now match. (Uncommitted working-tree change; the wave's COMMITTED Phase-1/2 work touched no vehicle files.)"
+    - "(NOT a framework row) Vehicle.FlagCarryOffset added (VehicleCommon.cs virtual default '0 0 96'; Racer overrides '-190 0 96' per vr_enter) — a CTF carried-flag cockpit offset read by Ctf.Tick; belongs to the ctf unit. Racer.cs LoadCvars also made presence-aware (GetString-length probe) so explicit `set ...bouncestop/rocket_locktarget 0` overrides are honoured — descriptor-level (vehicle-racer)."
   fixes_landed_waves16_17:
     - "init.initialize timing partial->faithful: the g_vehicles_delayspawn first-think STAGGER is now ported + LIVE (Wave 17, 2f0bfdb). VehicleSpawnFuncs.Spawn:86-91 (DelaySpawnEnabled, default-on) calls VehicleCommon.ScheduleDelayedSpawn:945, which sets nextthink = time + respawntime + random()*g_vehicles_delayspawn_jitter and re-arms def.Spawn (the FOLDED vehicles_spawn) as the delayed think, parking the vehicle EF_NODRAW+SOLID_NOT+DAMAGE_NO meanwhile — bit-faithful to the else-if(delayspawn) branch of vehicle_initialize (sv_vehicles.qc:1278-1280). RespawnTime is set by def.Spawn before ScheduleDelayedSpawn reads it. Map vehicles now activate at randomised offsets instead of all at once. values STAYS partial (the dphitcontentsmask PLAYERCLIP gate + the targetname/ACTIVE_NOT controller remain)."
     - "spawn.respawn presentation NARROWED (stays partial): the EFFECT_TELEPORT spawn-in flash is now EMITTED (VehicleCommon.cs:401-402, EffectEmitter.Emit(\"TELEPORT\", origin, 0, 1)). 'TELEPORT' is a registered effect (EffectsList.cs:182) so the emit resolves, and the host swaps EffectEmitter.Sink for a networking sink (the live Teleporters/Tuba seam). Cue-faithful to sv_vehicles.qc:1144 modulo the Base +'0 0 64' z-offset. Remaining presentation deferrals: CSQCMODEL_AUTOINIT / hook-removal sweep / vehicles_reset_colors."
@@ -177,10 +204,10 @@ features:
       - { name: "g_vehicles_teams", base: "1", port: "1 (team-clear branch NOW PORTED, VehicleSpawnFuncs.cs:48-49 + TeamsEnabled)", match: true }
       - { name: "g_vehicles_delayspawn / _jitter", base: "1 / 10", port: "1 / 10 — NOW PORTED (VehicleSpawnFuncs.cs:86-91 ScheduleDelayedSpawn: time+respawntime+random()*jitter; default-on, headless opts out)", match: true }
       - { name: "drop-to-floor tracebox (origin+'0 0 100' down 10000 MOVE_WORLDONLY)", base: "yes (nodrop==false)", port: "yes (VehicleSpawnFuncs.cs:56-69)", match: true }
-      - { name: "dphitcontentsmask", base: "BODY|SOLID (+PLAYERCLIP)", port: "descriptor-set; PLAYERCLIP gate unported", match: false }
+      - { name: "dphitcontentsmask", base: "BODY|SOLID (+PLAYERCLIP if g_playerclip_collisions)", port: "BODY|SOLID set in SpawnVehicle with `=`, |= PLAYERCLIP when g_playerclip_collisions!=0 (default 1) — NOW PORTED (VehicleCommon.cs:383-385); Raptor/Bumblebee layer |= LiquidsMask AFTER via vr_setup", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
@@ -188,15 +215,15 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "targetname controller / ACTIVE_NOT gating / vehicle_use not ported (map-scripted activation absent, sv_vehicles.qc:1178-1201/1276-1277). STILL OPEN. The targetname branch that ASSIGNS .team is unported, but the team-CLEAR branch (below) is independent of it."
-      - "dphitcontentsmask PLAYERCLIP gate (g_playerclip_collisions) unported (descriptor-set mask only). Keeps values partial."
+      - "targetname controller / ACTIVE_NOT gating / vehicle_use not ported (map-scripted activation absent, sv_vehicles.qc:1178-1201/1276-1277). STILL OPEN (logic-level deferral). The targetname branch that ASSIGNS .team is unported, but the team-CLEAR branch (below) is independent of it. This is the one remaining unported sub-feature of vehicle_initialize; it has no numeric constant, so it does not downgrade values."
     verification:
       - { kind: code, ref: "VehicleSpawnFuncs registered into SpawnFuncs (MapObjectsRegistry); per-vehicle master switch faithful; Spawn:104 calls InitVehicle + Remove on veto", result: pass }
       - { kind: code, ref: "drop-to-floor tracebox present (VehicleSpawnFuncs.cs:58-76); g_vehicles_teams clear-branch ported (:49-50: e.Team=0 when !Teamplay||!TeamsEnabled, default-on) — bit-faithful to sv_vehicles.qc:1203-1204", result: pass }
       - { kind: code, ref: "delayspawn jitter NOW PORTED + LIVE (Wave 17, 2f0bfdb): VehicleSpawnFuncs.Spawn:86-91 (DelaySpawnEnabled default-on) calls VehicleCommon.ScheduleDelayedSpawn:945 which sets nextthink=time+respawntime+random()*g_vehicles_delayspawn_jitter and re-arms def.Spawn as the delayed think, parking the vehicle EF_NODRAW+SOLID_NOT+DAMAGE_NO meanwhile — bit-faithful to sv_vehicles.qc:1278-1280 (the else-if delayspawn branch). RespawnTime is set by def.Spawn before ScheduleDelayedSpawn reads it (order verified). VehicleRuntimeTests opt out with g_vehicles_delayspawn 0", result: pass }
-      - { kind: code, ref: "grep targetname/vehicle_use in VehicleSpawnFuncs = none — the map-scripted ACTIVE_NOT/targetname controller (and thus game_starttime branch) still missing", result: fail }
+      - { kind: code, ref: "dphitcontentsmask NOW PORTED (this pass): VehicleCommon.SpawnVehicle:383 sets DpHitContentsMask = SOLID(0x1)|BODY(0x02000000) with `=`, then :385 |= PLAYERCLIP(0x100) when g_playerclip_collisions!=0 (default 1) — DP-supercontents values match engine Brush.SuperContents (Solid/Body/PlayerClip) and Nexball's DpContentsPlayerClip=256. SpawnVehicle runs FIRST in every descriptor Spawn (Raptor.cs:109 before :136 |= LiquidsMask), so the `=` base + descriptor `|=` liquid layering is bit-faithful to vehicle_initialize+vr_setup. TraceService.cs:562-563 honors Entity.DpHitContentsMask, so the move-trace now collides against PLAYERCLIP brushes — live", result: pass }
+      - { kind: code, ref: "grep targetname/vehicle_use in VehicleSpawnFuncs = none — the map-scripted ACTIVE_NOT/targetname controller (and thus game_starttime branch) still missing (logic-level deferral; no numeric constant)", result: fail }
     confidence: high
-    notes: "FIXED vs baseline (timing partial->faithful): Wave 17 (2f0bfdb) ported the g_vehicles_delayspawn first-think stagger (ScheduleDelayedSpawn), default-on + live, so map vehicles now activate at randomised offsets instead of all at once. Logic faithful (Wave 8 team-clear), drop-to-floor (Wave 7). values STAYS partial only for the unported dphitcontentsmask PLAYERCLIP gate; the targetname/ACTIVE_NOT controller (map-scripted activation) remains the one logic-level deferral, documented at VehicleSpawnFuncs.cs:93-100."
+    notes: "FIXED vs baseline (values partial->faithful): THIS pass ported the dphitcontentsmask PLAYERCLIP gate (VehicleCommon.cs:383-385 — BODY|SOLID base, |= PLAYERCLIP when g_playerclip_collisions default-1; layered before the descriptor LiquidsMask |=). With that, ALL init.initialize constants match. timing already faithful (Wave 17 delayspawn stagger), logic faithful (Wave 8 team-clear), drop-to-floor (Wave 7). The targetname/ACTIVE_NOT map-scripted controller (vehicle_use) remains the one logic-level deferral, documented at VehicleSpawnFuncs.cs:93-100 — it carries no numeric constant, so values is now fully faithful."
 
   - id: vehicle-framework.spawn.respawn
     name: "vehicles_spawn — reset to idle/ownerless/shootable at spawn point"

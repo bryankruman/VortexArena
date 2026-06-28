@@ -88,6 +88,15 @@ public sealed class TurretState
     /// <summary>QC TSL_NO_RESPAWN / TFL_DMG_DEATH_NORESPAWN — death removes the turret instead of respawning it.</summary>
     public bool NoRespawn;
 
+    /// <summary>
+    /// QC <c>.shot_volly</c> — the full-magazine count this turret was initialized with. <see cref="TurretAI.Respawn"/>
+    /// mirrors Base <c>turret_respawn</c> (sv_turrets.qc:282: <c>this.volly_counter = this.shot_volly</c>) by
+    /// resetting <see cref="VollyCounter"/> to this value on every respawn. Set by <see cref="TurretSpawn.Init"/>,
+    /// which clamps it to a minimum of 1 (single-shot turrets that pass <c>shotVolly 0</c> get 1, never 0), so a
+    /// respawn always restores a usable magazine.
+    /// </summary>
+    public int ShotVollyMax;
+
     /// <summary>QC TUR_FLAG_MOVE — a mobile turret that damage knockback can shove (.velocity += vforce).</summary>
     public bool Movable;
 
@@ -189,6 +198,20 @@ public static class TurretAI
     /// <summary>QC <c>TUR_FLAG_AMMOSOURCE</c> — declarative marker that this turret supplies ammo to others.
     /// Verified to be NEVER read anywhere in Base qcsrc (purely declarative); carried only to match identity.</summary>
     public const int TurFlagAmmoSource = 1 << 1;
+    /// <summary>QC <c>TUR_FLAG_PLAYER</c> — this turret selects/attacks player entities (vs. missiles-only or support-only).
+    /// Purely declarative in the port; the actual player-targeting gate is <see cref="SelectPlayers"/> in
+    /// <see cref="ValidTarget(Entity, Entity?, int, in TurretParams)"/>. Carried to match the class identity in
+    /// <c>ewheel.qh</c> + <c>turret.qh</c>.</summary>
+    public const int TurFlagPlayer = 1 << 2;
+    /// <summary>QC <c>TUR_FLAG_MOVE</c> — a mobile turret that physically moves through the map. Behavior is modeled
+    /// as <see cref="TurretState.Movable"/> (damage can shove it) + the turret descriptor's own locomotion
+    /// (EWheelTurret/WalkerTurret). Carried here to complete the identity set.</summary>
+    public const int TurFlagMove = 1 << 3;
+    /// <summary>QC <c>TUR_FLAG_ROAM</c> — an idle mobile turret roams a <c>turret_checkpoint</c> waypoint graph
+    /// rather than stopping in place. Behavior is fully ported (EWheelTurret <c>ewheel_move_path</c> /
+    /// <c>ewheel_findtarget</c>; the <c>turret_checkpoint</c> spawnfunc). Carried as identity data
+    /// so the eWheel's spawnflag identity matches <c>ewheel.qh</c> (TUR_FLAG_PLAYER|TUR_FLAG_MOVE|TUR_FLAG_ROAM).</summary>
+    public const int TurFlagRoam = 1 << 4;
 
     // ---- target-select flags (QC TFL_TARGETSELECT_*, turret.qh) used by ValidTarget gating ----
     public const int SelectLos        = 1 << 0;  ///< require line of sight
@@ -1175,7 +1198,11 @@ public static class TurretAI
         turret.AVelocity = Vector3.Zero;
         st.HeadAVelocity = Vector3.Zero;
         st.HeadAngles = st.IdleAim;
-        st.VollyCounter = st.AmmoMax > 0f ? st.VollyCounter : 1;
+        // QC turret_respawn (sv_turrets.qc:282): this.volly_counter = this.shot_volly — always reset to the
+        // full magazine on respawn, regardless of whether a burst was in-progress when the turret died, so no
+        // mid-burst counter survives a respawn. ShotVollyMax is clamped to >=1 by TurretSpawn.Init; the guard
+        // covers any headless caller that left it at the default 0.
+        st.VollyCounter = st.ShotVollyMax > 0 ? st.ShotVollyMax : 1;
         st.Ammo = st.AmmoMax;
         st.AttackFinished = 0f;
         st.Active = turret.Team != 0f;

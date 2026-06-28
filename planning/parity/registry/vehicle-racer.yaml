@@ -1,7 +1,7 @@
 unit: vehicle-racer
 category: vehicle
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 13
   worst_gaps:
@@ -9,7 +9,7 @@ summary:
     - "Cosmetic-only spawn values unset: scale 0.5 model hack (physics uses the real hitbox), view_ofs '0 0 50' + height 200 (cockpit camera offset/dist)."
     - "Shared-layer note: VehicleCommon.PainFrame still defers its low-health EFFECT_SMOKE_SMALL puff (the jitter/shake is live); that smoke is a VehicleCommon concern, not a racer-specific row."
     - "Minor fidelity notes: vr_impact NOIMPACT-surface skip not available headless; oldvelocity captured at Think-start not at the engine clip; LoadCvars zero-as-sentinel edge (a server explicitly setting a tunable to 0 keeps the Base default)."
-    - "Carried-flag position divergence (re-audit 2026-06-27): a CTF flag-carrier who boards the racer keeps the flag at the SHARED VEHICLE_FLAG_OFFSET (0,0,96) applied each tick by Ctf.Tick, NOT the racer-specific vr_enter '-190 0 96' (190u behind the cockpit). The flag IS live and rides the moving craft (equivalent-or-stronger logic); only the world position is off ~190u forward (board.usekey values: faithful->partial)."
+    - "Carried-flag position CLOSED (re-audit 2026-06-28): a CTF flag-carrier who boards the racer now keeps the flag at the racer-specific vr_enter '-190 0 96' (190u behind the cockpit), resolved via carrier.Vehicle.VehicleDef.FlagCarryOffset (Racer override) in Ctf.Tick. The prior shared-(0,0,96) divergence is fixed — board.usekey values: partial->faithful."
 features:
   - id: vehicle-racer.identity.def
     name: "Identity, hitbox, models, spawnflags"
@@ -136,23 +136,22 @@ features:
       - { name: "g_vehicles_enter_radius", base: "250", port: "250", match: true }
       - { name: "vehicle_enter_delay", base: "time+2 on exit", port: "Time+2", match: true }
       - { name: "g_vehicles_allow_bots", base: "0", port: "0", match: true }
-      - { name: "flag-carrier flag reposition on board", base: "racer vr_enter: setorigin(flagcarried, '-190 0 96')", port: "Ctf.Tick anchors carrier-in-vehicle flag to FlagVehicleCarryOffset (0,0,96) — the shared sv_ctf.qh VEHICLE_FLAG_OFFSET, NOT the racer-specific -190 0 96", match: false }
+      - { name: "flag-carrier flag reposition on board", base: "racer vr_enter: setorigin(flagcarried, '-190 0 96')", port: "Ctf.Tick anchors carrier-in-vehicle flag to carrier.Vehicle.VehicleDef.FlagCarryOffset, which Racer overrides to (-190,0,96) — the racer-specific vr_enter cockpit offset (falls back to the shared VEHICLE_FLAG_OFFSET (0,0,96) only for a descriptor-less vehicle)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: faithful
       presentation: na
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Flag offset diverges: the port anchors a boarding carrier's flag at (0,0,96) (the shared CTF VEHICLE_FLAG_OFFSET applied every tick by Ctf.Tick when carrier.Vehicle != null), whereas the racer's vr_enter does a one-shot setorigin to '-190 0 96' (190u BEHIND the cockpit). Logic is live and equivalent-or-stronger (the flag follows the moving craft each tick), but the carried-flag world position is off by ~190u forward vs Base on the racer. Cosmetic/position only."
+    gaps: []
     verification:
       - { kind: test, ref: "VehicleRuntimeTests.UseKey_BoardsNearbyRacer_LinksAndFreezesPilot (+ guard tests + Exit/Death eject)", result: pass }
-      - { kind: code_read, ref: "Ctf.cs:169 FlagVehicleCarryOffset=(0,0,96) (NOT -190,0,96), applied in Tick (line 1784) when carrier.Vehicle != null; VehicleCommon.Touch boards toucher when Cvar('g_vehicles_enter')==0; Racer.Exit sets player.OldVelocity (QC racer_exit oldvelocity), Think sets player.OldOrigin (QC racer_frame)", result: pass }
+      - { kind: code_read, ref: "Ctf.cs:1868-1870 reads `carrier.Vehicle.VehicleDef?.FlagCarryOffset ?? FlagVehicleCarryOffset` and Racer.cs:250 overrides `FlagCarryOffset => (-190,0,96)`; applied in Tick (line 1872) rotated by the craft yaw when carrier.Vehicle != null. Board wiring live: VehicleCommon.SpawnVehicle sets vehic.VehicleDef (line 365) + EnterVehicle sets player.Vehicle = vehic (line 222). VehicleCommon.Touch boards toucher when Cvar('g_vehicles_enter')==0; Racer.Exit sets player.OldVelocity, Think sets player.OldOrigin", result: pass }
     confidence: high
-    notes: "Board/exit/guards LIVE + tested (31 racer+obituary tests green 2026-06-27). CTF flag-carrier reposition IS live (flag rides the craft via Ctf.Tick) but at the shared (0,0,96) offset, NOT the racer-specific vr_enter '-190 0 96' — a ~190u forward position divergence (values: partial). Exit oldvelocity + Think oldorigin fall-damage negation both modeled."
+    notes: "FIX since 2026-06-27: the carried-flag reposition now uses the racer-specific vr_enter offset '-190 0 96' (190u behind the cockpit), resolved via carrier.Vehicle.VehicleDef.FlagCarryOffset (Racer override) in Ctf.Tick — the prior shared-(0,0,96) divergence is closed (values: partial->faithful). Board/exit/guards LIVE + tested (31 racer+obituary tests green). Exit oldvelocity + Think oldorigin fall-damage negation both modeled."
   - id: vehicle-racer.drive.hover4point
     name: "racer_align4point: 4 engine springs + pitch/roll torque + stabilizer"
     layer: [authority]

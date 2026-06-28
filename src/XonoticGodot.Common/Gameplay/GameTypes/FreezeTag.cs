@@ -143,6 +143,7 @@ public sealed class FreezeTag : GameType
     private HookHandler<MutatorHooks.SetWeaponArenaArgs>? _weaponArenaHandler;
     private HookHandler<MutatorHooks.PlayerRegenArgs>? _regenHandler;
     private HookHandler<MutatorHooks.ItemTouchArgs>? _itemTouchHandler;
+    private HookHandler<MutatorHooks.FragCenterMessageArgs>? _fragCenterMsgHandler;
 
     public FreezeTag()
     {
@@ -289,6 +290,15 @@ public sealed class FreezeTag : GameType
         // MUT_ITEMTOUCH_RETURN) — a pushed/teleported frozen body can't illegitimately pick items up.
         _itemTouchHandler = OnItemTouch;
         MutatorHooks.ItemTouch.Add(_itemTouchHandler);
+
+        // QC MUTATOR_HOOKFUNCTION(ft, FragCenterMessage) (sv_freezetag.qc): swap the per-kill personal centerprint
+        // from the generic FRAG/FRAGGED ("You fragged X" / "You were fragged by Y") to CHOICE_FRAG_FREEZE /
+        // CHOICE_FRAGGED_FREEZE ("You froze X" / "You were frozen by Y"), and SUPPRESS both lines entirely when the
+        // target was ALREADY frozen (a void/lava re-kill of a frozen body shouldn't print a fresh "froze" message).
+        // The live FragCenterMessage.Call (Scores.cs:809) fires from the obituary BEFORE FreezeTag.OnDeath, so
+        // IsFrozen(target) here still reflects the pre-death state — exactly QC's STAT(FROZEN, frag_target) test.
+        _fragCenterMsgHandler = OnFragCenterMessage;
+        MutatorHooks.FragCenterMessage.Add(_fragCenterMsgHandler);
     }
 
     /// <summary>
@@ -310,6 +320,7 @@ public sealed class FreezeTag : GameType
         if (_weaponArenaHandler is not null) { MutatorHooks.SetWeaponArena.Remove(_weaponArenaHandler); _weaponArenaHandler = null; }
         if (_regenHandler is not null) { MutatorHooks.PlayerRegen.Remove(_regenHandler); _regenHandler = null; }
         if (_itemTouchHandler is not null) { MutatorHooks.ItemTouch.Remove(_itemTouchHandler); _itemTouchHandler = null; }
+        if (_fragCenterMsgHandler is not null) { MutatorHooks.FragCenterMessage.Remove(_fragCenterMsgHandler); _fragCenterMsgHandler = null; }
     }
 
     public int AssignTeam(Player joiner, IReadOnlyList<Player> roster)
@@ -911,6 +922,30 @@ public sealed class FreezeTag : GameType
     /// </summary>
     private bool OnItemTouch(ref MutatorHooks.ItemTouchArgs args)
         => args.Toucher is Player p && IsFrozen(p);
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ft, FragCenterMessage)</c> (sv_freezetag.qc): rewrite the per-kill personal
+    /// centerprint for a freeze. If the target was ALREADY frozen (a re-kill in void/lava of a frozen body),
+    /// SUPPRESS both lines (QC <c>if(STAT(FROZEN, frag_target)) { M_ARGV(4,bool) = true; return true; }</c>).
+    /// Otherwise swap the attacker's line to CHOICE_FRAG_FREEZE ("You froze X") and the target's to
+    /// CHOICE_FRAGGED_FREEZE ("You were frozen by Y") and mark the message handled (QC returns true). The
+    /// kill-feed INFO lines (INFO_FREEZETAG_FREEZE/SELF) are sent separately by <see cref="Freeze"/>.
+    /// </summary>
+    private bool OnFragCenterMessage(ref MutatorHooks.FragCenterMessageArgs args)
+    {
+        if (MatchEnded || args.Target is not Player targ)
+            return false;
+        // QC: STAT(FROZEN, frag_target) — the obituary fires before FreezeTag.OnDeath, so IsFrozen still reads
+        // the pre-death state. An already-frozen body being re-killed prints nothing personal.
+        if (IsFrozen(targ))
+        {
+            args.Suppress = true;
+            return true;
+        }
+        args.AttackerChoice = "FRAG_FREEZE";   // CHOICE_FRAG_FREEZE: "You froze X"
+        args.TargetChoice   = "FRAGGED_FREEZE"; // CHOICE_FRAGGED_FREEZE: "You were frozen by Y"
+        return true;
+    }
 
     /// <summary>
     /// QC freezetag_CheckTeams (canRoundStart): a round may begin once every active team has a live,

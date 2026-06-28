@@ -1,7 +1,7 @@
 unit: monster-golem
 category: monster
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 12
   worst_gaps:
@@ -220,7 +220,7 @@ features:
       - { kind: code-read, ref: "Golem.cs:250-251 — gren.scale = 2.5 deferred (no networked Entity render-scale field); bolt draws at 1x", result: fail }
       - { kind: code-read, ref: "Golem.cs:254-256 — NO launch cue (QC M_Golem_Attack_Lightning emits none); ThrowLightning:218 fires the dispatch melee cue (QC :478). Confirms launch_sound=NONE; the fabricated electro_fire2.wav from the stale spec is absent in current code", result: pass }
     confidence: high
-    notes: "Re-audited 2026-06-27 (post Wave-16/17) — unchanged. Golem.cs:249 sets gren.Model = models/ebomb.mdl (the QC CSQCProjectile model), rendered via the live Entity.Model entity feed; ebomb.mdl ships in port assets. Residual (keeps presentation: partial): QC gren.scale=2.5 (golem.qc:145) is not networked, so the bolt draws at 1x — Entity carries no render-scale field (the CSQCMODEL scale-bit contract is unported). Logic (early-detonate-when-shot, bounce, MAKETRIGGER, 5s fuse), values, timing, audio (NO fabricated launch sound — current code Golem.cs:254-256 emits none, contra the stale 2026-06-22 spec note; only the dispatch melee cue) all faithful."
+    notes: "Re-audited 2026-06-28 — NO golem code change this wave (git diff b3a9c06..HEAD on Golem/MonsterAI/MonsterFramework is empty; the wave's working-tree edits are all CTF/FreezeTag/Warpzone/turret/vehicle, not monster). presentation stays partial — the gren.scale=2.5 render-scale bit is still unported, not addressed this pass. Prior (post Wave-16/17): Golem.cs:249 sets gren.Model = models/ebomb.mdl (the QC CSQCProjectile model), rendered via the live Entity.Model entity feed; ebomb.mdl ships in port assets. Residual (keeps presentation: partial): QC gren.scale=2.5 (golem.qc:145) is not networked, so the bolt draws at 1x — Entity carries no render-scale field (the CSQCMODEL scale-bit contract is unported). Logic (early-detonate-when-shot, bounce, MAKETRIGGER, 5s fuse), values, timing, audio (NO fabricated launch sound — current code Golem.cs:254-256 emits none, contra the stale 2026-06-22 spec note; only the dispatch melee cue) all faithful."
 
   - id: monster-golem.attack.lightning_explode
     name: "Lightning detonation: small blast + chained zaps to wide radius"
@@ -366,7 +366,7 @@ features:
       - { kind: value-diff, ref: "port path monsters/golem/<cue><N>.wav vs shipped sound/monsters/golem/<cue><N>.wav — assets present (death1-3, pain1-2, idle1-2, sight, melee); SoundCueCount matches; spawn gated out", result: pass }
       - { kind: code-read, ref: "melee cue at DISPATCH: QueueCombo:1436 (melee) + Golem.Smash:169/ThrowLightning:196 PlayMeleeCue (ranged); per-swing path suppressed — matches QC :468/478", result: pass }
     confidence: high
-    notes: "Re-audited 2026-06-27 (post Wave-16/17) — unchanged. Audio rated 'partial' ONLY because the .sounds group/skin system is hand-mirrored per descriptor (Golem.SoundCues + SoundCueCount mirror golem.dpm_0.sounds by hand) rather than parsed from the model file — behaviorally faithful for golem: real assets reach the mixer via MonsterSound (MonsterAI.cs:915-937), dispatch-granularity melee cue (QueueCombo:1714 + PlayMeleeCue from Smash/ThrowLightning), idle 7s + pain 1.2s throttles, spawn gated out, pain on PainAuto(-6). The fabricated electro_fire2.wav launch cue noted in the 2026-06-22 spec is NOT present in current code (Golem.cs:254-256)."
+    notes: "Re-audited 2026-06-28 — NO golem code change this wave; audio stays partial. Rated 'partial' ONLY because the .sounds group/skin system is hand-mirrored per descriptor (Golem.SoundCues + SoundCueCount mirror golem.dpm_0.sounds by hand) rather than parsed from the model file — behaviorally faithful for golem: real assets reach the mixer via MonsterSound (MonsterAI.cs:915-937), dispatch-granularity melee cue (QueueCombo:1714 + PlayMeleeCue from Smash/ThrowLightning), idle 7s + pain 1.2s throttles, spawn gated out, pain on PainAuto(-6). The fabricated electro_fire2.wav launch cue noted in the 2026-06-22 spec is NOT present in current code (Golem.cs:254-256)."
 
   - id: monster-golem.anim_frames
     name: "Animation frame-group table (mr_anim) for .dpm playback"
@@ -402,7 +402,7 @@ features:
       - { kind: code-read, ref: "AnimVariant set by QueueCombo:1711 (melee 0/1), MarkPain:1861 (pain 0/1), Golem.Smash:206 (smash =2 -> frame 6 anim_melee1), Golem.ThrowLightning:263 (lightning =0 -> frame 4 anim_melee2); Spawn phase set in Golem.Spawn:134 -> group 12 stamped", result: pass }
       - { kind: value-diff, ref: "Base golem.qc:264 anim_melee1 = animfixfps('6 1 5') NOW UNCOMMENTED + RANGED smash branch :193 setanim(anim_melee1); port routes smash variant2 -> frame 6 — match restored", result: pass }
     confidence: high
-    notes: "Re-audited 2026-06-27 (post Wave-16/17) — unchanged. AnimFrame (Golem.cs:79-92) maps every phase+variant correctly: Idle 0/Walk 1/Run 2/melee2 '4'(v0)/melee3 '5'(v1)/melee1 '6'(v2 smash)/pain1 '7'(v0)/pain2 '8'(v1)/Spawn 12/die1 '13'/die2 '15'. Variants set by QueueCombo (melee 0/1), MarkPain (pain 0/1), Smash (=2 -> frame 6 anim_melee1, Golem.cs:206), ThrowLightning (=0 -> frame 4 anim_melee2, Golem.cs:263); DriveAnimFrame (MonsterAI.cs:1464-1469) stamps onto Entity.Frame each think — LIVE. Values faithful. timing AND presentation stay partial for the SAME residual: only the group START index is stamped per phase — there is NO intra-group animfixfps framecount/fps playback timeline, so the client shows the correct starting pose but does not animate through the group. This is a shared monster-framework deferral (every monster, not golem-specific)."
+    notes: "Re-audited 2026-06-28 — NO golem code change this wave; timing+presentation stay partial for the same unaddressed residual (only the group START index is stamped; no intra-group animfixfps framecount/fps playback timeline). AnimFrame (Golem.cs:79-92) maps every phase+variant correctly: Idle 0/Walk 1/Run 2/melee2 '4'(v0)/melee3 '5'(v1)/melee1 '6'(v2 smash)/pain1 '7'(v0)/pain2 '8'(v1)/Spawn 12/die1 '13'/die2 '15'. Variants set by QueueCombo (melee 0/1), MarkPain (pain 0/1), Smash (=2 -> frame 6 anim_melee1, Golem.cs:206), ThrowLightning (=0 -> frame 4 anim_melee2, Golem.cs:263); DriveAnimFrame (MonsterAI.cs:1464-1469) stamps onto Entity.Frame each think — LIVE. Values faithful. timing AND presentation stay partial for the SAME residual: only the group START index is stamped per phase — there is NO intra-group animfixfps framecount/fps playback timeline, so the client shows the correct starting pose but does not animate through the group. This is a shared monster-framework deferral (every monster, not golem-specific)."
 
   - id: monster-golem.menu.describe
     name: "Monsterpedia describe() flavor text (MENUQC)"
@@ -428,4 +428,4 @@ features:
       - { kind: code-read, ref: "Golem.cs:43-49 — the 3-paragraph monsterpedia text IS present verbatim (the prior 'grep Golems are large -> none' claim is now FALSE; that string lives at Golem.cs:44). Values faithful.", result: pass }
       - { kind: code-read, ref: "grep '.Description' over src/**/Monsters — only the Golem override (Golem.cs:43); NO reader of Monster.Description anywhere -> dead data, no info-page UI surfaces it", result: fail }
     confidence: high
-    notes: "Re-audited 2026-06-27 (post Wave-16/17) — CORRECTED. The describe text data is present + verbatim-faithful (values: faithful) but unsurfaced: liveness flips na->dead (the descriptor carries it, no UI reads Monster.Description). User-visible presentation stays 'missing' since no monster info-page exists. MENUQC-only flavor, off the gameplay-parity critical path."
+    notes: "Re-audited 2026-06-28 — NO golem code change this wave; liveness stays dead (still zero readers of Monster.Description across src; no monster info-page UI landed). The describe text data is present + verbatim-faithful (values: faithful) but unsurfaced: liveness flips na->dead (the descriptor carries it, no UI reads Monster.Description). User-visible presentation stays 'missing' since no monster info-page exists. MENUQC-only flavor, off the gameplay-parity critical path."

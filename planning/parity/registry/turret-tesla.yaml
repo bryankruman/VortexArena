@@ -1,7 +1,7 @@
 unit: turret-tesla
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 8
   worst_gaps:
@@ -36,7 +36,7 @@ features:
     verification:
       - { kind: code_read, ref: "tesla.qh vs TeslaTurret ctor + Spawn (mins/maxs/model/netname/health/spawnflags all confirmed); grep HeadAngles (2026-06-27) -> only TeslaTurret/TurretAI/TurretSpawn (no render consumer); grep tesla_head -> 1 hit (TeslaTurret.cs:52 identity assignment only, no render attach)", result: pass }
     confidence: high
-    notes: "Re-verified 2026-06-27: identity/hitbox/base model/health faithful and live; head coil model still not modeled as a separate head-bone entity (no visual spin even though the spin state is computed in TrThink). Unchanged from prior audit."
+    notes: "Re-verified 2026-06-28 (this wave did NOT edit TeslaTurret.cs — last touched Wave 17/2f0bfdb; the uncommitted TurretAI.cs change adds only ShotVollyMax + declarative TUR_FLAG_* consts, no head-bone render). identity/hitbox/base model/health faithful and live; head coil model still not modeled as a separate head-bone entity — grep HeadAngles confirms tesla's only consumers are TrThink (writes) + the death-gib path (TurretAI.cs:1265), no live per-frame render node, so no visual spin even though the spin state is computed. Unchanged from prior audit."
   - id: turret-tesla.setup.tr_setup
     name: "tr_setup: select/validate flags, ammo flags, custom firecheck, no aim/track"
     layer: [authority]
@@ -258,4 +258,4 @@ features:
     verification:
       - { kind: code_read, ref: "tesla.qc tr_think (head avelocity branches + cooled-down idle-arc) vs TeslaTurret.TrThink:127-153 — called every Think; idle arc emits via wired TeCsqcLightningArc -> EmitByEffectInfoName(\"arc_lightning\") (real networked TE_CSQC_ARC beam, not a stub); HeadAngles has no render consumer (grep src/ 2026-06-27); Prandom.Vec() reads the unit-ball reject-sample (x^2+y^2+z^2<=1, Prandom.cs:85-94) — NOT a cube", result: pass }
     confidence: high
-    notes: "Re-verified 2026-06-27. Logic/values/timing faithful + live: TrThink reproduces the head spin-up scaling and the probabilistic idle crackle arc, called live each Think; the idle arc visual is genuinely emitted via the wired arc emitter. CLOSED since prior audit: the 'Prandom.Vec returns a cube' gap is STALE — the current Prandom.Vec() (Prandom.cs:85-94) rejection-samples the unit ball, matching QC randomvec() #91, so the idle-arc endpoint shape now matches Base. STILL OPEN on presentation only: the head model is not modeled as a head-bone entity, so the computed spin is never rendered (discharge arc + idle crackle ARE visible)."
+    notes: "Re-verified 2026-06-28. Logic/values/timing faithful + live: TrThink (TeslaTurret.cs:127-153) reproduces the head spin-up scaling and the probabilistic idle crackle arc, called live each Think; the idle arc visual is genuinely emitted via the wired arc emitter (TeCsqcLightningArc -> EmitByEffectInfoName('arc_lightning'), EffectEmitter.cs:299-300 — a real networked TE_CSQC_ARC beam, NOT a stub). Confirmed STILL CLOSED: Prandom.Vec() (Prandom.cs:85-94) rejection-samples the unit ball (x^2+y^2+z^2<=1), matching QC randomvec() #91. STILL OPEN on presentation only: the head model is not modeled as a head-bone entity, so the computed spin is never rendered (discharge arc + idle crackle ARE visible). This wave did not touch tesla code; status unchanged."

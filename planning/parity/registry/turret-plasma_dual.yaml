@@ -1,14 +1,13 @@
 unit: turret-plasma_dual
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 11
   worst_gaps:
-    - "Head-bone CLIENT render still absent: plasmad.md3 head model + two-barrel tag_fire alternation are NOT modeled (single computed ShotOrg muzzle). The server-authoritative head-frame wheel (Entity.Frame 0..6) and the head-angle headshake jolt ARE now ported and live; only the visible head model/spin remain unrendered (no turret CSQC head-bone layer; base.md3 has no spin frames)."
-    - "Respawn -0.2 hide/respawn split + EF_NODRAW hide-frame still not modeled (turret schedules Respawn directly at now+RespawnTime). NET respawn timing is faithful (Base 0.2 + (respawntime-0.2) = 60 == port now+60); only the intermediate EF_NODRAW hide-frame is a presentation gap."
+    - "Head-bone CLIENT render still absent: plasmad.md3 head model + two-barrel tag_fire alternation are NOT modeled (single computed ShotOrg muzzle). The server-authoritative head-frame wheel (Entity.Frame 0..6) and the head-angle headshake jolt ARE ported and live; only the visible head model/spin remain unrendered (no turret CSQC head-bone layer; base.md3 has no spin frames)."
     - "Instagib FireBullet is a single trace; QC FireRailgunBullet penetration/distance falloff deferred (shared TurretCombat documented gap)."
-    - "Death FX/sound branch (SND_ROCKET_IMPACT + EFFECT_ROCKET_EXPLODE) only fires in Base on TFL_DMG_DEATH_NORESPAWN; plasma_dual always respawns so the branch never applies (the port has the norespawn FX coded but unreachable for this unit)."
+    - "Death FX (rocket-impact sound + ROCKET_EXPLODE + base/head-gib debris) + the EF_NODRAW hide/respawn split are now MODELED + LIVE on every death (matching cl_turrets.qc turret_die); the only residual is that they emit server-side rather than via a CSQC turret edict (no client turret draw layer), behaviorally equivalent but not yet runtime-confirmed on a live placement."
 features:
   - id: turret-plasma_dual.spawn.registration
     name: "Map spawnfunc + turret_initialize (registration, model, hitbox, lifecycle)"
@@ -27,7 +26,7 @@ features:
       - { name: "mins", base: "'-32 -32 0'", port: "(-32,-32,0)", match: true }
       - { name: "maxs", base: "'32 32 64'", port: "(32,32,64)", match: true }
       - { name: "model", base: "models/turrets/base.md3", port: "models/turrets/base.md3", match: true }
-      - { name: "head_model", base: "models/turrets/plasmad.md3", port: "none (head bone not modeled server-side)", match: false }
+      - { name: "head_model", base: "models/turrets/plasmad.md3", port: "models/turrets/plasmad.md3 (PlasmaDualTurret ctor; consumed server-side by TossDeathGibs head gib)", match: true }
       - { name: "respawntime", base: "60", port: "60", match: true }
     status:
       logic: faithful
@@ -39,11 +38,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "head_model plasmad.md3 not used server-side (head-bone/tag_head networking is client-render, skipped)."
+      - "head_model plasmad.md3 is now set on the descriptor and consumed server-side (TossDeathGibs head gib); the live tur_head/tag_head CLIENT render attachment + spin is still absent (no turret CSQC head-bone layer) — tracked under presentation.head_frame_anim."
     verification:
-      - { kind: code-trace, ref: "MapObjectsRegistry.cs:231 RegisterAll -> SpawnFuncs.Register('turret_plasma_dual', TurretSpawnFuncs.PlasmaDual:68) -> def.Spawn -> TurretSpawn.Init -> Turrets registry + per-frame Think (TurretSpawnFuncs.Spawn:55). Live BSP dispatch: GameWorld.cs:4349 SpawnFuncs.TrySpawn(cls,e).", result: pass }
+      - { kind: code-trace, ref: "MapObjectsRegistry.cs:231 RegisterAll -> SpawnFuncs.Register('turret_plasma_dual', TurretSpawnFuncs.PlasmaDual) -> def.Spawn -> TurretSpawn.Init -> Turrets registry + per-frame Think. Live BSP dispatch: GameWorld.cs SpawnFuncs.TrySpawn(cls,e).", result: pass }
+      - { kind: code-read, ref: "PlasmaDualTurret ctor now sets HeadModel='models/turrets/plasmad.md3'; consumed by TurretAI.TossDeathGibs:1243 (head gib) so plasma_dual death tosses its own head gib like every standard turret.", result: pass }
     confidence: high
-    notes: "RE-VERIFIED 2026-06-27 (Wave 16/17 re-audit): registration line now 231 (still live, master-switch gated). Full chain re-traced end-to-end: BSP entity -> GameWorld.cs:4349 TrySpawn -> TurretSpawnFuncs.PlasmaDual -> Spawn(e,'plasma_dual') -> Turrets.ByName -> def.Spawn + per-frame Think. Subclass of PlasmaTurret per QC; registered [Turret]."
+    notes: "RE-AUDITED 2026-06-28: head_model now CONSTANT-matches Base — the ctor sets HeadModel='plasmad.md3' (this wave) and it is read server-side by TossDeathGibs for the head gib. Constant flipped match:false->true. Registration chain unchanged + still live (master-switch gated). The CLIENT head-bone render/spin attachment remains absent (tracked in presentation.head_frame_anim), so logic/values/timing/liveness stay faithful/live as before."
 
   - id: turret-plasma_dual.ai.think_loop
     name: "Per-frame AI: ammo regen, target scan throttle, validate, aim, track, firecheck, fire"
@@ -299,20 +299,20 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: missing
-      audio: missing
+      presentation: faithful
+      audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Respawn EF_NODRAW hide-frame split not modeled: Base hides (EF_NODRAW) at time+0.2 then turret_respawn at respawntime-0.2; port schedules Respawn directly at now+RespawnTime. NET respawn timing is identical (0.2 + (60-0.2) = 60 == now+60) — only the intermediate EF_NODRAW hide-frame (a presentation detail) is unmodeled."
-      - "Death FX/sound (SND_ROCKET_IMPACT + EFFECT_ROCKET_EXPLODE) only fire in Base on TFL_DMG_DEATH_NORESPAWN; plasma_dual always respawns so this branch never applies (port has it coded in Die but unreachable for this unit). tr_death is a no-op for plasma_dual."
+      - "Death FX/gibs are emitted SERVER-side at the death site (rocket-impact sound + ROCKET_EXPLODE + TossDeathGibs) rather than from a CSQC turret edict — the port has no client turret draw layer, so the FX/sound network to every viewer via the temp-entity/effect feed and the gibs render as physics entities through the entity feed (the VehicleCommon.TossGib idiom). Behaviorally equivalent to cl_turrets.qc turret_die; not yet runtime-confirmed on a live plasma_dual placement (code-trace only)."
     verification:
-      - { kind: code-trace, ref: "Damage gate LIVE: TurretSpawn.Init:93 sets e.GtEventDamage=TurretAI.EventDamage; DamageSystem.cs:331 routes a non-player edict with a GtEventDamage to it -> EventDamage -> Damage() gate + TakeResource + Combat.Death -> OnAnyDeath -> Die", result: pass }
-      - { kind: code-read, ref: "TurretAI.Die no longer does WeaponSplash.RadiusDamage; matches sv_turrets.qc:181 //RadiusDamage commented out (no death blast). turret_hide net respawn = 60 == port now+60", result: pass }
+      - { kind: code-trace, ref: "Damage gate LIVE: TurretSpawn.Init:93 sets e.GtEventDamage=TurretAI.EventDamage; DamageSystem routes a non-player edict with a GtEventDamage to it -> EventDamage -> Damage() gate + TakeResource + Combat.Death.Call (health<=0) -> OnAnyDeath (TurretAI.cs:952, subscribed via EnsureDeathHook:949) -> Die", result: pass }
+      - { kind: code-read, ref: "TurretAI.Die:1124 no death blast (matches sv_turrets.qc:182 //RadiusDamage commented out). Die->Hide->Respawn now models the QC two-step: Hide (TurretAI.cs:1167) sets Effects|=EF_NODRAW + schedules Respawn at respawntime-0.2; Respawn:1189 clears EF_NODRAW. Net dead time 0.2+(60-0.2)=60.", result: pass }
+      - { kind: code-trace, ref: "Death presentation now LIVE on EVERY death (cl_turrets.qc turret_die runs client-side on TNSF_STATUS health==0, not just NORESPAWN): Die:1136-1138 Api.Sound.Play(rocket_impact.wav)=SND_ROCKET_IMPACT + EffectEmitter.Emit('ROCKET_EXPLODE')=EFFECT_ROCKET_EXPLODE + TossDeathGibs. TossDeathGibs:1235 consumes Turrets.ByName(NetName).HeadModel (now 'plasmad.md3') for the head gib + base-gib coin flip; effect sinks live (ServerNet.cs:303 + ClientWorld.cs:393).", result: pass }
       - { kind: code-read, ref: "TurretAI.Damage does NOT set turret.Enemy=attacker; matches Base turret_damage (TFL_DMG_RETALIATE set but never read)", result: pass }
     confidence: high
-    notes: "timing reclassified unknown->faithful: net respawn time verified = 60s (Base 0.2 hide + (respawntime-0.2) respawn == port now+60); the -0.2 split itself is just the EF_NODRAW hide-frame, a presentation gap. Damage gate live via GtEventDamage + DamageSystem routing; no retaliation (Base never adopts attacker); no death blast (Base RadiusDamage commented out)."
+    notes: "RE-AUDITED THIS WAVE: presentation/audio missing->faithful and BOTH prior gaps CLOSED. (1) EF_NODRAW hide-frame split is now modeled — Die->Hide (EF_NODRAW + respawntime-0.2)->Respawn (clears NoDraw), net dead time still exactly 60. (2) Death FX/sound is NO LONGER unreachable: the port emits SND_ROCKET_IMPACT + EFFECT_ROCKET_EXPLODE + the cl_turrets.qc base-gib/head-gib debris toss on EVERY death (not just NORESPAWN), faithful to the client-side cl_turrets.qc turret_die which runs on every death. HeadModel='plasmad.md3' (constructor) feeds the head gib. Remaining nuance (now the only gap): FX emitted server-side rather than via a CSQC turret edict (port has no client turret draw layer) — behaviorally equivalent, code-traced not runtime-verified. logic/values/timing unchanged faithful; no retaliation; no death blast."
 
   - id: turret-plasma_dual.damage.headshake
     name: "TFL_DMG_HEADSHAKE: jolt head angles by random*damage on hit"

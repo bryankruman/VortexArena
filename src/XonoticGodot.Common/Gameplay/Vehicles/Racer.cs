@@ -117,7 +117,10 @@ public sealed class Racer : Vehicle
     private void LoadCvars()
     {
         if (Api.Services is null) return;
-        float Get(string n, float def) { float v = Api.Cvars.GetFloat(n); return v != 0f ? v : def; }
+        // Presence-aware read: GetString returns "" for an unregistered/unset cvar (EngineServices.GetString),
+        // so an explicit `set g_vehicle_racer_* 0` is honoured while an unloaded store keeps the Base default.
+        float Get(string n, float def) => Api.Cvars.GetString(n).Length != 0 ? Api.Cvars.GetFloat(n) : def;
+        bool IsSet(string n) => Api.Cvars.GetString(n).Length != 0;
 
         SpeedForward = Get("g_vehicle_racer_speed_forward", SpeedForward);
         SpeedStrafe = Get("g_vehicle_racer_speed_strafe", SpeedStrafe);
@@ -143,7 +146,7 @@ public sealed class Racer : Vehicle
         ThinkRate = Get("g_vehicle_racer_thinkrate", ThinkRate);
         WaterTime = Get("g_vehicle_racer_water_time", WaterTime);
         BounceFactor = Get("g_vehicle_racer_bouncefactor", BounceFactor);
-        // BounceStop default is 0 (engine default); Get() can't override to 0 so the field default stands.
+        BounceStop = Get("g_vehicle_racer_bouncestop", BounceStop); // presence-aware Get now honours an explicit 0
 
         MaxEnergy = Get("g_vehicle_racer_energy", MaxEnergy);
         EnergyRegen = Get("g_vehicle_racer_energy_regen", EnergyRegen);
@@ -169,9 +172,11 @@ public sealed class Racer : Vehicle
         RocketAccel = Get("g_vehicle_racer_rocket_accel", RocketAccel);
         RocketTurnRate = Get("g_vehicle_racer_rocket_turnrate", RocketTurnRate);
         RocketRefire = Get("g_vehicle_racer_rocket_refire", RocketRefire);
-        // RocketLockTarget defaults true (Base) and cannot be distinguished from "unset" via GetFloat (both read
-        // 0/false), so it is left at the default rather than forced off by an unloaded cvar store. (todo: needs a
-        // cvar-presence query to honour an explicit `g_vehicle_racer_rocket_locktarget 0` server override.)
+        // RocketLockTarget defaults true (Base). The presence query distinguishes an explicit server override
+        // (`g_vehicle_racer_rocket_locktarget 0/1`) from an unloaded store, so an explicit 0 now disables lock-on
+        // while an unset store keeps the Base-default true.
+        if (IsSet("g_vehicle_racer_rocket_locktarget"))
+            RocketLockTarget = Api.Cvars.GetFloat("g_vehicle_racer_rocket_locktarget") != 0f;
         RocketLockingTime = Get("g_vehicle_racer_rocket_locking_time", RocketLockingTime);
         RocketLockingReleaseTime = Get("g_vehicle_racer_rocket_locking_releasetime", RocketLockingReleaseTime);
         RocketLockedTime = Get("g_vehicle_racer_rocket_locked_time", RocketLockedTime);
@@ -238,6 +243,11 @@ public sealed class Racer : Vehicle
     {
         VehicleCommon.Impact(vehicle, 200f, 0.15f, 150f);
     }
+
+    // QC vr_enter: setorigin(instance.owner.flagcarried, '-190 0 96') — a boarding flag-carrier's flag parks
+    // 190u BEHIND the cockpit (not the shared VEHICLE_FLAG_OFFSET '0 0 96'). Ctf.Tick reads this each tick.
+    /// <summary>Racer-specific carried-flag cockpit offset (<c>'-190 0 96'</c>), per <c>vr_enter</c>.</summary>
+    public override Vector3 FlagCarryOffset => new(-190f, 0f, 96f);
 
     // METHOD(Racer, vr_enter) — racer.qc
     public override void Enter(Entity vehicle, Entity player)

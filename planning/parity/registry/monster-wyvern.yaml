@@ -1,11 +1,12 @@
 unit: monster-wyvern
 category: monster
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-25"
+last_audited: "2026-06-28"
 summary:
   feature_count: 17
   worst_gaps:
     - "anim_melee '5 1 5' and anim_pain2 '4 1 2' have no distinct phase (port collapses melee+ranged onto Attack=anim_shoot 6 and uses a single Pain=pain1=3 without pain1/pain2 alternation) — cosmetic, no behavioral difference."
+    - "CSQC monster frame playback (anim/pain/death/deadthink frame groups) is fully WIRED in code (DriveAnimFrame->networked Entity.Frame->ClientEntityView Generic frameDriven->ModelAnimator.FollowEntityFrame) but NEVER runtime-verified in-game, and depends on wyvern.dpm carrying >1 frame; presentation on those rows is unknown, not confirmed-faithful."
 features:
   - id: wyvern.identity.spawnflags_hitbox
     name: "Identity, fly spawnflags, asymmetric hitbox"
@@ -62,7 +63,7 @@ features:
     verification:
       - { kind: value, ref: "monsters.cfg:67-78 vs Wyvern.cs fields/Cvar fallbacks", result: pass }
     confidence: high
-    notes: "Each value read via MonsterAI.Cvar(name, fallback) so live cvar tuning carries through. Setup (MonsterAI.cs) also fires the spawn voice cue via MonsterSound('spawn', CH_VOICE, g_monsters_sounds-gated). Unchanged by Wave-5."
+    notes: "Each value read via MonsterAI.Cvar(name, fallback) so live cvar tuning carries through. Wave-16 added two faithful-confirming edits to Wyvern.cs: (1) Spawn now seeds e.ViewOfs = (0,0, maxs.z*0.35) = (0,0,10.5) per QC mr_setup eye-height (used by aim/ValidTarget eye-origin traces); (2) ctor sets an EMPTY SoundCues set so MonsterSound (MonsterAI.cs:926) emits no voice sample (Base ships no wyvern.dpm .sounds file, so QC sound7 plays nothing) — confirms wyvern is voice-silent, no port-invented death/pain sample. Neither edit changes a status. The spawn cue line still calls MonsterSound('spawn') but now resolves to silence."
 
   - id: wyvern.attack.dispatch
     name: "Attack: 1s wind-up, ranged+melee both lob a fireball"
@@ -186,24 +187,26 @@ features:
     base_refs:
       - "common/monsters/monster/wyvern.qc:M_Wyvern_Attack_Fireball_Explode (Send_Effect EFFECT_FIREBALL_EXPLODE)"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Monsters/Wyvern.cs:FireFireball (onExplode -> EffectEmitter.Emit(\"FIREBALL_EXPLODE\", p.Origin))"
-      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:122 (Register \"FIREBALL_EXPLODE\")"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Wyvern.cs:187 (onExplode -> EffectEmitter.Emit(\"FIREBALL_EXPLODE\", p.Origin))"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:154 (Register \"FIREBALL_EXPLODE\" -> effectinfo fireball_explode)"
     constants:
       - { name: "effect", base: "EFFECT_FIREBALL_EXPLODE", port: "\"FIREBALL_EXPLODE\" (effectinfo fireball_explode)", match: true }
     status:
       logic: faithful
       values: faithful
       timing: na
-      presentation: faithful
+      presentation: unknown
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps: []
+    gaps:
+      - "RUNTIME-UNVERIFIED: the Emit call IS on the live explode path and the effect IS registered, but the blast particle visibly rendering on detonation was not observed in-game. presentation:unknown."
     verification:
-      - { kind: source, ref: "EffectEmitter.Emit(\"FIREBALL_EXPLODE\") in onExplode -> Effects.ByName resolves the registered effect -> Sink.Emit; onExplode invoked from SpawnProjectile.Explode on Touch AND lifetime; live sink = EffectNetSink -> client RenderSink", result: pass }
-    confidence: high
-    notes: "Blast particle emitted on the server explode path and networked to the client. Same emission/registration pattern as the player Fireball weapon. Unchanged by Wave-5."
+      - { kind: source, ref: "Re-verified 06-28: Wyvern.cs:187 EffectEmitter.Emit(\"FIREBALL_EXPLODE\", p.Origin) inside onExplode, which SpawnProjectile.Explode invokes on Touch AND lifetime (live path). The effect is registered at EffectsList.cs:154 (Register FIREBALL_EXPLODE -> fireball_explode). Emission + registration confirmed in code. Unchanged this wave.", result: pass }
+      - { kind: visual, ref: "NOT runtime-observed: the explosion particle was not seen on screen this pass.", result: unknown }
+    confidence: medium
+    notes: "Logic/values/liveness faithful (the blast effect is emitted on the live server explode path and registered for networking). DOWNGRADED presentation faithful->unknown, confidence high->medium: visible particle render not runtime-observed. Same emission/registration pattern as the player Fireball weapon. Fixed stale line cites (Wyvern :187, EffectsList :154). Unchanged this wave."
 
   - id: wyvern.fireball.firemine_visual
     name: "In-flight fireball CSQC visual (PROJECTILE_FIREMINE)"
@@ -219,16 +222,18 @@ features:
       logic: faithful
       values: na
       timing: na
-      presentation: faithful
+      presentation: unknown
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps: []
+    gaps:
+      - "RUNTIME-UNVERIFIED: the classifier->Firemine Desc chain is wired in code, but the fire-mine billboard + FIREMINE trail + glow actually rendering on the in-flight projectile was not observed in-game. presentation:unknown."
     verification:
-      - { kind: source, ref: "Re-verified 06-25: SpawnProjectile (MonsterAI.cs:1440) sets ClassName='monster_projectile', NetName=st.Def.NetName ('wyvern'), MoveType.FlyMissile, Flags|=Item, Owner=actor. ServerNet.Classify (:2104) returns NetEntityKind.Projectile (Item marker + Owner + projectile movetype). Client ProjectileCatalog.Classify (:237) on 'monster_projectile  wyvern' now hits an explicit `Has(s,\"wyvern\") -> ProjectileType.Firemine` branch (:266-269, keyed before \"fireball\"). Firemine Desc (:180) = FireSprite body, FireOrange glow + HasLight, FIREMINE trail, fireball_fly loop sound. So the in-flight fireball draws the fire-mine visual.", result: pass }
-    confidence: high
-    notes: "FIXED since the 06-22 baseline: a `wyvern`->Firemine rule was added to ProjectileCatalog.Classify (ProjectileCatalog.cs:266-269), closing the long-standing Generic-fallback gap. The projectile is CSQC-networked (Projectile kind) and now renders the PROJECTILE_FIREMINE visual matching QC wr_think's CSQCProjectile(..., PROJECTILE_FIREMINE, ...). Same spawner is shared by mage/golem (which match via netname 'mage'/'golem')."
+      - { kind: source, ref: "Re-verified 06-28: SpawnProjectile (MonsterAI.cs:1739-1741) sets ClassName='monster_projectile', NetName=st.Def.NetName ('wyvern'), MoveType.FlyMissile, Flags|=Item, Owner=actor. ServerNet.Classify returns NetEntityKind.Projectile. Client ProjectileCatalog.Classify on 'wyvern' hits an explicit `Has(s,\"wyvern\") -> ProjectileType.Firemine` branch (ProjectileCatalog.cs:292, keyed BEFORE the generic 'fireball' at :293). Firemine Desc (:185) = FireSprite body, FireOrange glow + HasLight, FIREMINE trail, weapons/fireball_fly loop. The classification + Desc are confirmed in code. NOTE: registry previously cited line 266-269 — STALE; the actual branch is :292 (the :266-269 range is now the rocketminsta block).", result: pass }
+      - { kind: visual, ref: "NOT runtime-observed: the fire-mine in-flight visual was not seen on screen this pass.", result: unknown }
+    confidence: medium
+    notes: "Code chain confirmed (server NetName 'wyvern' -> Projectile kind -> client wyvern->Firemine -> FireSprite+FIREMINE Desc) and UNCHANGED this wave. DOWNGRADED presentation faithful->unknown, confidence high->medium: the PROJECTILE_FIREMINE visual rendering is wired but not runtime-observed (the spec itself lists it among the not-yet-runtime-verified items). Fixed the stale :266-269 line citation -> :292. Same spawner shared by mage/golem (match via netname 'mage'/'golem')."
 
   - id: wyvern.fireball.fire_sound
     name: "Fireball launch sound (electro_fire)"
@@ -298,16 +303,18 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: faithful
+      presentation: unknown
       audio: faithful
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps: []
+    gaps:
+      - "RUNTIME-UNVERIFIED: the pain frame (Pain->frame 3, anim_pain1) is computed + networked, but the .dpm visibly playing it is not runtime-confirmed (same unobserved client chain as the anim row). presentation:unknown."
     verification:
-      - { kind: source, ref: "Re-verified 06-22 (post Wave-5): Wyvern.cs:36 overrides PainWindow => 0.5f; MarkPain (MonsterAI.cs:1440) sets st.PainFinished = Now + st.Def.PainWindow and st.Anim=Pain; DriveAnimFrame maps Pain -> AnimFrame(Pain)=3f onto the networked Entity.Frame; ClientEntityView classifies the monster as Generic -> OnEntityUpdate(frameDriven:true) -> ModelAnimator.FollowEntityFrame plays MD3 frame 3 (anim_pain1). Audio: MonsterSound('pain', 1.2s throttle, CH/Body) plays wyvern_pain.wav gated by g_monsters_sounds.", result: pass }
-    confidence: high
-    notes: "FIXED by Wave-5: the anim_pain1 '3 1 2' frame group is now genuinely networked + played (presentation stub -> faithful), via the new AnimFrame/DriveAnimFrame/FollowEntityFrame seam. Logic/values/timing/audio remain faithful (0.5s window honored on the live damage path)."
+      - { kind: source, ref: "Re-verified 06-28: Wyvern.cs:36 overrides PainWindow => 0.5f; MarkPain (MonsterAI.cs) sets st.PainFinished = Now + st.Def.PainWindow and st.Anim=Pain; DriveAnimFrame maps Pain -> AnimFrame(Pain)=3f onto self.Frame; ClientEntityView classifies the monster as Generic -> OnEntityUpdate(frameDriven:true) -> ModelAnimator.FollowEntityFrame would play MD3 frame 3. The 0.5s pain window + the Pain->3 mapping are confirmed in code. Unchanged this wave.", result: pass }
+      - { kind: visual, ref: "NOT runtime-observed: the pain-anim morph was not seen in-game.", result: unknown }
+    confidence: medium
+    notes: "Logic/values/timing/audio faithful (0.5s window honored on the live damage path; voice cues are silent per the empty SoundCues set Wave-16 confirmed — so 'audio:faithful' = correct SILENCE, no wyvern_pain.wav, the earlier note's 'plays wyvern_pain.wav' was wrong). DOWNGRADED presentation faithful->unknown, confidence high->medium: the pain-frame client playback is wired but not runtime-observed."
 
   - id: wyvern.death
     name: "Death: die anim + random corpse launch scatter"
@@ -327,16 +334,18 @@ features:
       logic: faithful
       values: faithful
       timing: na
-      presentation: faithful
-      audio: faithful
+      presentation: unknown
+      audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps: []
+    gaps:
+      - "RUNTIME-UNVERIFIED: the falling die1 frame (Death,die2=false -> frame 7) is computed + networked, but the client visibly playing it is not runtime-confirmed (same unobserved chain). The CORPSE-SCATTER physics (logic/values) ARE faithful (Wyvern.cs:123-133 applies x=400r-200, y=400r-200, z=100r+100 + Gravity=1 on the first dead frame). presentation:unknown."
     verification:
-      - { kind: source, ref: "Re-verified 06-22 (post Wave-5): Wyvern.Think dead branch applies the 400r-200/400r-200/100r+100 scatter on the first dead frame + restores Gravity 1; MarkDead sets st.Anim=Death (MonsterAI.cs:1524) and leaves a flyer's velocity untouched; RunThink's dead branch calls DeadThink THEN DriveAnimFrame (MonsterAI.cs:1030), so AnimFrame(Death,die2=false)=7 (anim_die1) is networked and played client-side via FollowEntityFrame. Prandom.Float()=[0,1) matches QC random().", result: pass }
-    confidence: high
-    notes: "FIXED by Wave-5 on presentation: the anim_die1 falling frame group (frame 7) is now networked + played (stub -> faithful). Logic/values/audio remain faithful — a killed wyvern tumbles with the exact QC scatter. NUANCE: a GIBBED kill replaces .Think with a fade-only lambda (MarkDead) so the scatter is skipped — faithful, since a gibbed monster is in pieces. Per-edict scatter state is in a ConditionalWeakTable, reset on respawn."
+      - { kind: source, ref: "Re-verified 06-28: Wyvern.Think dead branch (Wyvern.cs:123-133) applies the 400r-200/400r-200/100r+100 scatter once (ds.Scattered guard) on the first dead frame + restores Gravity 1; Prandom.Float()=[0,1) matches QC random(); MarkDead sets st.Anim=Death and leaves a flyer's velocity untouched so the scatter survives; RunThink's dead branch calls DriveAnimFrame so AnimFrame(Death,die2=false)=7 is networked. The scatter math is exact + verified in code. Unchanged this wave.", result: pass }
+      - { kind: visual, ref: "NOT runtime-observed: a killed wyvern tumbling and playing die1 was not seen in-game; the corpse-frame morph is unconfirmed.", result: unknown }
+    confidence: medium
+    notes: "DOWNGRADED presentation faithful->unknown, confidence high->medium, audio faithful->na (Base wyvern mr_death plays NO death sound; the empty SoundCues set Wave-16 confirmed means MarkDead's MonsterSound('death') is silent — correct, but it is not an emitted cue so audio:na is more honest than audio:faithful). Logic/values faithful: the QC scatter velocities + Gravity restore are exact and verified in code. NUANCE: a GIBBED kill replaces .Think with a fade-only lambda so the scatter is skipped — faithful (a gibbed monster is in pieces). Per-edict scatter state in a ConditionalWeakTable, reset on respawn (Spawn removes the entry). The die1 frame PLAYBACK is wired but not runtime-observed."
 
   - id: wyvern.deadthink
     name: "Dead-think: swap to anim_die2 once the corpse lands"
@@ -353,16 +362,18 @@ features:
       logic: faithful
       values: na
       timing: faithful
-      presentation: faithful
+      presentation: unknown
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps: []
+    gaps:
+      - "RUNTIME-UNVERIFIED: the on-ground die2 swap (DeathLanded -> Death,die2=true -> frame 8) is computed + networked, but the client visibly swapping to the landed pose is not runtime-confirmed. The LANDING DETECTION (logic/timing) IS faithful (Wyvern.cs:138-142 sets st.DeathLanded once on EntFlags.OnGround). presentation:unknown."
     verification:
-      - { kind: source, ref: "Re-verified 06-22 (post Wave-5): Wyvern.Think runs every frame (Think wrapper re-arms NextThink, survives a non-gibbed kill); the dead branch detects EntFlags.OnGround and sets st.DeathLanded=true once (ds.Landed guard). RunThink's dead branch calls DriveAnimFrame, which reads st.DeathLanded -> AnimFrame(Death, die2=true)=8 (anim_die2) onto the networked Entity.Frame; the client FollowEntityFrame animator swaps to MD3 frame 8. st.DeathLanded is reset on respawn (MonsterAI.cs:1723).", result: pass }
-    confidence: high
-    notes: "FIXED by Wave-5 on presentation: the mr_deadthink on-ground die2 frame swap (frame 8) is now genuinely networked + played (stub -> faithful) — the landed-corpse pose is visible. Logic+liveness were already faithful (the hook is driven on the live corpse-fall path)."
+      - { kind: source, ref: "Re-verified 06-28: Wyvern.Think runs every frame (Think wrapper re-arms NextThink, survives a non-gibbed kill); the dead branch (Wyvern.cs:138-142) detects EntFlags.OnGround and sets st.DeathLanded=true once (ds.Landed guard). RunThink's dead branch calls DriveAnimFrame which reads st.DeathLanded -> AnimFrame(Death, die2=true)=8 (anim_die2) onto self.Frame; st.DeathLanded reset on respawn (MonsterAI.cs:2160). The landing-detection + die2 frame selection are confirmed in code. Unchanged this wave.", result: pass }
+      - { kind: visual, ref: "NOT runtime-observed: the landed-corpse die2 pose swap was not seen in-game.", result: unknown }
+    confidence: medium
+    notes: "Logic+timing+liveness faithful (the on-ground die2 hook is driven on the live corpse-fall path; the frame value swaps to 8 once grounded). DOWNGRADED presentation faithful->unknown, confidence high->medium: the landed-pose client morph is wired but not runtime-observed."
 
   - id: wyvern.anim.frame_table
     name: "Animation frame groups (mr_anim)"
@@ -383,17 +394,19 @@ features:
       logic: faithful
       values: faithful
       timing: faithful
-      presentation: faithful
+      presentation: unknown
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "anim_melee '5 1 5' and anim_pain2 '4 1 2' have no distinct phase: the port collapses both melee+ranged onto Attack=anim_shoot 6 (faithful for the wyvern — both QC branches lob a fireball) and uses a single Pain=3 (pain1) without the pain1/pain2 alternation. Cosmetic; no behavioral difference."
+      - "RUNTIME-UNVERIFIED: the AnimFrame->DriveAnimFrame->networked Entity.Frame->ClientEntityView(Generic,frameDriven:true)->ModelAnimator.FollowEntityFrame chain is wired end-to-end in CODE, but no in-game observation confirms the wyvern.dpm visibly morphs to frames 0/1/2/3/6/7/8, and it depends on the .dpm asset actually carrying >1 frame for the morph. Visible fidelity not runtime-verified -> presentation:unknown."
     verification:
-      - { kind: source, ref: "Re-verified 06-22 (post Wave-5): the Wyvern.AnimFrame override (Wyvern.cs:43) maps each MonsterAnimPhase to the QC frame-group START index; MonsterAI.RunThink calls DriveAnimFrame (MonsterAI.cs:1075 live branch + :1030 dead branch) which stamps that frame onto the networked Entity.Frame; ServerNet sends Frame (:1752), ClientEntityView copies it (:126) and routes the Generic-classified monster through OnEntityUpdate(frameDriven:true) (:203); ModelAnimator.Advance in FollowEntityFrame mode (:268) uses Entity.Frame directly as the MD3 morph playhead. Every wyvern group is count=1 (a single held keyframe), so a static frame per phase is faithful.", result: pass }
-    confidence: high
-    notes: "FIXED by Wave-5 (the worst baseline gap): the monster animation frame groups are now genuinely driven AND networked AND played client-side. The new AnimFrame/DriveAnimFrame seam + the ClientEntityView Generic->frameDriven path + ModelAnimator.FollowEntityFrame close the long-standing system-wide CSQC monster-animation deferral. NOTE: depends on the wyvern.dpm asset actually carrying >1 frame for the morph; the C# seam is fully wired regardless. Same seam now serves the Zombie (Zombie.cs:180) and any monster that declares an AnimFrame table."
+      - { kind: source, ref: "Re-verified 06-28: the Wyvern.AnimFrame override (Wyvern.cs:43-52) maps each MonsterAnimPhase to the QC frame-group START index; MonsterAI.DriveAnimFrame (MonsterAI.cs:1464-1469) reads st.Def.AnimFrame(...) and stamps frame onto self.Frame; called from RunThink's live + dead branches (:1302/:1348/:1406/:1424/:1455). Client: ClientEntityView routes the Generic-classified monster through OnEntityUpdate(frameDriven:true) (ClientEntityView.cs:226/233); ModelAnimator.FollowEntityFrame mode (ModelAnimator.cs:275) uses Entity.Frame directly as the playhead. The C# seam is wired end-to-end. Unchanged this wave.", result: pass }
+      - { kind: visual, ref: "NOT runtime-observed: no in-game wyvern spawn this pass to confirm the .dpm visibly morphs per phase; runtime presentation fidelity is unconfirmed and depends on wyvern.dpm carrying >1 frame.", result: unknown }
+    confidence: medium
+    notes: "Code seam (AnimFrame/DriveAnimFrame -> networked Entity.Frame -> ClientEntityView Generic frameDriven -> ModelAnimator.FollowEntityFrame) is fully wired and unchanged this wave. DOWNGRADED presentation faithful->unknown, confidence high->medium: the prior 'played client-side' claim was never runtime-verified and hinges on wyvern.dpm carrying >1 frame. Logic/values/timing/liveness remain faithful (the frame value IS computed + networked). Needs in-game spawn-and-observe to upgrade presentation."
 
   - id: wyvern.obituary
     name: "Kill notification (was fireballed by a Wyvern)"

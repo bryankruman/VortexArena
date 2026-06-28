@@ -1,11 +1,11 @@
 unit: turret-phaser
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 14
   worst_gaps:
-    - "Presentation only: no MDL_TUR_PHASER_BEAM beam-model visual (scaled to impact) and no phaser.md3 head bone attached — the head charge/discharge FRAME animation (tr_think) is ported live but rides the turret edict's Entity.Frame with no visible head model to show it. All authority/shared logic (penetrating multi-hit beam, audio, fireflag firecheck, bot_dodge, biases, track tuning, 90s respawn) re-verified faithful+live 2026-06-27 against current code."
+    - "Presentation only (DEGRADED, not absent): the MDL_TUR_PHASER_BEAM beam model is now spawned + per-frame rescaled to the wall-hit distance (beam.scale = vlen/256) and EF_LOWPRECISION set — visible+faithful on the LISTEN-SERVER/host path (EntityNode reads Entity.ScaleFactor), but remote clients render it at scale 1 (no EntityField.Scale wire bump — T48 deferred) and the QC setattachment(beam,tur_head,tag_fire) tag-socket is approximated by origin/angles (no tag sub-entity). Head charge/discharge FRAME animation rides Entity.Frame faithfully but phaser.md3 is not attached as a separate head bone. None of the visuals are runtime-verified. All authority/shared logic (penetrating multi-hit beam, audio, fireflag firecheck, bot_dodge, biases, track tuning, 90s respawn) re-verified faithful+live against current code."
 features:
   - id: turret-phaser.spawn.map_entity
     name: "Map placement + per-frame think wiring (spawnfunc turret_phaser)"
@@ -340,35 +340,45 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Attack"
       - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:FireFlag"
     constants:
-      - { name: "beam scale", base: "vlen(shotorg-trace_endpos)/256", port: "none", match: false }
+      - { name: "beam scale", base: "vlen(shotorg-trace_endpos)/256", port: "vlen(start-beamEnd)/256 (ScaleFactor, per-frame)", match: true }
+      - { name: "beam model", base: "MDL_TUR_PHASER_BEAM (models/turrets/phaser_beam.md3)", port: "models/turrets/phaser_beam.md3 (asset present)", match: true }
+      - { name: "effects", base: "EF_LOWPRECISION", port: "EfLowPrecision (4194304)", match: true }
       - { name: "head frames fireflag==1", base: "cycle 1..10", port: "cycle 1..10 (Entity.Frame)", match: true }
       - { name: "head frames fireflag==2", base: "advance to 15 then reset to 0", port: "advance to 15 then reset to 0 (Entity.Frame)", match: true }
     status:
-      logic: partial
-      values: partial
-      timing: partial
-      presentation: missing
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No PhaserTurret_beam model spawned/scaled to the impact distance (MDL_TUR_PHASER_BEAM + .scale = vlen/256 + setattachment tag_fire); acknowledged TODO comment in Attack (PhaserTurret.cs:161-165). The server-side beam logic/damage IS done; only the visible beam model is absent."
+      - "Beam model is visible+correctly-scaled only on the LISTEN-SERVER/host path: EntityNode reads Entity.ScaleFactor (EntityNode.cs:116, gated to s>0 && s!=1) but remote clients have no EntityField.Scale wire (T48 deferred), so a remote spectator sees the beam at scale 1 (wrong length). Whether server-spawned Solid.Not beam edicts are even included in the remote entity snapshot is unverified."
+      - "QC setattachment(beam, tur_head, \"tag_fire\") tag-socket attachment is not ported — the port approximates it by setting beam.Origin = muzzle shotOrg and beam.Angles = HeadWorldAngles each frame (no tag sub-entity in the port)."
       - "phaser.md3 head model is not attached as a separate tracking head bone — the head-frame animation drives the turret edict's own networked Entity.Frame, so the frame VALUE animates faithfully but there is no visible phaser.md3 head to show it (presentation gap shared with identity.model_hitbox)."
+      - "No runtime/visual verification: all beam-visual + head-frame claims are code-read only."
     verification:
-      - { kind: code, ref: "PhaserTurret.TrThinkHeadAnim (fireflag==1 cycle 1..10; fireflag==2 advance to 15 then reset to 0, fireflag=0) == phaser.qc tr_think; FireFlag set in Attack (=1) and BeamThink end (=2) — head FRAME state machine ported and live (PhaserTurret.cs:100-118,171,201-202)", result: pass }
-      - { kind: code, ref: "MDL_TUR_PHASER_BEAM setmodel + .scale = vlen/256 — still no port equivalent (PhaserTurret.cs:175-179 NOTE: no Entity.Scale / setattachment / server->client beam-model render path)", result: fail }
-    confidence: high
+      - { kind: code, ref: "PhaserTurret.Attack:181-187 setmodel(phaser_beam.md3)+EfLowPrecision+ScaleFactor=TargetRange/256+Origin/Angles; BeamThink:268-270 per-frame ScaleFactor=vlen(start-beamEnd)/256 (beamEnd tracked to the wall/empty trace endpoint) + re-Origin/Angles == phaser_weapon.qc wr_think setmodel + beam_think beam.scale=vlen/256", result: pass }
+      - { kind: code, ref: "asset models/turrets/phaser_beam.md3 present under xonotic-data.pk3dir/models/turrets/; Api.Entities.SetModel routes the model onto the edict (ServerEntities.SetModel)", result: pass }
+      - { kind: code, ref: "PhaserTurret.TrThinkHeadAnim (fireflag==1 cycle 1..10; fireflag==2 advance to 15 then reset to 0, fireflag=0) == phaser.qc tr_think; FireFlag set in Attack (=1) and BeamThink end (=2) — head FRAME state machine ported and live (PhaserTurret.cs:100-118,171,210)", result: pass }
+      - { kind: code, ref: "EntityNode.cs:116 reads Entity.ScaleFactor only on listen-server/demo (s>0 && |s-1|>0.001) — remote clients miss it until an EntityField.Scale protocol bump (T48 deferred). Presentation is therefore host-only, not full-fidelity", result: partial }
+      - { kind: visual, ref: "in-match observation of the beam model/scale/head anim — NOT performed", result: fail }
+    confidence: medium
     notes: >-
-      DRIFT (FIX) since baseline; re-confirmed 2026-06-27 (post Wave 16/17) against current PhaserTurret.cs. The
-      earlier audit recorded BOTH the beam model AND the head charge/discharge animation as fully missing. The
-      tr_think head-frame state machine is now ported live (TrThinkHeadAnim driven by TurretState.FireFlag):
-      fireflag==1 cycles the head frame 1..10 while firing, fireflag==2 advances 10->15 then resets to idle
-      (frame=0, fireflag=0). The frame logic/values/timing now match Base exactly. STILL OPEN: the visible
-      MDL_TUR_PHASER_BEAM beam model (scaled to the hit distance) and the phaser.md3 head-bone attachment — both
-      pure client-render with no port path, so presentation stays missing even though the head frame value is
-      driven faithfully on Entity.Frame. Statuses kept partial (not faithful) because the combined feature's
-      beam-visual half is entirely absent; presentation fidelity is not runtime-verified."
+      DRIFT (FIX) since baseline (Wave edit 2026-06-28, working tree). The earlier audit recorded the
+      MDL_TUR_PHASER_BEAM beam model as fully MISSING (presentation: missing) with the head-frame animation as the
+      only ported half. This wave added the beam-model visual: Attack now setmodel(phaser_beam.md3) (asset present),
+      sets EF_LOWPRECISION, and ScaleFactor=TargetRange/256; BeamThink re-scales it every frame to vlen(start-beamEnd)/256
+      where beamEnd is the wall/empty-trace endpoint of the FireImoBeam penetration loop (a beamEnd tracker was added
+      for exactly this), and re-positions/re-orients it to follow the slewing muzzle. So the beam-visual logic/values/
+      timing now match Base (beam.scale = vlen(tur_shotorg-trace_endpos)/256) and join the already-faithful head-frame
+      half — logic/values/timing promoted partial->faithful. PRESENTATION STAYS PARTIAL (NOT faithful): the model +
+      correct scale render only on the listen-server/host path (EntityNode reads Entity.ScaleFactor); remote clients
+      have no EntityField.Scale wire so they see the beam at scale 1 (T48 deferred), the QC tag_fire setattachment is
+      approximated by origin/angles, phaser.md3 is not a separate head bone, and none of it is runtime/visually verified.
+      Build green (Common project). Confidence medium pending an in-match visual check."
 
   - id: turret-phaser.aim.head_track_tuning
     name: "Per-unit head-tracking motor tuning (track_type / accel_pitch / accel_rot / blendrate)"

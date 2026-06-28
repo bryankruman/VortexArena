@@ -1,11 +1,11 @@
 unit: turret-framework
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-28"  # OPUS re-verify: Wave-16 4 turret mutator hooks (Think/Validate/CheckFire/Fire) + track-type aim_speed default CONFIRMED live (build green, 58 turret tests pass); dispatchers real, zero handler .Add (Base-faithful no-op)
+last_audited: "2026-06-28"  # OPUS re-verify post objstream wave: turret HEAD aim/avel + active/dead status now NETWORKED via the generic NetEntity delta (EntityField.TurretHead) — producer+codec+consumer live, round-trip-tested (61 turret/objstream tests pass, build green). net.sync missing->partial/live; but decode-only (no head-MODEL render node yet, deferred Phase-3) so client.presentation head render still open.
 summary:
   feature_count: 15
   worst_gaps:
-    - "No turret networking: none of the TNSF_* send/parse / CSQC turret edict exists (port runs turrets directly in the shared sim) — so all the visible/audible turret feedback is server-side temp-entity/point-particle emit, not a turret edict sync."
+    - "Turret networking PARTIAL: the turret HEAD aim (pitch/yaw 8-bit), head avel yaw, and active/dead status ARE now networked (folded into the generic NetEntity delta, EntityField.TurretHead) — producer+codec+consumer live + round-trip-tested. Still no dedicated ENT_CLIENT_TURRET edict / turret_send / turret_construct (no distinct TNSF_SETUP/ANIM group), and the decoded head block is DECODE-ONLY (no client node renders the rotating head MODEL from it yet — deferred Phase-3). Other visible/audible turret feedback remains server-side temp-entity/point-particle emit."
     - "Client presentation PARTIAL: muzzle flashes/tracers/beams/projectile trails/head-frame anims + death FX (Wave-8e/Wave-7) AND the framework-wide low-HP spark + SMOKE_LARGE/SMOKE_SMALL tiers (TurretAI.DrawFx) are emitted server-side; still missing the tur_head MODEL rotation render, the draw2d waypoint sprite/healthbar, the changeteam team recolor, and the client gib toss (all need a CSQC turret edict)."
     - "Per-unit cvar table unported (load_unit_settings / TR_PROPS_COMMON / turret_scale_* / turret_initparams clamping / dumpturrets / turrets_manager_think reloadcvars) — per-unit balance is hardcoded C# const, mappers can't retune. (Framework-level g_turrets_* cvars ARE read live; per-unit g_turrets_unit_<name>_<field> are not.)"
     - "Per-shot firecheck LOS + TEAMCHECK branches not modeled — but Base itself marks TFL_FIRECHECK_LOS/TEAMCECK as un-implemented (the '-' rows in the firecheck legend), so the port matches Base; acquisition-time LOS/team gating is the only LOS/team test in both."
@@ -414,24 +414,34 @@ features:
       - "common/turrets/sv_turrets.qc:turret_send"
       - "common/turrets/turret.qh:TNSF_SETUP"
       - "common/turrets/cl_turrets.qc:NET_HANDLE(ENT_CLIENT_TURRET)"
-    port_refs: []
+    port_refs:
+      - "game/net/ServerNet.cs:2248"
+      - "src/XonoticGodot.Net/NetEntity.cs:EntityField.TurretHead"
+      - "game/net/ClientEntityView.cs:162"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:TryGetState"
     constants:
-      - { name: "TNSF_SETUP/ANG/AVEL/MOVE/ANIM/STATUS", base: "6 sendflag groups", port: "none", match: false }
+      - { name: "TNSF_ANG (head pitch/yaw)", base: "turret_send writes tur_head.angles_x/_y (8-bit angles)", port: "ServerNet folds TurHeadPitch/Yaw into the generic entity delta; codec writes WriteAngles(Low)=8-bit per axis (NetEntity.cs EntityField.TurretHead) (NEW this wave)", match: true }
+      - { name: "TNSF_AVEL (head avelocity yaw)", base: "turret_send writes tur_head.avelocity_y", port: "TurHeadAVelYaw raw float in the TurretHead block (NEW this wave)", match: true }
+      - { name: "TNSF_STATUS (active/dead)", base: "team + scaled-health byte", port: "TurFlags byte: bit0 .active, bit1 DEAD_DEAD (NEW this wave); objective hp/255 + state ride the separate ObjState block (Onslaught)", match: false }
+      - { name: "TNSF_SETUP (registered id+origin+angles)", base: "dedicated CSQC turret edict", port: "none distinct — folds into the generic NetEntity stream (no ENT_CLIENT_TURRET edict, no turret_construct parse)", match: false }
+      - { name: "TNSF_MOVE / TNSF_ANIM", base: "origin+velocity+yaw / anim_start_time+frame", port: "origin via the generic entity record; head-frame anim rides the body Entity.Frame (no distinct ANIM group)", match: false }
     status:
-      logic: missing
-      values: missing
-      timing: missing
-      presentation: missing
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: partial
       audio: na
-      liveness: na
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No turret networking: none of the TNSF_* send/parse / CSQC turret edict exists."
+      - "Head-aim/status sync is folded into the GENERIC NetEntity entity-delta stream, NOT a dedicated CSQC turret edict — there is no ENT_CLIENT_TURRET / turret_send / turret_construct parse. TNSF_ANG (head pitch/yaw via WriteAngles Low) + TNSF_AVEL (head avel yaw) + the active/dead status bits ARE networked; TNSF_SETUP (distinct edict registration) and a distinct TNSF_ANIM group are not (anim rides the body Entity.Frame, origin rides the generic record)."
+      - "The networked head block is DECODE-ONLY on the client this wave — ClientEntityView lands TurHeadPitch/Yaw/AVelYaw/TurActive on the proxy Entity, but no render node yet reads them to rotate a head MODEL (the tur_head render is deferred to 'Phase-3'). So the sync exists but nothing consumes it visually yet (see client.presentation)."
     verification:
-      - { kind: code_read, ref: "no turret_send/TNSF/ENT_CLIENT_TURRET in port (only descriptive comments in EWheel/Walker/PlasmaDual/FusionReactor)", result: fail }
+      - { kind: code_read, ref: "ServerNet.cs:2248 TurretAI.TryGetState populates s.TurHeadPitch/Yaw/AVelYaw + TurFlags(active/dead) into the per-tick snapshot record; NetEntity.cs EntityField.TurretHead=1<<21 written via WriteAngles(Low)+raw avel float+TurFlags byte in WriteDelta and read in ReadDelta; ClientEntityView.cs:162 decodes them onto the proxy Entity. Producer runs every tick in the snapshot loop, consumer every frame — both LIVE on the net path.", result: pass }
+      - { kind: test, ref: "OPUS 06-28: ObjStreamCodecTests (TurretHead_RoundTrips / Idle_CostsNothing / AppendOrder_AllSet) round-trip the head block through EntityStateCodec; build green + 61 turret/objstream tests pass", result: pass }
     confidence: high
-    notes: "Structural: the port runs turrets directly in the shared sim, so there is no server->client turret edict sync at all. Unchanged 06-25."
+    notes: "FIX vs baseline (was logic/values/timing/presentation: missing, liveness: na, port_refs []): this wave [objstream] networks the turret HEAD aim + active/dead status — TNSF_ANG (head pitch/yaw, 8-bit WriteAngles Low), TNSF_AVEL (head avel yaw), and the .active/DEAD_DEAD status bits — by folding them into the GENERIC per-entity NetEntity delta (new EntityField.TurretHead bit) rather than a dedicated CSQC turret edict. Producer (ServerNet.TryGetState probe, non-allocating), 32-bit codec, and consumer (ClientEntityView decode) are all LIVE and round-trip-tested. Scored partial (not faithful): there is still NO dedicated ENT_CLIENT_TURRET edict / turret_send / turret_construct (no TNSF_SETUP/distinct ANIM group), and the decoded head block is decode-only — no client node renders the rotating head MODEL from it yet (deferred to Phase-3; tracked on client.presentation)."
   - id: turret-framework.client.presentation
     name: "Client presentation (cl_turrets.qc: construct/draw/draw2d/die/gibs/changeteam)"
     layer: [presentation]
@@ -467,7 +477,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "No tur_head sub-entity: the steady-state head MODEL rotation (turret_draw tur_head.angles += avelocity*dt) is never rendered, and the per-shot head-frame anim rides the turret body's own Entity.Frame instead of a separate head bone."
+      - "No tur_head MODEL render: the head aim/avel IS now networked + decoded onto the proxy (Entity.TurHeadPitch/Yaw/AVelYaw, see net.sync), but NO client node yet reads it to rotate a head model/bone (turret_draw tur_head.angles += avelocity*dt) — the render is deferred to 'Phase-3'. The per-shot head-frame anim still rides the turret body's own Entity.Frame instead of a separate head bone."
       - "No turret_draw2d radar layer: no waypoint sprite and no over-turret healthbar."
       - "No turret_changeteam team recolor (colormap/glowmod)."
       - "No client gib toss (turret_gibtoss/turret_gibboom) — needs a CSQC turret edict."

@@ -1,10 +1,11 @@
 unit: vehicle-raptor
 category: vehicle
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27b"
+last_audited: "2026-06-28"
 summary:
   feature_count: 17
   worst_gaps:
+    - "RE-AUDIT 2026-06-28 (post Phase-1/2 framework+consumer wave, HEAD cb7102c): the wave that just landed touched ONLY beam visuals (game/client/EffectSystem.cs Arc/Vortex per-variant beam width + EffectsList.cs new ARC_BEAM_LINE_BURST) — it did NOT touch any raptor code, raptor presentation consumer (VehicleVisuals/VehicleHud/VehicleCatalog/ModelGibs), or raptor effect registration. NOTHING closed and nothing newly opened for the raptor this wave; the 2026-06-27b assessment stands verbatim. Only drift: the EffectsList.cs ARC_BEAM_LINE_BURST insertion shifted RAPTOR_MUZZLEFLASH (:156->:163) + RAPTOR_BOMB_SPREAD (:145->:162) line numbers — citations refreshed, registration + live EffectNetSink wiring unchanged (verified by grep + file-exists check on all consumers)."
     - "DRIFT FIX (2026-06-27 re-audit, Waves 15/17): the prior 2026-06-27 baseline was written from a STALE read — it still recorded the cannon muzzleflash + the entire CSQC HUD as NOT done, but both had since landed. Wave-17 (2f0bfdb) added the live RAPTOR_MUZZLEFLASH emit (Raptor.cs:573) + the full client VehicleHud (game/hud/VehicleHud.cs) fed live by NetGame.UpdateVehicleHud/FeedRaptorReticle; Wave-15 (5958904) fixed the cannon spread RNG to the QC normalize(fwd+randomvec()*spread). Verified by code trace + Common/test build green + 34 vehicle tests pass."
     - "raptor.hud_crosshair: NOW LIVE (was port_refs:[] / all-missing). game/hud/VehicleHud.cs + NetGame.UpdateVehicleHud (NetGame.cs:2650 live each render frame) draw the per-mode reticle (vCROSS_BURST bomb / vCROSS_RAIN flare), the ammo/reload bars, the aux lock crosshair colored by VehLockStrength, AND the signature bomb dropmark with a real tracetoss predictor (VehiclePhysics.BombDropPredict) + green-live/red-linger (dropmark.cnt=time+5) states. Pilot path is the host/listen-server local Player; the cross-client VEHICLESTAT_* networking for a PURE remote client is the documented follow-up."
     - "raptor.impact: CONFIRMED LIVE (fixup commit 4be8357) — Spawn() no longer nulls vehicle.Touch, Think() snapshots OldVelocity, Spawn seeds PlayTime; full dispatch chain MoveTypePhysics(BounceMissile)->PushEntity(doTouch)->FlyMove->VehicleCommon.Touch->VehicleDef.Impact->vehicles_impact. Symmetric with Racer."
@@ -240,7 +241,7 @@ features:
       - { name: "cannon_refire", base: "0.033333", port: "0.033333", match: true }
       - { name: "refire double on 4th", base: "*(1 + ((cnt+1)>=4))", port: "same", match: true }
       - { name: "deathtype", base: "DEATH_VH_RAPT_CANNON", port: "DeathTypes.VhRaptCannon", match: true }
-      - { name: "muzzle FX (Send_Effect _mzlfx)", base: "EFFECT_RAPTOR_MUZZLEFLASH at proj.origin along proj.velocity", port: "EffectEmitter.Emit('RAPTOR_MUZZLEFLASH', org, vel, 1) — Raptor.cs:573 (Wave-17)", match: true }
+      - { name: "muzzle FX (Send_Effect _mzlfx)", base: "EFFECT_RAPTOR_MUZZLEFLASH at proj.origin along proj.velocity", port: "EffectEmitter.Emit('RAPTOR_MUZZLEFLASH', org, vel, 1) — Raptor.cs:573 (Wave-17); registered EffectsList.cs:163", match: true }
       - { name: "cannon spread RNG model", base: "normalize(dir + randomvec()*spread)*speed", port: "QMath.Normalize(fwd + Prandom.Vec()*CannonSpread)*CannonSpeed — Raptor.cs:561 (Wave-15)", match: true }
     status:
       logic: faithful
@@ -256,7 +257,7 @@ features:
       - "Cannon spread RNG FIXED (Wave-15, Raptor.cs:561): the port now does QC's normalize(fwd + randomvec()*spread)*speed exactly (was the uniform-in-disc Prandom.Spread cone). Distribution shape now bit-faithful."
       - "Remaining: no CSQCProjectile in-flight bolt trail (PROJECTILE_RAPTORCANNON) — a client-render trail on the moving bolt (server hit logic + muzzle FX are live)."
     verification:
-      - { kind: code, ref: "Raptor.cs:FireCannon vs RaptorCannon.wr_think alternating gun/energy/spread/refire; spread Raptor.cs:561 normalize(fwd+Prandom.Vec()*spread); muzzle Raptor.cs:573 Emit('RAPTOR_MUZZLEFLASH') -> EffectsList.cs:156 -> effectinfo.txt:5085 -> live EffectNetSink ServerNet.cs:303", result: pass }
+      - { kind: code, ref: "Raptor.cs:FireCannon vs RaptorCannon.wr_think alternating gun/energy/spread/refire; spread Raptor.cs:561 normalize(fwd+Prandom.Vec()*spread); muzzle Raptor.cs:573 Emit('RAPTOR_MUZZLEFLASH') -> EffectsList.cs:163 -> effectinfo.txt:5085 -> live EffectNetSink ServerNet.cs:303", result: pass }
       - { kind: test, ref: "VehicleRuntimeTests.Drive_PrimaryFire_SpawnsAVehicleProjectile (shared spawner); 34 vehicle tests green", result: pass }
     confidence: high
     notes: "Re-audited 2026-06-27b. Alternating gun1(<=2)/gun2(>2, reset at >=4) tag origins, energy gate + cnt regen-pause stamp, lasergun_fire.wav all match. presentation missing->partial: the cannon muzzleflash is now LIVE (Wave-17) and the spread RNG is now QC-faithful (Wave-15). The prior baseline's 'racer got its muzzleflash, raptor did NOT' is STALE. Only the in-flight CSQCProjectile bolt trail (presentation) remains. NOTE: this is the server-side Send_Effect path; the VehicleVisuals client-model muzzle (DriveMuzzle, gated on VehicleEffects.Firing) does NOT fire for the raptor because Raptor.cs never sets VehicleEffects.Firing (unlike Racer/Spiderbot) — but the server emit is the QC-faithful path anyway, so the flash still renders."
@@ -300,7 +301,7 @@ features:
       - "Remaining presentation: no CSQCProjectile visual (PROJECTILE_RAPTORBOMB / RAPTORBOMBLET) for the FALLING bomb/bomblet in-flight trail."
       - "DRIFT FIX (2026-06-27b): the burst FX is now MORE complete — the RAPTOR_BOMB_SPREAD particle puff AND the bomb-casing shell-fragment gibs (RaptorCBShellfragToss) BOTH render on burst now (see raptor.cb_shellfrag_gib, which went missing->faithful/live this re-audit). The only burst-FX piece left is the in-flight projectile trail above."
     verification:
-      - { kind: code, ref: "Raptor.cs:DropOneBomb burst loop + clear-fall trace + touch-delay vs raptor_bomb_burst/raptor_bomblet_touch/raptor_bombdrop — direction (norm_vel*bomblet_alt), cnt=time+10 window, nextthink gating, random()*explode_delay all match; Raptor.cs:625 EffectEmitter.Emit('RAPTOR_BOMB_SPREAD', origin, velocity, 1) on burst (RAPTOR_BOMB_SPREAD registered EffectsList.cs:145)", result: pass }
+      - { kind: code, ref: "Raptor.cs:DropOneBomb burst loop + clear-fall trace + touch-delay vs raptor_bomb_burst/raptor_bomblet_touch/raptor_bombdrop — direction (norm_vel*bomblet_alt), cnt=time+10 window, nextthink gating, random()*explode_delay all match; Raptor.cs:631 EffectEmitter.Emit('RAPTOR_BOMB_SPREAD', origin, velocity, 1) on burst (RAPTOR_BOMB_SPREAD registered EffectsList.cs:162)", result: pass }
     confidence: high
     notes: "DRIFT FIX 2026-06-25 (Wave-12a): presentation missing->partial — the cluster-burst RAPTOR_BOMB_SPREAD puff (the particle half of DEATH_VH_RAPT_FRAGMENT) is now emitted server-side via EffectEmitter. Wave-2 FIXED the two timing gaps: (1) the bomblet_alt clear-fall altitude test (traceline origin->origin+norm_vel*bomblet_alt; defer if trace_fraction==1 or within bomblet_radius of owner) matches QC, with the cnt=time+10 window and bomblet_alt-gated nextthink; (2) the random()*bomblet_explode_delay staggered touch detonation. Two bombs from bombmount_left/right, MakeTrigger transparency, 8 bomblets with spread, RadiusDamage values exact. Only the CSQC bomb/bomblet trails + the shell-fragment gibs remain."
 

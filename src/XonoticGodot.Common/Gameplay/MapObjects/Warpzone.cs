@@ -350,6 +350,28 @@ public sealed class WarpzoneManager
         // remote model crossing a zone).
         e.Effects ^= EffectFlags.Teleport;
 
+        // QC Portal_Think_TryTeleportPlayer (server/portals.qc:248-262): when a player crosses a Porto portal, any
+        // grappling-hook chain they have OUT is relocated through the SAME transform so it stays latched across the
+        // seam instead of snapping (the hook entity sits on the far side of the wall and would otherwise tear off as
+        // the owner warps away). Base iterates the player's weaponentity.hook and warps its origin + velocity by the
+        // portal transform. Map warpzones (no owner) skip this — it is a Porto-portal-only side effect (the hook
+        // would re-touch the warpzone trigger on its own anyway). Only a CLIENT crossing has hooks to carry.
+        if (wz.Owner is not null && (e.Flags & EntFlags.Client) != 0)
+        {
+            e.ForEachWeaponSlot(s =>
+            {
+                if (s.Hook is { IsFreed: false } hook)
+                {
+                    Vector3 hookOrigin = wz.Transform.TransformOrigin(hook.Origin);
+                    hook.Velocity = wz.Transform.TransformVelocity(hook.Velocity);
+                    hook.AVelocity = wz.Transform.TransformVelocity(hook.AVelocity);
+                    if (Api.Services is not null) Api.Entities.SetOrigin(hook, hookOrigin);
+                    else hook.Origin = hookOrigin;
+                    hook.OldOrigin = hookOrigin; // cancel interpolation across the seam (a teleport, not a slide)
+                }
+            });
+        }
+
         // QC server.qc:355 — stamp the same-frame re-teleport guard so the partner-zone touch (which the entity now
         // overlaps after emerging) doesn't immediately warp it straight back. Base uses
         // time + PHYS_INPUT_FRAMETIME - dt as a back-teleport guard; with no per-move dt here we hold for one frame.

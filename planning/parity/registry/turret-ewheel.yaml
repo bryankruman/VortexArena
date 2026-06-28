@@ -1,12 +1,12 @@
 unit: turret-ewheel
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 12
   worst_gaps:
     - "CSQC ewheel_draw rolling integration (origin += velocity*dt, head angles += avelocity*dt, MOVETYPE_BOUNCE+gravity) not ported — the low-health spark temp-entity IS now emitted server-side"
-    - "Head model (ewheel-gun1.md3) is now CARRIED as identity data (Wave-17 HeadModel field) but still NOT instantiated as a separate head bone entity (no tag_head attachment, no client render; its sole consumer TurretAI.TossDeathGibs skips ewheel); ROAM spawnflag not modeled"
+    - "Turret head (ewheel-gun1.md3) is CARRIED as identity data (Wave-17 HeadModel) AND its body-relative angles/avelocity are now NETWORKED (Phase-1 NetEntity.TurretHead -> Entity.TurHeadPitch/Yaw/AVelYaw), but the CLIENT STILL does not instantiate or render a separate head bone entity: ClientEntityView decodes the head state onto the proxy with an explicit 'no render work here; feeds the Phase-3 turret-head node' comment, and no such node exists. Head render + tag_head attach + ROAM-flag modeling all still open"
     - "Two-cannon head-frame alternation (tur_head.frame += 2, wrap > 3 -> 0) still absent — needs the unported head sub-entity (EFFECT_BLASTER_MUZZLEFLASH + PROJECTILE_BLASTER trail are now emitted, Wave-8e)"
     - "ammo_flags ENERGY|RECHARGE|RECIEVE modeled only as an ammo pool (no energy/recharge/receive bookkeeping); recharge rate itself honored"
 features:
@@ -34,13 +34,13 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Head model (ewheel-gun1.md3) string is now CARRIED as identity data (HeadModel field, Wave-17) but is still not instantiated as a separate head bone entity; no tag_head attachment and no client render of the head. Its only consumer (TurretAI.TossDeathGibs head-gib) explicitly skips turret_ewheel (ClassName guard at TurretAI.cs:1204, because Base tosses the whole ewheel model in its own CSQC draw), so for ewheel the field is presently inert identity data — presentation stays partial, NOT closed."
-      - "ROAM spawnflag not modeled as an explicit flag (the path-roaming behavior it gates is now implemented and live — see turret-ewheel.drive.path)."
+      - "Head model (ewheel-gun1.md3) string is CARRIED as identity data (HeadModel field, Wave-17) and its body-relative pitch/yaw/avelocity are now NETWORKED to all clients (Phase-1 NetEntity.TurretHead -> Entity.TurHeadPitch/Yaw/AVelYaw), but it is still NOT instantiated as a separate head bone entity; no tag_head attachment and no client render of the head. ClientEntityView decodes the head state onto the proxy with an explicit comment 'no render work here ... feeds the Phase-3 turret-head node', and that Phase-3 node does not yet exist (no client consumer of TurHeadYaw/Pitch/HeadModel). Its only other consumer (TurretAI.TossDeathGibs head-gib) explicitly skips turret_ewheel. So the head is networked-but-unrendered identity data — presentation stays partial, NOT closed."
+      - "ROAM spawnflag not modeled as an explicit flag (the path-roaming behavior it gates is implemented and live — see turret-ewheel.drive.path)."
     verification:
       - { kind: test, ref: "TurretLifecycleTests.EwheelSpawn_PinsHealthAndCoreSetup", result: pass }
-      - { kind: code_read, ref: "ewheel.qh vs EWheelTurret ctor + Spawn — Wave-17 added HeadModel='models/turrets/ewheel-gun1.md3'; consumer TurretAI.TossDeathGibs returns early for turret_ewheel so the head model is not rendered/gibbed for ewheel", result: pass }
+      - { kind: code_read, ref: "ewheel.qh vs EWheelTurret ctor + Spawn — HeadModel='models/turrets/ewheel-gun1.md3'; Phase-1 ServerNet writes HeadAngles to NetEntity.TurretHead and ClientEntityView decodes onto the proxy (decode-only, no render); no game/ client node renders a turret head (grep TurHeadYaw/HeadModel -> only ServerNet producer + ClientEntityView decode)", result: pass }
     confidence: high
-    notes: "RE-AUDIT (2026-06-27, post Wave-16/17): the ONLY ewheel-specific change in Waves 16-17 was Wave-17 adding the HeadModel identity string (matching ewheel.qh head_model ATTRIB) — a faithful identity-data improvement, but the head is still not instantiated/attached/rendered (sole consumer skips ewheel by classname), so presentation remains partial. Identity/hitbox/base model faithful; head bone render + ROAM flag still not modeled. (Wave-16 TurretAI edits were mutator-hook plumbing + a non-stepmotor aim_speed default-fill — both no-ops for stock ewheel.)"
+    notes: "RE-AUDIT (2026-06-28, branch claude/parity-port-waves Phase-1/2): EWheelTurret.cs is byte-identical to the Wave-17 baseline (git diff 2f0bfdb..HEAD empty for the file). The ewheel-relevant Phase-1 change was framework-level: turret head angles/avelocity are now networked (NetEntity.TurretHead) and decoded onto the client proxy — a data-plumbing improvement, but NO client node renders a separate head yet (the 'Phase-3 turret-head node' the decode comment references is unbuilt). Presentation therefore REMAINS partial, not closed. Identity/hitbox/base model faithful; head bone render + ROAM flag still not modeled."
   - id: turret-ewheel.setup.tr_setup
     name: "tr_setup: SlideBox/Step creature, select flags, ammo flags, home pose"
     layer: [authority]
@@ -261,7 +261,7 @@ features:
       - { kind: test, ref: "MonsterTurretVehicleObituaryTests.cs:203 (ewheel projectile deathtype)", result: pass }
       - { kind: code_read, ref: "ewheel_weapon.qc wr_think + turret_projectile vs Attack/Projectile — shot_spread 0.025; EFFECT_BLASTER_MUZZLEFLASH now emitted (EffectsList registers BLASTER_MUZZLEFLASH=laser_muzzleflash); missile.NetName='blaster' classifies to ProjectileType.Blaster (ProjectileCatalog.Classify:302) -> PROJECTILE_BLASTER trail; lasergun_fire plays on the weapon channel from the turret (matches turret_projectile sound on CH_WEAPON_A)", result: pass }
     confidence: high
-    notes: "FIX (Wave-8e, 2026-06-25 re-audit): fire presentation is now LIVE — Attack emits EFFECT_BLASTER_MUZZLEFLASH at the muzzle along the shot dir and stamps missile.NetName='blaster' so the client renders the PROJECTILE_BLASTER bolt (glow sprite, laster.mdl), lifting presentation missing->partial. The fire sound (lasergun_fire) is played on the weapon channel from the turret, matching Base turret_projectile's CH_WEAPON_A emit, lifting audio partial->faithful. Only the two-cannon head-frame alternation remains (head sub-entity gap). Earlier Wave-2 fix: shot_spread 0.0125->0.025."
+    notes: "RE-AUDIT (2026-06-28): unchanged this branch; confirmed still — Attack emits EFFECT_BLASTER_MUZZLEFLASH (EffectsList registers BLASTER_MUZZLEFLASH=laser_muzzleflash, EffectsList.cs:40) and stamps missile.NetName='blaster' (TurretSpawn.Projectile applies projType, TurretSpawn.cs:139) so the client renders the PROJECTILE_BLASTER bolt; lasergun_fire on the weapon channel. presentation partial (two-cannon head-frame alternation still absent — needs the still-unrendered head sub-entity), audio faithful. Prior: FIX Wave-8e (muzzleflash+blaster trail+sound); Wave-2 shot_spread 0.0125->0.025."
   - id: turret-ewheel.damage.lifecycle
     name: "Damage gating, head-shake, MOVE-shove, death + respawn"
     layer: [authority]
@@ -349,7 +349,7 @@ features:
     verification:
       - { kind: code_read, ref: "Drive emits EffectEmitter.TeSpark(origin+'0 0 40', Prandom.Vec()*256+'0 0 256', 16) when health<127 at 5%/frame — values match Base ewheel_draw; emitted server-side as a networked temp-entity so all viewers see it. The rolling origin/head integration is intentionally left as client render (NOTE in source)", result: pass }
     confidence: high
-    notes: "FIX (post-Wave-2, 2026-06-25): the low-health spark temp-entity is now emitted (server-side networked TE_SPARK, <127 hp, 5%/frame, exact Base velocity/count) — logic/values/timing faithful. The pure-client rolling-draw integration (origin/head roll, MOVETYPE_BOUNCE) is deliberately deferred to client render, so presentation is partial not missing."
+    notes: "RE-AUDIT (2026-06-28): unchanged this branch; confirmed — low-health spark temp-entity emitted (server-side networked TE_SPARK, <127 hp, 5%/frame, exact Base velocity/count, EWheelTurret.Drive) so logic/values/timing faithful. The pure-client rolling-draw integration (origin += velocity*dt, head angles += avelocity*dt, MOVETYPE_BOUNCE) is still NOT ported; note Phase-1 now networks origin/velocity AND head avelocity (TurHeadAVelYaw), but no client node integrates them, so the model does not client-roll — presentation remains partial."
   - id: turret-ewheel.anim.driveframes
     name: "Locomotion drive-frame animation (frames 0..4)"
     layer: [authority, presentation]

@@ -1,7 +1,7 @@
 unit: turret-hk
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 12
   worst_gaps:
@@ -277,10 +277,10 @@ features:
     gaps: []
     verification:
       - { kind: code_read, ref: "HunterKillerWeapon.cs now carries [Weapon] (HunterKillerWeapon.cs:46) so the source-gen RegistryGenerator (WeaponAttribute -> GameRegistryAttribute) auto-registers it into Registry<Weapon>; WrThink fully ports the IS_PLAYER wr_think branch (PrepareAttack 1s + AnimtimeFor 0.5s + WeaponFiring.SetupShot + GuidedProjectile.Launch with turret_initparams GENERIC defaults 50/25/37.5/2500 + te_explosion + rocket_fire). Reachable via impulse-9 / give weapon_turret_hk through WeaponFireDriver (Registry<Weapon>.ById dispatch).", result: pass }
-      - { kind: test, ref: "WeaponByIdTests (11 passed) — IsSkipped(SpecialAttack) count == 2 (nexball ball-stealer + HK); registered HK is correctly excluded from the by-id/priority order, confirming live registration without disturbing the weapon cycle.", result: pass }
+      - { kind: test, ref: "WeaponByIdTests (re-verified 2026-06-28, 69 turret/weapon tests pass) — IsSkipped(SpecialAttack) count == 3 (nexball ball-stealer + HK + FlacWeapon); registered HK is correctly excluded from the by-id/priority order, confirming live registration without disturbing the weapon cycle.", result: pass }
       - { kind: build, ref: "dotnet build XonoticGodot.Common -c Debug -> 0 warn / 0 err", result: pass }
     confidence: high
-    notes: "FIX from baseline (liveness dead -> live). The hidden player weapon WEP_HK / HunterKillerAttack is fully ported AND now registered: Waves 16/17 added the [Weapon] attribute (HunterKillerWeapon.cs:46) and updated the WeaponByIdTests SpecialAttack-skip contract (skipped 1->2, ball-stealer + HK), so the impulse-9 / give weapon_turret_hk fire path now has a live caller through WeaponFireDriver. As a WEP_FLAG_SPECIALATTACK weapon it is (correctly) auto-skipped from the normal by-id weapon cycle — live on the special-attack/impulse path only, which matches Base (the player obtains it via impulse 9 / give, never through a default arena). Faithful identity (Hidden|SpecialAttack, impulse 9, netname turret_hk), IS_PLAYER wr_think sequence, turret_initparams GENERIC balance (50/25/37.5/2500), shared guidance band autocvars, IS_PLAYER head-kick skip, muzzle te_explosion + rocket_fire all faithful."
+    notes: "FIX from baseline (liveness dead -> live), re-verified 2026-06-28. The hidden player weapon WEP_HK / HunterKillerAttack is fully ported AND registered: the [Weapon] attribute is present (HunterKillerWeapon.cs:46) and the WeaponByIdTests SpecialAttack-skip contract counts the HK among the skipped (now skipped==3: ball-stealer + HK + FlacWeapon), so the impulse-9 / give weapon_turret_hk fire path has a live caller through WeaponFireDriver. (Stale prose in HkTurret.cs:22-24 still says registration is 'deferred pending a WeaponByIdTests contract update' — that comment is out of date; the attribute is in fact applied.) As a WEP_FLAG_SPECIALATTACK weapon it is (correctly) auto-skipped from the normal by-id weapon cycle — live on the special-attack/impulse path only, which matches Base (the player obtains it via impulse 9 / give, never through a default arena). Faithful identity (Hidden|SpecialAttack, impulse 9, netname turret_hk), IS_PLAYER wr_think sequence, turret_initparams GENERIC balance (50/25/37.5/2500), shared guidance band autocvars, IS_PLAYER head-kick skip, muzzle te_explosion + rocket_fire all faithful."
   - id: turret-hk.damage.lifecycle
     name: "Damage gating, retaliation, death + respawn"
     layer: [authority]

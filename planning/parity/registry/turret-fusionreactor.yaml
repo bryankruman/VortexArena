@@ -1,7 +1,7 @@
 unit: turret-fusionreactor
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"  # W16/17 re-verify: all prior fixes hold against current code (mutator hook LIVE, te_smallflash real block, recipient-energy gate, one-ally-per-refire, respawntime 90). Refreshed stale port_ref line numbers (Wave-16 landed the hook at MutatorHooks.cs:1463/1484, call site FusionReactorTurret.cs:122). No status changes.
+last_audited: "2026-06-28"  # W-waves re-audit (opus): build green, all prior gameplay fixes re-verified against current working-tree code — mutator hook LIVE (MutatorHooks.cs:1484, called per-candidate FusionReactorTurret.cs:122), te_smallflash networks via EffectEmitter.Emit->Sink (live), recipient-energy gate (AmmoIsEnergy, FusionReactorTurret.cs:176), one-ally-per-refire break (:141), respawntime 90 (:71), head-spin integrated server-side (:150,:156). NO new closures: every gameplay/firecheck/lifecycle dimension was ALREADY faithful+live in the 2026-06-27 baseline; the only still-open items are the family-wide presentation gaps (no ENT_CLIENT_TURRET render: head model/spin display, waypoint/healthbar/death FX) and the dead Description const (no menu surface reads it). No status changes this wave.
 summary:
   feature_count: 9
   worst_gaps:
@@ -251,21 +251,23 @@ features:
     layer: [presentation]
     base_refs:
       - "common/turrets/turret/fusionreactor.qc:METHOD(FusionReactor, describe) (MENUQC)"
-    port_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/FusionReactorTurret.cs:49 (Description const — defined, NO live reader)"
     constants:
-      - { name: "describe text", base: "\"The %s is a bit of a unique turret... generating power for nearby turrets...\" + \"This is the only turret that doesn't directly attack its targets.\"", port: "none", match: false }
+      - { name: "describe text", base: "\"The %s is a bit of a unique turret... generating power for nearby turrets...\" + \"This is the only turret that doesn't directly attack its targets.\"", port: "Description const (full string ported verbatim, %s resolved to \"Fusion Reactor\")", match: true }
     status:
-      logic: missing
+      logic: faithful
       values: na
       timing: na
       presentation: missing
       audio: na
-      liveness: na
+      liveness: dead
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "The MENUQC describe() help string (shown in the menu turret codex) is not ported — the port has no menu turret-description surface for the Fusion Reactor."
+      - "The describe() text is now ported verbatim as FusionReactorTurret.Description (logic dimension closed), but it is a DEAD const: grep finds zero readers (no menu turret-codex / HUD / tooltip surface in the port consumes it). So nothing displays it — presentation:missing, liveness:dead. Closing this needs a menu/codex render surface, not just the string."
     verification:
-      - { kind: code-read, ref: "fusionreactor.qc MENUQC describe vs grep of port for the help strings (none found)", result: fail }
+      - { kind: code-read, ref: "FusionReactorTurret.cs:49 Description verbatim from fusionreactor.qc describe() with %s->\"Fusion Reactor\"", result: pass }
+      - { kind: liveness-trace, ref: "grep '.Description' across src/** — only ModelInfo/MapInfoBackend (unrelated) read a .Description; FusionReactorTurret.Description has NO reader", result: fail }
     confidence: high
-    notes: "Newly mapped 2026-06-25 (coverage gap in prior baseline). Menu-only cosmetic codex text; zero gameplay impact. Mirrors the describe row tracked in turret-hk.yaml."
+    notes: "REFINED 2026-06-28: the help string itself is now ported (logic missing->faithful, full text mirroring HkTurret.Description) but stays presentation:missing / liveness:dead because no menu/codex surface reads the const — a future turret-info page would wire it. Menu-only cosmetic; zero gameplay impact. Mirrors the describe row in turret-hk.yaml."

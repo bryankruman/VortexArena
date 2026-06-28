@@ -127,6 +127,15 @@ namespace XonoticGodot.Common.Gameplay
         /// minspeed/speedfac/maxpain thresholds. Default no-op (a vehicle with no impact tuning takes no ram damage).
         /// </summary>
         public virtual void Impact(Entity vehicle) { }
+
+        /// <summary>
+        /// (SERVER) Per-vehicle carried-CTF-flag cockpit offset. QC <c>vr_enter</c> parks a boarding flag-carrier's
+        /// flag at a fixed offset from the craft so it rides the vehicle instead of the player's back. The shared
+        /// default is <c>VEHICLE_FLAG_OFFSET = '0 0 96'</c> (sv_ctf.qh); a vehicle whose vr_enter uses a different
+        /// origin (the Racer parks it 190u behind the cockpit, <c>'-190 0 96'</c>) overrides this. Read by
+        /// <c>Ctf.Tick</c> each tick when the carrier is seated in a vehicle.
+        /// </summary>
+        public virtual Vector3 FlagCarryOffset => new(0f, 0f, 96f);
     }
 
     /// <summary>
@@ -362,6 +371,18 @@ namespace XonoticGodot.Common.Gameplay
             vehic.AVelocity = Vector3.Zero;
             vehic.Velocity = Vector3.Zero;
             vehic.VehicleFlags |= VehicleFlags.IsVehicle;
+
+            // QC vehicle_initialize (sv_vehicles.qc): dphitcontentsmask = DPCONTENTS_BODY | DPCONTENTS_SOLID,
+            // plus DPCONTENTS_PLAYERCLIP when autocvar_g_playerclip_collisions (default 1). A vehicle is a moving
+            // SOLID_SLIDEBOX edict; without an explicit hit-contents mask its move-trace falls back to the engine
+            // default (TraceService.GenericHitMask), so the vehicle would not collide against / settle on func_clip
+            // PLAYERCLIP brushes the mapper placed to fence it in. Set the BASE mask here with `=` (BEFORE the
+            // descriptor's vr_setup runs — SpawnVehicle is the first call in every descriptor Spawn), so the per-
+            // vehicle liquid mask the Raptor/Bumblebee add with `|=` (DPCONTENTS_LIQUIDSMASK) layers on top exactly
+            // as QC vr_setup does after vehicle_initialize. Mirrors the same gate Monsters/Nexball port (default 1).
+            vehic.DpHitContentsMask = SuperContentsSolid | SuperContentsBody;
+            if (Cvar("g_playerclip_collisions", 1f) != 0f) // playerclip.cfg default 1
+                vehic.DpHitContentsMask |= SuperContentsPlayerClip;
 
             // QC vehicles_spawn:1117 — this.event_damage = vehicles_damage. The vehicle carries its OWN
             // .event_damage as a GtEventDamage shim: DamageSystem.EventDamage routes a non-player edict with a
@@ -927,6 +948,14 @@ namespace XonoticGodot.Common.Gameplay
         // DELAYSPAWN — port of the g_vehicles_delayspawn nextthink branch of vehicle_initialize
         //              (sv_vehicles.qc ~1276-1281): stagger the FIRST activation of a map-placed vehicle.
         // =====================================================================================
+
+        // QC DPCONTENTS_* hit-contents bits (qcsrc reference DPCONTENTS_*; the live values live in
+        // XonoticGodot.Engine.Collision.SuperContents which Common cannot reference — Engine depends on Common, not
+        // the reverse). Mirrored here EXACTLY as MonsterAI.cs / Nexball.cs / LagComp.cs do; TraceService honors
+        // Entity.DpHitContentsMask. Used to stamp the vehicle move-trace mask in SpawnVehicle (vehicle_initialize).
+        private const int SuperContentsSolid      = 0x00000001; // QC DPCONTENTS_SOLID
+        private const int SuperContentsBody       = 0x02000000; // QC DPCONTENTS_BODY
+        private const int SuperContentsPlayerClip = 0x00000100; // QC DPCONTENTS_PLAYERCLIP
 
         /// <summary>QC EF_NODRAW (dpextensions) — the model is not rendered while a vehicle is parked pre-spawn.</summary>
         private const int EfNoDraw = 16; // EF_NODRAW

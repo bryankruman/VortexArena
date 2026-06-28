@@ -269,6 +269,10 @@ public static class ProjectileCatalog
         if (Has(s, "rocketminsta")) return ProjectileType.RocketMinstaLaser;
         if (Has(s, "devastator", "rocket")) return ProjectileType.Rocket;
         if (Has(s, "rpc")) return ProjectileType.Rpc;
+        // The mage spike sets NetName "mage_spike" (Mage.cs); the key string contains the substring "spike",
+        // so check "mage" BEFORE the generic crylink "spike" branch below — otherwise the in-flight spike is
+        // misclassified as a Crylink bolt (purple shards) instead of PROJECTILE_MAGE_SPIKE (TR_VORESPIKE).
+        if (Has(s, "mage")) return ProjectileType.MageSpike;
         if (Has(s, "spike", "crylink")) return ProjectileType.Crylink;
         if (Has(s, "hookbomb")) return ProjectileType.Hookbomb;
         if (Has(s, "grapplinghook", "hook")) return ProjectileType.Hookbomb;
@@ -295,8 +299,7 @@ public static class ProjectileCatalog
             return (e.Effects & EfBlue) != 0 ? ProjectileType.PortoBlue : ProjectileType.PortoRed;
         if (Has(s, "arc")) return ProjectileType.ArcBolt;
         if (Has(s, "hlacbolt", "hlac")) return ProjectileType.Hlac;
-        // (rocketminsta handled above, before the generic "rocket" check)
-        if (Has(s, "mage")) return ProjectileType.MageSpike;
+        // (rocketminsta handled above, before the generic "rocket" check; mage handled above, before "spike")
         if (Has(s, "golem")) return ProjectileType.GolemLightning;
         if (Has(s, "plasma", "vaporizer", "minsta")) return ProjectileType.Plasma;
         if (Has(s, "blaster", "laser")) return ProjectileType.Blaster;

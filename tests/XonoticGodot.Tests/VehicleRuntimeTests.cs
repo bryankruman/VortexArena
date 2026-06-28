@@ -415,18 +415,21 @@ public class VehicleRuntimeTests
         // burst (the client toss + puff hook). Assert the burst path emits it.
         var h = Build();
         WarmUpClock(h.Sim);
-        Entity raptor = SpawnVehicle("vehicle_raptor", new Vector3(0f, 0f, 400f));
-        Player pl = SpawnPlayer(new Vector3(80f, 0f, 400f));
+        // The chassis drops to the floor on spawn (droptofloor); board it at the settled floor height.
+        Entity raptor = SpawnVehicle("vehicle_raptor", new Vector3(0f, 0f, 64f));
+        Player pl = SpawnPlayer(new Vector3(80f, 0f, 64f));
         VehicleBoarding.UseKey(pl);
         var def = (Raptor)raptor.VehicleDef!;
 
         EffectEmitter.Recorder.Clear();
         EffectEmitter.Sink = EffectEmitter.Recorder;
 
-        // Drop the bombs, then drive their think to burst (each bomb thinks every tick; the clear-fall trace
-        // bursts them once there's no clear air for bomblet_alt below — true high over a floor far away).
+        // Drop the bombs, then drive their think until they burst. Each bomb thinks every tick; while inside the
+        // clear-fall window (cnt = time + 10s) it keeps deferring (it falls straight down, staying within
+        // bomblet_radius of the stationary raptor), then bursts unconditionally once the window lapses. The sim
+        // fixed-step is ~1/72s, so the 10s window is ~720 ticks — run 900 for margin so the burst is guaranteed.
         def.DropBombs(raptor, pl);
-        for (int i = 0; i < 260; i++) h.Sim.Tick(); // > clearFall window (10s @ 0.05s) so the burst is guaranteed
+        for (int i = 0; i < 900; i++) h.Sim.Tick();
 
         bool emitted = false;
         foreach (var r in EffectEmitter.Recorder.Log)
@@ -442,9 +445,14 @@ public class VehicleRuntimeTests
         // the secondary reloads. Assert the mirror climbs over the bombs_refire window after boarding.
         var h = Build();
         WarmUpClock(h.Sim);
-        Entity raptor = SpawnVehicle("vehicle_raptor", new Vector3(0f, 0f, 400f));
-        Player pl = SpawnPlayer(new Vector3(80f, 0f, 400f));
+        // A map-placed vehicle drops to the floor on spawn (QC vehicle_initialize droptofloor → the raptor settles
+        // onto the Z=0 floor regardless of the authored Z). Spawn the boarder at the SAME settled floor height so
+        // it stays inside the g_vehicles_enter_radius (250) — a high authored Z would leave the pilot stranded in
+        // the air after the chassis dropped.
+        Entity raptor = SpawnVehicle("vehicle_raptor", new Vector3(0f, 0f, 64f));
+        Player pl = SpawnPlayer(new Vector3(80f, 0f, 64f));
         VehicleBoarding.UseKey(pl);
+        Assert.Same(raptor, pl.Vehicle); // boarded (player at the settled floor height)
 
         // vr_enter seeds delay = time + bombs_refire (5s), lip = time → reload2 starts at 0 and climbs.
         h.Sim.Tick();

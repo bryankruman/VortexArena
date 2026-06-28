@@ -1,11 +1,11 @@
 unit: turret-plasma
 category: turret
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 13
   worst_gaps:
-    - "No live turret HEAD render: the head never visibly aims/spins (the body is a static base.md3 with no rendered tur_head sub-entity / CSQC turret net layer for plasma.md3/plasmad.md3), no team color glowmod, no waypoint sprite/healthbar. NOTE: head-spin frame logic, head-shake jitter, AND the low-HP damage smoke/sparks (<127/<85/<32 HP, DrawFx) all now run server-side (e.Frame / TurretState.HeadAngles / EffectEmitter); only the client RENDER of the aiming/spinning head model itself is missing. The death head GIB (plasma.md3/plasmad.md3) IS now tossed server-side."
+    - "No live turret HEAD render: the head never visibly aims/spins. A turret-head NET layer NOW EXISTS as scaffolding (NetEntityState.TurHeadPitch/Yaw/AVelYaw/Flags, EntityField.TurretHead bit21, decoded into Entity.TurHeadPitch/Yaw/TurActive) — but it is DEAD for plasma: no server producer ever writes NetEntityState.TurHeadPitch from TurretState.HeadAngles, and no client head-node reads the decoded Entity.TurHeadPitch to pose/spin a plasma.md3/plasmad.md3 head bone (the comments mark it 'Phase-3 head node', RESERVED). So the body is still a static base.md3, no rendered tur_head sub-entity, no team glowmod, no waypoint sprite/healthbar. NOTE: head-spin frame logic, head-shake jitter, AND the low-HP damage smoke/sparks (<127/<85/<32 HP, DrawFx) all run server-side (e.Frame / TurretState.HeadAngles / EffectEmitter); only the client RENDER of the aiming/spinning head model is missing. The death head GIB (plasma.md3/plasmad.md3) IS tossed server-side (HeadModel set on both ctors, consumed by TossDeathGibs)."
     - "Unit balance is still baked into C# consts rather than read from g_turrets_unit_plasma_* — the values MATCH the cfg, but server cvar overrides / turret_scale_* / g_turrets_reloadcvars still have no effect (the framework cvars targetscan/aimidle/nofire ARE read)."
     - "Plasma turret aim_flags wrongly include nothing extra — confirmed faithful (LEAD|SHOTTIMECOMPENSATE|SPLASH, zPredict:false). No remaining LOGIC/VALUES/AUDIO gaps: damage gate, death FX+gibs, muzzle/beam FX, and head-spin frame logic are all live and faithful; the ONLY residual is the client head-model render + cvar-driven balance."
 features:
@@ -67,7 +67,7 @@ features:
     verification:
       - { kind: value, ref: "plasma.qh/plasma_dual.qh ATTRIBs vs PlasmaTurret/PlasmaDualTurret ctor + Spawn (mins/maxs/base.md3/health 500 all equal); HeadModel=plasma.md3/plasmad.md3 now present on both ctors (EntityClasses.cs:148 Turret.HeadModel), read by TurretAI.TossDeathGibs via Turrets.ByName(NetName).HeadModel", result: pass }
     confidence: high
-    notes: "Dual is a PlasmaTurret subclass per QC CLASS(DualPlasmaTurret, PlasmaTurret). Body model + hitbox + health faithful. CHANGE (Wave 17 2f0bfdb): HeadModel is now set on both ctors and used server-side (death head gib) — identity now matches Base, head_model constant match:false->true. Presentation stays PARTIAL: the head model is never rendered as the live aiming/spinning head (no tur_head sub-entity / CSQC turret net layer)."
+    notes: "Dual is a PlasmaTurret subclass per QC CLASS(DualPlasmaTurret, PlasmaTurret). Body model + hitbox + health faithful. Wave 17 (2f0bfdb): HeadModel set on both ctors and used server-side (death head gib) — identity matches Base, head_model constant match:false->true. Presentation stays PARTIAL: the head model is never rendered as the live aiming/spinning head. A TurretHead net layer exists (NetEntity.cs bit21) but is dead scaffolding — no server producer, no render consumer. 2026-06-28 re-audit: confirmed (build green, HeadModel verified set+consumed)."
 
   - id: turret-plasma.balance.cvars
     name: "Balance constants (damage/refire/range/ammo/aim) from g_turrets_unit_plasma_*"
@@ -254,11 +254,12 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Head angles live only in server TurretState and are never networked/rendered — the head never visibly aims (presentation)."
+      - "Head angles live in server TurretState. A net field exists (NetEntityState.TurHeadPitch/Yaw + EntityField.TurretHead) but is DEAD: no server producer writes it from HeadAngles and no client head-node renders the decoded Entity.TurHeadPitch — so the head never visibly aims (presentation)."
     verification:
       - { kind: value, ref: "turrets.cfg track_accel_rot 0.7 / track_blendrate 0.2 vs MakeParams/Think defaults consumed in TurretAI.Track", result: pass }
+      - { kind: code, ref: "grep src/ for .TurHeadPitch/.TurHeadYaw/.TurActive: only NetEntity.cs serialize (WriteDelta:388/ReadDelta:459) + Entity.cs field decls — no turret producer feeds NetEntityState.TurHeadPitch from TurretState.HeadAngles, no render consumer reads Entity.TurHeadPitch (marked 'Phase-3 head node', RESERVED)", result: fail }
     confidence: high
-    notes: "Motor tuning faithful and consumed in Track. Head remains invisible client-side (no tur_head render). Unchanged this audit."
+    notes: "Motor tuning faithful and consumed in Track. Head remains invisible client-side: the TurretHead net field/decode proxies are scaffolding only (no producer, no render consumer). 2026-06-28 re-audit: confirmed dead net layer, presentation still missing."
 
   - id: turret-plasma.attack.plasma_ball
     name: "tr_attack: plasma ball projectile (PlasmaAttack.wr_think) + radius damage"
@@ -356,7 +357,7 @@ features:
     verification:
       - { kind: code, ref: "PlasmaTurret.Think advances e.Frame 1..5 wrap-to-0 (idle at 0), Attack sets frame=1 when 0 — matches plasma.qc. PlasmaDualTurret.Think advances 1..6 idling at BOTH 0 and 3, Attack does unconditional ++frame after the if/else — matches plasma_dual.qc:36. Think live via TurretSpawnFuncs:47 -> SV_RunThink", result: pass }
     confidence: high
-    notes: "Per-shot head-spin frame cycle ported for both single (0..5, idle-at-0) and dual (0..6, idle-at-0-and-3), running live on Entity.Frame (HellionTurret/HkTurret pattern). Only the visible RENDER of the spin remains absent (base.md3 has no head frames, no turret net render layer). Unchanged this audit."
+    notes: "Per-shot head-spin frame cycle ported for both single (0..5, idle-at-0) and dual (0..6, idle-at-0-and-3), running live on Entity.Frame (HellionTurret/HkTurret pattern). Only the visible RENDER of the spin remains absent (base.md3 has no head frames; the TurretHead net layer that would carry head pose/spin to a head node is present but dead — no producer/consumer). 2026-06-28 re-audit: logic unchanged + confirmed live; presentation still missing."
 
   - id: turret-plasma.damage.gate_retaliate
     name: "turret_damage: inactive invuln, friendly-fire scale, headshake (no retaliate)"

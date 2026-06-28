@@ -180,11 +180,14 @@ public sealed class FlacTurret : Turret
 ///   <item>Shared: <c>turret_projectile(…, PROJECTILE_HAGAR, …)</c>, fuse think override, fire sound.</item>
 /// </list></para>
 /// </summary>
-// NOTE (deferred): the [Weapon] registration is intentionally OFF. WEP_TUR_FLAC is a hidden, impulse-5,
-// dev-only player weapon; registering it shifts the player weapon-by-id + menu-priority order AND its impulse 5
-// collides with the Raptor's bomb-mode impulse (breaking WeaponById/MenuWeaponOrder/Raptor-impulse tests). The
-// faithful impl is kept below for a future pass that updates those test contracts + makes impulse routing
-// vehicle-context-aware; re-add [Weapon] then. The FLAC TURRET itself is fully live (fires via TurretSpawn).
+// WEP_TUR_FLAC — REGISTER_WEAPON(FlacAttack) (flac_weapon.qh): WEP_FLAG_SPECIALATTACK | WEP_FLAG_HIDDEN,
+// impulse 5. The [Weapon] attribute is now ON, making it impulse-selectable via `impulse 5` exactly like Base.
+// FlacWeapon carries WeaponFlags.SpecialAttack, so the by-id ordering (WeaponOrder.IsImpulseSkipped) skips it —
+// the by-id indices + menu weapon order are unaffected. Impulse-5 group cycling is safe: GetCycleWeapon filters
+// Hidden unowned weapons, and the Raptor vehicles_impulse switch only handles 1/2/10/11/12 (not 5).
+// WeaponByIdTests.ByIdOrder_Covers_Every_ImpulseReachable_Weapon_Exactly_Once reflects the new skipped-weapon
+// count (ball-stealer + HunterKiller + FlacWeapon = 3). The FLAC TURRET itself fires via TurretSpawn.
+[Weapon]
 public sealed class FlacWeapon : Weapon
 {
     // Shared balance (turrets.cfg g_turrets_unit_flac_*) — same constants as FlacTurret, exposed via

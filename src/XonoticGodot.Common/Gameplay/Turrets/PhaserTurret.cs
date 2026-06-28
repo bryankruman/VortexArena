@@ -172,11 +172,19 @@ public sealed class PhaserTurret : Turret
         if (turret.Frame == 0f)
             turret.Frame = 1f;
 
-        // NOTE (client-render): the MDL_TUR_PHASER_BEAM beam-model visual scaled to the hit distance (Base
-        // setmodel(MDL_TUR_PHASER_BEAM) + .scale = vlen/256 + setattachment to tag_fire) is still deferred — the
-        // port has no Entity.Scale / setattachment / server→client beam-model render path. The head charge/
-        // discharge FRAME animation is now ported above (Entity.Frame + fireflag). The server-side beam (per-tick
-        // damage, phaser_weapon.qc) is done above.
+        // phaser_weapon.qc wr_think: setmodel(MDL_TUR_PHASER_BEAM) + effects=EF_LOWPRECISION + beam.scale =
+        // actor.target_range/256 (initial visual length). Entity.ScaleFactor is read by EntityNode on the
+        // listen-server/demo path (game/EntityNode.cs:116: `float s = Entity.ScaleFactor; if (s>0) Scale=...`);
+        // remote clients see scale 1 until an EntityField.Scale wire bump (T48 deferred gap). The QC
+        // setattachment(beam,tur_head,"tag_fire") is unportable (no tag-socket/sub-entity); the beam is placed
+        // at the computed muzzle origin with the head world-angles instead.
+        beam.Model = "models/turrets/phaser_beam.md3";   // MDL_TUR_PHASER_BEAM
+        if (Api.Services is not null) Api.Entities.SetModel(beam, beam.Model);
+        beam.Effects |= AdvancedMovers.EfLowPrecision;   // QC: effects = EF_LOWPRECISION
+        beam.ScaleFactor = TargetRange / 256f;            // QC: beam.scale = actor.target_range / 256
+        // Place beam at the muzzle facing head aim (setattachment approximation).
+        beam.Origin = shotOrg;
+        beam.Angles = TurretAI.HeadWorldAngles(turret);
     }
 
     // beam_think (phaser_weapon.qc): re-trace along the head's aim each frame, damage + slow the first hit, and
@@ -229,13 +237,15 @@ public sealed class PhaserTurret : Turret
             Vector3 traceEnd = end + dir;   // QC: go a little into the wall so the final trace registers it
             var pierced = new List<(Entity ent, Vector3 loc, Solid solid)>();
             Vector3 cur = start;
+            // beamEnd: wall-hit endpoint for beam.scale (QC trace_endpos after the FireImoBeam loop).
+            Vector3 beamEnd = end;  // default = full acquisition range when nothing intercepts
             for (int guard = 0; guard < 64; ++guard)
             {
                 TraceResult tr = Api.Trace.Trace(cur, -half, half, traceEnd, MoveFilter.Normal, turret);
                 Entity? hit = tr.Ent;
-                if (hit is null || tr.Fraction >= 1f) break;   // hit world / nothing -> stop
+                if (hit is null || tr.Fraction >= 1f) { beamEnd = tr.EndPos; break; }  // hit world / nothing -> stop
                 pierced.Add((hit, tr.EndPos, hit.Solid));
-                if (hit.Solid == Solid.Bsp) break;             // a world brush ends the beam
+                if (hit.Solid == Solid.Bsp) { beamEnd = tr.EndPos; break; }            // a world brush ends the beam
                 hit.Solid = Solid.Not;                          // make non-solid so the next trace passes through
                 cur = tr.EndPos;
             }
@@ -251,6 +261,13 @@ public sealed class PhaserTurret : Turret
                 p.ent.Velocity *= VelFactor;   // QC FireImoBeam slow
                 ApplySlow(p.ent);              // optional status-effect layer
             }
+
+            // beam_think: beam.scale = vlen(tur_shotorg - trace_endpos) / 256 (visual length to the wall hit).
+            // Re-position/re-orient the beam each frame so it tracks the slewing muzzle
+            // (setattachment(beam,tur_head,"tag_fire") approximation). EntityNode reads ScaleFactor per-frame.
+            beam.ScaleFactor = QMath.VLen(start - beamEnd) / 256f;
+            beam.Origin = start;
+            beam.Angles = TurretAI.HeadWorldAngles(turret);
         }
 
         // Re-park the think with the (possibly advanced) hum clock so the 2s re-trigger persists across frames
