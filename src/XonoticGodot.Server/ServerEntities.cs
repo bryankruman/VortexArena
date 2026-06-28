@@ -217,4 +217,9 @@ public sealed class ServerServices : IEngineServices
     public ISoundService Sound => _inner.Sound;
     public IModelService Models => _inner.Models;
     public IGameClock Clock => _inner.Clock;
+    // MUST forward Surfaces to the real SurfaceService — without this it fell through to the IEngineServices
+    // default (NullSurfaceService), so every server-side getsurface* query returned empty. That broke the
+    // warpzone brush->plane auto-derivation (WarpzoneManager.DerivePlaneFromBrush), so NO map warpzones ever
+    // spawned (0 zones) → no teleport AND nothing for the portal renderer to match (dark placeholder).
+    public ISurfaceService Surfaces => _inner.Surfaces;
 }
