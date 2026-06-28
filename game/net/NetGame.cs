@@ -4095,6 +4095,12 @@ public sealed partial class NetGame : Node3D
                 else if (_client.SpectatingNetId > 0) qcSpectatee = _client.SpectatingNetId; // following a player
             }
             pressed.SpectateeStatus = qcSpectatee;
+            // When FOLLOWING another player, show THEIR keys (the networked STAT(PRESSED_KEYS), which the server
+            // copies from the spectatee); when playing/observing yourself, leave the override null so the panel
+            // reads your own live input (lower latency, and on a listen host LocalServerPlayer carries it anyway).
+            pressed.PressedKeysOverride = (_client is not null && _client.SpectatingNetId > 0)
+                ? _client.OwnerPressedKeys
+                : null;
         }
     }
     private Player? _lastHudPlayer;

@@ -189,6 +189,12 @@ public sealed class ClientNet : IDisposable
     /// Defaults to the panel's "no data" sentinels until the first snapshot.</summary>
     public XonoticGodot.Net.OwnerWeaponRings LocalWeaponRings { get; private set; } = XonoticGodot.Net.OwnerWeaponRings.None;
 
+    /// <summary>QC STAT(PRESSED_KEYS): the view-player's held-key bitset (KEY_FORWARD..KEY_ATCK2, bits 0..7),
+    /// replicated on the owner block — the local player's own keys while playing, the spectatee's keys while
+    /// following. Feeds <see cref="NetGame"/>'s pressedkeys/strafe HUD cluster on a remote client (a listen host
+    /// can read its own input locally).</summary>
+    public int OwnerPressedKeys { get; private set; }
+
     /// <summary>The stair-smoothing Z offset to subtract from <see cref="PredictedOrigin"/> Z when placing the
     /// camera (so it glides over steps). Advanced by the REAL frame delta <paramref name="frameDt"/> (clamped),
     /// NOT the server-synced render clock — the rebasing clock's quantized jumps made the view jitter up/down.</summary>
@@ -1010,6 +1016,11 @@ public sealed class ClientNet : IDisposable
             // 1s shownames grace window after switching who you follow).
             SpectateeStatusChangedTime = Api.Services is not null ? Api.Clock.Time : SpectateeStatusChangedTime;
         SpectateeStatus = newSpectatee;
+        // QC STAT(PRESSED_KEYS) (server GetPressedKeys / SpectateCopy): the view-player's held-key bitset — the
+        // OWN keys while playing, the SPECTATEE's keys while following (the server copies them). Written by
+        // ServerNet.WriteOwnerState right after spectatee; MUST be read here to keep the owner block aligned for
+        // PunchAngle and everything after. Feeds the HUD pressedkeys/strafe cluster on a remote client.
+        OwnerPressedKeys = r.ReadShort();
         PunchAngle = r.ReadVector(NetPrecision.Float); // QC view punch (recoil kick) — added to the view angles
         PunchVector = r.ReadVector(NetPrecision.Float); // QC view punch ORIGIN kick — added to the rendered origin
         LocalSpeedMultiplier = r.ReadFloat(); // QC STAT(MOVEVARS_HIGHSPEED) — mirrored onto the prediction carrier
