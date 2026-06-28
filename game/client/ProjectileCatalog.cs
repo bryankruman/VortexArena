@@ -166,8 +166,11 @@ public static class ProjectileCatalog
         // laser model isn't mounted (headless / missing content / factory miss).
         Add(new Desc { Type = ProjectileType.Blaster, TrailEffect = "", Trail = null,
             Body = BodyFamily.GlowSprite, ModelPath = "models/laser.mdl", GlowColor = BlasterYellow });
+        // EFFECT_Null — no trail. MDL_PROJECTILE_HLAC = models/hlac_bullet.md3 (all.inc:65). Falls back to the
+        // additive glow sprite when the bolt model isn't mounted (headless / missing content / factory miss),
+        // same convention as Blaster's models/laser.mdl.
         Add(new Desc { Type = ProjectileType.Hlac, TrailEffect = "", Trail = null,
-            Body = BodyFamily.GlowSprite, GlowColor = new Color(0.9f, 0.7f, 0.3f) });
+            Body = BodyFamily.GlowSprite, ModelPath = "models/hlac_bullet.md3", GlowColor = new Color(0.9f, 0.7f, 0.3f) });
         // EFFECT_TR_WIZSPIKE (projectile.qc:355,357-358)
         Add(new Desc { Type = ProjectileType.ArcBolt, TrailEffect = "TR_WIZSPIKE", Trail = WizSpike,
             Body = BodyFamily.GlowSprite, GlowColor = new Color(0.5f, 0.9f, 1.0f), HasLight = true });

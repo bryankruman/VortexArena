@@ -1,7 +1,7 @@
 unit: mapobject-movers-platforms
 category: mapobject
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 12
   worst_gaps:
@@ -348,14 +348,13 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "On an insane reverse curve QC objerrors (rejects the mover); the headless port returns false from SetPlatMoveType and leaves the parsed values — the train caller (MovingBrushes.cs:301) honors the false return, but PlatSetup (Platforms.cs:65) ignores it (calls SetPlatMoveType without checking). A func_plat with a reverse platmovetype would keep the bad curve instead of being rejected. Edge case (mapper authoring error); no stock-map impact."
+    gaps: []
     verification:
-      - { kind: code, ref: "SetPlatMoveType (MapObjectsCommon.cs) vs set_platmovetype (platforms.qc:209-235): tokenize, stof, force token, is_sane reject — line-by-line match", result: pass }
-      - { kind: code, ref: "CubicSpeedFuncIsSane (MapObjectsCommon.cs) vs cubic_speedfunc_is_sane (lib/math.qh): neg reject, <=3 accept, ellipse condition — identical", result: pass }
-      - { kind: code, ref: "Live wiring: PlatSetup:67 + MovingBrushes (train/corner) call SetPlatMoveType; .platmovetype promoted onto edict in MapObjectFieldsExtra on the live host map-spawn path; train honors the false return", result: pass }
+      - { kind: code, ref: "SetPlatMoveType (MapObjectsCommon.cs:1032-1052) vs set_platmovetype (platforms.qc:209-235): tokenize, stof, force token, is_sane reject — line-by-line match; returns false on an insane curve (objerror-equivalent)", result: pass }
+      - { kind: code, ref: "CubicSpeedFuncIsSane (MapObjectsCommon.cs:1064-1080) vs cubic_speedfunc_is_sane (lib/math.qh): neg reject, <=3 accept, ellipse condition — identical", result: pass }
+      - { kind: code, ref: "Live wiring + reject now honored EVERYWHERE: PlatSetup (Platforms.cs:68-69 `if (!SetPlatMoveType(...)) return;`) now bails out on an insane curve exactly like the train path (MovingBrushes.cs:332-333) and func_train default (MovingBrushes.cs:283/403); .platmovetype promoted onto the edict in MapObjectFieldsExtra on the live host map-spawn path", result: pass }
     confidence: high
-    notes: "Re-audited 2026-06-22: set_platmovetype + cubic_speedfunc_is_sane are fully ported and WIRED: PlatSetup (and func_train/path_corner in MovingBrushes) call MapMover.SetPlatMoveType(this, this.Platmovetype). logic/values faithful, liveness live. Minor residual: PlatSetup does not act on a false (insane) return (it would still register the mover); the train path does honor it."
+    notes: "FIXED this wave (Platforms.cs diff): the sole residual gap is closed. PlatSetup previously called SetPlatMoveType WITHOUT checking the return, so a func_plat with a reverse/insane platmovetype kept the bad curve instead of being rejected; PlatSetup now does `if (!MapMover.SetPlatMoveType(this, this.Platmovetype)) return;` (Platforms.cs:68-69), mirroring the train path and matching Base's objerror reject. set_platmovetype + cubic_speedfunc_is_sane were already fully ported + wired (PlatSetup, func_train, path_corner). logic/values faithful, liveness live, gaps now empty."
 
   - id: mapobject-movers-platforms.engine.pusher_integration
     name: "MOVETYPE_PUSH integration: think on ltime, rider carry, blocked revert"

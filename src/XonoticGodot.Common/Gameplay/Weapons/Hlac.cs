@@ -177,12 +177,12 @@ public sealed class Hlac : Weapon
         });
     }
 
-    // METHOD(Hlac, wr_aim) — common/weapons/weapon/hlac.qc:wr_aim. The bot fires the rapid primary; with a small
-    // per-decision chance it switches to the secondary spread burst (useful at close range to land more of the
-    // spray). QC leads both modes at the projectile speed (primary == secondary == 6000), so the brain's lead is
-    // the primary speed and this hook only routes the button. Non-lobbed, so the straight-line lead applies.
+    // METHOD(Hlac, wr_aim) — common/weapons/weapon/hlac.qc:156-159:wr_aim. QC bot_aim only presses the primary
+    // (PHYS_INPUT_BUTTON_ATCK); it never alt-fires, so the bot always uses the rapid primary. QC leads at the
+    // projectile speed (primary == secondary == 6000), so this hook just routes the button (always primary).
+    // Non-lobbed, so the straight-line lead applies.
     public override bool BotWantsSecondary(float enemyDistance, float skill, ref BotAimState ctx)
-        => ctx.Random01 <= 0.1f; // ~10% of decisions take the secondary burst (QC's occasional alt-fire)
+        => false; // QC wr_aim (hlac.qc:156-159) only presses primary; no secondary alt-fire in Base
 
     // Both HLAC modes launch at the primary projectile speed (matching the QC bot_aim call).
     public override float BotAimShotSpeed(float defaultSpeed) => Primary.Speed;

@@ -1,29 +1,30 @@
 unit: weapon-rifle
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
-# Re-audited 2026-06-27 (Wave 16/17 post-edit drift check, branch claude/parity-port-waves): adversarial
-# re-verification of all 17 rows against the CURRENT port. KEY FINDING: Waves 16-17 did NOT touch this unit's
-# gameplay logic — Rifle.cs was last edited in Wave 15 (322fc26). Wave 16 (b3a9c06) touched only EffectsList.cs,
-# and that edit added the UNRELATED ARC_BEAM_LINE/ARC_BEAM_LINE_HEAL (Arc weapon) entries, which merely shifted
-# the rifle effect registrations down ~25 lines (now EffectsList.cs:116-123) WITHOUT altering them. Wave 17
-# (2f0bfdb) touched nothing relevant. So NO dimension closed or regressed this pass.
-# OUTCOME vs the 2026-06-25 baseline: statuses UNCHANGED (all 5 dimensions of all 17 rows faithful & live, with
-#   the two documented NON-defects preserved: rifle.fx.impact presentation:partial server-emit-vs-CSQC, and the
-#   rifle.reload single-slot CheckAmmo edge case). The ONLY change is refreshing port_ref LINE NUMBERS that
-#   Wave 16's EffectsList insertion (and pre-existing drift) made stale.
+last_audited: "2026-06-28"
+# Re-audited 2026-06-28 (warpzone-wave post-edit drift check, branch claude/parity-port-waves): skeptical
+# re-verification of all 17 rows against the CURRENT port. KEY FINDING: this wave (the warpzone exit-angle fixes
+# 11baede..abba24b plus working-tree edits to Hlac.cs/Tuba.cs) did NOT touch the rifle gameplay path. Rifle.cs is
+# byte-identical to Wave 15 (322fc26) — `git log -- Rifle.cs` shows Wave 15 as its last edit, and the working tree
+# carries NO rifle change (only Hlac.cs/Tuba.cs are modified). EffectsList.cs continued to grow (more weapon FX
+# rows landed since Wave 15), shifting the rifle/casing registrations DOWN again (now EffectsList.cs:123-130)
+# WITHOUT altering their content. So NO dimension closed or regressed this pass.
+# OUTCOME vs the 2026-06-27 baseline: statuses UNCHANGED (all 5 applicable dimensions of all 17 rows faithful &
+#   live, with the two documented NON-defects preserved: rifle.fx.impact presentation:partial server-emit-vs-CSQC,
+#   and the rifle.reload single-slot CheckAmmo edge case). The ONLY change is refreshing the EffectsList port_ref
+#   LINE NUMBERS that the latest EffectsList growth made stale (116-123 -> 123-130).
 # Re-verified against current port (code trace, not runtime):
-#   * SoundSystem.PlayRic NOW at cs:403-411 (was cited :370-378) — still explicitly PlayOn(emitter, ric,
-#     SoundChannel.ShotsAuto, ...) == CH_SHOTS; audio:faithful holds. Throttle in WeaponFiring.BulletImpactFx
-#     cs:606-625 (0.25s prevric + 5% Prandom roll), org2 = pos + backoff*2.
-#   * Rifle FX registrations at EffectsList.cs:116-123 (CASING_BULLET/SHELL :116-117, RIFLE_IMPACT->
-#     machinegun_impact :120, RIFLE_MUZZLEFLASH :121, RIFLE/RIFLE_WEAK tracers isTrail :122-123).
-#   * Clip-aware DecreaseAmmo WeaponFireGate.cs:384-403 (reloadable -> drains ClipLoad); WReload reload.wav
-#     :326; GetWeaponLoad :408; SeedClipIfFresh :416. Driver wires WrSetup cs:289, SeedClipIfFresh cs:312,
-#     ButtonZoom mirror cs:180.
-#   * DeathMessages rifle kill case :82-85, suicide case :158-159. FireBullet tracerEffect param WeaponFiring.cs:282/298.
-# All 17 Base balance constants re-diffed against bal-wep-xonotic.cfg:587-630 — all match. NO regressions, NO new
-# unmapped Base symbols. Working tree clean (no uncommitted rifle edits).
+#   * Rifle FX registrations at EffectsList.cs:123-130 (CASING_BULLET/SHELL :123-124, RIFLE_IMPACT->
+#     machinegun_impact :127, RIFLE_MUZZLEFLASH :128, RIFLE/RIFLE_WEAK tracers isTrail :129-130). Content verbatim.
+#   * Clip-aware DecreaseAmmo WeaponFireGate.cs:384-396 (reloadable -> drains ClipLoad + persists weapon_load[]);
+#     WReload :270 / WReloadedAndReady :349 (reload.wav, refill-from-pool, 80 cap); GetWeaponLoad :408;
+#     SeedClipIfFresh :416. Rifle.FireBullets calls DecreaseAmmo (cs:294), NOT actor.TakeResource (confirmed by grep).
+#   * DeathMessages rifle kill case :82-85 (sec -> WEAPON_RIFLE_MURDER_HAIL), suicide case :159. FireBullet extended
+#     overload (WeaponFiring.cs:278-282) carries tracerEffect + deathTag params; Rifle passes both (cs:332/340).
+#   * SetupShot(actor, forward, range, ...) overload present (WeaponFiring.cs:243); Rifle uses it with wep/maxDamage
+#     (cs:300-301) for the accuracy FIRED credit.
+# All 17 Base balance constants unchanged (Configure() defaults vs bal-wep-xonotic.cfg). NO regressions, NO new
+# unmapped Base symbols. Working tree has NO rifle edit.
 summary:
   feature_count: 17
   worst_gaps:
@@ -286,7 +287,7 @@ features:
       - "common/effects/all.inc:EFFECT(RIFLE_MUZZLEFLASH, rifle_muzzleflash)"
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (EffectEmitter.Emit RIFLE_MUZZLEFLASH, cs:366)"
-      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:121"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:128"
     constants:
       - { name: "effect", base: "rifle_muzzleflash", port: "rifle_muzzleflash", match: true }
     status:
@@ -300,7 +301,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "EffectsList.cs:121 RIFLE_MUZZLEFLASH->rifle_muzzleflash; Rifle.cs:366 EffectEmitter.Emit(..., except: actor)", result: pass }
+      - { kind: code, ref: "EffectsList.cs:128 RIFLE_MUZZLEFLASH->rifle_muzzleflash; Rifle.cs:366 EffectEmitter.Emit(..., except: actor)", result: pass }
     confidence: medium
     notes: "Unchanged by Wave-2. Emit with except:actor so the firer's first-person view doesn't get the world muzzleflash. Actual particle render via the generic name-classified EffectSystem path; not visually verified in-game, hence medium."
 
@@ -313,7 +314,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (WeaponFiring.BulletImpactFx RIFLE_IMPACT, cs:279)"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:BulletImpactFx (cs:606)"
-      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:120"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:127"
     constants:
       - { name: "effect", base: "machinegun_impact", port: "machinegun_impact", match: true }
       - { name: "impact origin", base: "org2 = w_org + w_backoff*2", port: "impactPos + backoff*2 (WeaponFiring.cs:611)", match: true }
@@ -330,7 +331,7 @@ features:
     gaps:
       - "Emit PATH still diverges from Base: the port emits RIFLE_IMPACT server-side per bullet inside FireBullets off a world-only re-trace; Base emits it CSQC in wr_impacteffect off the Damage_DamageInfo feed. The effect NAME + the org2/backoff offsets now match QC, but the per-bullet server emit is a different fan-out than the CSQC damageinfo path — remote-client render not visually verified."
     verification:
-      - { kind: code, ref: "EffectsList.cs:120 RIFLE_IMPACT->machinegun_impact; Rifle.cs:356 -> WeaponFiring.BulletImpactFx cs:606 (applies QC's org2 = pos + backoff*2 offset, cs:611)", result: pass }
+      - { kind: code, ref: "EffectsList.cs:127 RIFLE_IMPACT->machinegun_impact; Rifle.cs:356 -> WeaponFiring.BulletImpactFx cs:606 (applies QC's org2 = pos + backoff*2 offset, cs:611)", result: pass }
     confidence: medium
     notes: "IMPROVED by Wave-2 (now routes through the shared BulletImpactFx, which applies the QC org2 = w_org + w_backoff*2 offset the prior direct Emit omitted), but presentation stays partial because the server-emit path still diverges from Base's CSQC damageinfo path. backoff (impact normal) from a world-only trace; falls back to -shotdir when no surface hit."
 
@@ -345,7 +346,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs:FireBullets (tracerEffect = RIFLE/RIFLE_WEAK, cs:267/273)"
       - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:FireBullet (tracerEffect param + EmitTrail, cs:241-259/322-329)"
       - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:EmitTrail (cs:237)"
-      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:122-123"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:129-130"
     constants:
       - { name: "primary_tracer", base: "1 (tr_rifle)", port: "Primary.Tracer 1 -> 'RIFLE'", match: true }
       - { name: "secondary_tracer", base: "0 (tr_rifle_weak)", port: "Secondary.Tracer 0 -> 'RIFLE_WEAK'", match: true }
@@ -362,7 +363,7 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "EffectsList.cs:122-123 register tr_rifle/_weak isTrail:true; Rifle.cs:332 selects tracerEffect (RIFLE/RIFLE_WEAK), passed to FireBullet cs:340; WeaponFiring.FireBullet EmitTrail per segment (16u open-air, 4u in-solid) matches tracing.qc:357/519-520", result: pass }
+      - { kind: code, ref: "EffectsList.cs:129-130 register tr_rifle/_weak isTrail:true; Rifle.cs:332 selects tracerEffect (RIFLE/RIFLE_WEAK), passed to FireBullet cs:340; WeaponFiring.FireBullet EmitTrail per segment (16u open-air, 4u in-solid) matches tracing.qc:357/519-520", result: pass }
       - { kind: code, ref: "EmitTrail uses Sink.Emit(EffectRequest{Effect=non-null RIFLE/RIFLE_WEAK}) -> ServerNet.WriteEffect encodes (trail branch) -> client Spawn handles trail; networks live (unlike the casing null-Effect path)", result: pass }
     confidence: high
     notes: "WAVE-2 FIX: the rifle's signature visible tracer is now drawn. FireBullet gained a tracerEffect parameter + per-segment trailparticles emission; the rifle passes 'RIFLE'/'RIFLE_WEAK' (tracer!=0 selects the strong trail, exactly QC's ternary). Thresholds (16u/4u) match Base constant-for-constant. The effects are REGISTERED (non-null) so they actually network and render, unlike the casing emit."

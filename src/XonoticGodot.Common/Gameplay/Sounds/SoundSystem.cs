@@ -425,8 +425,11 @@ public static class SoundSystem
     public static void PlayGlobalVariant(Entity emitter, GameSound? sound)
     {
         if (sound is null) return;
+        // QC GlobalSound (globalsound.qc) applies GlobalSound_pitch(pitchscale*this.scale) before emit.
+        // pitchscale is 1.0 at all call sites; ScaleFactor==0 (stock players) returns pitch 1.0 unchanged.
+        float pitch = GlobalSoundPitch(emitter.ScaleFactor);
         Api.Sound.Play(emitter, sound.EngineChannel,
-            SoundVariantGroups.ResolveGlobalSample(sound), sound.Volume, sound.Attenuation);
+            SoundVariantGroups.ResolveGlobalSample(sound), sound.Volume, sound.Attenuation, pitch: pitch);
     }
 
     /// <summary>Look up a counted GlobalSound by name (QC SND_&lt;name&gt;) then play a variant on the emitter.</summary>
@@ -449,7 +452,9 @@ public static class SoundSystem
         // QC PlayerSound plays pain/voice on the AUTO voice channel (CH_VOICE = -2) so overlapping cues stack
         // rather than cut each other off; the rate of these is bounded upstream (pain by the PainFinished
         // debounce, voice/death once per event), so they don't pile up.
-        Api.Sound.Play(emitter, SoundChannel.VoiceAuto, sample, volume, attenuation);
+        // QC PlayerSound macro also applies GlobalSound_pitch(pitchscale*this.scale) before emit.
+        float pitch = GlobalSoundPitch(emitter.ScaleFactor);
+        Api.Sound.Play(emitter, SoundChannel.VoiceAuto, sample, volume, attenuation, pitch: pitch);
     }
 
     /// <summary>
@@ -502,6 +507,11 @@ public static class SoundSystem
 
         string sample = Sounds.PlayerSoundSample(modelSoundDir, voiceMessageId);
 
+        // QC _GlobalSound(globalsound.qc:341): pitch = GlobalSound_pitch(pitchscale * this.scale).
+        // pitchscale is 1.0 at all current port call sites; this.scale maps to Entity.ScaleFactor
+        // (MapObjectFieldsExtra partial; 0f = unset/default = 1x = no pitch shift for stock players).
+        float pitch = GlobalSoundPitch(emitter.ScaleFactor);
+
         // QC reads cl_voice_directional per-recipient from CS_CVAR(it) for the directional cases.
         // The port has a single global cvar table (no per-client cvar stores), so we read the global
         // cvar value once and apply it uniformly — correct for a listen server where there is one client.
@@ -517,22 +527,22 @@ public static class SoundSystem
             {
                 // QC: if(!fake) { if(!this.pusher) break; … } — a faked speaker skips the attacker emit.
                 if (!fake && emitter.Pusher is { } attacker)
-                    Emit(attacker, sample, SoundLevels.VolBaseVoice, directionalAtten);
+                    Emit(attacker, sample, SoundLevels.VolBaseVoice, directionalAtten, pitch);
                 // QC: LASTATTACKER_ONLY stops here; LASTATTACKER also plays back to the speaker at ATTEN_NONE.
                 if (voiceType == VoiceType.LastAttackerOnly) break;
-                Emit(emitter, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenNone);
+                Emit(emitter, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenNone, pitch);
                 break;
             }
 
             case VoiceType.TeamRadio:
             {
                 // QC: if(fake) { msg_entity = this; X(); } — a faked speaker hears it alone.
-                if (fake) { Emit(emitter, sample, SoundLevels.VolBaseVoice, directionalAtten); break; }
+                if (fake) { Emit(emitter, sample, SoundLevels.VolBaseVoice, directionalAtten, pitch); break; }
                 // QC: FOREACH_CLIENT(IS_REAL_CLIENT(it) && SAME_TEAM(it, this), …) at the directional atten.
-                if (recipients is null) { Emit(emitter, sample, SoundLevels.VolBaseVoice, directionalAtten); break; }
+                if (recipients is null) { Emit(emitter, sample, SoundLevels.VolBaseVoice, directionalAtten, pitch); break; }
                 foreach (Entity it in recipients)
                     if (it is not null && Teams.SameTeam(it, emitter))
-                        Emit(it, sample, SoundLevels.VolBaseVoice, directionalAtten);
+                        Emit(it, sample, SoundLevels.VolBaseVoice, directionalAtten, pitch);
                 break;
             }
 
@@ -576,7 +586,7 @@ public static class SoundSystem
                 }
 
                 // QC: if(fake) { msg_entity = this; X(); } — a faked speaker hears it alone.
-                if (fake) { Emit(emitter, sample, SoundLevels.VolBaseVoice, tauntAtten); break; }
+                if (fake) { Emit(emitter, sample, SoundLevels.VolBaseVoice, tauntAtten, pitch); break; }
 
                 // QC AUTOTAUNT also rolls a PER-RECIPIENT random < that client's networked cvar_cl_autotaunt
                 // (globalsound.qc:411-426) so each recipient opts in to hearing autotaunts. That gate is a
@@ -588,11 +598,11 @@ public static class SoundSystem
                 // emit-to-all model for the manual TAUNT.
 
                 // QC broadcasts to all real clients (FOREACH_CLIENT(IS_REAL_CLIENT(it))) at the taunt atten.
-                if (recipients is null) { Emit(emitter, sample, SoundLevels.VolBaseVoice, tauntAtten); break; }
+                if (recipients is null) { Emit(emitter, sample, SoundLevels.VolBaseVoice, tauntAtten, pitch); break; }
                 foreach (Entity it in recipients)
                 {
                     if (it is null) continue;
-                    Emit(it, sample, SoundLevels.VolBaseVoice, tauntAtten);
+                    Emit(it, sample, SoundLevels.VolBaseVoice, tauntAtten, pitch);
                 }
                 break;
             }
@@ -601,15 +611,39 @@ public static class SoundSystem
             default:
             {
                 // QC: globalsound(MSG_ALL, …, ATTEN_NORM) — heard by everyone at the emitter's position.
-                Emit(emitter, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenNorm);
+                Emit(emitter, sample, SoundLevels.VolBaseVoice, SoundLevels.AttenNorm, pitch);
                 break;
             }
         }
     }
 
-    /// <summary>Emit a resolved voice sample on the CH_VOICE channel (QC sound7/soundto from _GlobalSound).</summary>
-    private static void Emit(Entity e, string sample, float volume, float attenuation)
-        => Api.Sound.Play(e, SoundChannel.VoiceAuto, sample, volume, attenuation);
+    /// <summary>Emit a resolved voice sample on the CH_VOICE channel (QC sound7/soundto from _GlobalSound).
+    /// <paramref name="pitch"/> is the model-scale pitch factor from <see cref="GlobalSoundPitch"/>; defaults to 1.0 (no shift).</summary>
+    private static void Emit(Entity e, string sample, float volume, float attenuation, float pitch = 1f)
+        => Api.Sound.Play(e, SoundChannel.VoiceAuto, sample, volume, attenuation, pitch: pitch);
+
+    /// <summary>
+    /// Model-scale pitch shift for a GlobalSound/PlayerSound emit (QC <c>GlobalSound_pitch(p)</c>,
+    /// globalsound.qc). Converts an entity's <c>.scale</c> (the <see cref="Entity.ScaleFactor"/> field,
+    /// declared in <c>MapObjectFieldsExtra</c>) to a playback pitch factor via the asymptotic gradient:
+    /// <c>pitch = (b*d*(a-1) + a*c*(1-b)) / (d*(a-1) + c*(1-b))</c>
+    /// where a=1.5 (max, tiny entity), b=0.75 (min, large entity), c=100 (nominal; scale==1.0 -> pitch==1.0).
+    /// <para>Input <paramref name="scaleFactor"/> is the multiplier-form scale; internally converted to
+    /// percentage (*100) to match the QC gradient's domain. 0f (QC default, unset) returns 1.0f (no shift).</para>
+    /// </summary>
+    internal static float GlobalSoundPitch(float scaleFactor)
+    {
+        // scaleFactor == 0 is the QC default (.scale unset) => treat as 1x, no pitch shift.
+        if (scaleFactor == 0f) return 1f;
+        const float a = 1.5f;    // QC GlobalSound_pitch: max pitch (tiny entity)
+        const float b = 0.75f;   // QC GlobalSound_pitch: min pitch (huge entity)
+        const float c = 100f;    // QC GlobalSound_pitch: nominal input (scaleFactor==1.0 => pitch==1.0)
+        float d = scaleFactor * c;
+        float denom = d * (a - 1f) + c * (1f - b);
+        if (System.MathF.Abs(denom) < 1e-6f) return 1f;
+        float pitch = (b * d * (a - 1f) + a * c * (1f - b)) / denom;
+        return System.Math.Clamp(pitch, b, a);
+    }
 
     /// <summary>Read a boolean cvar via the facade (a non-zero float is true; unset/no-services is false).</summary>
     private static bool CvarBool(string name)

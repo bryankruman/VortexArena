@@ -1448,7 +1448,18 @@ public sealed partial class NetGame : Node3D
         // each Fire() to spawn a fresh flash mesh node at the muzzle socket, gated by the per-weapon MuzzleModelPath
         // set at equip (MuzzleModelFor). LoadModel returns null when the file is missing, degrading to no flash.
         if (_assets is not null)
-            _viewModel.FlashModelFactory = path => _assets.LoadModel(path);
+        {
+            // Flash-model factory: for multi-frame MD3 flash files (flash.md3=30 frames, uziflash.md3=14 frames)
+            // return a ModelAnimator so SpawnMuzzleFlashModel can drive frame+=2 each 0.05 s tick
+            // (QC W_MuzzleFlash_Model_Think). Static/missing models fall back to plain LoadModel.
+            _viewModel.FlashModelFactory = path =>
+            {
+                XonoticGodot.Formats.Md3.Md3Data? md3 = _assets.LoadMd3(path);
+                if (md3 is not null && md3.FrameCount > 1)
+                    return ModelAnimator.Create(md3);
+                return _assets.LoadModel(path);
+            };
+        }
         _camera.AddChild(_viewModel);
         _render.ViewModel = _viewModel;
 

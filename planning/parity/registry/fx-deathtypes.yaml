@@ -1,7 +1,7 @@
 unit: fx-deathtypes
 category: notification
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 11
   worst_gaps:
@@ -271,7 +271,7 @@ features:
       - { kind: code, ref: "VOID_ENT LIVE+faithful: EmitObituary (Scores.cs:714-724 self / :820-830 murder) sends DEATH_SELF_VOID_ENT / DEATH_MURDER_VOID_ENT with inflictor.Message / .Message2 when a Void inflictor carries one; MsgFromEnt gate (:911) matches Base msg_from_ent exactly (Void only; self=.message, murder=.message2). Live via trigger_hurt. DEATH_*_VOID_ENT rows present", result: pass }
       - { kind: code, ref: "DEATH_CUSTOM selector+emit now present (Scores.cs:698-709) with the IndexOf('%') format guard ported; DEATH_SELF_CUSTOM rows present (NotificationsList.cs). BUT no emitter: re-grep 2026-06-27 DeathTypes.Custom across src -> consumer only (Scores.cs:698)", result: partial }
     confidence: high
-    notes: "Since baseline (Wave-6) the DEATH_CUSTOM SELECTION/EMISSION half was added (logic missing->faithful), but it has no live caller, so liveness stays partial (VOID_ENT live, CUSTOM dead). The HURTTRIGGER VOID_ENT path remains live and Base-faithful."
+    notes: "Since baseline (Wave-6) the DEATH_CUSTOM SELECTION/EMISSION half was added (logic missing->faithful), but it has no live caller, so liveness stays partial (VOID_ENT live, CUSTOM dead). The HURTTRIGGER VOID_ENT path remains live and Base-faithful. RE-AUDITED 2026-06-28 (post parity Phases 1-4 on claude/parity-port-waves): NO deathtype file was edited this wave (DeathTypes.cs/DeathMessages.cs/Scores.cs untouched since Wave-16/the auto-teamchange fix). Re-grepped DeathTypes.Custom across src: still exactly 2 refs (def DeathTypes.cs:161 + sole consumer Scores.cs:698-709) — no emitter; CUSTOM path remains DEAD. liveness stays partial. line refs re-verified accurate."
 
   - id: fx-deathtypes.special.suicide_special_routing
     name: "Obituary SUICIDE/MURDER/ACCIDENT special-routing (TEAMCHANGE/MIRRORDAMAGE/HURTTRIGGER branch + BOTLIKE achievement)"

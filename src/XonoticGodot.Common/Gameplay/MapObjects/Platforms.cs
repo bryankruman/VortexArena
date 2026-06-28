@@ -62,7 +62,11 @@ public static class Platforms
             return;
 
         // QC parses the .platmovetype spawn-key into platmovetype_start/_end here (movers default linear).
-        MapMover.SetPlatMoveType(this_, this_.Platmovetype);
+        // Base set_platmovetype objerrors (rejects the mover) on a reverse/insane curve; the headless port returns
+        // false. Mirror the train path (MovingBrushes.cs:332) and bail out so a malformed func_plat is inert
+        // rather than silently keeping the bad curve.
+        if (!MapMover.SetPlatMoveType(this_, this_.Platmovetype))
+            return;
 
         this_.Blocked = PlatCrush;
 

@@ -1,7 +1,7 @@
 unit: items-pickups
 category: item
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 16
   worst_gaps:
@@ -9,7 +9,7 @@ summary:
     - "stay-weapon COLORMOD (cl_weapon_stay_color) + vehicle-hud item tint (cl_items_vehicle_*) still not applied — item meshes have no per-instance colormod uniform (player-skin-shader-only). The stay-weapon ALPHA (cl_weapon_stay_alpha 0.75) IS now applied (Wave 16 DriveItemStayFx)."
     - "q3compat item-origin offset (z += -15 - mins.z) + item_armor1->ArmorSmall(shard) on Q3 maps remain DEAD: code present (StartItem) but gated on Q3CompatProvider, never wired."
     - "small-item clustering (setItemGroup / setItemGroupCount, 120qu radius -> item_group/item_group_count) still MISSING — itemstime HUD can't show a single 'xN' badge for a packed cluster. Presentation-only, low impact."
-    - "DRIFT FIX (re-audit, Waves 16-17 pass): loot sky-surface (Q3SURFACEFLAG_SKY) kill-on-touch was recorded as a gap but has actually been ported since Wave 13 (LootInNoDrop tests DpHitContents&NODROP | DpHitQ3SurfaceFlags&SKY on the live touch path) — stale row, now CLOSED. Stay-weapon ALPHA tint newly applied in Wave 16 (DriveItemStayFx)."
+    - "RE-AUDIT 2026-06-28 (parity-port-waves Phases 1-4): this wave touched NO items-pickups code — git diff fbb18fd..HEAD shows zero changes under Gameplay/Items/* (only ClientWorld.cs gained the cosmetic add-on layer / crosshair-chase body-fade / cylindric-line pool / raptor pitch-roll, none of them item paths). All 4 remaining gaps (simple items, stay-weapon colormod + vehicle tint, q3compat origin/shard via unwired Q3CompatProvider, item_group clustering) re-verified UNCHANGED in the current port. NB: ClientWorld now applies a frozen ICE colormod to PLAYER meshes (ModelTint.SetColormod, cosmetic layer) — this does NOT contradict the 'item meshes have no per-instance colormod' claim; the colormod uniform stays player-skin-shader-only for items. Nothing closed, nothing regressed."
 features:
   - id: items-pickups.def.resource_items
     name: "Health / Armor / Ammo item definitions, models, colors, sounds, bboxes"

@@ -1,11 +1,11 @@
 unit: mapobject-target
 category: mapobject
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 15
   worst_gaps:
-    - "target_spawn is the ONLY remaining dead feature: the $-templating reflection engine is intentionally cut AND SpawnEntityHandler is never assigned (re-grep 2026-06-27 OPUS re-audit: only the decl at TargetUtilities.cs:687 + the consumer at :713; zero assignments in src/game/tests — unlike every other host seam, this one was NOT wired in any wave), so on-use and ON_MAPLOAD both invoke a null seam — nothing is created or edited."
+    - "target_spawn is NEWLY LIVE this wave (was the only dead feature): SpawnEntityHandler is now assigned in the live GameWorld.Boot seam block (GameWorld.cs:730) with a real minimal-CREATE impl (tokenize .message -> classname -> ApplyDictFields -> SpawnFuncs.TrySpawn) that also honors the .count create-cap, so the common ON_MAPLOAD 'create one fixed entity' case fires on the live path (build green). Logic stays `partial` (intended cut): the *activator / FOREACH_ENTITY_STRING(target) EDIT modes + the $-templating reflection engine are not ported. NOT runtime-verified (no test added) — confidence medium."
     - "target_music / trigger_music override is LISTEN-SERVER ONLY (TE_CSQC_TARGET_MUSIC / ENT_CLIENT_TRIGGER_MUSIC net paths not ported; confirmed by TargetMusic.cs:13-14/65 comments + MusicPlayer reading live server state); a remote/dedicated client receives no override. target_music_use is a GLOBAL override (not QC per-activator+spectator) — it now guards null/non-client activators (TargetMusic.cs:97-99) but still applies globally. Per-round reset is LIVE (ResetMapObjects, GameWorld.cs:4683, fires e.Reset on every non-client entity)."
     - "target_speaker ACTIVATOR (BIT3) plays MSG_ONE to the triggering client ONLY on the LIVE path — PlayToClientHandler wired in NetGame.SetupListenServer:863 (re-wired every server start) -> ServerNet.SendSoundToPlayer:888 (per-peer SoundBundle). Re-verified live by OPUS 2026-06-27. Remaining minor gaps: the LOOPED_OFF-untargeted objerror is not modelled (port Log.Warns + leaves inert, TargetSpeaker.cs:152), and a *-voice sample with no model/activator falls back to silence (matches QC SND(Null))."
     - "STABLE: target_spawnpoint's forced-spawn output is LIVE (SpawnSystem.SelectSpawnPoint reads forPlayer.SpawnPointTarg at SpawnSystem.cs:392, cleared at :794); target_location's %l HUD/chat reader is LIVE (Chat.NearestLocation walks MapObjectsState.Locations); changelevel/levelwarp/give/gametype host seams all wired LIVE in GameWorld.Boot (670/682/692/701/704/717/719) + chmap/gametype BSP keys bound (MapObjectFieldsExtra.cs:181-182)."
@@ -262,22 +262,25 @@ features:
     constants:
       - { name: "ON_MAPLOAD spawnflag", base: "BIT(1)", port: "MapMover.SpawnAllEntities (BIT(1))", match: true }
     status:
-      logic: stub
-      values: na
+      logic: partial
+      values: faithful
       timing: na
       presentation: na
       audio: na
-      liveness: dead
+      liveness: live
     intended_divergence: true
-    divergence_rationale: "The full $-field reflection templating (numentityfields / putentityfieldstring / the field DB, deferred replacement, self/activator/other/pusher/target/target2-4/killtarget/time substitutions, +offset/+random, helper spawnfuncs setmodel/setsize, and the .count create-cap) has no port analogue and is intentionally cut (documented in the file header). The minimal SpawnSetup keeps the ON_MAPLOAD hook + a SpawnEntityHandler seam."
+    divergence_rationale: "The full $-field reflection templating (numentityfields / putentityfieldstring / the field DB, deferred replacement, self/activator/other/pusher/target/target2-4/killtarget/time substitutions, +offset/+random, helper spawnfuncs setmodel/setsize) and the *activator / FOREACH_ENTITY_STRING(target) EDIT modes have no port analogue and are intentionally cut (documented at GameWorld.cs:721-729). This wave wired the minimal viable CREATE path: a target_spawn with a `key value …` .message that carries a `classname` mints one fixed entity. The .count create-cap (target_spawn_cancreate) IS now honored — so create-mode is a faithful subset, edit-mode + templating are the deliberate cut."
     gaps:
-      - "STILL DEAD even on the minimal path: SpawnEntityHandler is never assigned (grep 2026-06-27: only the declaration at TargetUtilities.cs:687; zero assignments incl. tests), so both .use and ON_MAPLOAD invoke a null seam — nothing is created or edited."
-      - "Maps relying on target_spawn to spawn/edit entities (mapper scripting, *activator edits, FOREACH_ENTITY_STRING(target) edits) get no effect."
+      - "NEWLY LIVE this wave (was dead): SpawnEntityHandler is now assigned in the live GameWorld.Boot block (GameWorld.cs:730), so both the .use path and the ON_MAPLOAD deferred think now actually create an entity. The handler tokenizes .message into key/value pairs, extracts classname, mints an edict at .origin, runs ApplyDictFields (the same key→field path the BSP entity lump uses) and SpawnFuncs.TrySpawn."
+      - "CREATE-ONLY: the *activator self-edit and the FOREACH_ENTITY_STRING(target) bulk-edit modes are still not modelled — a target_spawn that edits an existing entity (target set, or *activator) has no effect (intentional cut)."
+      - "The $-templating mini-language (field DB, deferred $-substitution, +offset/+random, setmodel/setsize helpers) is not reproduced — a .message that uses $-tokens spawns with the literal token text."
+      - "origin parsing only supports the single-quoted-token form `origin \"x y z\"`; a three-bare-token origin would desync the 2-stride key/value loop (documented at GameWorld.cs:753-755)."
     verification:
-      - { kind: grep, ref: "no TargetUtilities.SpawnEntityHandler assignment anywhere (src/game/tests all empty; only decl at TargetUtilities.cs:687; re-confirmed 2026-06-27)", result: fail }
-      - { kind: code, ref: "SpawnUse delegates to a null SpawnEntityHandler (TargetUtilities.cs:713); ON_MAPLOAD think wired but harmless; registered MapObjectsRegistry.cs", result: pass }
-    confidence: high
-    notes: "Re-verified 2026-06-27 unchanged — STILL DEAD. count create-cap, the $-mini-language, target_spawn_cancreate, and the activator/other/pusher/target replacements are all absent. ON_MAPLOAD deferred-think hook correctly gated on BIT(1). Unlike the changelevel/levelwarp/give seams (Boot-assigned), SpawnEntityHandler was NOT wired in any wave."
+      - { kind: grep, ref: "TargetUtilities.SpawnEntityHandler now ASSIGNED at GameWorld.cs:730 (live Boot block, same block as the GiveItem/NextLevel/ChangeLevel seams, all consecutive at 670-730; SpawnMapEntities() called at GameWorld.cs:812 — confirms live boot path)", result: pass }
+      - { kind: code, ref: "the wired lambda is a real impl: EntityDict from the tokenized message, ApplyDictFields (GameWorld.cs:4496, the shared BSP key→field applier), SpawnFuncs.TrySpawn (EntityClasses.cs:206, the real spawnfunc dispatcher), .count cap via MoverCnt. SpawnUse (TargetUtilities.cs:709) invokes the seam; ON_MAPLOAD deferred think (SpawnSetup:699-703) gated on BIT(1)", result: pass }
+      - { kind: build, ref: "dotnet build XonoticGodot.Server -c Debug — succeeded, 0 warnings/errors (the new seam compiles)", result: pass }
+    confidence: medium
+    notes: "RECLASSIFIED 2026-06-28 OPUS re-audit: liveness dead->live, logic stub->partial, values na->faithful. This wave wired SpawnEntityHandler in the live GameWorld.Boot seam block (GameWorld.cs:730) with a REAL minimal-create implementation (tokenize .message -> classname -> ApplyDictFields -> SpawnFuncs.TrySpawn) AND honored the .count create-cap. So the common mapper case (a target_spawn with ON_MAPLOAD creating one fixed entity at match start) now works on the live path; build is green. Logic stays `partial` (NOT faithful) because the *activator / FOREACH_ENTITY_STRING(target) EDIT modes and the $-templating reflection engine are still intentionally cut. confidence: medium — verified by code-read + compile, but NOT runtime-verified (no unit test was added this wave and it wasn't exercised in-game); the seam is reached and the impl is sound but the actual create has not been observed firing."
 
   - id: mapobject-target.speaker.ambient_triggered
     name: "target_speaker — ambient / looped / one-shot / activator sound emitter"

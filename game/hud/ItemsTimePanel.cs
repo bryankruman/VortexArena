@@ -98,6 +98,7 @@ public partial class ItemsTimePanel : HudPanel
         c.Register("hud_panel_itemstime_progressbar_name", "progressbar", CvarFlags.Save);
         c.Register("hud_panel_itemstime_progressbar_reduced", "0", CvarFlags.Save);
         c.Register("hud_panel_itemstime_hidespawned", "1", CvarFlags.Save);
+        c.Register("hud_panel_itemstime_hidebig", "0", CvarFlags.Save);
         c.Register("hud_panel_itemstime_text", "1", CvarFlags.Save);
 
         // Shared progress-bar alpha (global; QC autocvar_hud_progressbar_alpha). Idempotent.
@@ -186,11 +187,18 @@ public partial class ItemsTimePanel : HudPanel
     {
         float now = CurrentTime();
         int hideMode = HideSpawnedMode();
+        // QC autocvar_hud_panel_itemstime_hidebig: when set, suppress Big Health (health_big) and Big Armor
+        // (armor_big) from the countdown panel. The server always tracks them; this is a client-only display
+        // preference. Default 0 = always show big items. Must be applied identically in both the count pass and
+        // the draw pass below so the grid layout uses the same item set it counted.
+        bool hideBig = CvarBool("hidebig");
 
         // --- Count the items to draw this frame (QC FOREACH count loop). ---
         int count = 0;
         foreach (var kv in Catalog)
         {
+            // QC hud_panel_itemstime_hidebig: skip health_big / armor_big when the option is on.
+            if (hideBig && (kv.Key == "health_big" || kv.Key == "armor_big")) continue;
             if (!_times.TryGetValue(kv.Key, out float t)) continue;
             if (CountsForGrid(t, now, hideMode)) count++;
         }
@@ -277,6 +285,8 @@ public partial class ItemsTimePanel : HudPanel
         int row = 0, column = 0;
         foreach (var kv in Catalog)
         {
+            // QC hud_panel_itemstime_hidebig: same filter as the count pass above — must match exactly.
+            if (hideBig && (kv.Key == "health_big" || kv.Key == "armor_big")) continue;
             if (!_times.TryGetValue(kv.Key, out float t)) continue;
             if (t == -1f) continue; // QC FOREACH gate: Item_ItemsTime_GetTime(id) != -1
 

@@ -1,11 +1,11 @@
 unit: weapon-tuba
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"  # OPUS re-audit: verified W16/17 edits landed; closed melody bprint gap, audio->unknown (headless)
+last_audited: "2026-06-28"  # OPUS re-audit: crossfade wave landed (cos/sin two-sample blend + SoundChannel.TubaBlend); audio.note_sound values partial->faithful, audio stays unknown (headless)
 summary:
   feature_count: 11
   worst_gaps:
-    - "Note SOUND is a SUSTAINED pitched loop: NoteOn plays Api.Sound.Play(loop:true) on CH_TUBA with the on-disk floor-neighbour sample (PitchStepBaseNote) AND the 2^(m/12) residual pitch-shift passed as the engine pitch, at VOL_BASE*cl_tuba_volume / cl_tuba_attenuation; NoteOff Stops it. The server-side emission path carries loop+pitch (SoundService.Play -> SoundEvent.Pitch), but the AUDIBLE result is NOT runtime-verified (headless read) so the audio dimension is unknown. Remaining residuals: the two-sample cos/sin crossfade (upper-neighbour timbre blend), the cl_tuba_fadetime release ramp, and ENT_CLIENT_TUBANOTE networking (remote players' notes still not driven by a dedicated note entity)."
+    - "Note SOUND is a SUSTAINED pitched loop WITH the two-sample cos/sin crossfade now ported: NoteOn plays the floor neighbour on CH_TUBA (vol1=cos, pitch 2^(m/12)) AND, in the in-range branch, the upper neighbour on the new CH_TUBA_BLEND channel (vol2=sin, pitch 2^((m-step)/12)), at VOL_BASE*cl_tuba_volume / cl_tuba_attenuation; NoteOff Stops both. The server-side emission carries loop+pitch (SoundService.Play -> SoundEvent.Pitch), but the AUDIBLE result is NOT runtime-verified (headless read) so the audio dimension stays unknown. Remaining residuals: the cl_tuba_fadetime release ramp and ENT_CLIENT_TUBANOTE networking (remote players' notes still not driven by a dedicated note entity)."
     - "GetNote still derives movestate from velocity (intended divergence) and omits crouch/jump/team pitch shifts — only changes which sample/pitch is heard, not whether a sound plays."
     - "Per-instrument view models (h_akordeon/h_kleinbottle via CSQC weaponname/wr_viewmodel) still unwired (render-only)."
     - "Melody recognition is LIVE+faithful (HasPlayed wired into the magic-ear pipeline) AND the recognised-melody bprint chat line is now wired (GameWorld.cs:663 -> Chat.PrintToChatAll) — the prior 'bprint still unwired' gap is CLOSED."
@@ -225,14 +225,14 @@ features:
       - { name: "available samples on disk", base: "only notes at cl_tuba_pitchstep=6 multiples in TUBA_MIN..MAX per 3 instruments", port: "PitchStepBaseNote returns the on-disk floor/upper neighbour (multiple of 6) so the lookup hits a REAL file", match: true }
       - { name: "cl_tuba_pitchstep rounding", base: "6; tubasound takes m=pymod(note,step), plays the floor neighbour", port: "honored — PitchStepBaseNote (Tuba.cs:286-323) reads cl_tuba_pitchstep (default 6), m=pymod, floor/upper neighbour branches match tuba.qc:449-477, exact-pitch when step<=0", match: true }
       - { name: "sound7 residual pitch shift 2^(m/12)", base: "speed1 = 2^(m/12) (or 2^((m-step)/12) at the low edge)", port: "honored — PitchStepBaseNote returns speed=2^(m/12) / 2^((m-step)/12), passed as engine pitch to Api.Sound.Play (Tuba.cs:207-210)", match: true }
-      - { name: "cl_tuba_pitchstep crossfade (vol1/vol2 cos/sin)", base: "in-range branch plays BOTH neighbours: vol1=cos(pi/2 m/step) on floor + vol2=sin(...) on upper for a timbre blend", port: "not honored — plays the floor neighbour only at full volume, no upper-neighbour blend (needs a second emitter)", match: false }
+      - { name: "cl_tuba_pitchstep crossfade (vol1/vol2 cos/sin)", base: "in-range branch plays BOTH neighbours: vol1=cos(pi/2 m/step) on floor + vol2=sin(...) on upper for a timbre blend", port: "honored — PitchStepBaseNote returns floor(vol1=cos)+upper(vol2=sin) pair; NoteOn plays floor on SoundChannel.Tuba and upper on SoundChannel.TubaBlend (=CH_TUBA_SINGLE+1), each pitched (2^(m/12) / 2^((m-step)/12)) (Tuba.cs:227-246)", match: true }
       - { name: "cl_tuba_volume", base: "1", port: "honored — vol = clamp(VOL_BASE * cl_tuba_volume, 0, 1) (Tuba.cs:208, TubaVolumeCvar)", match: true }
       - { name: "cl_tuba_attenuation", base: "0.5", port: "honored — attenuation = cl_tuba_attenuation (Tuba.cs:210, TubaAttenuationCvar)", match: true }
       - { name: "cl_tuba_fadetime", base: "0.25 (Ent_TubaNote_Think ramps volume down on release)", port: "not honored — NoteOff Stops the loop cleanly, no fade-out ramp", match: false }
       - { name: "sustained loop vs one-shot", base: "held tuba_note entity = one persistent loop on CH_TUBA_SINGLE", port: "honored — Api.Sound.Play(loop:true) on CH_TUBA, replaced on pitch/instrument change, Stopped by NoteOff (Tuba.cs:209-210,255)", match: true }
     status:
       logic: faithful
-      values: partial
+      values: faithful
       timing: partial
       presentation: partial
       audio: unknown
@@ -241,18 +241,19 @@ features:
     divergence_rationale: null
     gaps:
       - "Audible result NOT runtime-verified: this is a headless code read. The server-side emission carries the loop+pitch (SoundService.Play -> SoundEvent(Loop,Pitch), EngineServices.cs:615), but whether the CLIENT renderer actually applies the pitch shift on a looping (entity,channel) REPLACEMENT — vs treating a same-(entity,channel) re-emit as idempotent and ignoring the new pitch — is unobserved. Needs a behavioral/listen check before audio can be called faithful."
-      - "No two-sample cos/sin crossfade: Base's in-range branch plays the floor sample at cos(pi/2 m/step) AND the upper neighbour at sin(...) for a smooth timbre blend; the port plays only the floor neighbour at full volume (residual PITCH is shifted via 2^(m/12), but the upper-neighbour timbre blend needs a second emitter and is unported)."
       - "No cl_tuba_fadetime release ramp: NoteOff Stops the loop cleanly rather than ramping volume down over 0.25s (needs a client-side per-frame volume think)."
       - "No ENT_CLIENT_TUBANOTE networking: remote players' tuba notes are not driven by a dedicated note entity (no per-listener re-origin / SendFlags broadcast)."
     verification:
-      - { kind: read, ref: "Tuba.NoteSample vs tuba.qc:430 TUBA_STARTNOTE — name scheme matches; NoteOn (Tuba.cs:207-210) plays NoteSample(instrument, PitchStepBaseNote(note, out speed)) with loop:true, pitch:speed", result: pass }
-      - { kind: read, ref: "PitchStepBaseNote (Tuba.cs:286-323) ports tubasound (tuba.qc:449-477): m=pymod, floor neighbour note-m, low-edge upper neighbour note-m+step, speed=2^(m/12)/2^((m-step)/12); step<=0 -> exact note speed 1", result: pass }
-      - { kind: read, ref: "vol=clamp(VOL_BASE*cl_tuba_volume,0,1), attenuation=cl_tuba_attenuation (TubaVolumeCvar/TubaAttenuationCvar, Tuba.cs:208-210,325-337) — matches tubasound _sound args", result: pass }
-      - { kind: read, ref: "NoteOff (Tuba.cs:255) calls Api.Sound.Stop(actor, CH_TUBA) to end the held loop; SoundChannel.Tuba=5 single-channel (Services.cs:121) so re-emitting REPLACES rather than stacks", result: pass }
+      - { kind: read, ref: "Tuba.NoteSample vs tuba.qc:430 TUBA_STARTNOTE — name scheme matches; NoteOn (Tuba.cs:227-246) plays NoteSample(instrument, PitchStepBaseNote(...)) on SoundChannel.Tuba with loop:true, pitch:speed1", result: pass }
+      - { kind: read, ref: "PitchStepBaseNote (Tuba.cs:335-391) ports tubasound (tuba.qc:449-481): m=pymod, floor neighbour note-m (speed 2^(m/12)), low-edge upper note-m+step (speed 2^((m-step)/12)); IN-RANGE branch returns BOTH neighbours with vol1=cos / vol2=sin weights; step<=0 -> exact note speed 1", result: pass }
+      - { kind: read, ref: "Two-sample cos/sin crossfade NOW PORTED (was a baseline gap): NoteOn (Tuba.cs:227-246) plays the floor sample on SoundChannel.Tuba at baseVol*vol1(cos) AND, when vol2>0, the upper neighbour on SoundChannel.TubaBlend (=CH_TUBA_SINGLE+1, Services.cs:126) at baseVol*vol2(sin); edge/exact-step branches play one sample and Stop the TubaBlend channel so no stale loop bleeds — matches tubasound's e + e.enemy pair (tuba.qc:466-481)", result: pass }
+      - { kind: read, ref: "vol=clamp(VOL_BASE*cl_tuba_volume,0,1), attenuation=cl_tuba_attenuation (TubaVolumeCvar/TubaAttenuationCvar, Tuba.cs:230-231,393-405) — matches tubasound _sound args", result: pass }
+      - { kind: read, ref: "NoteOff (Tuba.cs:298-299) Stops BOTH CH_TUBA and CH_TUBA_BLEND; SoundChannel.Tuba=5 / TubaBlend=10 single-channel (Services.cs:121,126) so re-emitting REPLACES rather than stacks", result: pass }
       - { kind: code, ref: "all four cl_tuba_* cvars registered in xonotic-client.cfg:337-340 (attenuation 0.5/fadetime 0.25/pitchstep 6/volume 1)", result: pass }
+      - { kind: build, ref: "XonoticGodot.Common builds clean with the crossfade + SoundChannel.TubaBlend addition (0 warnings / 0 errors)", result: pass }
       - { kind: read, ref: "SoundService.Play (EngineServices.cs:602-616) broadcasts SoundEvent with Loop+Pitch; loop is keyed by (entity,channel) and replaced by a later loop on the same key. The CLIENT-side render of a pitched looping REPLACEMENT is NOT runtime-observed -> audio dimension unknown", result: unknown }
     confidence: medium
-    notes: "MAJOR FIX vs baseline (one-shot per tick -> sustained pitched loop), but audio fidelity NOT runtime-verified. NoteOn plays a held loop on CH_TUBA (loop:true) with the on-disk floor-neighbour sample AND the 2^(m/12) residual pitch-shift as the engine pitch, at VOL_BASE*cl_tuba_volume / cl_tuba_attenuation; NoteOff Stops it. logic missing-sustain->faithful; audio partial->UNKNOWN (the correct loop+pitch+volume+attenuation API is called and the server emission carries pitch, but the audible result — esp. whether a pitched loop REPLACEMENT actually re-pitches client-side rather than being treated as an idempotent re-emit — is unobserved in this headless audit); timing missing->partial (sustain present, fade-on-release still missing); values partial (volume/attenuation/pitchstep/sound7-pitch honored in the API call — only the cos/sin crossfade weights remain). Remaining: two-sample crossfade timbre blend, cl_tuba_fadetime ramp, ENT_CLIENT_TUBANOTE networking, AND a behavioral listen-check to upgrade audio from unknown."
+    notes: "FURTHER FIX this wave (crossfade landed); audio fidelity STILL NOT runtime-verified. NoteOn now plays the FULL two-sample cos/sin pitch-step crossfade: floor neighbour on CH_TUBA (vol1=cos, pitch 2^(m/12)) AND, in the in-range branch, the upper neighbour on the NEW CH_TUBA_BLEND channel (vol2=sin, pitch 2^((m-step)/12)); edge/exact branches play a single sample and Stop the blend channel. The baseline 'no upper-neighbour blend' value gap is CLOSED -> values partial->faithful (volume/attenuation/pitchstep/sound7-pitch + the cos/sin weights all honored). audio stays UNKNOWN (headless — the audible result of a pitched looping REPLACEMENT is unobserved; needs a behavioral listen-check). Remaining: cl_tuba_fadetime release ramp (timing partial — needs a CSQC per-frame volume think), ENT_CLIENT_TUBANOTE remote-player networking (presentation partial)."
 
   - id: weapon-tuba.melody.recognition
     name: "Melody recognition + magic-ear chat (W_Tuba_HasPlayed / lastnotes)"

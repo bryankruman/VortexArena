@@ -19,11 +19,12 @@ namespace XonoticGodot.Common.Gameplay;
 /// sustained note entity (held -> refresh, release -> note-off), the W_Tuba_GetNote pitch selection
 /// (derived from movement direction since key input is headless), the instrument cycling on reload
 /// (Tuba/Accordion/Klein Bottle, which carries the HITTYPE_SECONDARY/BOUNCE obituary bits), the per-note
-/// smoke ring, and the wr_setup instrument reset on equip. The note SOUND is now a sustained, pitch-stepped
-/// loop on CH_TUBA (Play(loop:true)+Stop with a 2^(m/12) pitch shift on the residual; cl_tuba_volume/
-/// attenuation honored). Only the ENT_CLIENT_TUBANOTE remote-player networking, the cl_tuba_fadetime release
-/// fade, and the two-sample cos/sin crossfade, plus the melody-recognition chat bprint line, remain
-/// render/online-only.
+/// smoke ring, the wr_setup instrument reset on equip, and the two-sample cos/sin crossfade timbre blend
+/// (SoundChannel.Tuba = floor neighbour + SoundChannel.TubaBlend = upper neighbour, weighted by cos/sin
+/// of the fractional semitone offset, matching tubasound's in-range branch). The melody-recognition chat
+/// bprint line is handled via the TubaMelodyBprint host seam. Only the ENT_CLIENT_TUBANOTE remote-player
+/// note networking and the cl_tuba_fadetime release fade remain unported (both need a per-frame CSQC
+/// client-side volume think that the server-side port cannot reproduce).
 /// </summary>
 [Weapon]
 public sealed class Tuba : Weapon
@@ -211,22 +212,38 @@ public sealed class Tuba : Weapon
         // QC plays a per-note pitched loop sample (TUBA_STARTNOTE) chosen by pitch+instrument, sustained on the
         // dedicated CH_TUBA_SINGLE channel and faded client-side via ENT_CLIENT_TUBANOTE / tubasound
         // (tuba.qc:438-489). The note-sound NETWORKING (remote players' notes via ENT_CLIENT_TUBANOTE) is still
-        // render-only, but the local sustained loop + pitch-step is reproduced here with the engine's loop/pitch
-        // sound primitives (the same Play(loop:true)/Stop pair the Arc beam uses):
-        //   * tubasound only loads samples on disk — multiples of cl_tuba_pitchstep (default 6), TUBA_MIN..MAX —
-        //     and SOUND7-shifts the residual `m` semitones (speed = 2^(m/12)). We play the floor neighbour
-        //     (note - m, clamped to the recorded range) and pass that 2^(m/12) speed as the engine `pitch`, so
-        //     the loop sounds at the TRUE note pitch instead of a flat snapped sample.
-        //   * loop:true makes the client keep ONE persistent loop per (actor, CH_TUBA) and replace it when the
-        //     pitch/instrument changes — exactly the sustained note QC holds while fire is down. NoteOff Stops it.
-        //   * volume = VOL_BASE * cl_tuba_volume (clamped [0,1]); attenuation = cl_tuba_attenuation — matching
-        //     tubasound's _sound(... tuba_volume, tuba_attenuate * autocvar_cl_tuba_attenuation).
-        // The two-sample cos/sin crossfade (blending the upper neighbour's timbre) needs a second emitter and
-        // stays unported; pitch is now faithful, only the cross-neighbour timbre blend remains a residual gap.
-        int baseNote = PitchStepBaseNote(note, out float speed);
-        float vol = System.Math.Clamp(SoundLevels.VolBase * TubaVolumeCvar(), 0f, 1f);
+        // render-only, but the local sustained loop + pitch-step + cos/sin crossfade is reproduced here:
+        //   * PitchStepBaseNote returns the PRIMARY (floor/edge) sample, its cos volume weight and pitch
+        //     speed (2^(m/12)), AND — in the in-range branch — the upper-neighbour sample, its sin volume
+        //     weight and pitch speed (2^((m-step)/12)), matching tubasound's four-branch logic (tuba.qc:449-477).
+        //   * Primary loop plays on CH_TUBA (=SoundChannel.Tuba), upper-neighbour on CH_TUBA+1
+        //     (=SoundChannel.TubaBlend). Both are keyed by (actor netId, channel) so a later Play on the
+        //     same (entity, channel) replaces them without stacking — exactly QC's e / e.enemy entity pair.
+        //   * When vol2 == 0 (single-sample edge branches) the TubaBlend channel is stopped so no stale
+        //     loop bleeds through on a pitch change that leaves the crossfade branch.
+        //   * volume = VOL_BASE * cl_tuba_volume (clamped [0,1]); attenuation = cl_tuba_attenuation.
+        // Remaining residuals: cl_tuba_fadetime release ramp (needs CSQC/ENT_CLIENT_TUBANOTE, unportable
+        // server-side), ENT_CLIENT_TUBANOTE remote-player networking.
+        int baseNote = PitchStepBaseNote(note,
+            out float vol1, out float speed1,
+            out int upperNote, out float vol2, out float speed2);
+        float baseVol = System.Math.Clamp(SoundLevels.VolBase * TubaVolumeCvar(), 0f, 1f);
+        float att = TubaAttenuationCvar();
         Api.Sound.Play(actor, SoundChannel.Tuba, NoteSample(st.TubaInstrument, baseNote),
-            vol, TubaAttenuationCvar(), loop: true, pitch: speed);
+            baseVol * vol1, att, loop: true, pitch: speed1);
+        if (vol2 > 0f)
+        {
+            // In-range crossfade: play the upper neighbour at the sin weight on the blend channel.
+            // tuba.qc:479-481: sound7(e.enemy, CH_TUBA_SINGLE, snd2, vol*vol2, atten, 100*speed2, 0).
+            Api.Sound.Play(actor, SoundChannel.TubaBlend, NoteSample(st.TubaInstrument, upperNote),
+                baseVol * vol2, att, loop: true, pitch: speed2);
+        }
+        else
+        {
+            // Edge branch or exact-step: ensure any stale TubaBlend loop from a previous in-range note
+            // is stopped (e.g. sliding from an in-range note into an edge note while holding fire).
+            Api.Sound.Stop(actor, SoundChannel.TubaBlend);
+        }
 
         // Per-note smoke ring (EFFECT_SMOKE_RING), throttled to 0.25s, with a per-instrument vertical offset.
         // tuba.qc:307-318. QC reads the weapon-tag origin (gettaginfo); headless, we approximate from the
@@ -273,11 +290,13 @@ public sealed class Tuba : Weapon
         if (!string.IsNullOrEmpty(melodyMatch))
             TubaMelodyBprint?.Invoke(actor, (int)note.Frame, melodyMatch); // note.Frame holds st.TubaInstrument (set at note spawn)
 
-        // Stop the sustained note loop on CH_TUBA. QC's CSQC fades over cl_tuba_fadetime (Ent_TubaNote_Think
-        // ramps tuba_volume down before sound(SND_Null)); we don't model the fade ramp (it needs a client-side
-        // per-frame volume think tied to ENT_CLIENT_TUBANOTE), so the loop ends cleanly — the fade tail is the
-        // remaining residual. Without this Stop the loop would hang after release.
+        // Stop both sustained loops on CH_TUBA and CH_TUBA_BLEND. QC's CSQC fades the note over
+        // cl_tuba_fadetime (Ent_TubaNote_Think ramps tuba_volume down on e AND e.enemy before SND_Null);
+        // we don't model that fade ramp (it needs a per-frame CSQC client-side volume think tied to
+        // ENT_CLIENT_TUBANOTE), so both loops end cleanly — the 0.25s fade tail remains a residual gap.
+        // Without both Stops the loops would hang after release (or after a pitch/instrument change).
         Api.Sound.Stop(actor, SoundChannel.Tuba);
+        Api.Sound.Stop(actor, SoundChannel.TubaBlend);
 
         if (!note.IsFreed) Api.Entities.Remove(note);
     }
@@ -302,13 +321,20 @@ public sealed class Tuba : Weapon
     /// <summary>
     /// Port of <c>tubasound</c>'s pitch-step branch (tuba.qc:438-489). Base records loop samples only at
     /// multiples of <c>cl_tuba_pitchstep</c> (default 6) across TUBA_MIN..TUBA_MAX (PRECACHE:591-594) and
-    /// SOUND7-shifts the residual <c>m = pymod(note, step)</c> semitones. This returns the on-disk sample note
-    /// to play (the floor neighbour <c>note - m</c>, or the upper neighbour when the floor falls below TUBA_MIN,
-    /// matching tubasound's three branches) and the playback <paramref name="speed"/> = 2^(shift/12) to apply as
-    /// the engine pitch so the loop sounds at the true note. With pitchstep 0 (Base's no-pitch-step branch) the
-    /// exact note is played at speed 1.
+    /// SOUND7-shifts the residual <c>m = pymod(note, step)</c> semitones.
+    ///
+    /// <para>Returns the PRIMARY (floor-neighbour) sample to play as the return value, its volume weight
+    /// <paramref name="vol1"/> = cos(pi/2 · m/step) and pitch <paramref name="speed1"/> = 2^(m/12).
+    /// When the note sits in the fully in-range branch (neither edge of TUBA_MIN..TUBA_MAX), also returns
+    /// the UPPER-NEIGHBOUR sample <paramref name="note2"/> = <c>note - m + step</c>, its weight
+    /// <paramref name="vol2"/> = sin(pi/2 · m/step) and pitch <paramref name="speed2"/> = 2^((m-step)/12)
+    /// — matching tubasound's two-sample cos/sin crossfade (tuba.qc:466-474). In the single-sample branches
+    /// <paramref name="vol2"/> is 0 and the caller should not emit a second loop.
+    /// With pitchstep 0 (Base's no-pitch-step branch) the exact note is played at speed 1 with full volume.</para>
     /// </summary>
-    private static int PitchStepBaseNote(int note, out float speed)
+    private static int PitchStepBaseNote(int note,
+        out float vol1, out float speed1,
+        out int note2, out float vol2, out float speed2)
     {
         // Default 6 (xonotic-client.cfg ships `cl_tuba_pitchstep 6`, and the loop samples only exist at
         // multiples of 6). Honor an EXPLICIT 0 (Base's no-pitch-step / exact-pitch lookup) but fall back to 6
@@ -320,30 +346,47 @@ public sealed class Tuba : Weapon
             if (!string.IsNullOrEmpty(s))
                 step = (int)Api.Cvars.GetFloat("cl_tuba_pitchstep");
         }
+        // No-pitchstep / exact-pitch branch (Base tubasound else branch, tuba.qc:483-488).
         if (step <= 0)
         {
-            speed = 1f;
+            vol1 = 1f; speed1 = 1f; note2 = note; vol2 = 0f; speed2 = 1f;
             return note;
         }
 
         // pymod: Python-style modulo so the residual is in [0, step) even for negative notes (matches QC pymod).
         int m = ((note % step) + step) % step;
+        // Exact step multiple — single sample, no crossfade. tuba.qc:476-477.
         if (m == 0)
         {
-            speed = 1f;
+            vol1 = 1f; speed1 = 1f; note2 = note; vol2 = 0f; speed2 = 1f;
             return note;
         }
 
         if (note - m < TubaMin)
         {
-            // Floor neighbour is below the recorded range -> use the UPPER neighbour, shift DOWN. tuba.qc:452-457
-            speed = MathF.Pow(2f, (m - step) / 12f);
+            // Floor neighbour is below the recorded range -> use the UPPER neighbour only, shift DOWN.
+            // tuba.qc:452-457. Single sample — no crossfade.
+            vol1 = 1f; speed1 = MathF.Pow(2f, (m - step) / 12f);
+            note2 = note - m + step; vol2 = 0f; speed2 = 1f;
             return note - m + step;
         }
-        // Floor neighbour exists (in range, or the upper neighbour would exceed TUBA_MAX -> still floor). Shift UP.
-        // tuba.qc:458-474 both play the floor sample (note - m) at speed 2^(m/12); only the in-range branch adds
-        // the cos/sin crossfade with the upper neighbour, which needs a second emitter and stays unported.
-        speed = MathF.Pow(2f, m / 12f);
+        if (note - m + step > TubaMax)
+        {
+            // Upper neighbour would exceed the recorded range -> floor sample only. tuba.qc:458-462.
+            vol1 = 1f; speed1 = MathF.Pow(2f, m / 12f);
+            note2 = note - m; vol2 = 0f; speed2 = 1f;
+            return note - m;
+        }
+        // IN-RANGE branch: both floor AND upper neighbours exist in TUBA_MIN..TUBA_MAX.
+        // Crossfade: vol1 = cos(pi/2 * m/step), vol2 = sin(pi/2 * m/step). tuba.qc:466-474.
+        // The upper neighbour is pitched DOWN (speed2 = 2^((m-step)/12)) to meet the floor pitch-up midway;
+        // the ear blends them into a smoother timbre than a hard jump between recorded samples.
+        float frac = (float)m / step;
+        vol1 = MathF.Cos(MathF.PI / 2f * frac);
+        speed1 = MathF.Pow(2f, m / 12f);
+        note2 = note - m + step;
+        vol2 = MathF.Sin(MathF.PI / 2f * frac);
+        speed2 = MathF.Pow(2f, (m - step) / 12f);
         return note - m;
     }
 

@@ -1,14 +1,14 @@
 unit: fx-sounds
 category: sound
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 15
   worst_gaps:
-    - "GlobalSound_pitch model-scale pitch shift (scale != 1 squeak/deepen) still not ported; wire carries a flat pitch byte — the only genuine match:false logic/values hole left in the unit."
     - "_GlobalSound AUTOTAUNT per-recipient probability roll (tauntrand < cl_autotaunt) still omitted (per-client cvar not networked; TAUNT animaction IS now fired — that gap closed)."
     - "play2 per-recipient MSG_ONE targeting is still a broadcast approximation (SoundWire has no per-client send); exact only on a single-human listen server."
     - "sound_allowed MSG_ONE 'sounds to self always pass' branch still omitted (cosmetic; no msg_entity context at the gate). The raw-Api.Sound.Play bypass is now CLOSED (gate applied at EngineServices.Play chokepoint)."
+    - "GlobalSound_pitch model-scale shift is now PORTED+WIRED this pass (SoundSystem.GlobalSoundPitch -> pitch: through Play -> SoundWire.Pitch -> ClientWorld PitchScale); residual: audible shift on a non-default .scale entity not runtime-verified (no-op for stock players, ScaleFactor==0 -> pitch 1.0)."
 features:
   - id: fx-sounds.registry.sound_table
     name: "Sound registry (SOUND(name,path) table) + path resolution"
@@ -324,7 +324,7 @@ features:
       - { kind: code, ref: "directional atten reads cl_voice_directional (==1 -> ATTEN_MIN else ATTEN_NONE); taunt atten applies bound(ATTEN_MIN, cl_voice_directional_taunt_attenuation, ATTEN_MAX)", result: pass }
       - { kind: grep, ref: "voicemessage cmd (Commands.cs:3149) passes _world.Clients.Players roster -> live recipient routing reachable (fake = spec/observer/flood)", result: pass }
     confidence: high
-    notes: "Re-audit 2026-06-27: the TAUNT animdecide_setaction(ANIMACTION_TAUNT) seam is now WIRED (SoundSystem.cs:553-560, fires on a living speaker before the sv_taunt/sv_gentle gates) — closes one of the two baseline logic gaps. Directional + taunt-attenuation already ported (presentation faithful). Logic stays PARTIAL ONLY for the per-client autotaunt probability roll (deferred — per-client cvar not networked). Recipient sets + sv_* gates + fake/self handling faithful & live; reached by the voicemessage cmd (Commands.cs:3149)."
+    notes: "Re-audit 2026-06-28: _GlobalSound now computes GlobalSoundPitch(emitter.ScaleFactor) once and threads it through every Emit() (LASTATTACKER/TEAMRADIO/TAUNT/AUTOTAUNT/PLAYERSOUND), matching QC's pitch=GlobalSound_pitch(pitchscale*this.scale) at globalsound.qc:341 — no-op for stock players (ScaleFactor 0 -> 1.0). The TAUNT animdecide_setaction(ANIMACTION_TAUNT) seam stays wired (SoundSystem.cs:563-570, fires on a living speaker before the sv_taunt/sv_gentle gates). Directional + taunt-attenuation faithful. Logic stays PARTIAL ONLY for the per-client autotaunt probability roll (deferred — per-client cvar not networked). Recipient sets + sv_* gates + fake/self handling faithful & live; reached by the voicemessage cmd (Commands.cs:3149)."
 
   - id: fx-sounds.voice.live_body_callers
     name: "PlayerSound/GlobalSound call sites (footstep/fall/pain/death/jump)"
@@ -379,7 +379,7 @@ features:
       - { name: "default_path", base: "key->file from sound/player/default.sounds (e.g. pain50 -> sound/player/espeak/player/pain50)", port: "PlayerSoundResolver parses default.sounds manifest -> same key->file mapping", match: true }
       - { name: "model_dir_resolve", base: "get_model_datafilename(model,skin,'sounds') parse; model pack overrides default", port: "ModelSoundsFile(model,skin) = '{model}_{skin}.sounds'; resolver tries model pack then default (override order matches)", match: true }
       - { name: "variant_pick", base: "N>0 => random {path}1..{path}N, N==0 => single file", port: "ModelSound.IsSingle (count<=0) else _rng.Next(1,N+1) suffix", match: true }
-      - { name: "globalsound_pitch", base: "GlobalSound_pitch model-scale shift (a=1.5/b=0.75/c=100) when scale != 1", port: "none (flat pitch byte on the wire)", match: false }
+      - { name: "globalsound_pitch", base: "GlobalSound_pitch model-scale shift (a=1.5/b=0.75/c=100) when scale != 1", port: "SoundSystem.GlobalSoundPitch(scaleFactor) — exact asymptotic gradient, wired into Play* via pitch: -> SoundWire.Pitch byte -> ClientWorld PitchScale", match: true }
     status:
       logic: faithful
       values: faithful
@@ -390,14 +390,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "GlobalSound_pitch model-scale pitch shift (a=1.5 max, b=0.75 min, c=100 std gradient applied when this.scale != 1) is still not ported: scaled-model voices don't squeak/deepen; the wire carries a flat pitch byte."
+      - "GlobalSound_pitch audible model-scale shift is now ported+wired (this pass) but NOT runtime-verified on a non-default .scale entity: for stock players ScaleFactor==0 -> pitch 1.0 (no shift), so the gradient is exercised live but only meaningfully diverges from 1.0 for a scaled emitter (giant/mini mutators, scaled map entities) — which was not played in-game side-by-side."
       - "Per-skin fallback chain partially simplified: QC tries skin N, then skin 0; the port resolves a single ModelSoundsFile(model,skin) and the default pack (a missing per-skin manifest falls through to default rather than to skin-0). Negligible for stock models, which ship one pack."
     verification:
       - { kind: code, ref: "PlayerSoundResolver.Resolve: model pack overrides, else default.sounds; ModelSounds.ParseEntries (id/path/variant, //comments skipped, last-wins) matches LoadPlayerSounds tokenize_console; default.sounds maps pain50->sound/player/espeak/player/pain50, taunt->sound/player/espeak/coms/taunt", result: pass }
       - { kind: code, ref: "LIVE: PlayerSoundResolver.Install(_vfs) at NetGame.cs:398 installs Sounds.ModelSoundResolver=Resolve when a VFS is mounted; Sounds.Reset clears it; headless falls back to PlayerSoundSampleRaw gracefully", result: pass }
-      - { kind: code, ref: "no GlobalSound_pitch equivalent; pitch field flat", result: fail }
+      - { kind: code, ref: "GlobalSoundPitch (SoundSystem.cs:634-646) reproduces QC asymptotic gradient pitch=(b*d*(a-1)+a*c*(1-b))/(d*(a-1)+c*(1-b)), d=scaleFactor*100, a=1.5/b=0.75/c=100; verified at all 3 anchors: scale 1.0 -> 1.0, scale->0 -> 1.5, scale->inf -> 0.75. Wired into PlayPlayerSound/PlayGlobalVariant/_GlobalSound.Emit (pitch:) — Play -> SoundWire.Pitch percentage byte -> ClientWorld.OnSound -> AudioStreamPlayer.PitchScale (full chain live). Build green (Common.csproj).", result: pass }
     confidence: high
-    notes: "Faithful & live on the real match path (manifest parser + headless resolver seam; default first, model pack overrides, variant counts honored). Residual: model-scale pitch shift (GlobalSound_pitch) + minor skin-0 fallback simplification. Unchanged this pass."
+    notes: "Re-audit 2026-06-28: the GlobalSound_pitch model-scale shift gap is now CLOSED (logic) — GlobalSoundPitch implements the exact QC gradient and is wired through every voice/body emit (pitch: arg flows Play->SoundWire->PitchScale). Was the SOLE match:false logic/values hole; constant now match:true. Manifest parser + headless resolver seam unchanged (faithful & live). Residual: audible scaled-emitter shift not runtime-verified (no-op at ScaleFactor 0); minor skin-0 fallback simplification."
 
   - id: fx-sounds.presentation.dp_attenuation
     name: "Client spatialization — DP SND_Spatialize distance gain + emitter follow"

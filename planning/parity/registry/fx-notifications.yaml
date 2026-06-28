@@ -1,7 +1,7 @@
 unit: fx-notifications
 category: notification
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 16
   worst_gaps:
@@ -80,7 +80,7 @@ features:
       - "common/notifications/all.qc:1365 (NET_HANDLE ENT_CLIENT_NOTIFICATION)"
     port_refs:
       - "game/net/ServerNet.cs:301 (NotificationSystem.Sink = NotificationNetSink)"
-      - "game/net/ServerNet.cs:2705 (FlushNotifications), :2779 (WriteNotification — writes RegistryId + WireType + text + args)"
+      - "game/net/ServerNet.cs (FlushNotifications), :3268 (WriteNotification — writes RegistryId + WireType + text + args; line drifted from :2779 by the warpzone wave, logic unchanged)"
       - "game/net/ClientNet.cs:1140 (HandleReliableBundle decode -> Notifications.ById(:1155) -> NotificationReceived)"
       - "game/net/NetGame.cs (OnNotificationReceived -> HudNotifications.OnNotification)"
     constants:
@@ -109,7 +109,7 @@ features:
     base_refs:
       - "common/notifications/all.qc:62 (Notification_ShouldSend)"
     port_refs:
-      - "game/net/ServerNet.cs:2738 (NotificationReaches)"
+      - "game/net/ServerNet.cs:3227 (NotificationReaches)"
     constants: []
     status:
       logic: faithful
@@ -123,7 +123,7 @@ features:
     gaps:
       - "Minor residual: NOTIF_TEAM/TEAM_EXCEPT require `d.Target is Player` (NotificationReaches :2757/:2764); a null-team or non-Player target silently reaches nobody (QC NOTIF_TEAM dereferences other_client.team, so a non-player target is an edge case there too). Benign."
     verification:
-      - { kind: code, ref: "ServerNet.NotificationReaches switch (:2740-2772) vs Notification_ShouldSend (all.qc:62-91): One reaches `p.IsObserver && p.Spectatee == d.Target` (= IS_SPEC && to.enemy == other); AllExcept excludes the same; Team adds `p.Spectatee?.Team == t.Team`; TeamExcept adds the spec-team branch WITH the `p.Spectatee != d.Target` guard. All four spec-aware cases now match QC.", result: pass }
+      - { kind: code, ref: "ServerNet.NotificationReaches switch (:3229-3261, re-confirmed 2026-06-28) vs Notification_ShouldSend (all.qc:62-91): One reaches `p.IsObserver && p.Spectatee == d.Target` (= IS_SPEC && to.enemy == other); AllExcept excludes the same; Team adds `p.Spectatee?.Team == t.Team`; TeamExcept adds the spec-team branch WITH the `p.Spectatee != d.Target` guard. All four spec-aware cases now match QC.", result: pass }
     confidence: high
     notes: "FIXED (Wave 12b, 2026-06-26, commit 6da9e80 — added after the prior 2026-06-25 audit): the spectator-follow clauses for all four spec-aware broadcast modes were added, so a spectator following a player now receives that player's personal NOTIF_ONE/TEAM notifications. The only residual is the non-Player-target edge case in TEAM/TEAM_EXCEPT (benign). ALL/ALL_EXCEPT/ONE/ONE_ONLY direct-recipient routing already correct."
 
@@ -392,7 +392,7 @@ features:
     port_refs:
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:116 (GentleMode), :358 (SelectTemplate)"
       - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs (gentle arg captured per Info/Center)"
-      - "src/XonoticGodot.Server/GameWorld.cs:1716 (GentleMode = sv_gentle != 0, per-tick StartFrame)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1849 (GentleMode = sv_gentle != 0, per-tick StartFrame)"
     constants:
       - { name: "cl_gentle / sv_gentle source", base: "GENTLE (cl_gentle/sv_gentle)", port: "GentleMode <- sv_gentle (GameWorld.cs:1716), per-tick", match: true }
     status:
@@ -407,8 +407,8 @@ features:
     gaps:
       - "Per-client cl_gentle preference is lost: gentle mode is a single server-global value (sv_gentle). A client wanting gentle text on a non-gentle server cannot get it."
     verification:
-      - { kind: code, ref: "GameWorld.cs:1716 assigns NotificationSystem.GentleMode = Api.Cvars.GetFloat(\"sv_gentle\") != 0f in the per-tick StartFrame; SelectTemplate (:358) returns n.Gentle when GentleMode && Gentle present; gentle strings registered per Info/Center", result: pass }
-      - { kind: code, ref: "grep `GentleMode =` across src/game -> 1 assignment (GameWorld.cs:1716), still live", result: pass }
+      - { kind: code, ref: "GameWorld.cs:1849 assigns NotificationSystem.GentleMode = Api.Cvars.GetFloat(\"sv_gentle\") != 0f in the per-tick StartFrame; SelectTemplate (:358) returns n.Gentle when GentleMode && Gentle present; gentle strings registered per Info/Center", result: pass }
+      - { kind: code, ref: "grep `GentleMode =` across src/game -> 1 assignment (GameWorld.cs:1849), still live (re-confirmed 2026-06-28)", result: pass }
     confidence: high
     notes: "The gentle toggle is LIVE — GameWorld drives GentleMode from sv_gentle every tick, so the gentle string variants (stored per notification) are actually selected. Intended divergence because the server-side formatting makes it global rather than per-client."
 

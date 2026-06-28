@@ -1,7 +1,7 @@
 unit: mapobject-misc
 category: mapobject
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 12
   worst_gaps:
@@ -343,7 +343,7 @@ features:
     verification:
       - { kind: code, ref: "grep bgmscript/doBGMScript/Ent_Wall_PreDraw across game/ + src/: only documented as out-of-scope (MapModels.cs:11-14, MapParticleEmitters.cs, PointParticles.cs); no consumer added by Wave-8", result: fail }
     confidence: high
-    notes: "STILL OPEN. Explicitly scoped out in the MapModels.cs / PointParticles.cs / MapParticleEmitters.cs headers as a documented residual ('bgmscript ADSR is out of scope — no shipped stock map depends on it'). Unchanged by Wave-8."
+    notes: "STILL OPEN (re-audited 2026-06-28, parity-port-waves branch). Explicitly scoped out in the MapModels.cs:15/69 / PointParticles.cs:14 / MapParticleEmitters.cs:19 headers as a documented residual ('bgmscript ADSR is out of scope — no bgmtime music-position clock; no shipped stock map depends on it'). grep bgmscript/doBGMScript/.bgs across game/+src/ finds only those out-of-scope comments — no consumer added this wave. All dimensions remain missing."
 
   - id: mapobject-misc.models.props_walls
     name: "models.qc decoration props + static walls (spawn/solid/drop/colormap)"
@@ -377,7 +377,7 @@ features:
     verification:
       - { kind: code, ref: "MapModels.cs:29-141 vs models.qc:17-218; all classnames registered in MapObjectsRegistry.cs; solid/SetModel order, DropBySpawnflags 3 branches, colormap teamplay path all match", result: pass }
     confidence: high
-    notes: "Re-verified Wave-8. func_wall/func_clientwall/func_static get Solid.Bsp + inline brush via SetModel. DropToFloor runs inline. The colormap-render/clientwall-fade/bgmscript pieces are separate presentation features."
+    notes: "Re-audited 2026-06-28 (parity-port-waves branch). func_wall/func_clientwall/func_static get Solid.Bsp + inline brush via SetModel; DropToFloor inline; logic/values/timing faithful+live. presentation STILL partial: ColorMapOverride is WRITTEN by SetColormapToActivator (MapModels.cs:150-158, RENDER_COLORMAPPED bit set) but no renderer team-tints a MAP PROP on screen — the only ColorMapOverride render consumers are WeaponThrowing/MonsterAI/PhysicalItems (dropped weapons / monsters / physical items), none of which paint a func_wall/misc_gamemodel prop. NOT closed this wave (no prop-colormap renderer added). The clientwall-fade + bgmscript pieces are tracked as their own rows."
 
   - id: mapobject-misc.models.clientwall_fade
     name: "func_clientwall distance-fade + PVS alpha-cull + antiwall solid-toggle (Ent_Wall_PreDraw / g_clientmodel_use)"
@@ -407,6 +407,6 @@ features:
       - "The antiwall .inactive flag toggles SOLID server-side but does NOT also force the wall's render alpha to 0 (Ent_Wall_PreDraw sets alph=0 when inactive); a deactivated clientwall goes non-solid but stays VISIBLE until a wall renderer consumes .inactive."
     verification:
       - { kind: code, ref: "MapObjectFieldsExtra.cs stores FadeStartDist/FadeEndDist/AlphaMax/AlphaMin/FadeVerticalOffset; grep across game/ + src/: no wall renderer consumes them for distance-fade (ClientWorld ItemDistanceAlpha = item despawn fade, not clientwall; WeatherSystem = rain/snow drawdist)", result: fail }
-      - { kind: code, ref: "FIXED (Waves 9-11, ff8a699): MapModels.cs:105-139 ClientModelUse ports g_clientmodel_use (antiwall_flag 1=deactivate->SOLID_NOT+inactive, 2=activate->restore DefaultSolid, then SetColormapToActivator); wired as ent.Use for func_clientwall/func_clientillusionary (MapModels.cs:93), antiwall_flag parsed (MapObjectFieldsExtra.cs:170), relayed through the trigger delay + SUB_UseTargets via MapMover.CurrentUseTrigger (MapObjectsCommon.cs:410/467) — LIVE on the server path", result: pass }
+      - { kind: code, ref: "SERVER antiwall relay LIVE: MapModels.cs:GModelInit installs ent.Use=ClientModelUse only for clientModel=true classnames (ClientWallSetup/ClientIllusionarySetup/ClientModelSetup pass clientModel:true) and records ent.DefaultSolid=sol; ClientModelUse (MapModels.cs:108-135) ports g_clientmodel_use (antiwall_flag 1=deactivate->SOLID_NOT+Inactive+unlink, 2=activate->restore DefaultSolid+link, then SetColormapToActivator); reads the firing trigger's AntiwallFlag via MapMover.CurrentUseTrigger (set on the SUB_UseTargets path, MapObjectsCommon.cs:466-481); antiwall_flag parsed (MapObjectFieldsExtra.cs); classnames registered (MapObjectsRegistry.cs:159-164)", result: pass }
     confidence: high
-    notes: "DRIFT 2026-06-27: the SERVER-side antiwall solid-toggle relay (g_clientmodel_use) is now ported and LIVE — added in Waves 9-11 (ff8a699) but the prior baseline (which only audited through Wave-8) still recorded it unported. logic/values/liveness lifted missing/na -> partial: the authority half (solid toggle + .inactive + DefaultSolid restore + colormap re-apply) is faithful+live; the CLIENT render half (distance-fade alpha formula, PVS alpha-cull, alpha-0-when-inactive) is STILL missing — no wall renderer consumes the stored fade fields. presentation stays missing. No shipped stock map is known to depend on the render fade; severity low for stock content."
+    notes: "Re-audited 2026-06-28 (parity-port-waves branch). The SERVER-side antiwall solid-toggle relay (g_clientmodel_use) is ported and LIVE on this branch — this wave wired it cleanly through a clientModel flag in GModelInit (ent.Use=ClientModelUse + ent.DefaultSolid recorded) for func_clientwall/func_clientillusionary/misc_clientmodel; the trigger's antiwall_flag is threaded via MapMover.CurrentUseTrigger on the SUB_UseTargets path. logic/values/liveness = partial: the authority half (solid toggle + .inactive + DefaultSolid restore + colormap re-apply) is faithful+live; the CLIENT render half (Ent_Wall_PreDraw distance-fade alpha formula, PVS alpha-cull, alpha-0-when-inactive) is STILL missing — no wall renderer consumes the stored fade fields (a func_clientwall's faces bake into the static map mesh; ClientWorld.cs:1486 ItemDistanceAlpha is the unrelated item-despawn fade; WeatherSystem reads FadeEndDist only for rain/snow drawdist). presentation stays missing. NOT closed this wave. No shipped stock map is known to depend on the render fade; severity low for stock content."

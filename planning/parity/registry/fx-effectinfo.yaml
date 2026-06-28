@@ -1,7 +1,7 @@
 unit: fx-effectinfo
 category: effect
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 10
   worst_gaps:
@@ -24,6 +24,7 @@ features:
       - { name: "EFFECT_Null id", base: "0", port: "0 (registered first)", match: true }
       - { name: "team variants (red/blue/yellow/pink/neutral)", base: "per-team registry entries", port: "TeamVariant resolver", match: true }
       - { name: "commented-out legacy per-team variants", base: "omitted in all.inc", port: "omitted", match: true }
+      - { name: "ARC_BEAM_LINE_BURST registry entry", base: "ARC_BT_BURST cylindric-line variant", port: "EffectsList.cs:81 (arc_beam_line_burst, isTrail)", match: true }
     status:
       logic: faithful
       values: faithful
@@ -35,9 +36,10 @@ features:
     divergence_rationale: null
     gaps: []
     verification:
-      - { kind: code, ref: "EffectsList.cs is a complete ordered port of all.inc; names/trail flags/team variants match; RegisterAll called from GameInit.cs:22. Wave 16 (b3a9c06) added ARC_BEAM_LINE/ARC_BEAM_LINE_HEAL (EffectsList.cs:73-74) — emitted live from Arc.cs:566 and routed to the Beam class (EffectSystem.cs:497,727)", result: pass }
+      - { kind: code, ref: "EffectsList.cs is a complete ordered port of all.inc; names/trail flags/team variants match; RegisterAll called from GameInit.cs:22. Wave 16 added ARC_BEAM_LINE/ARC_BEAM_LINE_HEAL (EffectsList.cs:73-74) — emitted live from Arc.cs:567 and routed to the Beam class (EffectSystem.cs:497,767)", result: pass }
+      - { kind: code, ref: "Phase 2 (493c876) added ARC_BEAM_LINE_BURST (EffectsList.cs:81, isTrail). LIVE caller Arc.cs:567 emits it on the burst branch (healed?HEAL:burst?BURST:LINE); net name arc_beam_line_burst contains the 'arc_beam_line' substring so EffectSystem.ClassifyUncached:767-769 short-circuits to EffectClass.Beam (no effectinfo block needed) and :510-521 selects width 14. Build green.", result: pass }
     confidence: high
-    notes: "Effects.Hash content-hashes EFFECT_* names in order (CL/SV handshake). Trail flag distinguishes pointparticles vs trailparticles. RegisterAll is live (GameInit). Wave 16 added the arc cylindric-beam line names (ARC_BEAM_LINE[_HEAL], registered isTrail only so the count-0 line survives the point-count guard) — they carry no effectinfo block and short-circuit to BeamRenderer.Beam; live caller is Arc.cs Draw_ArcBeam."
+    notes: "Effects.Hash content-hashes EFFECT_* names in order (CL/SV handshake). Trail flag distinguishes pointparticles vs trailparticles. RegisterAll is live (GameInit). Wave 16 added the arc cylindric-beam line names (ARC_BEAM_LINE[_HEAL]); Phase 2 (493c876) added ARC_BEAM_LINE_BURST — all three are registered isTrail only so the count-0 line survives the point-count guard, carry no effectinfo block, and short-circuit to BeamRenderer.Beam; live caller is Arc.cs BeamTick (burst/heal/normal select)."
 
   - id: fx-effectinfo.emit.send_effect
     name: "Server effect emission (Send_Effect / pointparticles / trailparticles)"
@@ -182,7 +184,7 @@ features:
     divergence_rationale: null
     gaps:
       - "Port is LENIENT where DP errors: DP's checkparms() aborts a block on wrong arg count and 'command before effect' breaks parsing; port silently skips. Also DP strtol base-0 treats a leading-0 token as octal; port reads it decimal. None occur in the shipped (generated) file, so no observable divergence."
-      - "No unit test covers the parser / keyword table / baseline defaults; verified by code read only."
+      - "No unit test covers the parser / keyword table / baseline defaults; verified by code read only. (Proposed extraction to an Engine-namespace EffectInfoParser.cs + EffectInfoParserTests.cs has NOT landed in this tree as of 2026-06-28; parse core still lives in game/client/EffectInfo.cs.)"
     verification:
       - { kind: code, ref: "Tokenize reproduces DP whitespace/newline/'//'/quote scanner; blocks layer by name; diffed against CL_Particles_ParseEffectInfo:314-479", result: pass }
     confidence: medium

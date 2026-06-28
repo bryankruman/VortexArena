@@ -162,7 +162,8 @@ public partial class ViewModel : Node3D
     /// </summary>
     public Func<string, Node3D?>? FlashModelFactory { get; set; }
 
-    private ModelAnimator? _animator;     // optional animated weapon model
+    private ModelAnimator? _animator;           // optional MD3 vertex-morph animated weapon model
+    private AnimationPlayer? _iqmAnimPlayer;    // optional IQM/DPM skeletal AnimationPlayer (h_* rigs); mutually exclusive with _animator — only one is set at a time
     private Node3D _modelRoot = null!;     // holds the weapon mesh (+ its tags), under the Quake->camera basis
     private Marker3D? _muzzleMarker;       // muzzle socket on the model (from tags)
     private bool _noDepthTestApplied;      // EF_NODEPTHTEST has been pushed onto the current model's materials
@@ -274,6 +275,7 @@ public partial class ViewModel : Node3D
         foreach (Node c in _modelRoot.GetChildren())
             c.QueueFree();
         _animator = null;
+        _iqmAnimPlayer = null;
         _muzzleMarker = null;
         ResetModelFx();
 
@@ -311,6 +313,7 @@ public partial class ViewModel : Node3D
         foreach (Node c in _modelRoot.GetChildren())
             c.QueueFree();
         _animator = null;
+        _iqmAnimPlayer = null;
         ResetModelFx();
 
         // The placeholder is authored in Quake view space too (a barrel a few units long forward of the eye),
@@ -365,6 +368,8 @@ public partial class ViewModel : Node3D
         foreach (Node c in _modelRoot.GetChildren())
             c.QueueFree();
         _animator = null;
+        _iqmAnimPlayer = null;
+        _lastNetAnimFrame = -1;  // reset so the first networked frame fires on a rising edge after the model swap
         ResetModelFx();
 
         ApplyRestPlacement();
@@ -379,6 +384,11 @@ public partial class ViewModel : Node3D
                         // to the skeleton's bone rest and pin a Marker3D there so the flash/light park at the
                         // barrel, in the SAME model space as the rendered gun (so flash + shot origin coincide).
                         ?? ResolveMuzzleMarker(name => MarkerFromSkeletonBone(model, name));
+
+        // Capture the IQM/DPM AnimationPlayer (h_* skeletal rigs) so PlayIdle/PlayReload/SetNetAnimFrame can
+        // drive the live weapon animation. IqmBuilder and DpmBuilder always name it "AnimationPlayer" (verified
+        // in IqmBuilder.cs:134 and DpmBuilder.cs:140). Null on plain v_*.md3 static models — those have no rig.
+        _iqmAnimPlayer = model.FindChild("AnimationPlayer", recursive: true, owned: false) as AnimationPlayer;
 
         // Capture the resolved shot tag's authored side offset (Base `vecs.y`) so cl_gunalign moves THIS gun by
         // its own per-model amount. CaptureAuthoredShotSide composes the marker relative to _modelRoot, so it
@@ -536,8 +546,9 @@ public partial class ViewModel : Node3D
         // The previous flash node (if still alive) is freed first (QC: wepent.muzzle_flash reused).
         SpawnMuzzleFlashModel();
 
-        // If the weapon has a "fire"/"attack" clip, play it once.
-        _animator?.Play(FindFireClip());
+        // If the weapon has a "fire"/"attack" clip, play it once. FindFireClip() plays the clip as a side-effect
+        // on whichever backend is active (IQM AnimationPlayer or the MD3 ModelAnimator), so a bare call suffices.
+        FindFireClip();
     }
 
     /// <summary>
@@ -580,21 +591,30 @@ public partial class ViewModel : Node3D
         // Use a Tween for exact per-step control (not a smooth Lerp — the QC does discrete steps).
         // In Godot 4, TweenCallback.SetDelay adds a RELATIVE delay before THAT step (sequential tween),
         // so each step fires 0.05s after the previous one — cumulative total 0.05, 0.10, 0.15 s.
+        // QC W_MuzzleFlash_Model sets flash.frame = 2 initially; W_MuzzleFlash_Model_Think does frame += 2 each tick.
+        // When FlashModelFactory returns a ModelAnimator (multi-frame MD3), seed it at frame 2 immediately.
+        if (_muzzleFlashNode is ModelAnimator seedAnim)
+            seedAnim.SetRawFrame(2);
+
         Tween tween = CreateTween();
         tween.SetProcessMode(Tween.TweenProcessMode.Idle);
-        // Step 1 (t=+0.05 s): scale 0.75 → 0.375, alpha 0.75 → 0.50
-        // Step 2 (t=+0.05 s): scale 0.375 → 0.1875, alpha 0.50 → 0.25
+        // Step 1 (t=+0.05 s): scale 0.75 → 0.375, alpha 0.75 → 0.50, frame 2 → 4
+        // Step 2 (t=+0.05 s): scale 0.375 → 0.1875, alpha 0.50 → 0.25, frame 4 → 6
         // Step 3 (t=+0.05 s): scale 0.1875 → 0.09375, alpha 0.25 → 0 → free
         for (int step = 1; step <= 3; step++)
         {
             float targetScale = 0.75f * MathF.Pow(0.5f, step);
             float targetAlpha = 0.75f - step * 0.25f; // 0.50, 0.25, 0
             int capturedStep = step;
+            int targetFrame = 2 + step * 2; // 4, 6, 8 (QC: flash.frame += 2 each think)
             tween.TweenCallback(Callable.From(() =>
             {
                 if (_muzzleFlashNode is null || !GodotObject.IsInstanceValid(_muzzleFlashNode)) return;
                 _muzzleFlashNode.Scale = Vector3.One * targetScale;
                 SetFlashAlpha(_muzzleFlashNode, targetAlpha);
+                // Advance MD3 flash frame: flash.md3=30 frames, uziflash.md3=14; SetRawFrame clamps safely.
+                if (_muzzleFlashNode is ModelAnimator flashAnim)
+                    flashAnim.SetRawFrame(targetFrame);
                 if (capturedStep >= 3)
                 {
                     _muzzleFlashNode.QueueFree();
@@ -657,9 +677,27 @@ public partial class ViewModel : Node3D
 
     private string FindFireClip()
     {
-        foreach (string n in new[] { "fire", "shoot", "attack", "fire1" })
-            if (_animator!.PlayIfChanged(n)) return n;
-        return _animator!.CurrentClip;
+        // IQM/DPM path (h_* rigs with an AnimationPlayer — the live equip path).
+        if (_iqmAnimPlayer is not null && GodotObject.IsInstanceValid(_iqmAnimPlayer))
+        {
+            foreach (string n in new[] { "fire", "shoot", "attack", "fire1" })
+            {
+                if (_iqmAnimPlayer.HasAnimation(n))
+                {
+                    _iqmAnimPlayer.Play(n);
+                    return n;
+                }
+            }
+            return _iqmAnimPlayer.CurrentAnimation;
+        }
+        // MD3 vertex-morph path (legacy SetWeapon(Md3Data) path).
+        if (_animator is not null)
+        {
+            foreach (string n in new[] { "fire", "shoot", "attack", "fire1" })
+                if (_animator.PlayIfChanged(n)) return n;
+            return _animator.CurrentClip;
+        }
+        return "";
     }
 
     /// <summary>
@@ -674,11 +712,24 @@ public partial class ViewModel : Node3D
     /// </summary>
     public void PlayReload()
     {
+        // IQM/DPM path (h_* rigs — the live equip path).
+        if (_iqmAnimPlayer is not null && GodotObject.IsInstanceValid(_iqmAnimPlayer))
+        {
+            foreach (string n in new[] { "reload", "reload1", "load" })
+            {
+                if (_iqmAnimPlayer.HasAnimation(n))
+                {
+                    _iqmAnimPlayer.Play(n);
+                    return;
+                }
+            }
+            return; // no reload clip on this rig — keep idling (faithful degenerate)
+        }
+        // MD3 vertex-morph path. Best-effort: only models that ship a reload clip animate the reload (Base picks
+        // anim_reload; a model without that frame group simply keeps idling, so a no-op here is the faithful
+        // degenerate case — we do NOT borrow the fire clip, which would read as the gun firing mid-reload).
         if (_animator is null)
             return;
-        // Best-effort: only models that ship a reload clip animate the reload (Base picks anim_reload; a model
-        // without that frame group simply keeps idling, so a no-op here is the faithful degenerate case — we do
-        // NOT borrow the fire clip, which would read as the gun firing mid-reload).
         foreach (string n in new[] { "reload", "reload1", "load" })
             if (_animator.PlayIfChanged(n))
                 return;
@@ -688,6 +739,21 @@ public partial class ViewModel : Node3D
     /// <c>anim_idle</c> when no fire/reload override is running). No-op when the model has no idle/anim.</summary>
     private void PlayIdle()
     {
+        // IQM/DPM path (h_* rigs — the live equip path).
+        if (_iqmAnimPlayer is not null && GodotObject.IsInstanceValid(_iqmAnimPlayer))
+        {
+            foreach (string n in new[] { "idle", "still", "stand" })
+            {
+                if (_iqmAnimPlayer.HasAnimation(n))
+                {
+                    if (_iqmAnimPlayer.CurrentAnimation != n)
+                        _iqmAnimPlayer.Play(n); // switch to idle only when not already playing it
+                    return;
+                }
+            }
+            return;
+        }
+        // MD3 vertex-morph path.
         if (_animator is null)
             return;
         foreach (string n in new[] { "idle", "still", "stand" })
@@ -724,9 +790,9 @@ public partial class ViewModel : Node3D
             case 0: // WFRAME_IDLE
                 PlayIdle();
                 break;
-            case 1: // WFRAME_FIRE1 — play the fire clip once (non-looping; _Process drops back to idle when done)
-                if (_animator is not null)
-                    _animator.Play(FindFireClip());
+            case 1: // WFRAME_FIRE1 — play the fire clip once (non-looping; _Process drops back to idle when done).
+                // FindFireClip() plays the clip as a side-effect on whichever backend is active.
+                FindFireClip();
                 break;
             case 2: // WFRAME_RELOAD
                 PlayReload();
@@ -845,6 +911,10 @@ public partial class ViewModel : Node3D
         // A one-shot fire/reload clip clears the animator's playing flag when its playhead reaches the end; drop
         // back to the looping idle so the gun keeps subtly cycling rather than freezing on the last fire frame.
         if (_animator is not null && !_animator.IsPlaying)
+            PlayIdle();
+        // IQM/DPM path: AnimationPlayer.IsPlaying() returns false once a non-looping clip (fire/reload) finishes;
+        // recover to idle, mirroring the _animator guard above.
+        if (_iqmAnimPlayer is not null && GodotObject.IsInstanceValid(_iqmAnimPlayer) && !_iqmAnimPlayer.IsPlaying())
             PlayIdle();
     }
 

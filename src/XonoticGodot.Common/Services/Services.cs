@@ -123,6 +123,9 @@ public enum SoundChannel
     Player = 7,
     Bgm = 8,
     AmbientSingle = 9, // CH_AMBIENT_SINGLE — looping per-entity ambient (e.g. func_rotating .noise)
+    TubaBlend = 10,   // CH_TUBA_SINGLE + 1 (implicit in QC via e.enemy entity) — the upper-neighbour timbre
+                      // sample for the cos/sin crossfade in tubasound (tuba.qc:471-473). Only active when
+                      // the note is not an exact pitchstep multiple and neither edge of the recorded range.
 }
 
 /// <summary>sound()/precache_sound (QC sound builtins), with DP's SV_StartSound entity+channel model.</summary>

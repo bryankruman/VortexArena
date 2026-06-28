@@ -1,8 +1,19 @@
 unit: mapobject-func
 category: mapobject
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
-# OPUS re-verify 2026-06-27 (post-Wave-16/17, branch claude/parity-port-waves): re-read the CURRENT port files
+last_audited: "2026-06-28"
+# OPUS re-verify 2026-06-28 (post Phase-2/3a/4 + warpzone fixes, branch claude/parity-port-waves): this wave did NOT
+# touch ANY of the unit's gameplay code — `git diff 2f0bfdb..HEAD` over Doors/Buttons/Platforms/MovingBrushes/Breakable/
+# AdvancedMovers/MapVolumes/MapObjectsCommon/TargetUtilities.cs is EMPTY (all byte-identical to the Wave-17 re-verify).
+# The wave's only edits touching a port_ref are in GameWorld.cs (spectator-kick fix, CA join-refused hook, Race timelimit
+# default) — NONE in ResetMapObjects itself. NO gaps closed (none were open — all 17 rows were already faithful/live from
+# prior waves), NO regressions. Re-confirmed in code this pass: all six Reset assignments still present (Doors.cs:73/133,
+# Buttons.cs:42, Platforms.cs:84, MovingBrushes.cs:77, Breakable.cs:82, TargetUtilities.cs:786); Play2->Play2Raw
+# (MapObjectsCommon.cs:845/848), Centerprint->SendCenterRaw (:910/919); Buttons InstallEventDamage(ButtonDamage) :50;
+# secret GtEventDamage :776. LINE-NUMBER DRIFT (GameWorld.cs edits shifted the seam down): ResetMapObjects body now at
+# GameWorld.cs:4786 (was :4683), e.Reset?.Invoke(e) at :4807 (was :4704), the ResetMapObjects() call at :4746. Seam LIVE,
+# unchanged in behavior. NO STATUS DRIFT — all 17 rows stay faithful/live.
+# ---- prior pass: OPUS re-verify 2026-06-27 (post-Wave-16/17, branch claude/parity-port-waves): re-read the CURRENT port files
 # against every claim below — NO STATUS DRIFT, all 17 feature rows stay faithful/live. Confirmed in code this pass:
 #   (1) MapObjectsCommon.cs Play2 (:845-849) -> SoundSystem.Play2Raw (SoundSystem.cs:255-256 =
 #       Api.Sound.Play(recipient, SoundChannel.Auto, sample, VolBase 0.7, AttenNone 0)) — the CH_INFO/2D-full-volume
@@ -139,7 +150,7 @@ features:
     gaps:
       - "func_breakable_reset's team_saved restore is not reproduced (no team_saved field at this layer) and func_breakable_look_restore is presentation-only (colormod); the core behave-restore/destroyed state IS reset. door_reset's CSQC SendFlags |= SF_TRIGGER_RESET is skipped (door networking latent/commented in Base)."
     verification:
-      - { kind: code_read, ref: "RE-VERIFIED 2026-06-27 post-Wave-16: GameWorld.ResetMapObjects (GameWorld.cs:4683 body, called from the reset_map body at :4643) snapshots every non-client server entity (new List(ServerEntities.Inner.All)) and invokes e.Reset?.Invoke(e) at :4704 (after the projectile/weapon_proj* cull). Line numbers shifted from the prior pass (:4619/:4640) by Wave-15/16 commits; seam unchanged. Each mover installs Entity.Reset at spawn (grep `.Reset =` in MapObjects/): Doors.cs DoorReset (Doors.cs:209; assigned at Doors.cs:73 DoorSetup + :133 DoorRotatingSetup; snaps Origin/Angles to Pos1, STATE_BOTTOM, ACTIVE, clears Think/Velocity, re-inits keys), Buttons.cs ButtonReset (assigned :42), Platforms.cs PlatReset (assigned :80), MovingBrushes.cs RotatingReset (assigned :77), Breakable.cs BreakableReset (assigned :82), TargetUtilities.cs SecretReset (assigned :786). Buttons.cs:15 comment is CORRECT.", result: pass }
+      - { kind: code_read, ref: "RE-VERIFIED 2026-06-28: GameWorld.ResetMapObjects (GameWorld.cs:4786 body, ResetMapObjects() call at :4746) snapshots every non-client server entity (new List(ServerEntities.Inner.All)) and invokes e.Reset?.Invoke(e) at :4807 (after the projectile/weapon_proj* cull). Line numbers shifted again (:4683/:4704 -> :4786/:4807) by this wave's GameWorld.cs edits (spectator-kick/CA-join/Race-timelimit, unrelated to reset); seam unchanged. Each mover installs Entity.Reset at spawn (grep `.Reset =` in MapObjects/): Doors.cs DoorReset (Doors.cs:209; assigned at Doors.cs:73 DoorSetup + :133 DoorRotatingSetup; snaps Origin/Angles to Pos1, STATE_BOTTOM, ACTIVE, clears Think/Velocity, re-inits keys), Buttons.cs ButtonReset (assigned :42), Platforms.cs PlatReset (assigned :80), MovingBrushes.cs RotatingReset (assigned :77), Breakable.cs BreakableReset (assigned :82), TargetUtilities.cs SecretReset (assigned :786). Buttons.cs:15 comment is CORRECT.", result: pass }
       - { kind: liveness, ref: "Live caller chain RE-CONFIRMED 2026-06-27: Warmup.ResetMap = ResetMap (GameWorld.cs:864, fired by WarmupController ready-restart :301/:385 + ReadyRestart :4565) + Rounds.OnRoundReset = ResetMap(fakeRoundStart:true) (GameWorld.cs:1647) + the :2975 round-reset call -> ResetMap (:4600) -> ResetMapObjects on the real `restart`/vote-restart/round-restart path. Snapshot iteration so MonsterAI.Reset (which removes SPAWNED monsters) is safe.", result: pass }
     confidence: high
     notes: "WAVE-5 FIX-UP: the round-restart .reset pass is now genuinely live. ResetMapObjects fires every map entity's Entity.Reset (the QC reset_map_global model) — door/plat/button/breakable/rotating/secret all snap home + re-arm, and monster/logic-gate/target-music .Reset hooks (previously assigned but never dispatched from GameWorld) now fire too. Spawn-time initial placement was already live; this closes the round-restart hole. Residual: breakable team_saved + colormod look_restore (minor, noted in gaps)."
@@ -293,7 +304,7 @@ features:
     divergence_rationale: null
     gaps:
       - "the pressed-state alternate texture (Frame=1) is set on the entity but whether the brush model renders the alt frame in-engine is unverified (presentation)."
-      - "button_reset round-restart re-arm is LIVE — ButtonReset is assigned at Buttons.cs:42 and dispatched by GameWorld.ResetMapObjects (e.Reset?.Invoke at GameWorld.cs:4704, body :4683; line shifted post-Wave-16). The Buttons.cs:15 comment is correct. (See mapobject-func.reset.)"
+      - "button_reset round-restart re-arm is LIVE — ButtonReset is assigned at Buttons.cs:42 and dispatched by GameWorld.ResetMapObjects (e.Reset?.Invoke at GameWorld.cs:4807, body :4786; line shifted 2026-06-28 by unrelated GameWorld edits). The Buttons.cs:15 comment is correct. (See mapobject-func.reset.)"
     verification:
       - { kind: code_read, ref: "button.qc vs Buttons.cs: button_damage is now a per-hit .event_damage callback installed via MapMover.InstallEventDamage(this_, ButtonDamage); NOSPLASH (!IsSpecial & HasHitType Splash -> return), DONTACCUMULATEDMG (Health<=damage single-hit, no subtract), default accumulate (Health-=damage; <=0 -> fire), health=-1 fire-on-any all reproduced; Active gate matches QC. The old Combat.Death accumulate-hook is REMOVED.", result: pass }
       - { kind: liveness, ref: "Entity.GtEventDamage dispatched per-hit by DamageSystem.EventDamage (DamageSystem.cs:331-335) on the live Damage() path (line 280); SpawnFuncs.Register(func_button); fire sound via MapMover.Sound", result: pass }

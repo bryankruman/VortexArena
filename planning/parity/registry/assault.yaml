@@ -1,7 +1,27 @@
 unit: assault
 category: gametype
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
+# OPUS re-audit 2026-06-28 (branch claude/parity-port-waves, post Phase 1-4 framework+surgical waves, head c7cece5):
+#   NO ASSAULT DRIFT vs the 2026-06-27 audit. The Phase 1/2 waves on this branch are precisely the work that built
+#   the WaypointSprite subsystem + net consumers the 2026-06-27 audit credited (493d822 "WaypointSprite subsystem +
+#   view consumers", 60d45f5 "objective/turret entity stream + view primitives"). Re-read the CURRENT branch code
+#   end-to-end and re-ran tests: all 13 AssaultSpawnTests PASS. Every "FIX" row below was re-verified live on this
+#   branch — the pipeline EXISTS, is WIRED, and is test-green. Only line numbers drifted (refreshed below); no
+#   status changes. The single honest open item is unchanged: the waypoint-sprite visible pixels are code-read at
+#   both ends but NOT runtime-observed (no game launched) — presentation stays faithful/high-confidence-on-existence
+#   with a live VISUAL check the only remaining upgrade.
+#   Line refresh (this branch): GameStopped @2238 (folds IsAssaultRoundFreeze @2249); DriveGametypeFrame @3506 with
+#   the live `case Assault aslt` -> aslt.DriveFrame(Time) @3556-3562; ServerNet.SendWaypoints @1192 (called live
+#   @493), WaypointVisible @1294; ClientNet.HandleWaypoints @751, .Waypoints source @708, NetControl.Waypoints
+#   dispatch @555; WaypointSpriteLayer DrawHealthBar @239 (health bar @206-207); NetGame wires the layer @1649 with
+#   Source=()=>_client.Waypoints @1659. Assault.cs: ObjectiveInactive=1000f @50, RoundDelay=5f @55,
+#   SpawnObjectiveSprite @413 (writes WaypointSprites.Active via SpawnFixed/UpdateSprites/UpdateMaxHealth/
+#   UpdateHealth + VisibleForPlayer gate), DestroyFinalObjective @784, StartSecondRound @842, TimeLimitReached @912,
+#   DriveFrame @937 (SecondRoundPending -> StartSecondRound @949-952), BPrint chat lines @815/@856. Bot RoleAssault
+#   @774 (120s timeout @791, 2s attack window @871, 500->1500 shell @839).
+#
+# --- prior note (2026-06-27, post Wave 16/17 commit 2f0bfdb) retained below for history ---
 # OPUS re-audit 2026-06-27 (post Wave 16/17, commit 2f0bfdb): TWO real drifts, both UNDER-stated by the prior
 # audit — the prior pass grepped `src/XonoticGodot.Net` (which holds NO net code; the net layer lives in
 # `game/net/`) and so wrongly recorded the Assault waypoint sprites + the round freeze as missing/non-enforced.
@@ -395,7 +415,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:WaypointSprites (SpawnFixed/UpdateHealth/UpdateMaxHealth/Disown/Kill; Active)"
       - "game/net/ServerNet.cs:SendWaypoints (game/net/ServerNet.cs:1192, called @493) + WaypointVisible (:1294)"
       - "game/net/ClientNet.cs:HandleWaypoints (:542) -> ClientNet.Waypoints (:695)"
-      - "game/client/WaypointSpriteLayer.cs (client draw incl. health bar) wired in game/net/NetGame.cs:1618/1628"
+      - "game/client/WaypointSpriteLayer.cs (client draw incl. health bar @206-207/DrawHealthBar @239) wired in game/net/NetGame.cs:1649 (Source=()=>_client.Waypoints @1659)"
       - "src/XonoticGodot.Server/GameWorld.cs:2613 (WaypointSprites.Think per-tick)"
     constants:
       - { name: "sprite_defend", base: "WP_AssaultDefend (radar RADARICON_OBJECTIVE)", port: "RadarIconObjective=1 + WaypointObjectiveColor orange (networked: ServerNet.cs:1233,1237)", match: true }
@@ -413,7 +433,7 @@ features:
       - "The prior audit's 'no client render path' gap is CLOSED (Wave 17, 2f0bfdb) — it had grepped src/XonoticGodot.Net (no net code there; the net layer is game/net/). The visible result is rendered by a faithful QC port of Draw_WaypointSprite but was NOT runtime-observed in this code-read re-audit (game not launched); a live visual check would be the only remaining upgrade."
     verification:
       - { kind: code_read, ref: "Assault.cs:413 SpawnObjectiveSprite (WP_AssaultDestroy + UpdateMaxHealth/UpdateHealth); DamageDestructible updates the bar each hit; DisownSprite on destroy. WaypointSprites.Think() ticked live (GameWorld.cs:2613).", result: pass }
-      - { kind: code_read, ref: "game/net/ServerNet.cs:1192 SendWaypoints iterates WaypointSprites.Active, per-peer WaypointVisible gate (honors VisibleForPlayer + SPRITERULE_TEAMPLAY), writes SpriteFor (Defend/Destroy) + RADARICON_OBJECTIVE + orange + wp.Health (health bar) + fade; CALLED live @ServerNet.cs:493. ClientNet.HandleWaypoints (:542) decodes; WaypointSpriteLayer (game/client/WaypointSpriteLayer.cs) draws marker+arrow+HEALTH BAR; wired NetGame.cs:1618/1628 (Source=()=>_client.Waypoints). NetProtocol v9 channel.", result: pass }
+      - { kind: code_read, ref: "game/net/ServerNet.cs:1192 SendWaypoints iterates WaypointSprites.Active, per-peer WaypointVisible gate (:1294, honors VisibleForPlayer + SPRITERULE_TEAMPLAY), writes radarByte (:1233) + wp.Health (health bar, :1240) + fade; CALLED live @ServerNet.cs:493. ClientNet.HandleWaypoints (:751, dispatched @555 on NetControl.Waypoints) decodes into .Waypoints (:708); WaypointSpriteLayer draws marker+arrow+HEALTH BAR (@206-207); wired NetGame.cs:1649 (Source=()=>_client.Waypoints @1659). Re-verified on branch claude/parity-port-waves (head c7cece5); 13/13 AssaultSpawnTests green.", result: pass }
     confidence: high
     notes: "FIX (re-audit, Wave 17 2f0bfdb): the objective waypoint sprite (defend/push/destroy image + health bar + radar icon) is spawned/updated/disowned/ticked server-side AND serialized per-peer + rendered client-side end-to-end. The attacker now sees an on-screen objective marker, health/progress bar, and radar icon. presentation missing->faithful. The prior MISSING was a directory mistake (grepped src/XonoticGodot.Net instead of game/net/). Code-read confirmed at both ends; not yet runtime-observed."
 

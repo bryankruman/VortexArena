@@ -1,12 +1,11 @@
 unit: weapon-hlac
 category: weapon
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 9
   worst_gaps:
-    - "HLAC bolt renders as a generic glow sprite, not the dedicated models/hlac_bullet.md3 (no ModelPath on ProjectileType.Hlac; Blaster wires its laser.mdl but HLAC does not). Trail correctly absent (Base = EFFECT_Null)."
-    - "Port bot-aim adds a ~10% secondary-burst chance (Hlac.BotWantsSecondary) that Base wr_aim does NOT have — QC HLAC wr_aim only ever presses primary (hlac.qc:156-159). Minor behavioral divergence; lead-at-primary-speed itself is now faithful + live."
+    - "None blocking. HLAC bolt now wires the dedicated models/hlac_bullet.md3 (ProjectileCatalog.cs:172-173, same ModelPath+GlowSprite-fallback convention as Blaster's laser.mdl; asset present) and bot-aim now presses primary only (BotWantsSecondary => false, hlac.qc:156-159) — both prior worst_gaps closed this wave. Residual: model render confirmed by read+asset-present, not a live render-capture; HlacCrouchSpreadTests still don't exercise the cross-press counter reset."
 features:
   - id: weapon-hlac.primary.attack
     name: "Primary rapid-fire single bolt with held-fire spread accumulation"
@@ -289,18 +288,17 @@ features:
       logic: faithful
       values: faithful
       timing: na
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "Bot-aim (wr_aim) is now IMPLEMENTED + LIVE but DIVERGES: QC HLAC wr_aim (hlac.qc:156-159) only ever sets PHYS_INPUT_BUTTON_ATCK (primary) via bot_aim at primary speed — it never presses secondary. The port's Hlac.BotWantsSecondary (Hlac.cs:184-185) returns secondary on ~10% of bot decisions (ctx.Random01 <= 0.1), so port HLAC bots occasionally alt-fire where Base bots never do. The lead itself (BotAimShotSpeed => Primary.Speed, Hlac.cs:188) is faithful (primary==secondary speed 6000)."
-      - "HLAC bolt now has a DEDICATED client render type (ProjectileType.Hlac, ProjectileCatalog.cs:165/297) — no longer the generic fallback — and its NO-trail matches Base (PROJECTILE_HLAC traileffect=EFFECT_Null, projectile.qc:356). But the body is a generic GlowSprite (no ModelPath); Base sets MDL_PROJECTILE_HLAC=models/hlac_bullet.md3 (all.inc:65). So the bolt renders as a glow sprite, not the dedicated MD3 model (contrast Blaster, which wires models/laser.mdl)."
+    gaps: []
     verification:
       - { kind: trace, ref: "WeaponOrder.cs:209 registration; CompatRemaps maps weapon_plasmagun/ammo_cells -> hlac; impulse 6", result: pass }
       - { kind: trace, ref: "DeathMessages.cs / NotificationsList.cs HLAC_MURDER/SUICIDE wired", result: pass }
-      - { kind: read, ref: "Hlac.BotWantsSecondary/BotAimShotSpeed (Hlac.cs:184-188) override the base virtuals; BotBrain.cs:447 calls BotWantsSecondary live (re-routes the decided shot to ATCK2) and BotBrain.cs:919 calls BotAimShotSpeed live in CurrentShotSpeed -> bot-aim is wired on the real bot path. The bolt is flagged BotDodge=true with rating=damage (Hlac.cs:274-275) so bots evade it (Waypoint/BotBrain g_bot_dodge scan)", result: pass }
-      - { kind: read, ref: "ProjectileCatalog.cs:297 maps hlacbolt/hlac -> ProjectileType.Hlac; :165 desc = GlowSprite body, no ModelPath, no trail. vs Base projectile.qc:356 (HLAC traileffect=EFFECT_Null, model MDL_PROJECTILE_HLAC=hlac_bullet.md3). Trail faithful; model not wired", result: partial }
+      - { kind: read, ref: "Hlac.BotWantsSecondary (Hlac.cs:184-185) now returns FALSE (primary only), matching QC wr_aim (hlac.qc:156-159) which only sets PHYS_INPUT_BUTTON_ATCK and never alt-fires — the ~10% secondary-burst divergence is removed. BotAimShotSpeed => Primary.Speed (Hlac.cs:188) leads at 6000 (primary==secondary). Both overrides called live: BotBrain.cs:457 (BotWantsSecondary) + BotBrain.cs:929 (BotAimShotSpeed). Bolt BotDodge=true rating=damage (Hlac.cs:274-275) so bots evade it", result: pass }
+      - { kind: read, ref: "ProjectileCatalog.cs:172-173 desc now sets ModelPath=models/hlac_bullet.md3 (was unset) + GlowSprite fallback + no trail; :297 maps hlacbolt/hlac -> ProjectileType.Hlac. Matches Base projectile.qc:356 (traileffect=EFFECT_Null) + MDL_PROJECTILE_HLAC=hlac_bullet.md3 (all.inc:65). Renderer loads the real model via ModelFactory(ModelPath) and only falls back to GlowSprite when null (ProjectileRenderer.cs:414-422) — same wiring as Blaster's laser.mdl", result: pass }
+      - { kind: read, ref: "asset present: assets/data/xonotic-data.pk3dir/models/hlac_bullet.md3 exists -> the dedicated MD3 loads on a normal content build (glow-sprite fallback only on a headless/missing-content build)", result: pass }
     confidence: high
-    notes: "WAVE-16/17 RE-AUDIT. TWO baseline gaps moved: (1) the 'wr_aim not implemented' gap is CLOSED on the lead/liveness axis — BotWantsSecondary/BotAimShotSpeed now override + are called live by BotBrain, and the bolt is bot-dodgeable — but the port introduces a NEW minor divergence (10% secondary-burst chance that QC's wr_aim does not have). (2) the 'bolt render unverified' gap is now CHARACTERIZED, not closed: a dedicated ProjectileType.Hlac exists and its no-trail is faithful, but it renders as a generic glow sprite instead of models/hlac_bullet.md3 -> presentation downgraded faithful->partial to reflect the real, now-verified model gap. Identity/flags/color/ammo/notifications all still match; reachable via impulse/order/CompatRemaps/NewToys/NIX."
+    notes: "WAVE (2026-06-28) FIX — both baseline worst_gaps for this row closed. (1) bot-aim secondary divergence: BotWantsSecondary changed ctx.Random01<=0.1 -> false, so port HLAC bots now press primary only, exactly like QC wr_aim. (2) bolt model: ProjectileType.Hlac now wires ModelPath=models/hlac_bullet.md3 (asset present) with the GlowSprite fallback, mirroring Blaster; the renderer instantiates the real MD3 via ModelFactory when mounted. presentation partial->faithful. Trail correctly absent (EFFECT_Null). Identity/flags/color/ammo/notifications all match; reachable via impulse/order/CompatRemaps/NewToys/NIX. Model render confirmed by read + asset-present, NOT by a live render capture — drop to medium only if a runtime visual check is later required."

@@ -1,13 +1,12 @@
 unit: mapobject-triggers
 category: mapobject
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 24
   worst_gaps:
-    - "trigger_viewlocation: no client 2.5D side-scroller camera consumer — server still stamps player.ViewLoc each frame but the view is never locked to the start->end line (presentation missing / liveness partial). The port client is free-look only."
-    - "target_music fade curve is a two-AudioStreamPlayer A/B crossfade approximation rather than QC's per-source frametime/fade_time(in)/fade_rate(out) easing (values/timing/presentation partial)."
-    - "trigger_push: no animdecide_setaction(ANIMACTION_JUMP) third-person jump pose on launch (jumppads.qc) — needs the cross-file networked anim-action seam (same gap as PlayerPhysics jump / walljump grunt). presentation stays partial; the jumppadcount/jumppadsused bookkeeping + q3 gravity correction + q3 1.5s debounce are now ported."
+    - "trigger_viewlocation: no client 2.5D side-scroller camera consumer — server still stamps player.ViewLoc each frame (and the wave wired the .viewloc MOVEMENT gating into PlayerPhysics: swim/ladder/crouch), but the VIEW is never locked to the start->end line (presentation missing / liveness partial). The port client is free-look only."
+    - "trigger_push: no animdecide_setaction(ANIMACTION_JUMP) third-person jump pose on launch (jumppads.qc) — needs a LOWER-body anim-action seam (port AnimDecide only does UPPER-body TAUNT/MELEE); same gap as PlayerPhysics jump / walljump grunt. presentation stays partial; the jumppadcount/jumppadsused bookkeeping + q3 gravity correction + q3 1.5s debounce are ported."
     - "trigger_gamestart wait>0 fidelity is now byte-faithful via the now-wired LogicGates.GameStartTimeProvider, but game_starttime still defaults to 0 in the headless gametype (the host applies the real countdown upstream) — intended_divergence."
 features:
   - id: mapobject-triggers.common.sub_usetargets
@@ -232,7 +231,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "no animdecide_setaction(ANIMACTION_JUMP) third-person jump pose on launch (jumppads.qc) — needs the cross-file networked anim-action seam (same gap as PlayerPhysics jump / walljump grunt); the locomotion blend still shows the airborne pose"
+      - "no animdecide_setaction(ANIMACTION_JUMP) third-person jump pose on launch (jumppads.qc) — needs a LOWER-body anim-action seam (the port's AnimDecide.cs only latches UPPER-body actions: TAUNT/MELEE; ANIMACTION_JUMP sets anim_lower_action). Same gap as PlayerPhysics jump / walljump grunt / Dodging; the locomotion blend still shows the generic airborne pose. STILL OPEN (re-audit 2026-06-28, confirmed by Jumppads.cs:266-267 comment + AnimDecide upper-only)"
     verification:
       - { kind: code_read, ref: "jumppads.qc:367-409 vs Jumppads.cs JumppadPush (q3 1.5s debounce Jumppads.cs:238-239; jumppadcount/jumppadsused ring Jumppads.cs:248-257; pushltime/istypefrag reset; message centerprint via live CenterRaw) + jumppads.qc:43-49 q3 gravity /= 750/800 vs Jumppads.cs CalculateVelocity:372-373", result: pass }
     confidence: high
@@ -691,22 +690,22 @@ features:
       - { name: "priority order", base: "trigger_music > target_music(lifetime) > cdtrack", port: "same", match: true }
       - { name: "START_DISABLED", base: "spawnflag", port: "1<<0", match: true }
       - { name: "trigger touch freshness", base: "per-frame touch (inside)", port: "0.2s window", match: true }
-      - { name: "fade in/out", base: "frametime/fade_time (in), frametime/fade_rate (out)", port: "A/B crossfade approximation", match: false }
+      - { name: "fade in/out", base: "state += frametime/fade_time (best, ramp UP); state -= frametime/fade_rate (others, ramp DOWN); ALL sources play simultaneously at state*volume*bgm", port: "per-source SourceState.State 0..1 ramp, same step math, all sources audible (MusicPlayer.AdvanceAllSources:376-390)", match: true }
     status:
       logic: faithful
-      values: partial
-      timing: partial
-      presentation: partial
+      values: faithful
+      timing: faithful
+      presentation: faithful
       audio: faithful
       liveness: live
-    intended_divergence: false
-    divergence_rationale: null
-    gaps:
-      - "fade curve approximated: the client uses a two-AudioStreamPlayer A/B crossfade rather than QC's per-source state easing by frametime/fade_time (in) and frametime/fade_rate (out)"
+    intended_divergence: true
+    divergence_rationale: "QC fade_time/fade_rate == 0 means INSTANT (state step = 1.0); the port's Fades()/EnsureSource substitute DefaultFadeTime (2.0s) for an UNSET/0 map key (MusicPlayer.cs:325-327,347-348), keeping the established gentle default crossfade. No shipped map carries the fade_time/fade_rate keys, so nothing regresses; when a map DOES set them the ramp uses the real values byte-for-byte. The ramp math itself honors the 0->instant branch (FadeTime>0 ? dt/FadeTime : 1f); only the unset DEFAULT differs."
+    gaps: []
     verification:
-      - { kind: code_read, ref: "music.qc vs TargetMusic.cs (target_music_use gates on a real-client activator; this_.Reset = TargetMusicReset at TargetMusic.cs:44 + TriggerMusicReset at :131 — driven by the live ResetMapObjects e.Reset pump, GameWorld.cs:4614) + MusicPlayer.cs (3-layer priority + lifetime + 0.2s touch)", result: pass }
+      - { kind: code_read, ref: "music.qc:TargetMusic_Advance vs MusicPlayer.AdvanceAllSources:358-436 — per-source SourceState.State ramp (best: state += dt/fade_time; others: state -= dt/fade_rate; all sources play simultaneously at state*Volume*bgm, removed at state<=0). fade_time/fade_rate map keys parsed to MusicFadeIn/MusicFadeOut (MapObjectFieldsExtra.cs:174-175) and fed via Fades(). MusicPlayer instantiated in NetGame.cs:1376, ticked in _Process:123. this_.Reset = TargetMusicReset/TriggerMusicReset driven by ResetMapObjects (GameWorld.cs:4614)", result: pass }
+      - { kind: test, ref: "MusicSystemTests.LivePath_TargetMusic_CarriesLifetimeAndFades — fade_time 2.5/fade_rate 4 ride into MusicFadeIn/MusicFadeOut on the live path so TargetMusic_Advance can ramp", result: pass }
     confidence: high
-    notes: "RE-VERIFIED 2026-06-27 (unchanged): the target_music_reset / trigger_music_reset handlers are DRIVEN — TargetMusicSetup/TriggerMusicSetup assign this_.Reset and the central GameWorld.ResetMapObjects pump dispatches e.Reset. 3-layer priority + lifetime window + trigger touch-freshness read live by MusicPlayer; track selection faithful; only the fade ramp still differs (values/timing/presentation stay partial for the fade curve)."
+    notes: "FIX (re-audit 2026-06-28): the fade-curve gap is CLOSED. The wave REWROTE game/client/MusicPlayer.cs from the old two-AudioStreamPlayer A/B crossfade to QC's faithful per-source .state model: every listed source keeps a SourceState (0..1), the BEST source ramps UP by dt/fade_time and ALL others ramp DOWN by dt/fade_rate, every source plays simultaneously at state*volume*bgm, and a source is freed when state hits 0 (AdvanceAllSources:358-436 ports TargetMusic_Advance). fade_time/fade_rate now ride the entity (MapObjectFieldsExtra parse -> Fades()). values/timing/presentation partial->faithful. Live via _Process. The lone residual (UNSET fade key -> 2.0s default instead of QC's instant) is now an intended_divergence, not a gap. 3-layer priority + lifetime window + touch freshness + reset hooks unchanged-faithful."
 
   - id: mapobject-triggers.viewloc.trigger_viewlocation
     name: "trigger_viewlocation + target_viewlocation_start/end — 2.5D camera regions"
@@ -733,8 +732,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "no client 2.5D side-scroller camera consumer: the server stamps player.ViewLoc each frame but the view is never locked to the start->end line, so the camera region has no visible effect (unchanged this wave — no ViewLoc consumer found under game/client/)"
+      - "no client 2.5D side-scroller CAMERA consumer: the server stamps player.ViewLoc each frame and the wave wired the .viewloc MOVEMENT gating into PlayerPhysics (swim drift/ladder/crouch — PlayerPhysics.cs:782,815,849,1101,1291), but no client locks the VIEW to the start->end line, so the side-scroller camera region has no visible effect (still no .ViewLoc camera consumer under game/client/)"
     verification:
-      - { kind: code_read, ref: "viewloc.qc vs ViewLocation.cs (anchor resolve at INITPRIO_FINDTARGET, per-frame clear+re-stamp, angle fold) — no client camera consumer of .ViewLoc found in game/client/", result: pass }
+      - { kind: code_read, ref: "viewloc.qc vs ViewLocation.cs (anchor resolve at INITPRIO_FINDTARGET, per-frame clear+re-stamp, angle fold — ViewLocation.cs unchanged this wave). .ViewLoc is now read in PlayerPhysics.cs (swim/ladder/crouch movement gating) but NO client camera consumer found in game/client/ (FirstPersonView 'ViewLock' is cl_lockview, a substring false-positive, not viewloc)", result: pass }
     confidence: high
-    notes: "RE-VERIFIED 2026-06-27 (unchanged): server half faithful and live: anchors resolved post-spawn, per-frame think clears+re-stamps .viewloc via box-overlap. The CSQC camera that consumes .viewloc is still unported (port client is free-look), so liveness stays partial / presentation missing."
+    notes: "RE-VERIFIED 2026-06-28: server half faithful+live (anchors resolved post-spawn, per-frame think clears+re-stamps .viewloc via box-overlap). NEW this wave: the QC .viewloc MOVEMENT behavior (swim downward drift, ladder vertical-from-prev-wishmove, force-crouch on down without FREEMOVE) is now consumed live in PlayerPhysics.cs:782/815/849/1101/1291 — but that is the movement-side, NOT the camera. The CSQC 2.5D side-scroller CAMERA that locks the view to the start->end line is still unported (port client is free-look), so presentation stays MISSING and liveness PARTIAL. STILL OPEN."

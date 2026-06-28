@@ -718,6 +718,78 @@ public sealed class GameWorld
         // QC target_levelwarp_use → CampaignLevelWarp(n): jump to a campaign level (n>=0 specific, -1 next).
         XonoticGodot.Common.Gameplay.TargetUtilities.CampaignLevelWarpHandler = n => Campaign.LevelWarp(n);
 
+        // QC target_spawn_use (minimal): the $-field reflection engine (numentityfields/putentityfieldstring) is
+        // intentionally cut, but the seam was never assigned — so both the on-use path and the ON_MAPLOAD deferred
+        // think have been dead no-ops since the entity was ported. Wire the minimal viable spawn: parse the
+        // target_spawn's .message as a whitespace-tokenized "key value key value …" list, extract the classname,
+        // mint a new edict at the target_spawn's origin, apply the recognized fields (via the same ApplyDictFields
+        // path the BSP entity-lump loop uses), and call SpawnFuncs.TrySpawn. Covers the common mapper use-case:
+        // a target_spawn with ON_MAPLOAD (BIT1) that creates one fixed entity at match start (e.g. a dynamic light
+        // or a misc_laser that needs conditional spawning). The *activator edit and FOREACH_ENTITY_STRING(target)
+        // edit modes and the .count create-cap are left as intentional cuts (the $-templating gap is documented).
+        XonoticGodot.Common.Gameplay.TargetUtilities.SpawnEntityHandler = (self, actor) =>
+        {
+            if (Api.Services is null)
+                return;
+
+            // Tokenize the message into (key, value) pairs — same contract as QC tokenize_console on .message.
+            string msg = self.Message ?? "";
+            string[] tokens = msg.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+            if (tokens.Length < 2)
+                return; // need at least one key-value pair
+
+            // Build a minimal EntityDict from the token list.
+            var dict = new EntityDict { ClassName = "", Origin = self.Origin };
+            for (int i = 0; i + 1 < tokens.Length; i += 2)
+            {
+                string key = tokens[i];
+                string val = tokens[i + 1];
+                dict.Fields[key] = val;
+                // Promote origin/angles into the typed slots so ApplyDictFields sees them.
+                if (string.Equals(key, "classname", StringComparison.OrdinalIgnoreCase))
+                    dict.ClassName = val;
+                else if (string.Equals(key, "origin", StringComparison.OrdinalIgnoreCase))
+                {
+                    // QC origin is a vector literal "x y z"; handle the mapper writing
+                    // `origin "128 0 64"` (one quoted token) — the three-bare-token form would
+                    // desync the 2-stride loop, so only the quoted form is supported here.
+                    var parts = val.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length == 3
+                        && float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float ox)
+                        && float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float oy)
+                        && float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float oz))
+                        dict.Origin = new Vector3(ox, oy, oz);
+                }
+            }
+
+            if (string.IsNullOrEmpty(dict.ClassName))
+                return; // no classname key in the message — nothing to spawn
+
+            // Respect the .count create-cap when non-zero (QC target_spawn_cancreate: count==0 → unlimited;
+            // count>0 → cap at that many total spawns across all activations). MoverCnt (a spare float on the
+            // edict) carries the remaining-count: seed it from .count on the first activation, then decrement.
+            if (self.Count > 0)
+            {
+                if (self.MoverCnt == 0f)
+                    self.MoverCnt = self.Count; // first activation: seed the remaining-count
+                if (self.MoverCnt <= 0f)
+                    return; // cap reached
+                self.MoverCnt -= 1f;
+            }
+
+            Entity e = Api.Entities.Spawn();
+            e.ClassName = dict.ClassName;
+            ApplyDictFields(e, dict);
+
+            if (!SpawnFuncs.TrySpawn(dict.ClassName, e))
+            {
+                // No spawnfunc: keep the edict (matches BSP-lump behaviour) but register a targetname'd one so
+                // the SUB_UseTargets / FindByTargetName index can reach it.
+                if (!string.IsNullOrEmpty(e.TargetName))
+                    XonoticGodot.Common.Gameplay.MapMover.IndexRegister(e);
+            }
+        };
+
         // [A2-review F13] Zero the process-global monster counters BEFORE the entity lump spawns any monster
         // (QC monsters_total/monsters_killed are server globals cleared when a new map spawns). Without this the
         // scoreboard map-stats row accumulates across every Invasion map played in one process run.

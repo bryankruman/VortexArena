@@ -1,12 +1,13 @@
 unit: mutator-powerups
 category: mutator
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"
+last_audited: "2026-06-28"
 summary:
   feature_count: 16
   worst_gaps:
-    - "Strength/Shield glow renders primarily as a colored OmniLight3D rather than the exact EF_ADDITIVE|EF_FULLBRIGHT whole-body additive recolor (a documented CsqcModelEffects render gap) — now the single largest residual gap in the unit."
+    - "Strength/Shield glow renders primarily as a colored OmniLight3D rather than the exact EF_ADDITIVE|EF_FULLBRIGHT whole-body additive recolor (a documented CsqcModelEffects render gap) — the single largest residual gap in the unit."
     - "Pickup/powerdown notifications fire the powerdown center-print on ANY falling edge (Base gates it on STATUSEFFECT_REMOVE_TIMEOUT only); stopsound(CH_TRIGGER_SINGLE) on removal still unported."
+    - "DRIFT 2026-06-28 (Wave 16/17 re-audit): the parity-port-waves Phase 1-4 commits did NOT touch the powerups port files (last touch was Wave 15, 5958904) — nothing newly closed, nothing regressed. Re-verified all 'live' claims against current code: LogDeath S/I chain (Scores.AppendItemcodes:634 -> MutatorActivation.LogDeathAppendItemCodes -> sink GameWorld.cs:924), m_botvalue consumer (BotRoles.cs:342), jetpack/fuelregen hookreplace dispatch (ItemSpawnFuncs.cs:299), WeaponRateFactor(actor)-only callers, strength-fire sound (WeaponFiring.cs:287/Shotgun.cs:356), stealth triple (MonsterAI.cs:824, BotBrain.cs:1100, ServerNet.WaypointVisible:1294) — all confirmed live. Two documented partials remain open: glow render fidelity + the notifications TIMEOUT-only gate/stopsound."
     - "DRIFT 2026-06-27 (re-audit): the last big gap closed — the death-log item codes (LogDeath_AppendItemCodes, S/I) are now ported and LIVE (PowerupsMutator.LogDeathAppendItemCodes overrides MutatorBase, chained by MutatorActivation.LogDeathAppendItemCodes, folded into the :kill:...:items= line via Scores.AppendItemcodes/EmitLogDeath, sunk to GameLog.Echo gated on sv_eventlog at GameWorld.cs:852). obituary_mutator_strings logic+presentation partial->faithful, gap closed."
     - "DRIFT 2026-06-27: two more gaps closed since 06-25 — m_botvalue is now set on the port pickups (11000 base / 3000 jetpack+fuelregen, PowerupItem.cs:37/196/250) and consumed live in BotRoles.cs:342 (defs_spawn_gate values:partial->faithful); and the jetpack/fuelregen m_spawnfunc_hookreplace -> ITEM_Fuel is now ported (PowerupItem.cs:221/263) and dispatched live (ItemSpawnFuncs.cs:299) (jetpack.start_item_hookreplace logic missing->faithful, liveness na->live)."
     - "DRIFT 2026-06-25: Wave-8d closed three gaps wholesale — invisibility exterior-weapon alpha + vehicle guard (invisibility.alpha presentation faithful), radar CustomizeWaypoint stealth (invisibility.stealth logic+presentation faithful, via ServerNet.WaypointVisible), and the dropped-powerup WP_Item countdown waypoint + ItemTouched hook (drop.ondeath_onuse logic+presentation faithful). jetpack-fuel fallback also fixed to 8."
@@ -197,7 +198,7 @@ features:
       - { kind: code, ref: "OnPlayerPreThink ORs StrengthGlow=(EF_BLUE|Additive|FullBright)/ShieldGlow=(EF_RED|...) into player.Effects each frame (idempotent set/clear, lines 350-351); PlayerPreThink is live", result: pass }
       - { kind: code, ref: "player.Effects networks via the Effects field -> CsqcModelEffects.Apply emits a blue light for EF_BLUE / red for EF_RED (CsqcModelEffects.cs:119-120)", result: pass }
     confidence: high
-    notes: "Re-confirmed (Wave 16/17 re-audit 2026-06-27). Strength glows BLUE (EF_BLUE), Shield glows RED (EF_RED) — matches Base; the live glow path is the networked Entity.Effects bits (set at PowerupsMutator.cs:407-408) decoded to a blue/red OmniLight3D in CsqcModelEffects.cs:119-120. CORRECTION to the prior note: CsqcModelEffectFlags.RoleGlowFlags is NOT inverted (strength->EF_BLUE, shield->EF_RED, CsqcModelEffectFlags.cs:92-98) and it IS live (ComposeForcedAppearance, ClientWorld.cs:1147-1148) — but it is only ever invoked with strength=shield=false (jetpack-only path), so it neither drives nor harms this row. Presentation remains partial: light, not whole-body EF_ADDITIVE|EF_FULLBRIGHT recolor."
+    notes: "Re-confirmed 2026-06-28 (Wave 16/17 re-audit) — UNCHANGED this wave. Strength glows BLUE (EF_BLUE), Shield glows RED (EF_RED) — matches Base; the live glow path is the networked Entity.Effects bits (set at PowerupsMutator.cs:407-408) decoded to a blue/red OmniLight3D in CsqcModelEffects.cs:119-120 (re-grepped: EF_BLUE->Color(.15,.15,1.5), EF_RED->Color(1.5,.15,.15), still light-only). Presentation remains partial: a light, NOT a whole-body EF_ADDITIVE|EF_FULLBRIGHT recolor — SetAdditive/SetFullbright (CsqcModelEffects.cs:118/122) only affect per-instance-material meshes; shared/shader-material player models skip them (a documented CsqcModelEffects render gap). NOT closed."
 
   - id: powerups.strength.fire_sound
     name: "Strength-fire sound (anti-spammed) on firing while Strength active"
@@ -236,10 +237,10 @@ features:
       - "common/mutators/mutator/powerups/powerup/speed.qc:m_apply, m_remove"
       - "common/mutators/mutator/powerups/powerup/invisibility.qc:m_apply, m_remove"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnPlayerPreThink (353-367), NotifyEdge (381)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnPlayerPreThink (353-367), NotifyEdge (438-450)"
     constants: []
     status:
-      logic: faithful
+      logic: partial
       values: na
       timing: faithful
       presentation: faithful
@@ -253,7 +254,7 @@ features:
     verification:
       - { kind: code, ref: "NotifyEdge: rising edge -> NotificationSystem.Info(POWERUP_X,netname) (when !g_cts) + Center(POWERUP_X); falling edge -> Center(POWERDOWN_X). PlayerPreThink live; Client+rising-edge gating mirrors QC !wasactive && IS_PLAYER && !g_cts.", result: pass }
     confidence: high
-    notes: "Re-confirmed unchanged. Edge tracked via _prevActive bitmap so re-pickup while still active does not re-notify (matches QC !wasactive). Two residual gaps confirmed against strength.qc: the TIMEOUT-only gate on the powerdown print, and the stopsound-on-removal."
+    notes: "Re-confirmed 2026-06-28 (Wave 16/17 re-audit) — UNCHANGED this wave. Edge tracked via _prevActive bitmap so re-pickup while still active does not re-notify (matches QC !wasactive). Two residual gaps still present (PowerupsMutator.cs:438-450 NotifyEdge): the powerdown center-print fires on ANY falling edge (Base gates the m_remove CENTER on removal_type==STATUSEFFECT_REMOVE_TIMEOUT only, strength.qc:7), and stopsound(actor, CH_TRIGGER_SINGLE) on removal (strength.qc:13) is not ported. logic stays partial; NOT closed."
 
   - id: powerups.countdown_beep
     name: "Powerdown countdown beep (play_countdown SND_POWEROFF)"
