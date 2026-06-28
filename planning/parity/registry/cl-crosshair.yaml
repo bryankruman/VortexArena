@@ -1,11 +1,11 @@
 unit: cl-crosshair
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-27"  # OPUS re-audit after W16/W17: W17 added UpdateCrosshairFeedback (NetGame:3163, live at 2681) which reads the networked own-entity slice ClientNet.LocalState -> the NADE_TIMER + REVIVE_PROGRESS objective rings AND the hit-indication flash now also work on a PURE REMOTE client (not just the listen host). hit_indication liveness UPGRADED partial->live; objring nade/revive remote read-back CLOSED (capture still dead). Weapon-stat rings + pickup pulse remain host-only (no networked wepent/pickup stat). All NetGame line refs re-pinned (file grew ~80 lines since baseline).
+last_audited: "2026-06-27"  # OPUS re-audit after W16/W17: W17 added UpdateCrosshairFeedback (NetGame:3163, live at 2681) which reads the networked own-entity slice ClientNet.LocalState -> the NADE_TIMER + REVIVE_PROGRESS objective rings AND the hit-indication flash now also work on a PURE REMOTE client (not just the listen host). hit_indication liveness UPGRADED partial->live; objring nade/revive remote read-back CLOSED (capture still dead). FIX (post-W17, wepent-rings): the weapon-stat rings (vortex charge/chargepool, clip/ammo, Hagar, Mine Layer, Arc heat) are now networked on the owner block (ServerNet.ResolveOwnerWeaponRings -> OwnerWeaponRings.Write; ClientNet reads via OwnerWeaponRings.Read -> LocalWeaponRings; UpdateCrosshairWeaponRings feeds them on a pure remote client) so all three ring rows go liveness partial->live. This ALSO fixed a latent desync: W16 (b3a9c06) added the WriteOwnerState ring tail but no matching client read, so the 9 unread floats corrupted every owner-block-following section for a real remote client; the shared OwnerWeaponRings struct + OwnerWeaponRingsTests now guard the layout. Only the pickup pulse remains host-only (no networked LAST_PICKUP).
 summary:
   feature_count: 18
   worst_gaps:
-    - "Weapon-stat rings (Vortex charge/chargepool, clip/ammo, Hagar, Mine Layer, Arc heat) + the pickup pulse are fed ONLY on the host/listen-server path: UpdateCrosshairWeaponRings (NetGame:3283) + UpdatePickupFeed (NetGame:3214) read only LocalServerPlayer (3286/3218). A PURE REMOTE client gets no charge/clip/heat/load ring and no pickup bump — these wepent/LAST_PICKUP fields are NOT in the networked LocalState slice. (Contrast: the nade/revive/hit FEEDBACK fields ARE networked and W17 wired their remote read-back — see UpdateCrosshairFeedback.)"
+    - "The pickup pulse is fed ONLY on the host/listen-server path: UpdatePickupFeed (NetGame:3214) reads only LocalServerPlayer (3218), so a PURE REMOTE client gets no pickup bump — there is no networked STAT(LAST_PICKUP) in the LocalState slice. (The weapon-stat rings, by contrast, ARE now networked — see the wepent-rings FIX in last_audited and the three cl-crosshair.ring.* rows — and the nade/revive/hit FEEDBACK fields were wired remote in W17 via UpdateCrosshairFeedback.)"
     - "CAPTURE_PROGRESS objective ring is still fully DEAD end-to-end: no producer assigns Player.CaptureProgress, ServerNet.cs:2100 leaves NetEntityState.CaptureProgress at 0 (commented), the host feed hardcodes x.CaptureProgress=0 (NetGame:3175), and the remote read (ls.CaptureProgress, NetGame:3189) is always 0. Only test-side use (ClientFeedbackTests.cs:275). NADE_TIMER + REVIVE_PROGRESS, by contrast, are now fed on BOTH host and remote (W17 LocalState read-back)."
     - "No third-person chase crosshair (crosshair_chase / _chase_playeralpha): crosshair always drawn at the panel centre, never traced from the player org, body alpha never faded. crosshair_chase/_playeralpha ARE now registered in RegisterDefaults (CrosshairPanel.cs:324-325) but have NO reader (inert cvars). UNCHANGED this pass."
     - "Per-weapon crosshair pic is still partial: PerWeaponNumber dict is never populated, so every weapon shows the same `crosshair` number; crosshair_2d (registered at 323 but no reader) and the vehicle crosshair are absent; color_special 3 (rainbow) not ported. UNCHANGED this pass."
@@ -333,16 +333,16 @@ features:
       timing: faithful
       presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Host path only: UpdateCrosshairWeaponRings feeds CrosshairPanel.ChargeFraction = st.VortexCharge and .ChargePool = st.VortexChargePoolAmmo (NetGame:3305-3306) while a vortex/vaporizer/*nex* weapon is active off the host-side slot-0 WeaponSlotState (the C# home of QC wepent.*). The Vortex charge ring + inner chargepool/moving-average ring render for the host player. VortexCharge is genuinely produced server-side. STILL host-only: UpdateCrosshairWeaponRings reads only LocalServerPlayer (NetGame:3286); a pure remote client (LocalServerPlayer==null) gets the -1 sentinel and no ring — the wepent ring fields are NOT in the networked LocalState slice (unlike the W17 nade/hit feedback fields). UNCHANGED this pass (line refs re-pinned)."
+      - "NOW LIVE ON BOTH PATHS (wepent-rings fix): UpdateCrosshairWeaponRings feeds CrosshairPanel.ChargeFraction = st.VortexCharge and .ChargePool = st.VortexChargePoolAmmo on a listen host (off LocalServerPlayer's slot-0 WeaponSlotState), and on a PURE REMOTE client it now mirrors the networked owner-block scalars instead (ClientNet.LocalWeaponRings, resolved server-side by ServerNet.ResolveOwnerWeaponRings and read via OwnerWeaponRings.Read). VortexCharge is genuinely produced server-side. (This also fixed a latent W16 desync — the server wrote the ring tail with no matching client read; see last_audited.)"
       - "Minor fidelity: ChargePool is fed unconditionally for vortex-like weapons (default VortexChargePoolAmmo=1f), so the inner chargepool ring shows even when secondary chargepool isn't enabled; Base gates the inner-pool branch on use_vortex_chargepool. Overkill-Nex weapon itself is otherwise absent from this port."
     verification:
       - { kind: code, ref: "ChargeFraction/ChargePool fed NetGame:3305-3306 on the active vortex-like slot; sentinel -1 reset otherwise (3310-11); feeder reads LocalServerPlayer only (3286, host); panel ChargeRingValue + DrawStatRing inner/outer math faithful (CrosshairPanel:919-1030)", result: pass }
     confidence: high
-    notes: "PREVIOUSLY DEAD; now live on the host path. Ring math (outer nexgun ring + inner pool/movingavg) is a faithful port. Liveness partial (remote clients unfed)."
+    notes: "PREVIOUSLY DEAD; now live on BOTH the host AND pure-remote paths (remote fed via networked OwnerWeaponRings). Ring math (outer nexgun ring + inner pool/movingavg) is a faithful port. Liveness partial->live."
 
   - id: cl-crosshair.ring.reload_ammo
     name: "Reload / ammo (clip) ring (+ Rifle ring art)"
@@ -363,15 +363,15 @@ features:
       timing: faithful
       presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Host path only: UpdateCrosshairWeaponRings feeds CrosshairPanel.ClipLoad = st.ClipLoad and .ClipSize = st.ClipSize when the active slot has a clip (NetGame:3317-3318). The ammo ring renders for every reloadable weapon on the host. ClipLoad/ClipSize are genuinely maintained on the slot by WeaponFireGate/WeaponFireDriver. STILL host-only: feeder reads only LocalServerPlayer (NetGame:3286); remote clients get the -1/0 sentinel and no ring (no networked clip stat in LocalState). UNCHANGED this pass (line refs re-pinned)."
+      - "NOW LIVE ON BOTH PATHS (wepent-rings fix): UpdateCrosshairWeaponRings feeds CrosshairPanel.ClipLoad/.ClipSize when the active slot has a clip — off LocalServerPlayer on a listen host, and off the networked owner-block scalars (ClientNet.LocalWeaponRings.ClipLoad/ClipSize, resolved by ServerNet.ResolveOwnerWeaponRings) on a pure remote client. ClipLoad/ClipSize are genuinely maintained on the slot by WeaponFireGate/WeaponFireDriver."
     verification:
       - { kind: code, ref: "ClipLoad/ClipSize fed NetGame:3317-3318 when st.ClipSize>0 (host, LocalServerPlayer); panel DrawStatRing reload branch (987-996) + Rifle-80 art faithful; clip state produced by WeaponFireGate.cs", result: pass }
     confidence: high
-    notes: "PREVIOUSLY DEAD; now live on the host path. Faithful clip_load/clip_size fraction + Rifle-80 art branch. Liveness partial (remote clients unfed)."
+    notes: "PREVIOUSLY DEAD; now live on BOTH the host AND pure-remote paths (remote fed via networked OwnerWeaponRings). Faithful clip_load/clip_size fraction + Rifle-80 art branch. Liveness partial->live."
 
   - id: cl-crosshair.ring.minelayer_hagar_arc
     name: "Mine Layer / Hagar load / Arc heat rings"
@@ -393,15 +393,15 @@ features:
       timing: faithful
       presentation: faithful
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Host path only: UpdateCrosshairWeaponRings feeds CrosshairPanel.HagarLoad (st.HagarLoad, NetGame:3329), .MineCount (live g_mines scan of mines owned by the player, 3341-3344), and .ArcHeat (st.BeamHeat/OverheatMax with the overheat-jam latch, 3360-3363) when the matching weapon is active. Mine-count, Hagar burst-load, and Arc overheat rings render for the host player. HagarLoad/BeamHeat/ArcOverheat are genuinely produced server-side (Hagar.cs/Arc.cs). STILL host-only: feeder reads only LocalServerPlayer (NetGame:3286); remote clients get the -1 sentinel and no ring (no networked wepent ring state in LocalState). UNCHANGED this pass (line refs re-pinned)."
+      - "NOW LIVE ON BOTH PATHS (wepent-rings fix): UpdateCrosshairWeaponRings feeds CrosshairPanel.HagarLoad, .MineCount, and .ArcHeat (with the overheat-jam latch) when the matching weapon is active. On a listen host these come off LocalServerPlayer (incl. the live g_mines scan); on a pure remote client they come from the networked owner-block scalars (ClientNet.LocalWeaponRings.HagarLoad/MineCount/ArcHeat, resolved server-side by ServerNet.ResolveOwnerWeaponRings — which runs the same mine scan + arc-heat expression off the authoritative player). HagarLoad/BeamHeat/ArcOverheat are genuinely produced server-side (Hagar.cs/Arc.cs)."
     verification:
       - { kind: code, ref: "HagarLoad/MineCount/ArcHeat fed NetGame:3329-3363 on the matching active weapon (host, LocalServerPlayer); panel DrawStatRing branches (968-1010) faithful; Arc heat percent (st.BeamHeat/OverheatMax + latch) mirrors Arc_GetHeat_Percent; weapon-side state produced by Hagar.cs/Arc.cs", result: pass }
     confidence: high
-    notes: "PREVIOUSLY DEAD; now live on the host path. Mine fraction, Hagar load fraction, and Arc cold/hot alpha+color lerp all match Base. Liveness partial (remote clients unfed)."
+    notes: "PREVIOUSLY DEAD; now live on BOTH the host AND pure-remote paths (remote fed via networked OwnerWeaponRings). Mine fraction, Hagar load fraction, and Arc cold/hot alpha+color lerp all match Base. Liveness partial->live."
 
   - id: cl-crosshair.ring.switch_fade
     name: "Weapon-switch ring fade-out/in (wcross_ring_prev)"

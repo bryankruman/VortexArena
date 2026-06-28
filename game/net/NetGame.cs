@@ -3277,18 +3277,35 @@ public sealed partial class NetGame : Node3D
     /// the one that owns it, so the panel only draws the ring for the weapon currently held — exactly like the QC
     /// per-weapon if/else chain. Called unconditionally each frame (the feeder was hoisted out of the host-only
     /// block): on a listen host it reads the live slot state off <see cref="LocalServerPlayer"/>; on a pure remote
-    /// / dedicated-server client there is no LocalServerPlayer, so it falls through to the hide branch and the
-    /// rings stay blank (the cross-client wepent-prop networking that would feed a remote client is the follow-up).
+    /// / dedicated-server client there is no LocalServerPlayer, so it mirrors the networked owner-block ring
+    /// scalars instead (<see cref="ClientNet.LocalWeaponRings"/>, resolved server-side by
+    /// <c>ServerNet.ResolveOwnerWeaponRings</c>) — so a remote client draws the same rings the host does.
     /// </summary>
     private void UpdateCrosshairWeaponRings()
     {
         CrosshairPanel x = _fullHud.Crosshair;
         Player? p = LocalServerPlayer;
-        Weapon? active = p is not null ? Inventory.CurrentWeapon(p) : null;
-        if (p is null || active is null || p.IsDead || p.IsObserver)
+
+        // Pure remote / dedicated-server client: no LocalServerPlayer, so feed the rings from the networked
+        // owner-block scalars (ServerNet.ResolveOwnerWeaponRings → OwnerWeaponRings, read by ClientNet). The
+        // server already resolved each ring's -1/0 'no data' sentinel for the held weapon, so just mirror them —
+        // the same crosshair charge/clip/load/heat rings the listen host shows, now on a remote client too.
+        if (p is null)
         {
-            // No live weapon (or a pure remote client with no LocalServerPlayer) → hide every ring (sentinels
-            // match the panel's "no data" defaults).
+            XonoticGodot.Net.OwnerWeaponRings rings = _client?.LocalWeaponRings ?? XonoticGodot.Net.OwnerWeaponRings.None;
+            x.ChargeFraction = rings.VortexCharge; x.ChargePool = rings.VortexChargePool;
+            x.ClipLoad = rings.ClipLoad; x.ClipSize = rings.ClipSize;
+            x.HagarLoad = rings.HagarLoad; x.HagarLoadMax = rings.HagarLoadMax;
+            x.MineCount = rings.MineCount; x.MineLimit = rings.MineLimit;
+            x.ArcHeat = rings.ArcHeat;
+            return;
+        }
+
+        Weapon? active = Inventory.CurrentWeapon(p);
+        if (active is null || p.IsDead || p.IsObserver)
+        {
+            // Live host owner but no live weapon (dead / observing) → hide every ring (sentinels match the
+            // panel's "no data" defaults).
             x.ChargeFraction = -1f; x.ChargePool = -1f;
             x.ClipLoad = -1f; x.ClipSize = 0f;
             x.HagarLoad = -1f; x.MineCount = -1f; x.ArcHeat = -1f;

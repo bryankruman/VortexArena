@@ -13,7 +13,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | timing | 0 | 1098 | 35 | 923 | 44 | 0 | 17 |
 | presentation | 0 | 614 | 105 | 1199 | 189 | 0 | 10 |
 | audio | 0 | 314 | 7 | 1772 | 20 | 0 | 4 |
-| liveness | 22 | 0 | 0 | 64 | 104 | 0 | 8 |
+| liveness | 22 | 0 | 0 | 64 | 101 | 0 | 8 |
 
 ## Features by unit
 
@@ -112,9 +112,9 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `cl-crosshair.anim.smooth_ease` | Goal-based smooth scale/alpha/color ease (crosshair_effect_time) | OK | OK | OK | ~ | - | live | high |
 | `cl-crosshair.anim.switch_crossfade` | Weapon-switch crosshair image cross-fade | OK | OK | OK | OK | - | ~ | medium |
 | `cl-crosshair.trueaim.teammate_blur_signal` | Teammate shrink + wall/teammate blur signalling | OK | OK | - | ~ | - | live | high |
-| `cl-crosshair.ring.vortex_charge` | Vortex / Overkill-Nex charge ring (+ inner chargepool / moving-average ring) | OK | OK | OK | OK | - | ~ | high |
-| `cl-crosshair.ring.reload_ammo` | Reload / ammo (clip) ring (+ Rifle ring art) | OK | OK | OK | OK | - | ~ | high |
-| `cl-crosshair.ring.minelayer_hagar_arc` | Mine Layer / Hagar load / Arc heat rings | OK | OK | OK | OK | - | ~ | high |
+| `cl-crosshair.ring.vortex_charge` | Vortex / Overkill-Nex charge ring (+ inner chargepool / moving-average ring) | OK | OK | OK | OK | - | live | high |
+| `cl-crosshair.ring.reload_ammo` | Reload / ammo (clip) ring (+ Rifle ring art) | OK | OK | OK | OK | - | live | high |
+| `cl-crosshair.ring.minelayer_hagar_arc` | Mine Layer / Hagar load / Arc heat rings | OK | OK | OK | OK | - | live | high |
 | `cl-crosshair.ring.switch_fade` | Weapon-switch ring fade-out/in (wcross_ring_prev) | OK | OK | OK | OK | - | ~ | medium |
 | `cl-crosshair.dot` | Center dot (crosshair_dot) | OK | OK | - | OK | - | live | high |
 | `cl-crosshair.objring.nade_capture_revive` | Objective rings: NADE_TIMER > CAPTURE_PROGRESS > REVIVE_PROGRESS | OK | OK | OK | ~ | - | ~ | high |

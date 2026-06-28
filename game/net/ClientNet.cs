@@ -182,6 +182,13 @@ public sealed class ClientNet : IDisposable
     /// on a change.</summary>
     public int LocalAccuracyGeneration { get; private set; }
 
+    /// <summary>[W-wepent-charges] The owner-only weapon-HUD ring scalars (QC the networked wepent.* fields:
+    /// vortex charge/chargepool, clip load/size, hagar load/max, mine count/limit, arc heat), replicated on the
+    /// owner block. <see cref="NetGame.UpdateCrosshairWeaponRings"/> feeds these to the crosshair on a pure
+    /// remote / dedicated-server client (a listen host reads the same values off its LocalServerPlayer instead).
+    /// Defaults to the panel's "no data" sentinels until the first snapshot.</summary>
+    public XonoticGodot.Net.OwnerWeaponRings LocalWeaponRings { get; private set; } = XonoticGodot.Net.OwnerWeaponRings.None;
+
     /// <summary>The stair-smoothing Z offset to subtract from <see cref="PredictedOrigin"/> Z when placing the
     /// camera (so it glides over steps). Advanced by the REAL frame delta <paramref name="frameDt"/> (clamped),
     /// NOT the server-synced render clock — the rebasing clock's quantized jumps made the view jitter up/down.</summary>
@@ -1027,6 +1034,14 @@ public sealed class ClientNet : IDisposable
         {
             LocalAccuracyGeneration = accGen; // no change this frame; keep the generation current
         }
+
+        // [W-wepent-charges] the owner-only weapon-HUD ring scalars (QC the networked wepent vortex_charge /
+        // vortex_chargepool_ammo / clip_load / clip_size / hagar_load (+max) / minelayer_mines (+limit) /
+        // arc_heat_percent), read in lockstep with ServerNet.WriteOwnerState's OwnerWeaponRings tail. Feeds the
+        // crosshair charge/clip/load/heat rings on a PURE remote / dedicated-server client (the listen host reads
+        // the same values straight off LocalServerPlayer). ALWAYS consumes the 9 floats so the owner block stays
+        // aligned for the movevars/scores/entity sections that follow — the server writes them unconditionally.
+        LocalWeaponRings = XonoticGodot.Net.OwnerWeaponRings.Read(ref r);
 
         // movevars: when the server's physics changed, stamp the replicated values into our cvar store so the
         // predictor's MovementParameters.FromCvars() matches authority (mid-match physics/mutator changes), then

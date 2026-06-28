@@ -2776,15 +2776,14 @@ public sealed class ServerNet : IDisposable
             out float wsHagarLoad, out float wsHagarLoadMax,
             out float wsMineCount, out float wsMineLimit,
             out float wsArcHeat);
-        w.WriteFloat(wsCharge);
-        w.WriteFloat(wsChargePool);
-        w.WriteFloat(wsClipLoad);
-        w.WriteFloat(wsClipSize);
-        w.WriteFloat(wsHagarLoad);
-        w.WriteFloat(wsHagarLoadMax);
-        w.WriteFloat(wsMineCount);
-        w.WriteFloat(wsMineLimit);
-        w.WriteFloat(wsArcHeat);
+        new XonoticGodot.Net.OwnerWeaponRings
+        {
+            VortexCharge = wsCharge, VortexChargePool = wsChargePool,
+            ClipLoad = wsClipLoad, ClipSize = wsClipSize,
+            HagarLoad = wsHagarLoad, HagarLoadMax = wsHagarLoadMax,
+            MineCount = wsMineCount, MineLimit = wsMineLimit,
+            ArcHeat = wsArcHeat,
+        }.Write(w); // ClientNet.HandleSnapshot reads this via OwnerWeaponRings.Read, in lockstep
     }
 
     // =====================================================================================
