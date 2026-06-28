@@ -8,12 +8,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | dim | dead | faithful | missing | na | partial | stub | unknown |
 |---|---|---|---|---|---|---|---|
-| logic | 0 | 1888 | 55 | 28 | 141 | 4 | 1 |
-| values | 0 | 1748 | 43 | 225 | 88 | 0 | 13 |
-| timing | 0 | 1103 | 29 | 924 | 44 | 0 | 17 |
-| presentation | 0 | 618 | 94 | 1199 | 188 | 0 | 18 |
-| audio | 0 | 314 | 6 | 1773 | 20 | 0 | 4 |
-| liveness | 21 | 0 | 0 | 56 | 100 | 0 | 8 |
+| logic | 0 | 1887 | 54 | 28 | 142 | 4 | 2 |
+| values | 0 | 1746 | 42 | 225 | 90 | 0 | 14 |
+| timing | 0 | 1103 | 28 | 924 | 44 | 0 | 18 |
+| presentation | 0 | 619 | 84 | 1199 | 187 | 0 | 28 |
+| audio | 0 | 314 | 4 | 1773 | 20 | 0 | 6 |
+| liveness | 21 | 0 | 0 | 56 | 99 | 0 | 8 |
 
 ## Features by unit
 
@@ -1392,20 +1392,20 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `mutator-nades.toss.projectile` | toss_nade: launch physics (size, newton-style, health, fuse) | OK | ~ | OK | - | - | live | high |
 | `mutator-nades.touch.bounce_pickup_detonate` | nade_touch: owner pass-through, pickup, bounce, impact detonate | OK | OK | OK | - | OK | live | high |
 | `mutator-nades.damage.launch_destroy` | nade_damage: shoot-to-launch / shoot-to-destroy interactions | OK | OK | OK | - | - | live | high |
-| `mutator-nades.boom.dispatch` | nade_boom: type dispatch + destroyed->normal fallback | OK | - | OK | MISS | ~ | live | high |
-| `mutator-nades.boom.normal` | Normal nade explosion (RadiusDamage) | OK | OK | - | MISS | - | live | high |
-| `mutator-nades.boom.napalm` | Napalm: fireballs + fountain fire damage | OK | OK | OK | MISS | ~ | live | high |
-| `mutator-nades.boom.ice` | Ice: freeze field | OK | OK | OK | MISS | OK | live | high |
-| `mutator-nades.boom.translocate` | Translocate: teleport thrower to detonation | ~ | OK | - | MISS | - | live | medium |
-| `mutator-nades.boom.spawn` | Spawn: relocate respawn point | OK | OK | - | MISS | - | live | high |
-| `mutator-nades.boom.heal` | Heal: healing orb (friend heal / foe harm / armor) | OK | OK | OK | MISS | - | live | high |
-| `mutator-nades.boom.ammo` | Ammo: ammo orb (refill friend / drain foe) | OK | OK | OK | MISS | - | live | high |
-| `mutator-nades.boom.entrap_veil_darkness` | Entrap / Veil / Darkness orbs + fields | OK | OK | OK | MISS | MISS | live | high |
+| `mutator-nades.boom.dispatch` | nade_boom: type dispatch + destroyed->normal fallback | OK | - | OK | ? | ~ | live | high |
+| `mutator-nades.boom.normal` | Normal nade explosion (RadiusDamage) | OK | OK | - | ? | - | live | high |
+| `mutator-nades.boom.napalm` | Napalm: fireballs + fountain fire damage | OK | OK | OK | ? | ~ | live | high |
+| `mutator-nades.boom.ice` | Ice: freeze field | OK | OK | OK | ? | OK | live | high |
+| `mutator-nades.boom.translocate` | Translocate: teleport thrower to detonation | ~ | OK | - | ? | - | live | medium |
+| `mutator-nades.boom.spawn` | Spawn: relocate respawn point | OK | OK | - | ? | - | live | high |
+| `mutator-nades.boom.heal` | Heal: healing orb (friend heal / foe harm / armor) | OK | OK | OK | ? | - | live | high |
+| `mutator-nades.boom.ammo` | Ammo: ammo orb (refill friend / drain foe) | OK | OK | OK | ? | - | live | high |
+| `mutator-nades.boom.entrap_veil_darkness` | Entrap / Veil / Darkness orbs + fields | OK | OK | OK | ? | ? | live | high |
 | `mutator-nades.boom.monster` | Pokenade: spawn monster | OK | OK | OK | - | - | live | high |
 | `mutator-nades.bonus.economy` | Bonus-nade economy (accrual / award / wipe) | ~ | ~ | OK | OK | OK | live | high |
 | `mutator-nades.lifecycle.cleanup` | Held-nade/bonus cleanup + spectate copy + vehicle/death-drop toss | OK | - | - | - | - | live | high |
 | `mutator-nades.damage.freezetag_revive` | Damage_Calculate: freezetag revive-nade | ~ | OK | OK | - | - | live | high |
-| `mutator-nades.presentation.client` | Client presentation: projectile/trail, orb model + 2D flash, darkness overlay, bonus ammo icon, charge ring | MISS | MISS | MISS | MISS | MISS | ~ | high |
+| `mutator-nades.presentation.client` | Client presentation: projectile/trail, orb model + 2D flash, darkness overlay, bonus ammo icon, charge ring | ? | ? | ? | ? | ? | live | medium |
 | `mutator-nades.display.mutators_string` | Mutator-list display token (BuildMutatorsString / BuildMutatorsPrettyString) | OK | OK | - | OK | - | live | high |
 
 ### `mutator-new_toys` (mutator) — 9 features
@@ -2485,7 +2485,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `vehicle-racer.drive.afterburn` | Afterburn (jump): energy drain + boost thrust (water vs air) + booster/smoke FX + engine-sound state machine | OK | OK | OK | OK | OK | live | high |
 | `vehicle-racer.weapon.cannon` | Primary energy laser cannon (rapid, energy-gated) | OK | OK | OK | ~ | OK | live | high |
 | `vehicle-racer.weapon.rocket` | Secondary rocket pair (lock-on / homing / ground-hugging) | OK | OK | OK | ~ | OK | live | high |
-| `vehicle-racer.weapon.rockethud` | Secondary HUD ammo/reload mirror (vehicle_ammo2 / vehicle_reload2) | OK | OK | OK | ~ | - | live | high |
+| `vehicle-racer.weapon.rockethud` | Secondary HUD ammo/reload mirror (vehicle_ammo2 / vehicle_reload2) | OK | OK | OK | OK | - | live | high |
 | `vehicle-racer.regen.resources` | Per-frame shield/energy/health regen + player %-stat mirror | OK | OK | OK | - | - | live | high |
 | `vehicle-racer.death.blowup` | vr_death tumble -> deadtouch/timed blowup -> radius blast -> respawn | OK | OK | OK | OK | OK | live | high |
 | `vehicle-racer.impact.bouncepain` | vr_impact: ram/collision fall-damage (vehicles_impact bouncepain) | OK | OK | OK | - | - | live | high |
@@ -2496,7 +2496,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 |---|---|---|---|---|---|---|---|---|
 | `raptor.spawn.setup` | Spawn / setup (hitbox, resources, capability flags, sub-entities) | OK | OK | OK | ~ | - | live | high |
 | `raptor.liveness.spawnfunc` | Map placement spawnfunc + live think wiring | OK | OK | OK | - | - | live | high |
-| `raptor.enter` | Board / enter (vr_enter) | OK | OK | OK | MISS | - | live | high |
+| `raptor.enter` | Board / enter (vr_enter) | OK | ~ | OK | MISS | - | live | high |
 | `raptor.takeoff` | Vertical takeoff sequence (raptor_takeoff) | OK | OK | OK | ~ | OK | live | high |
 | `raptor.flight_controller` | Free-flight avelocity controller (raptor_frame physics) | OK | OK | OK | ~ | OK | live | high |
 | `raptor.cannon_aim_lock` | Twin-cannon turret aim + target lock + lead predict | OK | OK | OK | OK | OK | live | medium |
@@ -2519,7 +2519,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `vehicle-spiderbot.identity.registration` | Spiderbot vehicle type registration + identity (model, name, hitbox, view) | OK | OK | - | ~ | - | live | high |
 | `vehicle-spiderbot.spawn.map_placement` | vehicle_spiderbot map spawnfunc (g_vehicle_spiderbot gate + vehicle_initialize) | OK | OK | - | - | - | live | high |
 | `vehicle-spiderbot.spawn.setup` | vr_setup / vr_spawn — resources, flags, gun sub-entities, movetype | OK | OK | - | - | - | live | high |
-| `vehicle-spiderbot.enter` | vr_enter — W2MODE=GUIDE, seat the pilot, reattach a carried CTF flag to the head | OK | OK | - | - | - | live | high |
+| `vehicle-spiderbot.enter` | vr_enter — W2MODE=GUIDE, seat the pilot, reattach a carried CTF flag to the head | ~ | ~ | - | - | - | live | high |
 | `vehicle-spiderbot.exit` | spiderbot_exit — unguide in-flight rockets, eject pilot with momentum/ahead-spot | OK | OK | - | - | - | live | high |
 | `vehicle-spiderbot.frame.controller` | spiderbot_frame per-frame controller (drive dispatch + game_stopped + pilot glue) | OK | OK | OK | - | - | live | high |
 | `vehicle-spiderbot.frame.head_aim` | Head turret aim toward the pilot crosshair (turn + pitch within limits) | OK | OK | OK | - | - | live | high |
