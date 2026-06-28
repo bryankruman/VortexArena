@@ -8,12 +8,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | dim | dead | faithful | missing | na | partial | stub | unknown |
 |---|---|---|---|---|---|---|---|
-| logic | 0 | 1886 | 58 | 28 | 140 | 4 | 1 |
-| values | 0 | 1745 | 44 | 225 | 90 | 0 | 13 |
-| timing | 0 | 1101 | 30 | 925 | 44 | 0 | 17 |
-| presentation | 0 | 621 | 98 | 1199 | 187 | 0 | 12 |
-| audio | 0 | 314 | 7 | 1772 | 20 | 0 | 4 |
-| liveness | 22 | 0 | 0 | 58 | 100 | 0 | 8 |
+| logic | 0 | 1888 | 55 | 28 | 141 | 4 | 1 |
+| values | 0 | 1748 | 43 | 225 | 88 | 0 | 13 |
+| timing | 0 | 1103 | 29 | 924 | 44 | 0 | 17 |
+| presentation | 0 | 618 | 94 | 1199 | 188 | 0 | 18 |
+| audio | 0 | 314 | 6 | 1773 | 20 | 0 | 4 |
+| liveness | 21 | 0 | 0 | 56 | 100 | 0 | 8 |
 
 ## Features by unit
 
@@ -508,7 +508,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `freezetag.weaponarena` | FT default weapon arena (g_freezetag_weaponarena 'most_available') | OK | OK | - | - | - | live | high |
 | `freezetag.frozen.no_regen` | Frozen players don't regen health/armor (PlayerRegen) | OK | - | - | - | - | live | high |
 | `freezetag.frozen.no_pickup` | Frozen players can't pick up items or buffs (ItemTouch/BuffTouch) | OK | - | - | - | - | ~ | high |
-| `freezetag.frags.center_message` | Per-freeze choice centerprint ('You froze X' / 'You were frozen by Y') | MISS | OK | - | MISS | - | DEAD | high |
+| `freezetag.frags.center_message` | Per-freeze choice centerprint ('You froze X' / 'You were frozen by Y') | OK | OK | OK | OK | - | live | high |
 | `freezetag.presentation.frozen_anim` | Frozen-pose player animation (PlayerAnim ANIMSTATE_FROZEN) | MISS | - | - | MISS | - | - | medium |
 | `freezetag.notif.alone` | Last-survivor 'You are now alone!' centerprint (LastPlayerForTeam → CENTER_ALONE) | OK | OK | OK | OK | - | live | high |
 
@@ -1030,7 +1030,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 |---|---|---|---|---|---|---|---|---|
 | `monster-mage.spawn.setup` | Spawn + mr_setup (health, speeds, loot, size, attackfunc) | OK | OK | OK | - | OK | live | high |
 | `monster-mage.attack.select` | Attack selection (melee push vs ranged teleport/spike) *(intended)* | OK | OK | OK | - | - | live | high |
-| `monster-mage.attack.spike` | Homing electric spike (one in flight, seeker guidance) | OK | OK | OK | ~ | OK | live | high |
+| `monster-mage.attack.spike` | Homing electric spike (one in flight, seeker guidance) | OK | OK | OK | OK | OK | live | high |
 | `monster-mage.attack.push` | Explosive close-range push (AoE shove) | OK | OK | OK | OK | OK | live | high |
 | `monster-mage.attack.teleport` | Teleport behind / random-relocate near the target | OK | OK | OK | OK | OK | live | high |
 | `monster-mage.defend.shield` | Self damage-blocking shield | OK | OK | OK | - | OK | live | high |
@@ -1072,14 +1072,14 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `wyvern.fireball.spawn` | Fireball projectile spawn (speed, size, spin, lifetime, muzzle) | OK | OK | OK | - | - | live | high |
 | `wyvern.fireball.radiusdamage` | Fireball explosion: radius damage + knockback | OK | OK | - | - | - | live | high |
 | `wyvern.fireball.burning` | Fireball ignites everything in radius (burning DoT) | OK | OK | OK | - | - | live | high |
-| `wyvern.fireball.explode_effect` | Fireball blast particle (EFFECT_FIREBALL_EXPLODE) | OK | OK | - | OK | - | live | high |
-| `wyvern.fireball.firemine_visual` | In-flight fireball CSQC visual (PROJECTILE_FIREMINE) | OK | - | - | OK | - | live | high |
+| `wyvern.fireball.explode_effect` | Fireball blast particle (EFFECT_FIREBALL_EXPLODE) | OK | OK | - | ? | - | live | medium |
+| `wyvern.fireball.firemine_visual` | In-flight fireball CSQC visual (PROJECTILE_FIREMINE) | OK | - | - | ? | - | live | medium |
 | `wyvern.fireball.fire_sound` | Fireball launch sound (electro_fire) | OK | OK | OK | - | OK | live | high |
 | `wyvern.brain.think_move` | Per-frame brain: flying chase + attack check | OK | OK | OK | - | - | live | high |
-| `wyvern.pain` | Pain reaction (0.5s window, pain anim) | OK | OK | OK | OK | OK | live | high |
-| `wyvern.death` | Death: die anim + random corpse launch scatter | OK | OK | - | OK | OK | live | high |
-| `wyvern.deadthink` | Dead-think: swap to anim_die2 once the corpse lands | OK | - | OK | OK | - | live | high |
-| `wyvern.anim.frame_table` | Animation frame groups (mr_anim) | OK | OK | OK | OK | - | live | high |
+| `wyvern.pain` | Pain reaction (0.5s window, pain anim) | OK | OK | OK | ? | OK | live | medium |
+| `wyvern.death` | Death: die anim + random corpse launch scatter | OK | OK | - | ? | - | live | medium |
+| `wyvern.deadthink` | Dead-think: swap to anim_die2 once the corpse lands | OK | - | OK | ? | - | live | medium |
+| `wyvern.anim.frame_table` | Animation frame groups (mr_anim) | OK | OK | OK | ? | - | live | medium |
 | `wyvern.obituary` | Kill notification (was fireballed by a Wyvern) | OK | OK | - | OK | - | live | high |
 | `wyvern.spawnfunc` | Map spawnfunc monster_wyvern (+ spawner/random/Invasion) | OK | OK | OK | - | - | live | high |
 | `wyvern.menu.describe` | MENUQC monster-tooltip description text | OK | OK | - | OK | - | live | high |
@@ -2240,7 +2240,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `turret-flac.fire.flak_shell` | Flak shell fire: fast splash projectile + timed air-burst fuse | OK | OK | OK | ~ | OK | live | high |
 | `turret-flac.lifecycle.respawn` | Death + respawn timer (and the port's extra death blast) | OK | OK | OK | - | - | live | high |
 | `turret-flac.obituary.death_message` | FLAC kill obituary / death notification (DEATH_TURRET_FLAC) | OK | OK | - | OK | - | live | high |
-| `turret-flac.weapon.player_form` | Hidden player FLAC weapon (FlacAttack, impulse 5) | OK | OK | OK | ~ | OK | DEAD | high |
+| `turret-flac.weapon.player_form` | Hidden player FLAC weapon (FlacAttack, impulse 5) | OK | OK | OK | ~ | OK | live | high |
 | `turret-flac.damage.headshake` | TFL_DMG_HEADSHAKE: head flinches off-aim when the turret is hit | OK | OK | - | - | - | live | high |
 
 ### `turret-framework` (turret) — 15 features
@@ -2259,7 +2259,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `turret-framework.lifecycle.use_damage` | Activation + damage gate (turret_use / turret_damage / turret_heal) | OK | OK | OK | - | - | live | high |
 | `turret-framework.lifecycle.death_respawn` | Death + respawn (turret_die / turret_hide / turret_respawn) | OK | OK | OK | - | - | live | high |
 | `turret-framework.lifecycle.round_reset` | Round-restart reset hook (turret_reset -> turret_respawn via .reset) | OK | OK | OK | - | - | live | high |
-| `turret-framework.net.sync` | Turret networking (turret_send / TNSF_* / ENT_CLIENT_TURRET) | MISS | MISS | MISS | MISS | - | - | high |
+| `turret-framework.net.sync` | Turret networking (turret_send / TNSF_* / ENT_CLIENT_TURRET) | ~ | ~ | ~ | ~ | - | live | high |
 | `turret-framework.client.presentation` | Client presentation (cl_turrets.qc: construct/draw/draw2d/die/gibs/changeteam) | ~ | ~ | ~ | ~ | ~ | ~ | high |
 | `turret-framework.mapents.path_trigger` | Waypoint path + receive-target entities (turret_checkpoint / targettrigger / manager) | OK | OK | OK | - | - | live | high |
 
@@ -2275,7 +2275,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `turret-fusionreactor.fx.attack` | te_smallflash at recharged recipient + ammo-scaled head spin | OK | ~ | OK | ~ | - | ~ | high |
 | `turret-fusionreactor.spawn.lifecycle` | Spawnfunc + master switch + think wiring + damage/use/death/respawn | OK | OK | OK | - | - | live | high |
 | `turret-fusionreactor.mutator.validtarget_hook` | FusionReactor_ValidTarget mutator override hook | OK | - | - | - | - | live | high |
-| `turret-fusionreactor.menu.describe` | MENUQC turret-codex help text (describe) | MISS | - | - | MISS | - | - | high |
+| `turret-fusionreactor.menu.describe` | MENUQC turret-codex help text (describe) | OK | - | - | MISS | - | DEAD | high |
 
 ### `turret-hellion` (turret) — 10 features
 
@@ -2326,7 +2326,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `turret-machinegun.weapon.firebullet` | wr_think fireBullet (hitscan bullet + spread + force) | OK | OK | - | OK | OK | live | high |
 | `turret-machinegun.lifecycle.use_team` | turret_use: adopt activator team, set active | OK | OK | - | - | - | live | medium |
 | `turret-machinegun.lifecycle.damage` | turret_damage gate: inactive-immunity, friendly-fire, headshake | OK | OK | - | ~ | - | live | high |
-| `turret-machinegun.lifecycle.die_respawn` | turret_die / turret_respawn (+ death FX, gibs) | OK | OK | OK | OK | OK | live | medium |
+| `turret-machinegun.lifecycle.die_respawn` | turret_die / turret_respawn (+ death FX, gibs) | ~ | OK | OK | OK | OK | live | high |
 
 ### `turret-mlrs` (turret) — 8 features
 
@@ -2356,7 +2356,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `turret-phaser.fire.target_select_bias` | Per-unit target-selection scoring biases (range/angle/same/missile/player) | OK | OK | - | - | - | live | high |
 | `turret-phaser.fire.extra_slow_status` | Port-only layered slow/disability status effect *(intended)* | OK | - | OK | - | - | live | medium |
 | `turret-phaser.audio.beam_sound` | Phaser beam sound (start + 2s re-trigger + silence-on-end) and impact cue | OK | OK | OK | - | OK | live | high |
-| `turret-phaser.presentation.beam_visual_and_head_anim` | Beam model visual (MDL_TUR_PHASER_BEAM) + head charge/discharge animation (tr_think) | ~ | ~ | ~ | MISS | - | live | high |
+| `turret-phaser.presentation.beam_visual_and_head_anim` | Beam model visual (MDL_TUR_PHASER_BEAM) + head charge/discharge animation (tr_think) | OK | OK | OK | ~ | - | live | medium |
 | `turret-phaser.aim.head_track_tuning` | Per-unit head-tracking motor tuning (track_type / accel_pitch / accel_rot / blendrate) | OK | OK | OK | - | - | live | high |
 | `turret-phaser.lifecycle.respawn_time` | Death + respawn timer | OK | OK | OK | - | - | live | high |
 
@@ -2390,7 +2390,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `turret-plasma_dual.target.scoring_biases` | Target scoring biases (rangebias/samebias/anglebias/playerbias/missilebias) | OK | OK | - | - | - | live | high |
 | `turret-plasma_dual.aim.lead_splash_predict` | Aiming: lead + shot-time compensation + z-predict + splash (aim at feet) | OK | OK | OK | - | - | live | high |
 | `turret-plasma_dual.track.head_motor` | Head tracking: FLUIDINERTIA motor, pitch/rot clamps | OK | OK | OK | - | - | live | high |
-| `turret-plasma_dual.damage.gating_die_respawn` | Damage handling: friendly-fire scale, MOVE-shove, die + timed respawn | OK | OK | OK | MISS | MISS | live | high |
+| `turret-plasma_dual.damage.gating_die_respawn` | Damage handling: friendly-fire scale, MOVE-shove, die + timed respawn | OK | OK | OK | OK | OK | live | high |
 | `turret-plasma_dual.damage.headshake` | TFL_DMG_HEADSHAKE: jolt head angles by random*damage on hit | OK | OK | OK | MISS | - | live | high |
 | `turret-plasma_dual.presentation.head_frame_anim` | Head-frame wheel animation (tr_think 0..6 + ++frame on fire) | OK | OK | OK | MISS | - | live | high |
 
@@ -2448,7 +2448,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
-| `vehicle-framework.init.initialize` | vehicle_initialize — master gate, model/tag setup, placement, init hook | OK | ~ | OK | - | - | live | high |
+| `vehicle-framework.init.initialize` | vehicle_initialize — master gate, model/tag setup, placement, init hook | OK | OK | OK | - | - | live | high |
 | `vehicle-framework.spawn.respawn` | vehicles_spawn — reset to idle/ownerless/shootable at spawn point | OK | OK | OK | ~ | - | live | high |
 | `vehicle-framework.think.tick` | vehicles_think — per-tick think cadence + painframe + W2MODE mirror | OK | OK | OK | OK | - | live | high |
 | `vehicle-framework.enter.handshake` | vehicles_enter — board guards, gunner branch, player freeze + link | OK | OK | OK | ~ | - | live | high |
@@ -2479,7 +2479,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `vehicle-racer.identity.def` | Identity, hitbox, models, spawnflags | OK | OK | - | ~ | - | live | high |
 | `vehicle-racer.spawn.lifecycle` | vr_spawn / vr_setup: movetype, solid, health/shield/energy, regen capability flags, bounce/mass | OK | OK | - | ~ | - | live | high |
 | `vehicle-racer.spawnfunc.liveness` | Map spawnfunc wiring + master cvar gate + per-cvar tunable retune | OK | OK | OK | - | - | live | high |
-| `vehicle-racer.board.usekey` | +use board / exit + guards (PlayerUseKey -> vehicles_enter/exit) | OK | ~ | OK | - | - | live | high |
+| `vehicle-racer.board.usekey` | +use board / exit + guards (PlayerUseKey -> vehicles_enter/exit) | OK | OK | OK | - | - | live | high |
 | `vehicle-racer.drive.hover4point` | racer_align4point: 4 engine springs + pitch/roll torque + stabilizer | OK | OK | OK | - | - | live | high |
 | `vehicle-racer.drive.controller` | racer_frame: yaw/pitch/roll toward view, friction, wishmove, downforce | OK | OK | OK | - | - | live | high |
 | `vehicle-racer.drive.afterburn` | Afterburn (jump): energy drain + boost thrust (water vs air) + booster/smoke FX + engine-sound state machine | OK | OK | OK | OK | OK | live | high |
