@@ -31,6 +31,7 @@ the row is explicitly marked `intended_divergence: true` with a rationale.
 | `NEEDS-INGAME-CHECK.md` | Generated: rows whose presentation/liveness code-reading couldn't confirm — the manual in-game verify queue. |
 | `PORTING-PLAN.md` | Generated: the **wave-based execution plan** for closing the gaps (how to do the work, in parallel). See below. |
 | `REMAINING-WAVES.md` | Live wave tracker: which waves are done and the remaining final waves (16–17 + verification). |
+| `UNPORTABLE-ANALYSIS.md` | Reclassifies the 357 `unportable`-flagged gaps: truly-unportable (~0) vs decision vs difficult vs verify-only, with options + a recommendation per cluster. |
 | `EXECUTION-STRATEGY.md` | The reusable **plan→apply harness + model-tiering rule** every porting wave runs. Read before authoring a wave. |
 
 ## The two workflows
