@@ -1,6 +1,6 @@
 # Parity Index
 
-_Generated 2026-06-27 from 154 units, 2117 features._
+_Generated 2026-06-28 from 154 units, 2117 features._
 
 Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liveness `live`/`DEAD`/`~`/`?`.
 
@@ -13,7 +13,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | timing | 0 | 1099 | 34 | 923 | 44 | 0 | 17 |
 | presentation | 0 | 614 | 104 | 1199 | 189 | 0 | 11 |
 | audio | 0 | 314 | 7 | 1772 | 20 | 0 | 4 |
-| liveness | 22 | 0 | 0 | 63 | 102 | 0 | 8 |
+| liveness | 22 | 0 | 0 | 63 | 101 | 0 | 8 |
 
 ## Features by unit
 
@@ -1760,7 +1760,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `net-entity-state.entcs.radar_shownames_slice` | ent_cs GPS slice for radar + shownames teammate health/armor *(intended)* | OK | ~ | ~ | OK | - | live | high |
 | `net-entity-state.entcs.privacy_mask` | ent_cs public/private mask (radar_showenemies / SAME_TEAM) *(intended)* | OK | ~ | - | - | - | live | high |
 | `net-entity-state.wepent.active_weapon` | wepent active/held weapon (local viewmodel + remote third-person) *(intended)* | OK | OK | OK | OK | - | live | high |
-| `net-entity-state.wepent.charges_clip_heat` | wepent charge/clip/heat HUD fields (vortex/oknex charge+pool, clip_load/size, hagar_load, minelayer_mines, arc_heat) *(intended)* | OK | OK | OK | OK | - | ~ | medium |
+| `net-entity-state.wepent.charges_clip_heat` | wepent charge/clip/heat HUD fields (vortex/oknex charge+pool, clip_load/size, hagar_load, minelayer_mines, arc_heat) *(intended)* | OK | OK | OK | OK | - | live | high |
 | `net-entity-state.wepent.switch_alpha_misc` | wepent switch/alpha/gunalign/porto/tuba/skin viewmodel fields *(intended)* | ~ | ~ | ~ | ~ | - | ~ | high |
 | `net-entity-state.csqcmodel.appearance_hook` | csqcmodel appearance hook (force model/colors, unique enemy colors, death-fade) | OK | OK | - | OK | - | live | high |
 | `net-entity-state.replicate.client_cvars` | Client->server cvar replication (REPLICATE / cmd sentcvar) | OK | ~ | OK | - | - | live | high |

@@ -1,6 +1,6 @@
 # Needs in-game check
 
-_Generated 2026-06-27. 34 features whose presentation/liveness/timing code-reading could not confirm. Verify by running the app and observing._
+_Generated 2026-06-28. 34 features whose presentation/liveness/timing code-reading could not confirm. Verify by running the app and observing._
 
 | unit | feature | uncertain | what to look for |
 |---|---|---|---|

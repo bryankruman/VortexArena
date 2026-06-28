@@ -1,6 +1,6 @@
 # Parity Gaps — ranked by gameplay impact
 
-_Generated 2026-06-27. 462 features with gaps, highest-impact first._
+_Generated 2026-06-28. 462 features with gaps, highest-impact first._
 
 Score weights logic & liveness highest, then values/timing, then presentation/audio, scaled by category (core gameplay > niche entities). Intended divergences excluded.
 
