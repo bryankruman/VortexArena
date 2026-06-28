@@ -8,12 +8,12 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 
 | dim | dead | faithful | missing | na | partial | stub | unknown |
 |---|---|---|---|---|---|---|---|
-| logic | 0 | 1899 | 51 | 28 | 133 | 4 | 2 |
-| values | 0 | 1748 | 41 | 225 | 89 | 0 | 14 |
-| timing | 0 | 1105 | 27 | 925 | 42 | 0 | 18 |
-| presentation | 0 | 624 | 78 | 1199 | 188 | 0 | 28 |
+| logic | 0 | 1899 | 51 | 28 | 134 | 3 | 2 |
+| values | 0 | 1751 | 41 | 224 | 87 | 0 | 14 |
+| timing | 0 | 1106 | 27 | 925 | 41 | 0 | 18 |
+| presentation | 0 | 626 | 78 | 1199 | 186 | 0 | 28 |
 | audio | 0 | 314 | 4 | 1773 | 20 | 0 | 6 |
-| liveness | 20 | 0 | 0 | 54 | 93 | 0 | 8 |
+| liveness | 19 | 0 | 0 | 54 | 93 | 0 | 8 |
 
 ## Features by unit
 
@@ -272,7 +272,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | id | name | L | V | T | P | A | live | conf |
 |---|---|---|---|---|---|---|---|---|
 | `cl-viewmodel.model.select_and_rig` | View-model entity + model select (invisible-hand vs full-rig), rebuild on weapon change | OK | OK | OK | OK | - | live | high |
-| `cl-viewmodel.anim.networked_frames` | Networked weapon fire/idle/reload animation (wframe temp entity) | ~ | MISS | MISS | ~ | - | ~ | high |
+| `cl-viewmodel.anim.networked_frames` | Networked weapon fire/idle/reload animation (wframe temp entity) | OK | MISS | MISS | ~ | - | ~ | medium |
 | `cl-viewmodel.model.skin_colormap_glow_effects` | Per-child skin / team colormap / glowmod / EF_NODEPTHTEST / cheap effects mask | OK | ~ | - | ~ | - | live | high |
 | `cl-viewmodel.alpha.viewmodel_alpha` | View-model alpha (cl_viewmodel_alpha / _alpha_min, vehicle/dead/intermission/chase hide) | OK | OK | - | OK | - | live | high |
 | `cl-viewmodel.align.gunalign_gunoffset` | Shot-origin alignment (cl_gunalign 1/2/3/4) + cl_gunoffset | OK | ~ | - | OK | - | live | high |
@@ -903,7 +903,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `mapobject-target.levelwarp.use` | target_levelwarp — campaign level warp | OK | - | - | - | - | live | high |
 | `mapobject-target.give.use` | target_give — give the activator the items pointed to | OK | OK | - | - | OK | live | medium |
 | `mapobject-target.items.use` | target_items — set/add items + resources + powerups via a token string | ~ | OK | - | OK | - | live | high |
-| `mapobject-target.spawn.use` | target_spawn — data-driven entity creator/editor ($-templating) *(intended)* | stub | - | - | - | - | DEAD | high |
+| `mapobject-target.spawn.use` | target_spawn — data-driven entity creator/editor ($-templating) *(intended)* | ~ | OK | - | - | - | live | medium |
 | `mapobject-target.speaker.ambient_triggered` | target_speaker — ambient / looped / one-shot / activator sound emitter | ~ | OK | - | - | OK | live | high |
 | `mapobject-target.music.target_music` | target_music — triggered background-music override / map default *(intended)* | ~ | ~ | ~ | OK | OK | ~ | medium |
 | `mapobject-target.music.trigger_music` | trigger_music — brush-volume music override (highest priority) *(intended)* | ~ | OK | ~ | OK | OK | ~ | medium |
@@ -959,7 +959,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `mapobject-triggers.magicear.trigger_magicear` | trigger_magicear — chat pattern match -> SUB_UseTargets / text replace | OK | OK | - | - | - | live | high |
 | `mapobject-triggers.keylock.trigger_keylock` | trigger_keylock — fire target when all required keys supplied | OK | OK | OK | OK | OK | live | high |
 | `mapobject-triggers.teleport.trigger_teleport` | trigger_teleport / target_teleporter — player teleport source *(intended)* | OK | OK | OK | OK | OK | live | high |
-| `mapobject-triggers.music.target_music` | target_music / trigger_music — map music overrides | OK | ~ | ~ | ~ | OK | live | high |
+| `mapobject-triggers.music.target_music` | target_music / trigger_music — map music overrides *(intended)* | OK | OK | OK | OK | OK | live | high |
 | `mapobject-triggers.viewloc.trigger_viewlocation` | trigger_viewlocation + target_viewlocation_start/end — 2.5D camera regions | OK | OK | OK | MISS | - | ~ | high |
 
 ### `warpzones` (mapobject) — 18 features
@@ -1513,7 +1513,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `powerups.invisibility.stealth` | Invisibility: radar/monster/bot stealth | OK | - | - | OK | - | live | high |
 | `powerups.glow.effects` | Strength/Shield player glow (EF_BLUE / EF_RED + EF_ADDITIVE + EF_FULLBRIGHT) | OK | OK | OK | ~ | - | live | high |
 | `powerups.strength.fire_sound` | Strength-fire sound (anti-spammed) on firing while Strength active | OK | OK | OK | - | OK | live | high |
-| `powerups.notifications` | Pickup/powerdown notifications (center-print + broadcast) | OK | - | OK | OK | - | live | high |
+| `powerups.notifications` | Pickup/powerdown notifications (center-print + broadcast) | ~ | - | OK | OK | - | live | high |
 | `powerups.countdown_beep` | Powerdown countdown beep (play_countdown SND_POWEROFF) | OK | OK | OK | - | OK | live | high |
 | `powerups.item.apply_stack` | Powerup pickup -> status-effect apply + stacking (max vs add) | OK | OK | OK | - | - | live | high |
 | `powerups.item.defs_spawn_gate` | Powerup item defs + spawn gating (MUTATORBLOCKED) + jetpack fuel | OK | OK | OK | OK | - | live | high |
@@ -2699,7 +2699,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-hlac.recoil.punchangle` | Per-shot punchangle recoil kick | OK | OK | - | OK | - | live | high |
 | `weapon-hlac.ammo.checkreload` | Ammo check + reload (wr_checkammo / wr_reload / forced reload) | OK | OK | OK | - | OK | live | high |
 | `weapon-hlac.fx.muzzle_impact` | Muzzle flash, impact effect, fire/impact sounds | OK | OK | - | OK | OK | live | high |
-| `weapon-hlac.identity.metadata` | Weapon identity, kill/suicide notifications, registration/liveness | OK | OK | - | ~ | - | live | high |
+| `weapon-hlac.identity.metadata` | Weapon identity, kill/suicide notifications, registration/liveness | OK | OK | - | OK | - | live | high |
 
 ### `weapon-hook` (weapon) — 12 features
 
@@ -2857,7 +2857,7 @@ Status: `OK`=faithful `~`=partial `stub` `MISS`=missing `-`=n/a `?`=unknown; liv
 | `weapon-tuba.pitch.getnote` | Note pitch selection from movement state *(intended)* | ~ | ~ | - | - | - | live | high |
 | `weapon-tuba.note.sustain_lifetime` | Sustained note entity: spawn, refresh-on-hold, off-on-release, keep-alive | OK | ~ | ~ | - | - | live | high |
 | `weapon-tuba.fx.smoke_ring` | Per-note smoke ring puff | OK | OK | OK | ~ | - | live | high |
-| `weapon-tuba.audio.note_sound` | Sustained pitched note sound (loop sample, pitch step, fade, attenuation, networking) | OK | ~ | ~ | ~ | ? | live | medium |
+| `weapon-tuba.audio.note_sound` | Sustained pitched note sound (loop sample, pitch step, fade, attenuation, networking) | OK | OK | ~ | ~ | ? | live | medium |
 | `weapon-tuba.melody.recognition` | Melody recognition + magic-ear chat (W_Tuba_HasPlayed / lastnotes) | OK | OK | OK | OK | - | live | high |
 | `weapon-tuba.setup.instrument_reset` | wr_setup resets instrument to Tuba on (re)equip | OK | OK | - | - | - | live | high |
 | `weapon-tuba.identity.metadata` | Weapon identity, flags, models, ammo, bot aim, registration/liveness | OK | OK | - | ~ | - | live | high |
