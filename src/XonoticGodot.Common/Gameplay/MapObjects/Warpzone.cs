@@ -407,13 +407,14 @@ public sealed class WarpzoneManager
         Vector3 org = brush.Origin;
         if (org == Vector3.Zero) org = 0.5f * (brush.Mins + brush.Maxs);
 
-        Vector3 norm = Vector3.Zero, point = Vector3.Zero;
+        Vector3 norm = Vector3.Zero, point = Vector3.Zero, refNorm = Vector3.Zero;
         float area = 0f;
         for (int i_s = 0; ; i_s++)
         {
             string tex = surf.GetSurfaceTexture(brush, i_s);
             if (string.IsNullOrEmpty(tex)) break;                 // past the last surface (QC `if (!tex) break`)
             if (tex == "textures/common/trigger" || tex == "trigger") continue;
+            refNorm += surf.GetSurfaceNormal(brush, i_s);         // reliable (vertex-normal) FRONT normal — for SIGN
             int nt = surf.GetSurfaceNumTriangles(brush, i_s);
             for (int i_t = 0; i_t < nt; i_t++)
             {
@@ -431,6 +432,12 @@ public sealed class WarpzoneManager
 
         if (area > 0f)
         {
+            // The geometric cross-product normal's SIGN depends on the BSP triangle winding (Cross(c-a,b-a) is the
+            // negated standard triangle normal), and the no-aiment path below applies no correction — so an
+            // aiment-less warpzone (e.g. glowplant) derived a BACKWARDS plane normal, which flipped the whole
+            // warp transform (wrong teleport-exit angle AND wrong portal-camera view). Orient it to agree with the
+            // surface's reliable rendering FRONT normal (the averaged vertex normals, which always face outward).
+            if (Vector3.Dot(norm, refNorm) < 0f) norm = -norm;
             norm *= 1f / area;
             point *= 1f / (3f * area);
             if (norm.Length() < 0.99f) area = 0f;                  // surfaces don't agree on a plane → non-planar
