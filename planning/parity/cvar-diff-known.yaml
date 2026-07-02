@@ -1,0 +1,22 @@
+# Known/intended cvar divergences for tools/parity-cvar-diff.py — the differ's analogue of the
+# registry's `intended_divergence: true`. Entries suppress a name from every report section so
+# deliberate port changes stop re-flagging forever. `name` supports fnmatch wildcards.
+#
+# Discipline: add an entry ONLY after confirming the divergence on the live path and deciding it
+# is deliberate. A suppressed genuine bug is invisible — prefer fixing over suppressing.
+
+known:
+  # The port's default physics preset: stock Xonotic values + sv_step_upspeed_max 1 (the step-up
+  # launch cap). Shipped as physicsBryan.cfg; xonotic-server.cfg execs it instead of physicsX.cfg.
+  # See the chain-divergence section (expected: physicsX.cfg Base-only, physicsBryan.cfg port-only,
+  # xonotic-server.cfg + physics.cfg text differ).
+  - name: "g_mod_physics"
+    note: "port default physics preset is 'Bryan' (stock + sv_step_upspeed_max 1)"
+  - name: "g_physics_clientselect_options"
+    note: "port adds 'warsow bryan' to the selectable preset list"
+  - name: "g_physics_bryan_*"
+    note: "the port-added physicsBryan preset cvar family"
+  - name: "sv_step_upspeed_max"
+    note: "port-added step-up launch cap knob (the one deliberate physics change)"
+  - name: "sv_step_upspeed_scale"
+    note: "port-added step-up launch scale knob (companion to sv_step_upspeed_max)"

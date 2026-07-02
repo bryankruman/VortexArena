@@ -2,30 +2,26 @@
  "generated": "2026-07-02",
  "summary": {
   "cited": {
-   "files": 588,
-   "lines": 170996
+   "files": 608,
+   "lines": 176544
   },
   "excluded": {
    "files": 11,
    "lines": 4220
   },
   "deferred": {
-   "files": 393,
-   "lines": 39308
+   "files": 378,
+   "lines": 34892
   },
   "unmapped": {
-   "files": 765,
-   "lines": 26701
+   "files": 760,
+   "lines": 25569
   }
  },
  "unmapped": [
   {
    "path": "common/effects/effectinfo_vehicles.inc",
    "lines": 1166
-  },
-  {
-   "path": "client/hud/panel/strafehud.qc",
-   "lines": 804
   },
   {
    "path": "lib/string.qh",
@@ -156,10 +152,6 @@
    "lines": 158
   },
   {
-   "path": "client/hud/panel/strafehud.qh",
-   "lines": 154
-  },
-  {
    "path": "common/monsters/sv_monsters.qh",
    "lines": 154
   },
@@ -198,10 +190,6 @@
   {
    "path": "client/view.qh",
    "lines": 134
-  },
-  {
-   "path": "common/playerstats.qh",
-   "lines": 132
   },
   {
    "path": "server/weapons/csqcprojectile.qc",
@@ -808,10 +796,6 @@
    "lines": 27
   },
   {
-   "path": "common/effects/qc/damageeffects.qh",
-   "lines": 27
-  },
-  {
    "path": "common/items/all.qc",
    "lines": 27
   },
@@ -1217,10 +1201,6 @@
   },
   {
    "path": "common/mutators/mutator/nades/net.qh",
-   "lines": 15
-  },
-  {
-   "path": "lib/json.qh",
    "lines": 15
   },
   {
@@ -3085,16 +3065,6 @@
   "client/command/_mod.qh",
   "client/command/cl_cmd.qc",
   "client/command/cl_cmd.qh",
-  "client/hud/panel/strafehud/_mod.inc",
-  "client/hud/panel/strafehud/_mod.qh",
-  "client/hud/panel/strafehud/draw.qc",
-  "client/hud/panel/strafehud/draw.qh",
-  "client/hud/panel/strafehud/draw_core.qc",
-  "client/hud/panel/strafehud/draw_core.qh",
-  "client/hud/panel/strafehud/extra.qc",
-  "client/hud/panel/strafehud/extra.qh",
-  "client/hud/panel/strafehud/util.qc",
-  "client/hud/panel/strafehud/util.qh",
   "common/command/_mod.inc",
   "common/command/_mod.qh",
   "common/command/command.qh",
@@ -3106,9 +3076,6 @@
   "common/command/reg.qh",
   "common/command/rpn.qc",
   "common/command/rpn.qh",
-  "common/effects/qc/damageeffects.qc",
-  "common/mapinfo.qc",
-  "common/mapinfo.qh",
   "common/minigames/_mod.inc",
   "common/minigames/_mod.qh",
   "common/minigames/cl_minigames.qc",
@@ -3135,8 +3102,6 @@
   "common/minigames/minigames.qh",
   "common/minigames/sv_minigames.qc",
   "common/minigames/sv_minigames.qh",
-  "lib/json.qc",
-  "lib/urllib.qc",
   "menu/_mod.inc",
   "menu/_mod.qh",
   "menu/anim/_mod.inc",

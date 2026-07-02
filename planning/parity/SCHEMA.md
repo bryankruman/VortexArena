@@ -22,7 +22,16 @@ features:
 
 `gametype` · `weapon` · `mutator` · `monster` · `turret` · `vehicle` · `item` ·
 `physics` · `mapobject` · `server` · `client` · `effect` · `sound` · `notification` ·
-`scoring` · `damage` · `bot` · `net` · `misc`
+`scoring` · `damage` · `bot` · `net` · `menu` · `data` · `misc`
+
+- `menu` (added 2026-07-02): the menu system audited at **behavior level** — which dialogs/
+  settings/screens exist and whether their bound cvars take effect. The QC widget toolkit
+  internals (`menu/item/*`) are an `intended_divergence` (Godot Control replaces them), but
+  the files are still cited so the coverage ledger counts them.
+- `data` (added 2026-07-02): cross-cutting data-layer contracts (cfg default fidelity, asset
+  reference resolution) surfaced by `tools/parity-cvar-diff.py` / `tools/parity-asset-check.py`.
+  Confirmed per-feature mismatches should live in the owning gameplay unit; `data` units hold
+  the contracts that belong to no single unit.
 
 ## FEATURE ROW
 

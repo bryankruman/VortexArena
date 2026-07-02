@@ -25,8 +25,6 @@ defer:
     note: "minigames unit — 2026-07-02 unmapped-area audit wave"
   - pattern: "menu/**"
     note: "menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave"
-  - pattern: "common/effects/qc/damageeffects.qc"
-    note: "cl-damageeffects unit — 2026-07-02 unmapped-area audit wave"
   - pattern: "client/hud/panel/strafehud/**"
     note: "cl-strafehud unit — 2026-07-02 unmapped-area audit wave"
   - pattern: "common/command/**"

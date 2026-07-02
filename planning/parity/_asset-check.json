@@ -1,0 +1,63 @@
+{
+ "generated": "2026-07-02",
+ "missing": [
+  {
+   "ref": "gfx/hud/default/nopreview_map",
+   "where": [
+    "game/hud/MapVotePanel.cs:569"
+   ]
+  },
+  {
+   "ref": "gfx/hud/default/weaponvortex",
+   "where": [
+    "game/hud/TextureCache.cs:26"
+   ]
+  },
+  {
+   "ref": "gfx/menu/default/nopreview_map",
+   "where": [
+    "game/hud/MapVotePanel.cs:572"
+   ]
+  },
+  {
+   "ref": "gfx/vehicles/axh-ring",
+   "where": [
+    "game/hud/VehicleHud.cs:171"
+   ]
+  },
+  {
+   "ref": "gfx/vehicles/axh-target",
+   "where": [
+    "game/hud/VehicleHud.cs:154",
+    "game/hud/VehicleHud.cs:190",
+    "game/net/NetGame.cs:3662"
+   ]
+  },
+  {
+   "ref": "models/sphere.md3",
+   "where": [
+    "game/client/NadeOrbRenderer.cs:78",
+    "game/client/NadeOrbRenderer.cs:79"
+   ]
+  }
+ ],
+ "unsupported": [
+  {
+   "ref": "models/casing_shell.mdl",
+   "resolved": "models/casing_shell.mdl",
+   "where": [
+    "game/client/ShellCasings.cs:134"
+   ]
+  },
+  {
+   "ref": "models/gibs/chunk.mdl",
+   "resolved": "models/gibs/chunk.mdl",
+   "where": [
+    "game/client/ModelGibs.cs:72",
+    "game/client/ModelGibs.cs:165"
+   ]
+  }
+ ],
+ "ok": 135,
+ "interpolated_skipped": 75
+}

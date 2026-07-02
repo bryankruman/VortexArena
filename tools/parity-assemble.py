@@ -35,9 +35,9 @@ PENALTY = {"missing": 1.0, "stub": 0.8, "partial": 0.5, "unknown": 0.4,
 # category weighting: core gameplay first, niche entities last
 CAT_MULT = {
     "gametype": 1.5, "weapon": 1.5, "damage": 1.5, "physics": 1.5, "item": 1.4, "scoring": 1.4,
-    "server": 1.2, "net": 1.1, "mapobject": 0.9, "mutator": 1.0,
+    "server": 1.2, "net": 1.1, "data": 1.1, "mapobject": 0.9, "mutator": 1.0,
     "client": 0.8, "effect": 0.8, "sound": 0.8, "notification": 0.8, "bot": 0.7,
-    "monster": 0.6, "turret": 0.6, "vehicle": 0.6, "misc": 0.7,
+    "monster": 0.6, "turret": 0.6, "vehicle": 0.6, "misc": 0.7, "menu": 0.5,
 }
 GLYPH = {"faithful": "OK", "partial": "~", "stub": "stub", "missing": "MISS",
          "na": "-", "unknown": "?", "live": "live", "dead": "DEAD"}

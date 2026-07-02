@@ -1,6 +1,6 @@
 # Base coverage ledger
 
-_Generated 2026-07-02 by `tools/parity-coverage.py` from 154 registry shards against `C:\Users\Bryan\Projects\Xonotic\Base\data\xonotic-data.pk3dir\qcsrc`._
+_Generated 2026-07-02 by `tools/parity-coverage.py` from 158 registry shards against `C:\Users\Bryan\Projects\Xonotic\Base\data\xonotic-data.pk3dir\qcsrc`._
 
 A Base file is **cited** when any registry row's `base_refs` names it, **excluded** when
 [coverage-scope.yaml](coverage-scope.yaml) declares it out of parity scope (with rationale),
@@ -12,21 +12,21 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 
 | bucket | files | lines | % of lines |
 |---|---:|---:|---:|
-| cited | 588 | 170996 | 70.9% |
+| cited | 608 | 176544 | 73.2% |
 | excluded | 11 | 4220 | 1.7% |
-| deferred | 393 | 39308 | 16.3% |
-| UNMAPPED | 765 | 26701 | 11.1% |
+| deferred | 378 | 34892 | 14.5% |
+| UNMAPPED | 760 | 25569 | 10.6% |
 | **total** | 1757 | 241225 | 100% |
 
 ## Per-directory
 
 | dir | total files | cited | excluded | deferred | UNMAPPED files | UNMAPPED lines |
 |---|---:|---:|---:|---:|---:|---:|
-| `client/` | 109 | 41 | 0 | 14 | 54 | 2632 |
-| `common/` | 1000 | 458 | 0 | 40 | 502 | 11625 |
+| `client/` | 109 | 53 | 0 | 4 | 52 | 1674 |
+| `common/` | 1000 | 463 | 0 | 37 | 500 | 11466 |
 | `dpdefs/` | 12 | 1 | 11 | 0 | 0 | 0 |
 | `ecs/` | 21 | 2 | 0 | 0 | 19 | 196 |
-| `lib/` | 101 | 18 | 0 | 2 | 81 | 7131 |
+| `lib/` | 101 | 21 | 0 | 0 | 80 | 7116 |
 | `menu/` | 340 | 4 | 0 | 336 | 0 | 0 |
 | `server/` | 174 | 64 | 0 | 1 | 109 | 5117 |
 
@@ -35,7 +35,6 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | file | lines |
 |---|---:|
 | `common/effects/effectinfo_vehicles.inc` | 1166 |
-| `client/hud/panel/strafehud.qc` | 804 |
 | `lib/string.qh` | 667 |
 | `server/pathlib/main.qc` | 545 |
 | `common/debug.qh` | 502 |
@@ -68,7 +67,6 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | `lib/spawnfunc.qh` | 161 |
 | `server/weapons/accuracy.qc` | 160 |
 | `server/pathlib/movenode.qc` | 158 |
-| `client/hud/panel/strafehud.qh` | 154 |
 | `common/monsters/sv_monsters.qh` | 154 |
 | `common/animdecide.qh` | 147 |
 | `server/damage.qh` | 147 |
@@ -79,17 +77,18 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | `lib/bits.qh` | 139 |
 | `server/pathlib/costs.qc` | 135 |
 | `client/view.qh` | 134 |
-| `common/playerstats.qh` | 132 |
 | `server/weapons/csqcprojectile.qc` | 132 |
 | `common/monsters/monster.qh` | 126 |
 | `lib/map.qh` | 124 |
 | `common/effects/effectinfo_ctf.inc` | 123 |
+| `common/effects/effectinfo_onslaught.inc` | 123 |
+| `server/items/items.qh` | 123 |
+| `common/mutators/events.qh` | 122 |
 
 ## Deferred (audit scheduled)
 
 | file | lines | note |
 |---|---:|---|
-| `common/mapinfo.qc` | 1678 | mapinfo unit — 2026-07-02 unmapped-area audit wave |
 | `common/minigames/minigame/bd.qc` | 1457 | minigames unit — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/serverlist.qc` | 1201 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/menu.qc` | 1115 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
@@ -105,19 +104,14 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | `menu/xonotic/keybinder.qc` | 626 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `common/command/rpn.qc` | 623 | console-commands unit — 2026-07-02 unmapped-area audit wave |
 | `common/minigames/minigame/c4.qc` | 540 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `common/effects/qc/damageeffects.qc` | 464 | cl-damageeffects unit — 2026-07-02 unmapped-area audit wave |
 | `common/minigames/cl_minigames.qc` | 444 | minigames unit — 2026-07-02 unmapped-area audit wave |
 | `menu/item/listbox.qc` | 415 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `common/minigames/sv_minigames.qc` | 414 | minigames unit — 2026-07-02 unmapped-area audit wave |
 | `menu/draw.qc` | 408 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `server/command/getreplies.qc` | 406 | console-commands unit — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/maplist.qc` | 404 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `lib/urllib.qc` | 377 | playerstats-xonstat unit — 2026-07-02 unmapped-area audit wave |
 | `menu/item/container.qc` | 375 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `client/hud/panel/strafehud/util.qc` | 367 | cl-strafehud unit — 2026-07-02 unmapped-area audit wave |
-| `lib/json.qc` | 363 | playerstats-xonstat unit — 2026-07-02 unmapped-area audit wave |
 | `menu/item/inputbox.qc` | 355 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `client/hud/panel/strafehud/draw.qc` | 344 | cl-strafehud unit — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/mainwindow.qc` | 337 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/cvarlist.qc` | 318 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/statslist.qc` | 316 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
@@ -125,14 +119,11 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | `menu/item/slider.qc` | 287 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/skin-customizables.inc` | 282 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/campaign.qc` | 282 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `client/hud/panel/strafehud/extra.qc` | 272 | cl-strafehud unit — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/playlist.qc` | 272 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/hudskinlist.qc` | 260 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/screenshotlist.qc` | 254 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_effects.qc` | 253 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `client/hud/panel/strafehud/draw_core.qc` | 246 | cl-strafehud unit — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/slider_resolution.qc` | 242 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `common/mapinfo.qh` | 237 | mapinfo unit — 2026-07-02 unmapped-area audit wave |
 | `menu/item/modalcontroller.qc` | 237 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_multiplayer_join_serverinfo.qc` | 236 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_multiplayer_create.qc` | 230 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
@@ -294,7 +285,6 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | `menu/xonotic/dialog_hudpanel_modicons.qc` | 28 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_hudpanel_pressedkeys.qc` | 28 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/tabcontroller.qc` | 28 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `client/hud/panel/strafehud/util.qh` | 27 | cl-strafehud unit — 2026-07-02 unmapped-area audit wave |
 | `menu/anim/animation.qh` | 27 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_multiplayer_create_mapinfo.qh` | 27 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings.qc` | 27 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
@@ -363,7 +353,6 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | `menu/xonotic/rootdialog.qh` | 16 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/slider_resolution.qh` | 16 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_media_screenshot.qh` | 15 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `client/hud/panel/strafehud/extra.qh` | 14 | cl-strafehud unit — 2026-07-02 unmapped-area audit wave |
 | `common/command/rpn.qh` | 14 | console-commands unit — 2026-07-02 unmapped-area audit wave |
 | `menu/anim/easing.qh` | 14 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/crosshairpicker.qh` | 14 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
@@ -443,11 +432,9 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | `menu/xonotic/dialog_settings_user.qh` | 10 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/slider_decibels.qh` | 10 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/slider_picmip.qh` | 10 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `client/hud/panel/strafehud/draw.qh` | 9 | cl-strafehud unit — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/bigcommandbutton.qh` | 9 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/leavematchbutton.qh` | 9 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/slider_sbfadetime.qh` | 9 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `client/hud/panel/strafehud/draw_core.qh` | 8 | cl-strafehud unit — 2026-07-02 unmapped-area audit wave |
 | `common/minigames/minigame/_mod.inc` | 8 | minigames unit — 2026-07-02 unmapped-area audit wave |
 | `common/minigames/minigame/_mod.qh` | 8 | minigames unit — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/bigbutton.qc` | 8 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
@@ -458,8 +445,6 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | `menu/xonotic/tab.qc` | 7 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/guide/_mod.inc` | 6 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/guide/_mod.qh` | 6 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `client/hud/panel/strafehud/_mod.inc` | 5 | cl-strafehud unit — 2026-07-02 unmapped-area audit wave |
-| `client/hud/panel/strafehud/_mod.qh` | 5 | cl-strafehud unit — 2026-07-02 unmapped-area audit wave |
 | `common/command/_mod.inc` | 5 | console-commands unit — 2026-07-02 unmapped-area audit wave |
 | `common/command/_mod.qh` | 5 | console-commands unit — 2026-07-02 unmapped-area audit wave |
 | `menu/anim/_mod.inc` | 5 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
@@ -491,7 +476,21 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 
 ## Defer entries now satisfied (remove from coverage-scope.yaml)
 
+- `client/hud/panel/strafehud/_mod.inc` is now cited
+- `client/hud/panel/strafehud/_mod.qh` is now cited
+- `client/hud/panel/strafehud/draw.qc` is now cited
+- `client/hud/panel/strafehud/draw.qh` is now cited
+- `client/hud/panel/strafehud/draw_core.qc` is now cited
+- `client/hud/panel/strafehud/draw_core.qh` is now cited
+- `client/hud/panel/strafehud/extra.qc` is now cited
+- `client/hud/panel/strafehud/extra.qh` is now cited
+- `client/hud/panel/strafehud/util.qc` is now cited
+- `client/hud/panel/strafehud/util.qh` is now cited
+- `common/mapinfo.qc` is now cited
+- `common/mapinfo.qh` is now cited
 - `common/minigames/cl_minigames_hud.qc` is now cited
+- `lib/json.qc` is now cited
+- `lib/urllib.qc` is now cited
 - `menu/xonotic/dialog_multiplayer_create_mutators.qc` is now cited
 - `menu/xonotic/dialog_sandboxtools.qc` is now cited
 - `menu/xonotic/dialog_settings_game_messages.qc` is now cited

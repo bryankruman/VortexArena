@@ -12,11 +12,21 @@ machine-checkable process**, not a one-off audit. Each prior ad-hoc audit
 
 - **Reference (the spec):** original Xonotic QuakeC at `../Base/data/xonotic-data.pk3dir/qcsrc`
 - **Pinned reference revision:** `v0.8.6-1779-g863cd3e84` (from `csprogs-xonotic-v0.8.6-1779-g863cd3e84.pk3`)
+  — this is the **data submodule's** checkout; the outer `../Base` umbrella repo describes as
+  `xonotic-v0.8.6-151-*`, which is a *different repo's* numbering. Never derive the pin from `git describe`.
 - **Subject under test:** this repo — gameplay in `src/XonoticGodot.Common/Gameplay/**` and
   `src/XonoticGodot.Server/**`; presentation/client in `game/**` and `src/XonoticGodot.Engine/**`.
 
 The QuakeC is authoritative. When the port disagrees with Base, the port is wrong **unless**
 the row is explicitly marked `intended_divergence: true` with a rationale.
+
+**The spec is wider than qcsrc** (amended 2026-07-02 — see
+[STRATEGY-REVIEW-2026-07-02.md](STRATEGY-REVIEW-2026-07-02.md)): original-Xonotic behavior also
+comes from the shipped **data layer** (~170 cfg files, effectinfo, assets) and the **DarkPlaces
+engine**. The registry units cover the QC; the data layer is checked *mechanically* by the
+coverage/differ tools below (`COVERAGE.md`, `CVAR-DIFF.md`, `ASSET-CHECK.md`), and engine-behavior
+divergences are recorded where consumed (unit rows + `intended_divergence`). Real shipped bugs have
+come from each of these layers — none of them is out of scope.
 
 ## Layout
 
@@ -33,6 +43,13 @@ the row is explicitly marked `intended_divergence: true` with a rationale.
 | `REMAINING-WAVES.md` | Live wave tracker: which waves are done and the remaining final waves (16–17 + verification). |
 | `UNPORTABLE-ANALYSIS.md` | Reclassifies the 357 `unportable`-flagged gaps: truly-unportable (~0) vs decision vs difficult vs verify-only, with options + a recommendation per cluster. |
 | `EXECUTION-STRATEGY.md` | The reusable **plan→apply harness + model-tiering rule** every porting wave runs. Read before authoring a wave. |
+| `STRATEGY-REVIEW-2026-07-02.md` | The four structural blind spots of the audit strategy + the improvement plan and its status. Read before changing the parity *process*. |
+| `COVERAGE.md` | Generated (`tools/parity-coverage.py`): how much of Base qcsrc the registry actually cites — cited/excluded/deferred/**UNMAPPED** per directory + stale-citation lint. The completeness metric. |
+| `coverage-scope.yaml` | Scope declarations for the coverage ledger: `exclude` (out of scope, rationale required) and `defer` (audit scheduled). |
+| `CVAR-DIFF.md` | Generated (`tools/parity-cvar-diff.py`): Base cfg chain vs port cfg chain vs port code-literal defaults — value diffs, code-default mismatches, never-read cvars. |
+| `cvar-diff-known.yaml` | Intended cvar divergences (fnmatch patterns) suppressed from CVAR-DIFF — the differ's `intended_divergence`. |
+| `ASSET-CHECK.md` | Generated (`tools/parity-asset-check.py`): every literal asset path in port code resolved against the VFS mounts, with model-magic sniffing (catches missing files and unsupported `.mdl`). |
+| `asset-check-known.yaml` | Accepted asset-ref suppressions (doc placeholders, virtual shader names). |
 
 ## The two workflows
 
@@ -74,6 +91,20 @@ The plan is generated, not hand-maintained: `tools/parity-plan-deps.*` analysis 
 ```sh
 # Regenerate INDEX.md, PARITY-GAPS.md, NEEDS-INGAME-CHECK.md from the registry shards:
 python tools/parity-assemble.py
+
+# Regenerate COVERAGE.md (+ _coverage.json): Base-file citation coverage + stale-citation lint.
+# Run alongside parity-assemble after any registry change; drive UNMAPPED to 0 via audits or
+# explicit coverage-scope.yaml entries:
+python tools/parity-coverage.py
+
+# Regenerate CVAR-DIFF.md: cfg-chain + code-default + never-read cvar diffs vs Base.
+# Rerun after touching cfgs, Cvars tables, or Register defaults; triage findings into fixes or
+# cvar-diff-known.yaml entries:
+python tools/parity-cvar-diff.py
+
+# Regenerate ASSET-CHECK.md: literal asset refs resolved against the VFS (missing / bad-format).
+# Rerun after adding assets or asset-path code:
+python tools/parity-asset-check.py
 
 # Regenerate the wave-based PORTING-PLAN.md from the persisted dependency analysis:
 python tools/parity-plan-gen.py
