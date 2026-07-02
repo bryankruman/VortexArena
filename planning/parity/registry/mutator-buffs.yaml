@@ -64,7 +64,7 @@ last_audited: "2026-06-28"
 # re-verified live+faithful, unchanged. All 13 Base buff types + all sv_buffs.qc features have rows (no new
 # unmapped Base features).
 summary:
-  feature_count: 34
+  feature_count: 38
   worst_gaps:
     - "Spawned buff items now render in the per-buff SKIN (relic.md3 skin per type) AND carry a WP_Buff radar/HUD waypoint; residual presentation gaps are the world-item color/glowmod tint (Color is networked only to the waypoint, not the item), the carrier buff_model glow, and the buff_Effect particle trail."
     - "Disability buff fire-rate slow is LIVE (WeaponRateFactor x1.5), but projectile-speed (WeaponSpeedFactor x0.7) and monster run/walk (MonsterMove x0.7) slows are still absent."

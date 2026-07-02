@@ -189,10 +189,25 @@ public static class TriggerTouch
     /// the authoritative <see cref="XonoticGodot.Common.Gameplay.WarpzoneManager.Teleport"/> EXACTLY (only warp
     /// when moving INTO the IN plane) so the predicted warp fires on the same tick the server's touch does.
     /// </summary>
+    /// <summary>
+    /// Predicted-warp budget: how many warpzone crossings the PREDICTOR may still apply this render frame
+    /// (across every reconcile replay chain). The host arms it to 1 each frame (NetGame._Process); each
+    /// predicted warp consumes one. Without the cap, a replay chain could carry the carrier through BOTH
+    /// paired zones (T_B∘T_A == identity — e.g. re-cross the original zone at tick K, then a later replayed
+    /// tick drifts back through the partner), stamping a bogus ENTRY-facing fixangle that overwrote the
+    /// correct exit view (the "one direction comes out reversed" report — observed live as a predicted snap
+    /// equal to the pre-warp view). A genuine same-frame double-crossing is sacrificed: the AUTHORITATIVE
+    /// server stamp still snaps it correctly a frame later. Defaults effectively-unlimited for headless
+    /// tests that never arm it.
+    /// </summary>
+    public static int PredictedWarpBudget = int.MaxValue;
+
     public static void PredictWarpzonesAmbient(Entity mover)
     {
         if (Api.Services is null || mover.IsFreed)
             return;
+        if (PredictedWarpBudget <= 0)
+            return; // this frame's predicted crossing already happened — see PredictedWarpBudget
 
         var manager = XonoticGodot.Common.Gameplay.WarpzoneTrace.AmbientManager;
         if (manager is null)
@@ -240,6 +255,7 @@ public static class TriggerTouch
             // is what the listen host actually relies on (this one-shot flag is cleared by every replayed tick).
             mover.FixAngle = true;
             mover.FixAngleAngles = newAngles;
+            PredictedWarpBudget--; // consume this frame's predicted crossing (see the field doc)
             return; // one warp per tick — the mover has moved off this (fixed) overlap box
         }
     }

@@ -30,10 +30,60 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | `menu/` | 340 | 163 | 0 | 177 | 0 | 0 |
 | `server/` | 174 | 67 | 0 | 0 | 107 | 4898 |
 
-## Largest UNMAPPED files (top 0)
+## Largest UNMAPPED files (top 50)
 
 | file | lines |
 |---|---:|
+| `common/effects/effectinfo_vehicles.inc` | 1166 |
+| `lib/string.qh` | 667 |
+| `server/pathlib/main.qc` | 545 |
+| `common/debug.qh` | 502 |
+| `lib/net.qh` | 453 |
+| `lib/intrusivelist.qh` | 389 |
+| `lib/oo.qh` | 368 |
+| `common/mapobjects/func/pointparticles.qc` | 340 |
+| `lib/_all.inc` | 330 |
+| `common/effects/effectinfo_nades.inc` | 325 |
+| `client/draw.qc` | 311 |
+| `common/effects/effectinfo_buffs.inc` | 305 |
+| `lib/warpzone/mathlib.qc` | 295 |
+| `lib/registry.qh` | 270 |
+| `server/pathlib/path_waypoint.qc` | 239 |
+| `lib/matrix/matrix.qc` | 236 |
+| `server/pathlib/expandnode.qc` | 236 |
+| `lib/vector.qh` | 232 |
+| `lib/stats.qh` | 217 |
+| `server/pathlib/utility.qc` | 213 |
+| `client/main.qh` | 211 |
+| `lib/promise.qc` | 210 |
+| `common/viewloc.qc` | 206 |
+| `common/effects/effectinfo_gentle_particlegibs.inc` | 199 |
+| `lib/iter.qh` | 192 |
+| `lib/color.qh` | 189 |
+| `lib/deglobalization.qh` | 172 |
+| `common/mapobjects/subs.qh` | 171 |
+| `common/physics/movetypes/movetypes.qh` | 166 |
+| `lib/spawnfunc.qh` | 161 |
+| `server/weapons/accuracy.qc` | 160 |
+| `server/pathlib/movenode.qc` | 158 |
+| `common/monsters/sv_monsters.qh` | 154 |
+| `common/animdecide.qh` | 147 |
+| `server/damage.qh` | 147 |
+| `common/effects/qc/modeleffects.qc` | 146 |
+| `common/mapobjects/func/rainsnow.qc` | 143 |
+| `server/bot/default/navigation.qh` | 140 |
+| `server/scores.qh` | 140 |
+| `lib/bits.qh` | 139 |
+| `server/pathlib/costs.qc` | 135 |
+| `client/view.qh` | 134 |
+| `server/weapons/csqcprojectile.qc` | 132 |
+| `common/monsters/monster.qh` | 126 |
+| `lib/map.qh` | 124 |
+| `common/effects/effectinfo_ctf.inc` | 123 |
+| `common/effects/effectinfo_onslaught.inc` | 123 |
+| `server/items/items.qh` | 123 |
+| `common/mutators/events.qh` | 122 |
+| `common/effects/effectinfo_gentle.inc` | 121 |
 
 ## Deferred (audit scheduled)
 

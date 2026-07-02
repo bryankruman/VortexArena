@@ -2646,6 +2646,11 @@ public sealed partial class NetGame : Node3D
         // client accumulators are pre-scaled here.
         float slowmo = ResolveTimeScale();
 
+        // Arm the predicted-warpzone budget: ONE predicted crossing per render frame, across every reconcile
+        // replay chain this frame runs (see TriggerTouch.PredictedWarpBudget — kills the replay round-trip
+        // through both paired zones that stamped a bogus entry-facing view snap).
+        XonoticGodot.Engine.Simulation.TriggerTouch.PredictedWarpBudget = 1;
+
         // Drive the listen server (if any) by real elapsed time — it runs its fixed ticks, pulls each client's
         // queued input, simulates, and broadcasts snapshots.
         // S5: when threaded, the dedicated worker (XG-ServerSim) owns ServerNet.Tick — the main thread must NOT

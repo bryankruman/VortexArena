@@ -1,0 +1,674 @@
+Godot Engine v4.6.3.stable.mono.official.7d41c59c4 - https://godotengine.org
+
+[lb]frameprofiler] env: managed-debugger=False godot-context=debug csharp=Debug vsync=Enabled maxfps=0 refresh=-1Hz cpu=24c gpu=[0m
+[lb]frameprofiler] columns: proc=all _Process CPU | rcpu=render-thread submit | gpu=main viewport GPU | rest=present/vsync/stall (ms-proc-rcpu) | alloc=managed garbage/frame | pipe=shader-pipeline compiles[0m
+=== XonoticGodot boot ===[0m
+Weapons:   27[0m
+Items:     21[0m
+Mutators:  46[0m
+GameTypes: 20[0m
+[lb]MenuState] config: 6462 cvars from 25 cfg files (374 aliases, 0 missing).[0m
+[lb]video] vid_vsync 2 → requested Mailbox, actual Enabled[0m
+[lb]video] cl_maxfps 256 -> Engine.MaxFps 144 (refresh -1Hz)[0m
+[lb]video] process priority AboveNormal (sys_priority_boost 1)[0m
+[MenuCommand] 'playerstats_update' has no client backend yet (inert).
+[lb]Shell] hosting listen server: gametype=dm map=stormkeep bots=5 skill=0 timelimit=0 fraglimit=0[0m
+[AssetSystem] loaded 2439 shaders from 185 scripts.
+[NetTransport.Server] listening on UDP 26000 (max 16).
+[ServerNet] LAN discovery: answering getinfo on UDP 26001 (game port 26000).
+[NetTransport.Client] connecting to 127.0.0.1:26000 …
+[EffectSystem] effectinfo: 301 effects, particlefont atlas: loaded, style overlay: 0 effects
+[Particles] backend=original (cl_particles_modern=0)
+[MapLoader] occluder: 90035 verts / 107970 tris (r_occlusion_cull A/B)
+[MapLoader] 'stormkeep' materials: lightmapped=35 vertexLit=3 plain=9 glow=4 normalMapped=34 (deluxe=True, internalPages=0, atlas=1p, cellSize=131072, cells=8, surfaces=194)
+[MapLoader] 'stormkeep' portal surfaces: 2 (from 2 faces)
+[DecalSplats] geometry: 106027 render triangles, 502 grid cells
+[Skybox] loaded 'env/extragalactic/asteroids'.
+[PortalRenderer] 2 live portal(s)
+[NetGame] map music: 'cdtracks/track005' (from mapinfo/worldspawn)
+[NetGame] precached 24 weapon models, skipped 0 (lazy), 24 muzzle tags.
+[NetGame] precached 36 combat sounds, 10 player models (rendered for pipeline warm).
+[NetGame] listen server on 127.0.0.1:26000 (map 'stormkeep', dm, 5 bots) — self-connecting.
+[ServerNet] peer 381336933 connected (awaiting handshake).
+[ServerNet] peer 381336933 accepted as 'player' (netId 381336933, id 25404485).
+[ClientNet] handshake accepted by 'Xonotic  Server': netId 1, tickrate 72 Hz.
+[NetGame] handshake accepted by 'Xonotic  Server': netId 1.
+[lb]hitch EXTERNAL] 64.4ms (3 dropped @60Hz) (med 6.9, ×9.3) — rest-dominated, game-side quiet — OS/compositor/driver | proc 13.8 rcpu 0.0 gpu 0.0 rest 50.6 | alloc 865KB | ticks 5, remote.ents 21 | watchdog: 4/7 samples in 'ng.process'[0m
+[lb]hitch]   events: [lb]-1f] net: PREDICTION DESYNC 1067qu (predicted vs acked-replay origin)[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL ×2] 29.0–64.4ms over 0.0s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 15.6ms (med 6.9, ×2.2) — present/vsync-bound (rest 10.1ms, gpu 0.0ms) | proc 5.4 rcpu 0.0 gpu 0.0 rest 10.1 | alloc 96KB | ticks 1, remote.ents 21[0m
+[lb]frameprofile] scene: nodes 2839 objs-drawn 0 draws 0 vram 0MB[0m
+[lb]frameprofile] census: Label 876  HBoxContainer 218  Control 157  Dependent 113  Button 110  CvarCheckBox 104  VBoxContainer 78  HSlider 62  CvarSlider 58  MarginContainer 52[0m
+[lb]frameprofile] 315 frames: p50 6.9 p95 126.6 p99 147.1 p99.9 149.9ms (max 150.0) | 2 EXTERNAL, 1 VSYNC/PRESENT | alloc 9MB/s heap 205.8MB | proc 1.4 gpu 0.0[0m
+[lb]frameprofile] ms/frame: iqm.mesh 23.5  iqm.materials 23.4  iqm.anims 4.5  cev.process 3.4  ng.process 1.7  proc:other 1.1  server.tick 0.6  net.send 0.3  cw.process 0.1  net.poll 0.1[0m
+[lb]bots] waypoints for 'stormkeep': nodes=99 (file=loaded, cache=yes)[0m
+[lb]hitch CPU-LOGIC] 126.3ms (7 dropped @60Hz) (med 6.9, ×18.2) — ng.process 499.0ms (typ 31.3ms, 16× over) | proc 126.3 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 296KB | ticks 9, remote.ents 22 | watchdog: 282/330 samples in 'bot.strategy'[0m
+[lb]hitch]   events: anim cache HIT models/player/ignismasked.iqm[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch GC-PAUSE] 122.4ms (6 dropped @60Hz) (med 6.9, ×17.6) — GC g0+1 g1+1 g2+1, pause 1.4ms, 94.3MB allocated | proc 10.5 rcpu 0.0 gpu 0.0 rest 111.9 | alloc 94.3MB | ticks 9, remote.ents 22 | watchdog: 1/3 samples in 'cw.csqc'[0m
+[lb]hitch VSYNC/PRESENT] 19.2ms (med 6.9, ×2.8) — present/vsync-bound (rest 13.7ms, gpu 0.0ms) | proc 5.5 rcpu 0.0 gpu 0.0 rest 13.7 | alloc 80.1MB | ticks 1, remote.ents 22 | watchdog: 4/6 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT ×2] 14.1–19.2ms over 0.0s (med 6.9) — present/vsync-bound (rest 13.7ms, gpu 0.0ms)[0m
+[lb]hitch EXTERNAL] 72.0ms (3 dropped @60Hz) (med 6.9, ×10.4) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.7 rcpu 0.0 gpu 0.0 rest 64.4 | alloc 85KB | ticks 5, remote.ents 22[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 14.4ms, gpu 0.0ms) | proc 2.2 rcpu 0.0 gpu 0.0 rest 14.4 | alloc 178KB | ticks 1, remote.ents 22 | watchdog: 2/3 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 95.5ms (5 dropped @60Hz) (med 6.9, ×13.8) — ng.process 177.3ms (typ 15.7ms, 11× over) | proc 95.5 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 56KB | ticks 7, remote.ents 22 | watchdog: 107/111 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 140.9ms (7 dropped @60Hz) (med 6.9, ×20.3) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.8 rcpu 0.0 gpu 0.0 rest 132.0 | alloc 88KB | ticks 10, remote.ents 22[0m
+[lb]hitch CPU-LOGIC] 18.1ms (med 6.9, ×2.6) — ng.process 162.6ms (typ 22.6ms, 7× over) | proc 18.1 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 48KB | ticks 1, remote.ents 22 | watchdog: 77/103 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 148.6ms (8 dropped @60Hz) (med 6.9, ×21.4) — rest-dominated, game-side quiet — OS/compositor/driver | proc 12.2 rcpu 0.0 gpu 0.0 rest 136.4 | alloc 74KB | ticks 11, remote.ents 22 | watchdog: 1/4 samples in 'move.pm'[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 14.2ms, gpu 0.0ms) | proc 2.5 rcpu 0.0 gpu 0.0 rest 14.2 | alloc 40KB | ticks 1, remote.ents 22 | watchdog: 1/5 samples in 'move.pm'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 95.5 140.9 18.1 148.6[0m
+[lb]hitch EXTERNAL] 105.9ms (5 dropped @60Hz) (med 6.9, ×15.3) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.3 rcpu 0.0 gpu 0.0 rest 98.6 | alloc 56KB | ticks 8, remote.ents 22[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 14.3ms, gpu 0.0ms) | proc 2.4 rcpu 0.0 gpu 0.0 rest 14.3 | alloc 48KB | ticks 1, remote.ents 22[0m
+[lb]hitch EXTERNAL] 130.1ms (7 dropped @60Hz) (med 6.9, ×18.7) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.4 rcpu 0.0 gpu 0.0 rest 121.6 | alloc 65KB | ticks 9, remote.ents 22[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL ×2] 50.0–130.1ms over 0.7s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 14.0ms (med 6.9, ×2.0) — present/vsync-bound (rest 11.2ms, gpu 0.0ms) | proc 2.8 rcpu 0.0 gpu 0.0 rest 11.2 | alloc 40KB | ticks 1, remote.ents 22 | watchdog: 27/30 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 50.0 6.9[0m
+[lb]hitch EXTERNAL] 52.6ms (2 dropped @60Hz) (med 6.9, ×7.6) — rest-dominated, game-side quiet — OS/compositor/driver | proc 2.8 rcpu 0.0 gpu 0.0 rest 49.7 | alloc 40KB | ticks 3, remote.ents 22 | watchdog: 33/35 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL ×5] 26.6–52.6ms over 0.7s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 23.5ms (med 6.9, ×3.4) — present/vsync-bound (rest 22.0ms, gpu 0.0ms) | proc 1.6 rcpu 0.0 gpu 0.0 rest 22.0 | alloc 40KB | ticks 2, remote.ents 21 | watchdog: 20/22 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch CPU-LOGIC] 16.9ms (med 6.9, ×2.4) — ng.process 90.3ms (typ 6.8ms, 13× over) | proc 16.9 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 1.5MB | ticks 1, remote.ents 21 | watchdog: 52/57 samples in 'bot.strategy'[0m
+[lb]hitch ASSET-BUILD] 102.4ms (5 dropped @60Hz) (med 6.9, ×14.7) — iqm.anims 252.1ms (asset build/upload) | proc 10.1 rcpu 0.0 gpu 0.0 rest 92.4 | alloc 31.0MB | ticks 8, remote.ents 21[0m
+[lb]hitch VSYNC/PRESENT] 24.5ms (med 6.9, ×3.5) — present/vsync-bound (rest 14.2ms, gpu 0.0ms) | proc 10.3 rcpu 0.0 gpu 0.0 rest 14.2 | alloc 2.1MB | ticks 1, remote.ents 21 | watchdog: 2/3 samples in '(unscoped)'[0m
+[lb]frameprofile] scene: nodes 2854 objs-drawn 0 draws 0 vram 0MB[0m
+[lb]frameprofile] census: Label 876  HBoxContainer 218  Control 157  Dependent 113  Button 110  CvarCheckBox 104  VBoxContainer 78  HSlider 62  CvarSlider 58  MarginContainer 52[0m
+[lb]frameprofile] 540 frames: p50 6.9 p95 11.6 p99 102.4 p99.9 140.9ms (max 148.6) | 11 EXTERNAL, 1 ASSET-BUILD, 1 GC-PAUSE, 9 VSYNC/PRESENT, 4 CPU-LOGIC | alloc 205MB/s heap 805.9MB | proc 3.0 gpu 0.0[0m
+[lb]frameprofile] ms/frame: ng.process 4.3  server.tick 3.9  sim.move 3.5  move.in 3.2  bot.think 3.2  bot.strategy 3.1  proc:other 0.7  iqm.anims 0.5  bot.path 0.3  cw.process 0.3[0m
+[IdleWarmer] asset warm queue drained — full asset set is hot.
+[lb]hitch VSYNC/PRESENT ×2] 13.2–24.5ms over 0.0s (med 6.9) — present/vsync-bound (rest 14.2ms, gpu 0.0ms)[0m
+[lb]hitch EXTERNAL] 49.4ms (2 dropped @60Hz) (med 6.9, ×7.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 2.7 rcpu 0.0 gpu 0.0 rest 46.7 | alloc 40KB | ticks 3, remote.ents 21 | watchdog: 20/23 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL ×2] 42.1–49.4ms over 0.4s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 15.3ms, gpu 0.0ms) | proc 1.3 rcpu 0.0 gpu 0.0 rest 15.3 | alloc 40KB | ticks 1, remote.ents 21 | watchdog: 33/34 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 38.4ms (1 dropped @60Hz) (med 6.9, ×5.5) — rest-dominated, game-side quiet — OS/compositor/driver | proc 2.7 rcpu 0.0 gpu 0.0 rest 35.7 | alloc 40KB | ticks 3, remote.ents 21 | watchdog: 22/26 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch CPU-LOGIC] 13.6ms (med 6.9, ×2.0) — ng.process 62.1ms (typ 7.1ms, 9× over) | proc 13.6 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 140KB | ticks 1, remote.ents 21 | watchdog: 27/36 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 56.4ms (2 dropped @60Hz) (med 6.9, ×8.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.4 rcpu 0.0 gpu 0.0 rest 53.0 | alloc 48KB | ticks 4, remote.ents 21 | watchdog: 27/37 samples in 'bot.strategy'[0m
+[lb]hitch VSYNC/PRESENT] 13.3ms (med 6.9, ×1.9) — present/vsync-bound (rest 11.4ms, gpu 0.0ms) | proc 1.8 rcpu 0.0 gpu 0.0 rest 11.4 | alloc 48KB | ticks 1, remote.ents 21 | watchdog: 27/37 samples in 'bot.strategy'[0m
+[lb]hitch VSYNC/PRESENT ×2] 13.3–24.7ms over 0.3s (med 6.9) — present/vsync-bound (rest 11.4ms, gpu 0.0ms)[0m
+[lb]hitch EXTERNAL] 37.0ms (1 dropped @60Hz) (med 6.9, ×5.3) — rest-dominated, game-side quiet — OS/compositor/driver | proc 2.3 rcpu 0.0 gpu 0.0 rest 34.7 | alloc 40KB | ticks 3, remote.ents 21 | watchdog: 24/26 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 13.4ms (med 6.9, ×1.9) — present/vsync-bound (rest 12.6ms, gpu 0.0ms) | proc 0.8 rcpu 0.0 gpu 0.0 rest 12.6 | alloc 196KB | ticks 0, remote.ents 21 | watchdog: 24/26 samples in 'bot.strategy'[0m
+[lb]hitch CPU-LOGIC] 61.1ms (3 dropped @60Hz) (med 6.9, ×8.8) — ng.process 99.8ms (typ 9.6ms, 10× over) | proc 61.1 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 48KB | ticks 4, remote.ents 21 | watchdog: 46/60 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch CPU-LOGIC ×2] 61.1–104.0ms over 0.1s (med 6.9) — ng.process 99.8ms (typ 9.6ms, 10× over)[0m
+[lb]hitch EXTERNAL] 90.4ms (4 dropped @60Hz) (med 6.9, ×13.0) — rest-dominated, game-side quiet — OS/compositor/driver | proc 4.9 rcpu 0.0 gpu 0.0 rest 85.6 | alloc 48KB | ticks 6, remote.ents 21[0m
+[lb]hitch VSYNC/PRESENT] 13.9ms (med 6.9, ×2.0) — present/vsync-bound (rest 11.9ms, gpu 0.0ms) | proc 2.0 rcpu 0.0 gpu 0.0 rest 11.9 | alloc 48KB | ticks 1, remote.ents 21[0m
+[lb]hitch VSYNC/PRESENT ×2] 13.9–15.1ms over 0.0s (med 6.9) — present/vsync-bound (rest 11.9ms, gpu 0.0ms)[0m
+[lb]hitch EXTERNAL] 109.7ms (6 dropped @60Hz) (med 6.9, ×15.8) — rest-dominated, game-side quiet — OS/compositor/driver | proc 6.4 rcpu 0.0 gpu 0.0 rest 103.4 | alloc 56KB | ticks 8, remote.ents 21[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL ×2] 77.8–109.7ms over 0.1s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 15.2ms (med 6.9, ×2.2) — present/vsync-bound (rest 13.5ms, gpu 0.0ms) | proc 1.7 rcpu 0.0 gpu 0.0 rest 13.5 | alloc 40KB | ticks 1, remote.ents 21 | watchdog: 52/54 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 38.1ms (1 dropped @60Hz) (med 6.9, ×5.5) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.2 rcpu 0.0 gpu 0.0 rest 34.9 | alloc 40KB | ticks 3, remote.ents 21 | watchdog: 27/28 samples in 'bot.strategy'[0m
+[lb]hitch VSYNC/PRESENT] 15.3ms (med 6.9, ×2.2) — present/vsync-bound (rest 13.4ms, gpu 0.0ms) | proc 1.9 rcpu 0.0 gpu 0.0 rest 13.4 | alloc 40KB | ticks 1, remote.ents 21 | watchdog: 27/28 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 45.6ms (2 dropped @60Hz) (med 6.9, ×6.6) — rest-dominated, game-side quiet — OS/compositor/driver | proc 2.7 rcpu 0.0 gpu 0.0 rest 43.0 | alloc 40KB | ticks 3, remote.ents 21 | watchdog: 34/36 samples in 'bot.strategy'[0m
+[lb]hitch CPU-LOGIC] 16.7ms (med 6.9, ×2.4) — ng.process 49.9ms (typ 9.0ms, 6× over) | proc 16.7 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 56KB | ticks 1, remote.ents 21 | watchdog: 28/29 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 48.6ms (2 dropped @60Hz) (med 6.9, ×7.0) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.1 rcpu 0.0 gpu 0.0 rest 45.5 | alloc 48KB | ticks 4, remote.ents 21 | watchdog: 28/30 samples in 'bot.strategy'[0m
+[lb]hitch VSYNC/PRESENT] 13.2ms (med 6.9, ×1.9) — present/vsync-bound (rest 11.4ms, gpu 0.0ms) | proc 1.8 rcpu 0.0 gpu 0.0 rest 11.4 | alloc 48KB | ticks 1, remote.ents 21 | watchdog: 28/30 samples in 'bot.strategy'[0m
+[lb]frameprofile] scene: nodes 2866 objs-drawn 0 draws 0 vram 0MB[0m
+[lb]frameprofile] census: Label 876  HBoxContainer 218  Control 157  Dependent 113  Button 110  CvarCheckBox 104  VBoxContainer 78  HSlider 62  CvarSlider 58  MarginContainer 52[0m
+[lb]frameprofile] 608 frames: p50 6.9 p95 8.4 p99 48.6 p99.9 104.1ms (max 109.7) | 11 EXTERNAL, 9 VSYNC/PRESENT, 4 CPU-LOGIC | alloc 5MB/s heap 820.1MB | proc 1.4 gpu 0.0[0m
+[lb]frameprofile] ms/frame: ng.process 2.5  server.tick 2.1  sim.move 1.8  move.in 1.5  bot.think 1.5  bot.strategy 1.5  proc:other 0.6  net.send 0.2  move.pm 0.2  bot.path 0.2[0m
+[lb]hitch EXTERNAL] 105.5ms (5 dropped @60Hz) (med 6.9, ×15.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 6.3 rcpu 0.0 gpu 0.0 rest 99.2 | alloc 56KB | ticks 8, remote.ents 21[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL ×2] 53.1–105.5ms over 0.1s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 16.4ms (med 6.9, ×2.4) — present/vsync-bound (rest 14.6ms, gpu 0.0ms) | proc 1.7 rcpu 0.0 gpu 0.0 rest 14.6 | alloc 40KB | ticks 1, remote.ents 21 | watchdog: 38/40 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 87.8ms (4 dropped @60Hz) (med 6.9, ×12.6) — rest-dominated, game-side quiet — OS/compositor/driver | proc 6.1 rcpu 0.0 gpu 0.0 rest 81.7 | alloc 56KB | ticks 6, remote.ents 21 | watchdog: 42/52 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 12.6ms, gpu 0.0ms) | proc 4.1 rcpu 0.0 gpu 0.0 rest 12.6 | alloc 164KB | ticks 2, remote.ents 21[0m
+[lb]hitch EXTERNAL] 71.6ms (3 dropped @60Hz) (med 6.9, ×10.3) — rest-dominated, game-side quiet — OS/compositor/driver | proc 5.3 rcpu 0.0 gpu 0.0 rest 66.3 | alloc 56KB | ticks 5, remote.ents 21 | watchdog: 32/37 samples in 'bot.strategy'[0m
+[lb]hitch CPU-LOGIC] 74.0ms (3 dropped @60Hz) (med 6.9, ×10.7) — ng.process 63.6ms (typ 7.9ms, 8× over) | proc 64.4 rcpu 0.0 gpu 0.0 rest 9.7 | alloc 56KB | ticks 5, remote.ents 21 | watchdog: 36/38 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.7 6.7 6.7 6.7 6.7 6.7 6.7 6.7[0m
+[lb]hitch EXTERNAL] 67.3ms (3 dropped @60Hz) (med 6.9, ×9.7) — rest-dominated, game-side quiet — OS/compositor/driver | proc 6.0 rcpu 0.0 gpu 0.0 rest 61.3 | alloc 169KB | ticks 5, remote.ents 21 | watchdog: 36/40 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL ×4] 51.6–67.3ms over 0.7s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch EXTERNAL] 88.9ms (4 dropped @60Hz) (med 6.9, ×12.8) — rest-dominated, game-side quiet — OS/compositor/driver | proc 4.8 rcpu 0.0 gpu 0.0 rest 84.0 | alloc 48KB | ticks 6, remote.ents 22 | watchdog: 48/69 samples in 'bot.strategy'[0m
+[lb]hitch]   events: [lb]-7f] stream: player model models/player/ignismasked.iqm tex textures/ignisfullbright built (0.0ms); [lb]-7f] stream: player model models/player/ignismasked.iqm tex textures/ignisfullbright_norm built (0.0ms); [lb]-7f] stream: player model models/player/ignismasked.iqm tex textures/ignisfullbright_gloss built (0.0ms); [lb]-7f] stream: player model models/player/ignismasked.iqm tex textures/ignisfullbright_glow built (0.0ms); [lb]-7f] stream: player model models/player/ignismasked.iqm tex textures/ignisfullbright_reflect built (0.0ms); [lb]-7f] stream: player model models/player/ignismasked.iqm tex textures/ignisfullbright_shirt built (0.0ms); [lb]-7f] stream: player model models/player/ignismasked.iqm tex textures/ignisfullbright_pants built (0.0ms); [lb]-7f] stream: player model models/player/ignismasked.iqm tex textures/ignisheadfb built (0.0ms); [lb]-7f] stream: player model models/player/ignismasked.iqm tex textures/ignisheadfb_norm built (0.0ms); [lb]-7f] stream: player model models/player/ignismasked.iqm tex textures/ignisheadfb_gloss built (0.0ms); [lb]-7f] stream: player model models/player/ignismasked.iqm tex textures/ignisheadfb_glow built (0.0ms); [lb]-7f] stream: player model models/player/ignismasked.iqm tex textures/ignisheadfb_reflect built (0.0ms); [lb]-7f] stream: player model models/player/ignismasked.iqm tex textures/ignisheadfb_shirt built (0.0ms); [lb]-7f] stream: player model models/player/ignismasked.iqm tex textures/ignisheadfb_pants built (1.7ms)[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 14.2ms, gpu 0.0ms) | proc 2.5 rcpu 0.0 gpu 0.0 rest 14.2 | alloc 206KB | ticks 1, remote.ents 22[0m
+[lb]hitch EXTERNAL] 67.5ms (3 dropped @60Hz) (med 6.9, ×9.7) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.4 rcpu 0.0 gpu 0.0 rest 64.1 | alloc 40KB | ticks 4, remote.ents 22 | watchdog: 35/42 samples in 'bot.strategy'[0m
+[lb]hitch VSYNC/PRESENT] 12.8ms (med 6.9, ×1.8) — present/vsync-bound (rest 10.7ms, gpu 0.0ms) | proc 2.1 rcpu 0.0 gpu 0.0 rest 10.7 | alloc 40KB | ticks 1, remote.ents 22 | watchdog: 35/42 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 85.1ms (4 dropped @60Hz) (med 6.9, ×12.3) — rest-dominated, game-side quiet — OS/compositor/driver | proc 4.4 rcpu 0.0 gpu 0.0 rest 80.7 | alloc 48KB | ticks 6, remote.ents 22 | watchdog: 47/62 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 14.4ms, gpu 0.0ms) | proc 2.2 rcpu 0.0 gpu 0.0 rest 14.4 | alloc 193KB | ticks 1, remote.ents 22[0m
+[lb]frameprofile] scene: nodes 2882 objs-drawn 0 draws 0 vram 0MB[0m
+[lb]frameprofile] census: Label 876  HBoxContainer 218  Control 157  Dependent 113  Button 110  CvarCheckBox 104  VBoxContainer 78  HSlider 62  CvarSlider 58  MarginContainer 52[0m
+[lb]frameprofile] 610 frames: p50 6.9 p95 8.4 p99 67.4 p99.9 88.9ms (max 105.5) | 11 EXTERNAL, 5 VSYNC/PRESENT, 1 CPU-LOGIC | alloc 5MB/s heap 820.2MB | proc 2.6 gpu 0.0[0m
+[lb]frameprofile] ms/frame: ng.process 2.5  server.tick 2.1  sim.move 1.7  move.in 1.5  bot.think 1.5  bot.strategy 1.4  proc:other 0.5  net.send 0.2  move.pm 0.2  cw.process 0.2[0m
+[lb]hitch EXTERNAL] 68.4ms (3 dropped @60Hz) (med 6.9, ×9.8) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.8 rcpu 0.0 gpu 0.0 rest 64.6 | alloc 48KB | ticks 5, remote.ents 22 | watchdog: 36/43 samples in 'bot.strategy'[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 14.2ms, gpu 0.0ms) | proc 2.4 rcpu 0.0 gpu 0.0 rest 14.2 | alloc 40KB | ticks 1, remote.ents 22 | watchdog: 36/43 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 70.4ms (3 dropped @60Hz) (med 6.9, ×10.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 5.1 rcpu 0.0 gpu 0.0 rest 65.3 | alloc 48KB | ticks 5, remote.ents 22 | watchdog: 34/37 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL ×2] 61.1–70.4ms over 0.7s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.6ms, gpu 0.0ms) | proc 3.1 rcpu 0.0 gpu 0.0 rest 13.6 | alloc 40KB | ticks 1, remote.ents 22[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 61.1[0m
+[lb]hitch CPU-LOGIC] 111.1ms (6 dropped @60Hz) (med 6.9, ×16.0) — ng.process 115.2ms (typ 11.9ms, 10× over) | proc 111.1 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 56KB | ticks 8, remote.ents 22 | watchdog: 62/73 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 7.0 6.9[0m
+[lb]hitch EXTERNAL] 116.7ms (6 dropped @60Hz) (med 6.9, ×16.8) — rest-dominated, game-side quiet — OS/compositor/driver | proc 9.0 rcpu 0.0 gpu 0.0 rest 107.7 | alloc 181KB | ticks 8, remote.ents 22[0m
+[lb]hitch VSYNC/PRESENT] 17.5ms (med 6.9, ×2.5) — present/vsync-bound (rest 13.9ms, gpu 0.0ms) | proc 3.7 rcpu 0.0 gpu 0.0 rest 13.9 | alloc 48KB | ticks 2, remote.ents 22 | watchdog: 2/3 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 103.1ms (5 dropped @60Hz) (med 6.9, ×14.8) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.4 rcpu 0.0 gpu 0.0 rest 94.7 | alloc 48KB | ticks 7, remote.ents 22[0m
+[lb]hitch CPU-LOGIC] 18.3ms (med 6.9, ×2.6) — ng.process 89.1ms (typ 12.7ms, 7× over) | proc 18.3 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 48KB | ticks 2, remote.ents 22 | watchdog: 54/56 samples in 'bot.strategy'[0m
+[lb]hitch CPU-LOGIC ×2] 18.3–83.3ms over 0.1s (med 6.9) — ng.process 89.1ms (typ 12.7ms, 7× over)[0m
+[lb]hitch EXTERNAL] 97.8ms (5 dropped @60Hz) (med 6.9, ×14.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 6.3 rcpu 0.0 gpu 0.0 rest 91.6 | alloc 32.3MB | ticks 7, remote.ents 23[0m
+[lb]hitch]   events: [lb]-1f] anim cache HIT models/player/erebus.iqm; stream: player model models/player/erebus.iqm (parse) built (0.0ms)[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 103.1 18.3 83.3[0m
+[lb]hitch VSYNC/PRESENT] 18.8ms (med 6.9, ×2.7) — present/vsync-bound (rest 12.6ms, gpu 0.0ms) | proc 6.3 rcpu 0.0 gpu 0.0 rest 12.6 | alloc 138KB | ticks 1, remote.ents 23 | watchdog: 7/7 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 126.4ms (7 dropped @60Hz) (med 6.9, ×18.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 9.9 rcpu 0.0 gpu 0.0 rest 116.5 | alloc 56KB | ticks 9, remote.ents 23 | watchdog: 2/3 samples in 'ng.process'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 12.3ms, gpu 0.0ms) | proc 4.4 rcpu 0.0 gpu 0.0 rest 12.3 | alloc 172KB | ticks 1, remote.ents 23 | watchdog: 3/5 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 121.6ms (6 dropped @60Hz) (med 6.9, ×17.5) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.2 rcpu 0.0 gpu 0.0 rest 113.4 | alloc 48KB | ticks 9, remote.ents 24[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 12.6ms (med 6.9, ×1.8) — present/vsync-bound (rest 10.2ms, gpu 0.0ms) | proc 2.4 rcpu 0.0 gpu 0.0 rest 10.2 | alloc 161KB | ticks 0, remote.ents 24 | watchdog: 4/4 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 100.0ms (5 dropped @60Hz) (med 6.9, ×14.4) — rest-dominated, game-side quiet — OS/compositor/driver | proc 5.9 rcpu 0.0 gpu 0.0 rest 94.1 | alloc 56KB | ticks 7, remote.ents 24 | watchdog: 65/69 samples in 'bot.strategy'[0m
+[lb]hitch MIXED] 16.7ms (med 6.9, ×2.4) — mixed — ng.process 5.2ms | proc 7.6 rcpu 0.0 gpu 0.0 rest 9.1 | alloc 56KB | ticks 1, remote.ents 24[0m
+[lb]hitch MIXED ×2] 13.5–16.7ms over 0.4s (med 6.9) — mixed — ng.process 5.2ms[0m
+[lb]hitch CPU-LOGIC] 106.0ms (5 dropped @60Hz) (med 6.9, ×15.3) — ng.process 126.4ms (typ 12.6ms, 10× over) | proc 106.0 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 48KB | ticks 7, remote.ents 25 | watchdog: 75/82 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 13.5 8.3 8.3[0m
+[lb]hitch CPU-LOGIC ×2] 106.0–132.8ms over 0.1s (med 6.9) — ng.process 126.4ms (typ 12.6ms, 10× over)[0m
+[lb]hitch EXTERNAL] 124.8ms (6 dropped @60Hz) (med 6.9, ×18.0) — rest-dominated, game-side quiet — OS/compositor/driver | proc 10.6 rcpu 0.0 gpu 0.0 rest 114.2 | alloc 80KB | ticks 9, remote.ents 25 | watchdog: 2/4 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT] 16.6ms (med 6.9, ×2.4) — present/vsync-bound (rest 12.2ms, gpu 0.0ms) | proc 4.4 rcpu 0.0 gpu 0.0 rest 12.2 | alloc 40KB | ticks 1, remote.ents 25 | watchdog: 3/5 samples in '(unscoped)'[0m
+[lb]frameprofile] scene: nodes 2922 objs-drawn 0 draws 0 vram 0MB[0m
+[lb]frameprofile] census: Label 876  HBoxContainer 218  Control 157  Dependent 113  Button 110  CvarCheckBox 104  VBoxContainer 78  HSlider 62  CvarSlider 58  MarginContainer 52[0m
+[lb]frameprofile] 530 frames: p50 6.9 p95 9.1 p99 106.1 p99.9 126.4ms (max 132.8) | 10 EXTERNAL, 7 VSYNC/PRESENT, 5 CPU-LOGIC, 2 MIXED | alloc 4MB/s heap 856.7MB | proc 2.6 gpu 0.0[0m
+[lb]frameprofile] ms/frame: ng.process 3.8  server.tick 3.4  sim.move 2.9  move.in 2.6  bot.think 2.6  bot.strategy 2.5  proc:other 0.6  cw.process 0.6  cw.players 0.5  net.send 0.3[0m
+[lb]hitch CPU-LOGIC] 97.2ms (5 dropped @60Hz) (med 6.9, ×14.0) — ng.process 121.7ms (typ 11.7ms, 10× over) | proc 97.2 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 120KB | ticks 7, remote.ents 39 | watchdog: 77/79 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch CPU-LOGIC ×2] 97.2–124.8ms over 0.1s (med 6.9) — ng.process 121.7ms (typ 11.7ms, 10× over)[0m
+[lb]hitch EXTERNAL] 116.7ms (6 dropped @60Hz) (med 6.9, ×16.8) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.4 rcpu 0.0 gpu 0.0 rest 109.3 | alloc 56KB | ticks 8, remote.ents 39[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 12.7ms, gpu 0.0ms) | proc 4.0 rcpu 0.0 gpu 0.0 rest 12.7 | alloc 48KB | ticks 2, remote.ents 39 | watchdog: 3/4 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 91.7ms (4 dropped @60Hz) (med 6.9, ×13.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 9.7 rcpu 0.0 gpu 0.0 rest 82.0 | alloc 48KB | ticks 6, remote.ents 39 | watchdog: 1/3 samples in 'ng.process'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch CPU-LOGIC] 17.9ms (med 6.9, ×2.6) — ng.process 90.7ms (typ 13.2ms, 7× over) | proc 17.9 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 156KB | ticks 2, remote.ents 39 | watchdog: 52/58 samples in 'bot.strategy'[0m
+[lb]hitch CPU-LOGIC ×3] 17.9–139.3ms over 0.3s (med 6.9) — ng.process 90.7ms (typ 13.2ms, 7× over)[0m
+[lb]hitch EXTERNAL] 100.9ms (5 dropped @60Hz) (med 6.9, ×14.5) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.5 rcpu 0.0 gpu 0.0 rest 92.4 | alloc 48KB | ticks 8, remote.ents 39[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.3ms, gpu 0.0ms) | proc 3.3 rcpu 0.0 gpu 0.0 rest 13.3 | alloc 48KB | ticks 1, remote.ents 39 | watchdog: 3/4 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 114.0ms (6 dropped @60Hz) (med 6.9, ×16.4) — ng.process 169.4ms (typ 15.0ms, 11× over) | proc 114.0 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 56KB | ticks 8, remote.ents 40 | watchdog: 89/108 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL] 140.7ms (7 dropped @60Hz) (med 6.9, ×20.3) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.8 rcpu 0.0 gpu 0.0 rest 132.9 | alloc 184KB | ticks 10, remote.ents 40[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 12.9ms, gpu 0.0ms) | proc 3.8 rcpu 0.0 gpu 0.0 rest 12.9 | alloc 56KB | ticks 2, remote.ents 39 | watchdog: 3/3 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 107.3ms (5 dropped @60Hz) (med 6.9, ×15.4) — ng.process 93.7ms (typ 11.2ms, 8× over) | proc 96.1 rcpu 0.0 gpu 0.0 rest 11.1 | alloc 48KB | ticks 8, remote.ents 40 | watchdog: 54/60 samples in 'bot.strategy'[0m
+[lb]hitch]   events: [lb]-7f] anim cache HIT models/player/seraphina.iqm; [lb]-6f] stream: player model models/player/seraphina.iqm (parse) built (0.0ms); [lb]-5f] stream: player model models/player/seraphina.iqm tex textures/seraphina built (0.0ms); [lb]-5f] stream: player model models/player/seraphina.iqm tex textures/seraphina_norm built (0.0ms); [lb]-5f] stream: player model models/player/seraphina.iqm tex textures/seraphina_gloss built (0.0ms); [lb]-5f] stream: player model models/player/seraphina.iqm tex textures/seraphina_glow built (0.0ms); [lb]-5f] stream: player model models/player/seraphina.iqm tex textures/seraphina_reflect built (0.0ms); [lb]-5f] stream: player model models/player/seraphina.iqm tex textures/seraphina_shirt built (0.0ms); [lb]-5f] stream: player model models/player/seraphina.iqm tex textures/seraphina_pants built (0.0ms); [lb]-5f] stream: player model models/player/seraphina.iqm tex textures/ignisfullbright built (0.0ms); [lb]-5f] stream: player model models/player/seraphina.iqm tex textures/ignisfullbright_norm built (0.0ms); [lb]-5f] stream: player model models/player/seraphina.iqm tex textures/ignisfullbright_gloss built (0.0ms); [lb]-5f] stream: player model models/player/seraphina.iqm tex textures/ignisfullbright_glow built (0.0ms); [lb]-5f] stream: player model models/player/seraphina.iqm tex textures/ignisfullbright_reflect built (0.0ms); [lb]-5f] stream: player model models/player/seraphina.iqm tex textures/ignisfullbright_shirt built (0.0ms); [lb]-5f] stream: player model models/player/seraphina.iqm tex textures/ignisfullbright_pants built (1.9ms)[0m
+[lb]hitch]   prev: 6.9 6.9 10.3 7.1 6.3 7.1 7.1 7.1[0m
+[lb]hitch EXTERNAL] 100.3ms (5 dropped @60Hz) (med 6.9, ×14.4) — rest-dominated, game-side quiet — OS/compositor/driver | proc 9.5 rcpu 0.0 gpu 0.0 rest 90.8 | alloc 253KB | ticks 7, remote.ents 40[0m
+[lb]hitch EXTERNAL ×2] 85.9–100.3ms over 0.3s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 14.1ms (med 6.9, ×2.0) — present/vsync-bound (rest 10.4ms, gpu 0.0ms) | proc 3.7 rcpu 0.0 gpu 0.0 rest 10.4 | alloc 40KB | ticks 1, remote.ents 40[0m
+[lb]hitch EXTERNAL] 98.1ms (5 dropped @60Hz) (med 6.9, ×14.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 6.3 rcpu 0.0 gpu 0.0 rest 91.8 | alloc 48KB | ticks 7, remote.ents 40[0m
+[lb]hitch]   prev: 5.6 5.6 5.6 6.7 6.9 6.9 6.9 6.9[0m
+[lb]hitch CPU-LOGIC] 95.8ms (5 dropped @60Hz) (med 6.9, ×13.8) — ng.process 115.9ms (typ 11.7ms, 10× over) | proc 95.8 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 56KB | ticks 7, remote.ents 39 | watchdog: 63/74 samples in 'bot.strategy'[0m
+[lb]hitch]   events: anim cache HIT models/player/gakmasked.iqm[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch CPU-LOGIC ×3] 95.8–122.8ms over 0.3s (med 6.9) — ng.process 115.9ms (typ 11.7ms, 10× over)[0m
+[lb]hitch EXTERNAL] 132.7ms (7 dropped @60Hz) (med 6.9, ×19.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 9.1 rcpu 0.0 gpu 0.0 rest 123.6 | alloc 72KB | ticks 10, remote.ents 38 | watchdog: 1/3 samples in 'iqm.skeleton'[0m
+[lb]hitch VSYNC/PRESENT] 17.3ms (med 6.9, ×2.5) — present/vsync-bound (rest 13.2ms, gpu 0.0ms) | proc 4.1 rcpu 0.0 gpu 0.0 rest 13.2 | alloc 56KB | ticks 1, remote.ents 38 | watchdog: 2/4 samples in '(unscoped)'[0m
+[lb]frameprofile] scene: nodes 2954 objs-drawn 0 draws 0 vram 0MB[0m
+[lb]frameprofile] census: Label 876  HBoxContainer 218  Control 157  Dependent 113  Button 110  CvarCheckBox 104  VBoxContainer 78  HSlider 62  CvarSlider 58  MeshInstance3D 53[0m
+[lb]frameprofile] 470 frames: p50 6.9 p95 11.9 p99 116.6 p99.9 139.4ms (max 140.7) | 8 EXTERNAL, 5 VSYNC/PRESENT, 10 CPU-LOGIC | alloc 36MB/s heap 938.6MB | proc 2.0 gpu 0.0[0m
+[lb]frameprofile] ms/frame: ng.process 5.2  server.tick 4.8  sim.move 4.4  move.in 4.0  bot.think 4.0  bot.strategy 3.9  cw.process 1.0  cw.players 0.9  proc:other 0.6  move.pm 0.3[0m
+[lb]hitch EXTERNAL] 114.1ms (6 dropped @60Hz) (med 6.9, ×16.4) — rest-dominated, game-side quiet — OS/compositor/driver | proc 9.6 rcpu 0.0 gpu 0.0 rest 104.5 | alloc 192KB | ticks 8, remote.ents 40 | watchdog: 1/3 samples in 'ng.process'[0m
+[lb]hitch]   prev: 6.7 6.7 6.7 6.7 6.7 6.7 6.7 6.9[0m
+[lb]hitch VSYNC/PRESENT] 21.3ms (med 6.9, ×3.1) — present/vsync-bound (rest 17.8ms, gpu 0.0ms) | proc 3.4 rcpu 0.0 gpu 0.0 rest 17.8 | alloc 145KB | ticks 1, remote.ents 40 | watchdog: 3/5 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 94.5ms (5 dropped @60Hz) (med 6.9, ×13.6) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.4 rcpu 0.0 gpu 0.0 rest 87.1 | alloc 48KB | ticks 7, remote.ents 41[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.5ms, gpu 0.0ms) | proc 3.2 rcpu 0.0 gpu 0.0 rest 13.5 | alloc 193KB | ticks 1, remote.ents 41 | watchdog: 3/3 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 91.7ms (4 dropped @60Hz) (med 6.9, ×13.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 5.9 rcpu 0.0 gpu 0.0 rest 85.7 | alloc 40KB | ticks 6, remote.ents 40 | watchdog: 48/51 samples in 'bot.strategy'[0m
+[lb]hitch VSYNC/PRESENT] 13.8ms (med 6.9, ×2.0) — present/vsync-bound (rest 10.6ms, gpu 0.0ms) | proc 3.2 rcpu 0.0 gpu 0.0 rest 10.6 | alloc 40KB | ticks 1, remote.ents 40[0m
+[lb]hitch EXTERNAL] 67.9ms (3 dropped @60Hz) (med 6.9, ×9.8) — rest-dominated, game-side quiet — OS/compositor/driver | proc 4.9 rcpu 0.0 gpu 0.0 rest 63.0 | alloc 48KB | ticks 5, remote.ents 40 | watchdog: 51/54 samples in 'bot.strategy'[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.4ms, gpu 0.0ms) | proc 3.3 rcpu 0.0 gpu 0.0 rest 13.4 | alloc 40KB | ticks 1, remote.ents 40[0m
+[lb]hitch EXTERNAL] 108.3ms (5 dropped @60Hz) (med 6.9, ×15.6) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.1 rcpu 0.0 gpu 0.0 rest 101.2 | alloc 56KB | ticks 8, remote.ents 40[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.4ms, gpu 0.0ms) | proc 3.3 rcpu 0.0 gpu 0.0 rest 13.4 | alloc 164KB | ticks 1, remote.ents 40 | watchdog: 2/3 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 134.7ms (7 dropped @60Hz) (med 6.9, ×19.4) — ng.process 97.6ms (typ 12.5ms, 8× over) | proc 99.6 rcpu 0.0 gpu 0.0 rest 35.1 | alloc 56KB | ticks 9, remote.ents 40 | watchdog: 56/62 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 105.0ms (5 dropped @60Hz) (med 6.9, ×15.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.9 rcpu 0.0 gpu 0.0 rest 96.0 | alloc 64KB | ticks 8, remote.ents 40[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.3ms, gpu 0.0ms) | proc 3.3 rcpu 0.0 gpu 0.0 rest 13.3 | alloc 40KB | ticks 1, remote.ents 40 | watchdog: 2/3 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 147.2ms (8 dropped @60Hz) (med 6.9, ×21.2) — ng.process 111.5ms (typ 13.7ms, 8× over) | proc 113.4 rcpu 0.0 gpu 0.0 rest 33.8 | alloc 56KB | ticks 10, remote.ents 39 | watchdog: 64/70 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL] 119.7ms (6 dropped @60Hz) (med 6.9, ×17.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.1 rcpu 0.0 gpu 0.0 rest 112.6 | alloc 167KB | ticks 9, remote.ents 39[0m
+[lb]hitch VSYNC/PRESENT] 13.6ms (med 6.9, ×2.0) — present/vsync-bound (rest 10.6ms, gpu 0.0ms) | proc 3.1 rcpu 0.0 gpu 0.0 rest 10.6 | alloc 38KB | ticks 1, remote.ents 39[0m
+[lb]hitch VSYNC/PRESENT ×2] 12.5–13.6ms over 0.0s (med 6.9) — present/vsync-bound (rest 10.6ms, gpu 0.0ms)[0m
+[lb]hitch CPU-LOGIC] 113.1ms (6 dropped @60Hz) (med 6.9, ×16.3) — ng.process 221.2ms (typ 18.4ms, 12× over) | proc 113.1 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 72KB | ticks 8, remote.ents 40 | watchdog: 134/143 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 130.6ms (7 dropped @60Hz) (med 6.9, ×18.8) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.0 rcpu 0.0 gpu 0.0 rest 122.6 | alloc 112KB | ticks 10, remote.ents 40[0m
+[lb]hitch]   events: [lb]-1f] anim cache HIT models/player/seraphina.iqm; stream: player model models/player/seraphina.iqm (parse) built (0.0ms)[0m
+[lb]hitch]   prev: 6.7 6.7 6.7 6.7 6.7 6.7 6.7 113.1[0m
+[lb]hitch VSYNC/PRESENT] 19.4ms (med 6.9, ×2.8) — present/vsync-bound (rest 13.5ms, gpu 0.0ms) | proc 5.8 rcpu 0.0 gpu 0.0 rest 13.5 | alloc 159KB | ticks 1, remote.ents 40 | watchdog: 2/3 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 120.4ms (6 dropped @60Hz) (med 6.9, ×17.3) — rest-dominated, game-side quiet — OS/compositor/driver | proc 6.2 rcpu 0.0 gpu 0.0 rest 114.2 | alloc 48KB | ticks 9, remote.ents 40 | watchdog: 70/73 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.4ms, gpu 0.0ms) | proc 3.2 rcpu 0.0 gpu 0.0 rest 13.4 | alloc 171KB | ticks 1, remote.ents 40[0m
+[lb]hitch EXTERNAL] 115.5ms (6 dropped @60Hz) (med 6.9, ×16.6) — rest-dominated, game-side quiet — OS/compositor/driver | proc 5.6 rcpu 0.0 gpu 0.0 rest 109.9 | alloc 56KB | ticks 8, remote.ents 41 | watchdog: 62/66 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL ×2] 91.5–115.5ms over 0.4s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.1ms, gpu 0.0ms) | proc 3.5 rcpu 0.0 gpu 0.0 rest 13.1 | alloc 40KB | ticks 1, remote.ents 40[0m
+[lb]hitch]   prev: 6.7 6.7 6.7 6.9 6.9 6.9 6.9 91.5[0m
+[lb]frameprofile] scene: nodes 2971 objs-drawn 0 draws 0 vram 0MB[0m
+[lb]frameprofile] census: Label 876  HBoxContainer 218  Control 157  Dependent 113  Button 110  CvarCheckBox 104  VBoxContainer 78  HSlider 62  CvarSlider 58  MeshInstance3D 55[0m
+[lb]frameprofile] 520 frames: p50 6.9 p95 9.9 p99 114.1 p99.9 134.6ms (max 147.2) | 11 EXTERNAL, 11 VSYNC/PRESENT, 3 CPU-LOGIC | alloc 4MB/s heap 933.5MB | proc 2.2 gpu 0.0[0m
+[lb]frameprofile] ms/frame: ng.process 4.1  server.tick 3.7  sim.move 3.3  move.in 3.0  bot.think 3.0  bot.strategy 3.0  cw.process 1.0  cw.players 0.9  proc:other 0.6  move.pm 0.2[0m
+[lb]hitch EXTERNAL] 114.3ms (6 dropped @60Hz) (med 6.9, ×16.5) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.9 rcpu 0.0 gpu 0.0 rest 105.4 | alloc 56KB | ticks 8, remote.ents 41[0m
+[lb]hitch VSYNC/PRESENT] 12.7ms (med 6.9, ×1.8) — present/vsync-bound (rest 8.9ms, gpu 0.0ms) | proc 3.8 rcpu 0.0 gpu 0.0 rest 8.9 | alloc 32KB | ticks 1, remote.ents 41 | watchdog: 2/4 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 119.6ms (6 dropped @60Hz) (med 6.9, ×17.2) — ng.process 108.2ms (typ 11.7ms, 9× over) | proc 110.4 rcpu 0.0 gpu 0.0 rest 9.3 | alloc 48KB | ticks 9, remote.ents 39 | watchdog: 62/67 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL] 116.7ms (6 dropped @60Hz) (med 6.9, ×16.8) — rest-dominated, game-side quiet — OS/compositor/driver | proc 5.9 rcpu 0.0 gpu 0.0 rest 110.7 | alloc 185KB | ticks 8, remote.ents 39 | watchdog: 62/69 samples in 'bot.strategy'[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 12.3ms, gpu 0.0ms) | proc 4.4 rcpu 0.0 gpu 0.0 rest 12.3 | alloc 64KB | ticks 1, remote.ents 40[0m
+[lb]hitch EXTERNAL] 92.1ms (5 dropped @60Hz) (med 6.9, ×13.3) — rest-dominated, game-side quiet — OS/compositor/driver | proc 5.5 rcpu 0.0 gpu 0.0 rest 86.6 | alloc 48KB | ticks 6, remote.ents 40 | watchdog: 52/55 samples in 'bot.strategy'[0m
+[lb]hitch CPU-LOGIC] 17.2ms (med 6.9, ×2.5) — ng.process 89.1ms (typ 10.5ms, 9× over) | proc 17.2 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 64KB | ticks 2, remote.ents 40 | watchdog: 52/54 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 92.1[0m
+[lb]hitch EXTERNAL] 94.6ms (5 dropped @60Hz) (med 6.9, ×13.6) — rest-dominated, game-side quiet — OS/compositor/driver | proc 5.2 rcpu 0.0 gpu 0.0 rest 89.4 | alloc 138KB | ticks 6, remote.ents 40 | watchdog: 52/57 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL ×2] 73.8–94.6ms over 0.3s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch CPU-LOGIC] 115.7ms (6 dropped @60Hz) (med 6.9, ×16.7) — ng.process 115.5ms (typ 12.9ms, 9× over) | proc 115.7 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 48KB | ticks 8, remote.ents 40 | watchdog: 71/74 samples in 'bot.strategy'[0m
+[lb]hitch]   events: [lb]-5f] anim cache HIT models/player/seraphina.iqm; [lb]-4f] stream: player model models/player/seraphina.iqm (parse) built (0.0ms); [lb]-3f] stream: player model models/player/seraphina.iqm tex textures/seraphina built (0.0ms); [lb]-3f] stream: player model models/player/seraphina.iqm tex textures/seraphina_norm built (0.0ms); [lb]-3f] stream: player model models/player/seraphina.iqm tex textures/seraphina_gloss built (0.0ms); [lb]-3f] stream: player model models/player/seraphina.iqm tex textures/seraphina_glow built (0.0ms); [lb]-3f] stream: player model models/player/seraphina.iqm tex textures/seraphina_reflect built (0.0ms); [lb]-3f] stream: player model models/player/seraphina.iqm tex textures/seraphina_shirt built (0.0ms); [lb]-3f] stream: player model models/player/seraphina.iqm tex textures/seraphina_pants built (0.0ms); [lb]-3f] stream: player model models/player/seraphina.iqm tex textures/ignisfullbright built (0.0ms); [lb]-3f] stream: player model models/player/seraphina.iqm tex textures/ignisfullbright_norm built (0.0ms); [lb]-3f] stream: player model models/player/seraphina.iqm tex textures/ignisfullbright_gloss built (0.0ms); [lb]-3f] stream: player model models/player/seraphina.iqm tex textures/ignisfullbright_glow built (0.0ms); [lb]-3f] stream: player model models/player/seraphina.iqm tex textures/ignisfullbright_reflect built (0.0ms); [lb]-3f] stream: player model models/player/seraphina.iqm tex textures/ignisfullbright_shirt built (0.0ms); [lb]-3f] stream: player model models/player/seraphina.iqm tex textures/ignisfullbright_pants built (2.0ms)[0m
+[lb]hitch]   prev: 6.7 6.7 6.7 6.7 6.7 6.7 6.7 6.7[0m
+[lb]hitch EXTERNAL] 119.7ms (6 dropped @60Hz) (med 6.9, ×17.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.2 rcpu 0.0 gpu 0.0 rest 111.5 | alloc 271KB | ticks 9, remote.ents 41[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.3ms, gpu 0.0ms) | proc 3.4 rcpu 0.0 gpu 0.0 rest 13.3 | alloc 56KB | ticks 1, remote.ents 41 | watchdog: 2/3 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 138.1ms (7 dropped @60Hz) (med 6.9, ×19.9) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.6 rcpu 0.0 gpu 0.0 rest 129.4 | alloc 56KB | ticks 10, remote.ents 41[0m
+[lb]hitch VSYNC/PRESENT] 19.6ms (med 6.9, ×2.8) — present/vsync-bound (rest 16.3ms, gpu 0.0ms) | proc 3.3 rcpu 0.0 gpu 0.0 rest 16.3 | alloc 48KB | ticks 1, remote.ents 41 | watchdog: 3/4 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 123.1ms (6 dropped @60Hz) (med 6.9, ×17.7) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.2 rcpu 0.0 gpu 0.0 rest 115.0 | alloc 48KB | ticks 9, remote.ents 41[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 19.2ms (med 6.9, ×2.8) — present/vsync-bound (rest 16.1ms, gpu 0.0ms) | proc 3.1 rcpu 0.0 gpu 0.0 rest 16.1 | alloc 155KB | ticks 1, remote.ents 41 | watchdog: 3/4 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 129.4ms (7 dropped @60Hz) (med 6.9, ×18.6) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.8 rcpu 0.0 gpu 0.0 rest 121.6 | alloc 56KB | ticks 9, remote.ents 41[0m
+[lb]hitch EXTERNAL ×2] 120.7–129.4ms over 0.6s (med 6.7) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch CPU-LOGIC] 139.1ms (7 dropped @60Hz) (med 6.7, ×20.9) — ng.process 131.2ms (typ 14.3ms, 9× over) | proc 133.3 rcpu 0.0 gpu 0.0 rest 5.7 | alloc 48KB | ticks 10, remote.ents 41 | watchdog: 78/82 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.7 6.7 6.7 6.7 6.7 6.7 6.7 6.7[0m
+[lb]hitch CPU-LOGIC ×2] 127.0–139.1ms over 0.1s (med 6.7) — ng.process 131.2ms (typ 14.3ms, 9× over)[0m
+[lb]hitch EXTERNAL] 128.2ms (7 dropped @60Hz) (med 6.7, ×19.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.8 rcpu 0.0 gpu 0.0 rest 120.5 | alloc 48KB | ticks 9, remote.ents 41[0m
+[lb]hitch CPU-LOGIC] 119.6ms (6 dropped @60Hz) (med 6.9, ×17.2) — ng.process 115.5ms (typ 13.6ms, 9× over) | proc 117.7 rcpu 0.0 gpu 0.0 rest 1.9 | alloc 48KB | ticks 9, remote.ents 41 | watchdog: 69/73 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL] 119.3ms (6 dropped @60Hz) (med 6.9, ×17.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 11.6 rcpu 0.0 gpu 0.0 rest 107.7 | alloc 316KB | ticks 8, remote.ents 43 | watchdog: 2/4 samples in 'ng.process'[0m
+[lb]frameprofile] scene: nodes 2995 objs-drawn 0 draws 0 vram 0MB[0m
+[lb]frameprofile] census: Label 876  HBoxContainer 218  Control 157  Dependent 113  Button 110  CvarCheckBox 104  VBoxContainer 78  HSlider 62  MeshInstance3D 59  CvarSlider 58[0m
+[lb]frameprofile] 473 frames: p50 6.9 p95 11.4 p99 123.1 p99.9 138.1ms (max 139.1) | 12 EXTERNAL, 5 VSYNC/PRESENT, 6 CPU-LOGIC | alloc 3MB/s heap 934.5MB | proc 11.6 gpu 0.0[0m
+[lb]frameprofile] ms/frame: ng.process 5.0  server.tick 4.6  sim.move 4.3  move.in 4.0  bot.think 4.0  bot.strategy 3.9  cw.process 1.1  cw.players 1.0  proc:other 0.6  net.send 0.2[0m
+[lb]hitch VSYNC/PRESENT] 21.2ms (med 6.9, ×3.1) — present/vsync-bound (rest 17.0ms, gpu 0.0ms) | proc 4.2 rcpu 0.0 gpu 0.0 rest 17.0 | alloc 104KB | ticks 2, remote.ents 42 | watchdog: 6/10 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT ×2] 13.8–21.2ms over 0.0s (med 6.9) — present/vsync-bound (rest 17.0ms, gpu 0.0ms)[0m
+[lb]hitch EXTERNAL] 142.4ms (8 dropped @60Hz) (med 6.9, ×20.5) — rest-dominated, game-side quiet — OS/compositor/driver | proc 9.8 rcpu 0.0 gpu 0.0 rest 132.6 | alloc 128KB | ticks 10, remote.ents 42 | watchdog: 1/4 samples in 'ng.process'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 23.9ms (med 6.9, ×3.4) — present/vsync-bound (rest 20.0ms, gpu 0.0ms) | proc 3.9 rcpu 0.0 gpu 0.0 rest 20.0 | alloc 186KB | ticks 2, remote.ents 42 | watchdog: 4/7 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 120.6ms (6 dropped @60Hz) (med 6.9, ×17.4) — ng.process 207.3ms (typ 17.8ms, 12× over) | proc 120.6 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 48KB | ticks 9, remote.ents 41 | watchdog: 127/131 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 133.3ms (7 dropped @60Hz) (med 6.9, ×19.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.1 rcpu 0.0 gpu 0.0 rest 126.2 | alloc 72KB | ticks 9, remote.ents 41[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.3ms, gpu 0.0ms) | proc 3.3 rcpu 0.0 gpu 0.0 rest 13.3 | alloc 40KB | ticks 1, remote.ents 41[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 120.6 133.3[0m
+[lb]hitch EXTERNAL] 100.0ms (5 dropped @60Hz) (med 6.9, ×14.4) — rest-dominated, game-side quiet — OS/compositor/driver | proc 4.9 rcpu 0.0 gpu 0.0 rest 95.1 | alloc 48KB | ticks 7, remote.ents 41 | watchdog: 59/63 samples in 'bot.strategy'[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.3ms, gpu 0.0ms) | proc 3.4 rcpu 0.0 gpu 0.0 rest 13.3 | alloc 40KB | ticks 1, remote.ents 41[0m
+[lb]hitch EXTERNAL] 138.9ms (7 dropped @60Hz) (med 6.9, ×20.0) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.1 rcpu 0.0 gpu 0.0 rest 131.8 | alloc 56KB | ticks 10, remote.ents 65 | watchdog: 84/94 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 12.5ms, gpu 0.0ms) | proc 4.1 rcpu 0.0 gpu 0.0 rest 12.5 | alloc 161KB | ticks 1, remote.ents 65[0m
+[lb]hitch EXTERNAL] 120.2ms (6 dropped @60Hz) (med 6.9, ×17.3) — rest-dominated, game-side quiet — OS/compositor/driver | proc 6.7 rcpu 0.0 gpu 0.0 rest 113.5 | alloc 56KB | ticks 8, remote.ents 34[0m
+[lb]hitch CPU-LOGIC] 102.1ms (5 dropped @60Hz) (med 6.9, ×14.7) — ng.process 111.7ms (typ 12.0ms, 9× over) | proc 102.1 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 51KB | ticks 7, remote.ents 34 | watchdog: 52/69 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL] 116.7ms (6 dropped @60Hz) (med 6.9, ×16.8) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.1 rcpu 0.0 gpu 0.0 rest 109.5 | alloc 171KB | ticks 9, remote.ents 34[0m
+[lb]hitch VSYNC/PRESENT] 17.7ms (med 6.9, ×2.5) — present/vsync-bound (rest 14.0ms, gpu 0.0ms) | proc 3.7 rcpu 0.0 gpu 0.0 rest 14.0 | alloc 40KB | ticks 1, remote.ents 34 | watchdog: 3/3 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 83.4ms (4 dropped @60Hz) (med 6.9, ×12.0) — ng.process 82.4ms (typ 13.1ms, 6× over) | proc 83.4 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 48KB | ticks 6, remote.ents 28 | watchdog: 44/51 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 83.7ms (4 dropped @60Hz) (med 6.9, ×12.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 5.2 rcpu 0.0 gpu 0.0 rest 78.5 | alloc 64KB | ticks 6, remote.ents 28 | watchdog: 44/52 samples in 'bot.strategy'[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.8ms, gpu 0.0ms) | proc 2.9 rcpu 0.0 gpu 0.0 rest 13.8 | alloc 40KB | ticks 1, remote.ents 28[0m
+[lb]hitch EXTERNAL] 122.5ms (6 dropped @60Hz) (med 6.9, ×17.6) — rest-dominated, game-side quiet — OS/compositor/driver | proc 6.8 rcpu 0.0 gpu 0.0 rest 115.7 | alloc 48KB | ticks 9, remote.ents 28[0m
+[lb]hitch]   prev: 7.1 7.1 7.1 7.1 7.1 7.1 7.1 7.1[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.5ms, gpu 0.0ms) | proc 3.2 rcpu 0.0 gpu 0.0 rest 13.5 | alloc 188KB | ticks 1, remote.ents 28 | watchdog: 2/3 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 95.3ms (5 dropped @60Hz) (med 6.9, ×13.7) — ng.process 258.8ms (typ 18.2ms, 14× over) | proc 95.3 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 40KB | ticks 7, remote.ents 28 | watchdog: 150/168 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL] 130.8ms (7 dropped @60Hz) (med 6.9, ×18.8) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.3 rcpu 0.0 gpu 0.0 rest 122.4 | alloc 177KB | ticks 9, remote.ents 28[0m
+[lb]frameprofile] scene: nodes 2948 objs-drawn 0 draws 0 vram 0MB[0m
+[lb]frameprofile] census: Label 876  HBoxContainer 218  Control 157  Dependent 113  Button 110  CvarCheckBox 104  VBoxContainer 78  HSlider 62  CvarSlider 58  MarginContainer 52[0m
+[lb]frameprofile] 523 frames: p50 6.9 p95 8.6 p99 120.1 p99.9 138.9ms (max 142.4) | 9 EXTERNAL, 9 VSYNC/PRESENT, 4 CPU-LOGIC | alloc 4MB/s heap 938.3MB | proc 2.5 gpu 0.0[0m
+[lb]frameprofile] ms/frame: ng.process 4.2  server.tick 3.8  sim.move 3.5  move.in 3.2  bot.think 3.2  bot.strategy 3.2  cw.process 1.2  cw.players 1.1  proc:other 0.6  bot.path 0.2[0m
+[lb]hitch EXTERNAL ×3] 77.2–130.8ms over 0.6s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.6ms, gpu 0.0ms) | proc 3.1 rcpu 0.0 gpu 0.0 rest 13.6 | alloc 40KB | ticks 1, remote.ents 28 | watchdog: 59/62 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 91.1[0m
+[lb]hitch EXTERNAL] 90.8ms (4 dropped @60Hz) (med 6.9, ×13.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 5.7 rcpu 0.0 gpu 0.0 rest 85.1 | alloc 40KB | ticks 6, remote.ents 29 | watchdog: 53/57 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 12.9ms, gpu 0.0ms) | proc 3.8 rcpu 0.0 gpu 0.0 rest 12.9 | alloc 131KB | ticks 2, remote.ents 29[0m
+[lb]hitch EXTERNAL] 132.8ms (7 dropped @60Hz) (med 6.9, ×19.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 11.0 rcpu 0.0 gpu 0.0 rest 121.8 | alloc 128KB | ticks 9, remote.ents 35 | watchdog: 1/3 samples in 'ng.process'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 13.9ms (med 6.9, ×2.0) — present/vsync-bound (rest 10.4ms, gpu 0.0ms) | proc 3.5 rcpu 0.0 gpu 0.0 rest 10.4 | alloc 186KB | ticks 1, remote.ents 35 | watchdog: 2/5 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT ×2] 13.2–13.9ms over 0.0s (med 6.9) — present/vsync-bound (rest 10.4ms, gpu 0.0ms)[0m
+[lb]hitch EXTERNAL] 88.2ms (4 dropped @60Hz) (med 6.9, ×12.7) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.9 rcpu 0.0 gpu 0.0 rest 79.2 | alloc 56KB | ticks 6, remote.ents 34 | watchdog: 2/3 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.3ms, gpu 0.0ms) | proc 3.4 rcpu 0.0 gpu 0.0 rest 13.3 | alloc 64KB | ticks 2, remote.ents 34 | watchdog: 3/4 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 104.3ms (5 dropped @60Hz) (med 6.9, ×15.0) — ng.process 106.4ms (typ 15.4ms, 7× over) | proc 104.3 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 128KB | ticks 7, remote.ents 34 | watchdog: 54/67 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 16.7 4.9 6.9 6.9 6.9 6.7 6.7 6.7[0m
+[lb]hitch EXTERNAL] 116.7ms (6 dropped @60Hz) (med 6.9, ×16.8) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.8 rcpu 0.0 gpu 0.0 rest 108.9 | alloc 152KB | ticks 9, remote.ents 33[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 10.6ms, gpu 0.0ms) | proc 6.0 rcpu 0.0 gpu 0.0 rest 10.6 | alloc 112KB | ticks 1, remote.ents 34 | watchdog: 2/3 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 117.9ms (6 dropped @60Hz) (med 6.9, ×17.0) — ng.process 219.2ms (typ 18.0ms, 12× over) | proc 117.9 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 48KB | ticks 8, remote.ents 28 | watchdog: 136/142 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch CPU-LOGIC ×3] 117.2–134.2ms over 0.2s (med 6.9) — ng.process 219.2ms (typ 18.0ms, 12× over)[0m
+[lb]hitch EXTERNAL] 99.4ms (5 dropped @60Hz) (med 6.9, ×14.3) — rest-dominated, game-side quiet — OS/compositor/driver | proc 6.4 rcpu 0.0 gpu 0.0 rest 93.0 | alloc 48KB | ticks 8, remote.ents 28[0m
+[lb]frameprofile] scene: nodes 2949 objs-drawn 0 draws 0 vram 0MB[0m
+[lb]frameprofile] census: Label 876  HBoxContainer 218  Control 157  Dependent 113  Button 110  CvarCheckBox 104  VBoxContainer 78  HSlider 62  CvarSlider 58  MarginContainer 52[0m
+[lb]frameprofile] 541 frames: p50 6.9 p95 7.6 p99 99.4 p99.9 132.9ms (max 134.2) | 9 EXTERNAL, 6 VSYNC/PRESENT, 4 CPU-LOGIC | alloc 3MB/s heap 934.7MB | proc 1.9 gpu 0.0[0m
+[lb]frameprofile] ms/frame: ng.process 3.6  server.tick 3.2  sim.move 2.9  move.in 2.6  bot.think 2.6  bot.strategy 2.5  cw.process 1.1  cw.players 1.0  proc:other 0.5  net.send 0.2[0m
+[lb]hitch EXTERNAL ×5] 75.0–140.0ms over 2.0s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 18.3ms (med 6.9, ×2.6) — present/vsync-bound (rest 15.2ms, gpu 0.0ms) | proc 3.1 rcpu 0.0 gpu 0.0 rest 15.2 | alloc 40KB | ticks 1, remote.ents 28 | watchdog: 1/6 samples in 'mp.weapon'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 140.0[0m
+[lb]hitch VSYNC/PRESENT ×2] 15.1–18.3ms over 0.0s (med 6.9) — present/vsync-bound (rest 15.2ms, gpu 0.0ms)[0m
+[lb]hitch CPU-LOGIC] 141.9ms (8 dropped @60Hz) (med 6.9, ×20.4) — ng.process 142.2ms (typ 22.0ms, 6× over) | proc 141.9 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 56KB | ticks 10, remote.ents 28 | watchdog: 87/91 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 141.5ms (7 dropped @60Hz) (med 6.9, ×20.4) — rest-dominated, game-side quiet — OS/compositor/driver | proc 9.0 rcpu 0.0 gpu 0.0 rest 132.4 | alloc 64KB | ticks 10, remote.ents 27[0m
+[lb]hitch VSYNC/PRESENT] 18.3ms (med 6.9, ×2.6) — present/vsync-bound (rest 14.9ms, gpu 0.0ms) | proc 3.4 rcpu 0.0 gpu 0.0 rest 14.9 | alloc 38KB | ticks 1, remote.ents 27 | watchdog: 2/4 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT ×2] 15.1–18.3ms over 0.0s (med 6.9) — present/vsync-bound (rest 14.9ms, gpu 0.0ms)[0m
+[lb]hitch EXTERNAL] 98.6ms (5 dropped @60Hz) (med 6.9, ×14.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.9 rcpu 0.0 gpu 0.0 rest 90.7 | alloc 48KB | ticks 7, remote.ents 41[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 16.8ms (med 6.9, ×2.4) — present/vsync-bound (rest 12.6ms, gpu 0.0ms) | proc 4.1 rcpu 0.0 gpu 0.0 rest 12.6 | alloc 164KB | ticks 1, remote.ents 41 | watchdog: 4/4 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 109.8ms (6 dropped @60Hz) (med 6.9, ×15.8) — rest-dominated, game-side quiet — OS/compositor/driver | proc 10.1 rcpu 0.0 gpu 0.0 rest 99.6 | alloc 56KB | ticks 8, remote.ents 41 | watchdog: 1/3 samples in 'ng.process'[0m
+[lb]hitch VSYNC/PRESENT] 19.3ms (med 6.9, ×2.8) — present/vsync-bound (rest 15.3ms, gpu 0.0ms) | proc 4.0 rcpu 0.0 gpu 0.0 rest 15.3 | alloc 40KB | ticks 1, remote.ents 41 | watchdog: 2/5 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 99.1ms (5 dropped @60Hz) (med 6.9, ×14.3) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.6 rcpu 0.0 gpu 0.0 rest 91.5 | alloc 56KB | ticks 7, remote.ents 41[0m
+[lb]hitch CPU-LOGIC] 105.2ms (5 dropped @60Hz) (med 6.9, ×15.1) — ng.process 101.5ms (typ 12.4ms, 8× over) | proc 103.8 rcpu 0.0 gpu 0.0 rest 1.5 | alloc 48KB | ticks 7, remote.ents 41 | watchdog: 59/65 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL] 111.8ms (6 dropped @60Hz) (med 6.9, ×16.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.9 rcpu 0.0 gpu 0.0 rest 102.9 | alloc 163KB | ticks 8, remote.ents 41[0m
+[lb]hitch VSYNC/PRESENT] 21.5ms (med 6.9, ×3.1) — present/vsync-bound (rest 14.7ms, gpu 0.0ms) | proc 6.8 rcpu 0.0 gpu 0.0 rest 14.7 | alloc 40KB | ticks 2, remote.ents 41[0m
+[lb]hitch CPU-LOGIC] 139.0ms (7 dropped @60Hz) (med 6.9, ×20.0) — ng.process 106.8ms (typ 16.6ms, 6× over) | proc 110.2 rcpu 0.0 gpu 0.0 rest 28.7 | alloc 56KB | ticks 10, remote.ents 41 | watchdog: 63/69 samples in 'bot.strategy'[0m
+[lb]hitch CPU-LOGIC ×2] 118.0–139.0ms over 0.3s (med 6.9) — ng.process 106.8ms (typ 16.6ms, 6× over)[0m
+[lb]hitch EXTERNAL] 142.7ms (8 dropped @60Hz) (med 6.9, ×20.6) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.8 rcpu 0.0 gpu 0.0 rest 133.9 | alloc 48KB | ticks 11, remote.ents 41[0m
+[lb]hitch]   prev: 6.9 6.9 7.0 7.3 7.2 6.7 139.0 118.0[0m
+[lb]hitch VSYNC/PRESENT] 14.1ms (med 6.9, ×2.0) — present/vsync-bound (rest 10.0ms, gpu 0.0ms) | proc 4.1 rcpu 0.0 gpu 0.0 rest 10.0 | alloc 137KB | ticks 1, remote.ents 41 | watchdog: 3/5 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 92.5ms (5 dropped @60Hz) (med 6.9, ×13.3) — rest-dominated, game-side quiet — OS/compositor/driver | proc 11.6 rcpu 0.0 gpu 0.0 rest 81.0 | alloc 128KB | ticks 7, remote.ents 42 | watchdog: 2/4 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT] 18.0ms (med 6.9, ×2.6) — present/vsync-bound (rest 13.2ms, gpu 0.0ms) | proc 4.8 rcpu 0.0 gpu 0.0 rest 13.2 | alloc 56KB | ticks 1, remote.ents 42 | watchdog: 5/7 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT ×2] 15.3–18.0ms over 0.0s (med 6.9) — present/vsync-bound (rest 13.2ms, gpu 0.0ms)[0m
+[lb]hitch EXTERNAL] 129.2ms (7 dropped @60Hz) (med 6.9, ×18.6) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.7 rcpu 0.0 gpu 0.0 rest 120.5 | alloc 53KB | ticks 9, remote.ents 41[0m
+[lb]hitch]   prev: 9.4 5.6 6.1 6.8 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 23.1ms (med 6.9, ×3.3) — present/vsync-bound (rest 19.6ms, gpu 0.0ms) | proc 3.5 rcpu 0.0 gpu 0.0 rest 19.6 | alloc 114KB | ticks 2, remote.ents 41 | watchdog: 5/5 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 92.5ms (5 dropped @60Hz) (med 6.9, ×13.3) — ng.process 93.0ms (typ 17.7ms, 5× over) | proc 92.5 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 48KB | ticks 6, remote.ents 40 | watchdog: 55/60 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 90.9ms (4 dropped @60Hz) (med 6.9, ×13.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 6.1 rcpu 0.0 gpu 0.0 rest 84.8 | alloc 48KB | ticks 7, remote.ents 40 | watchdog: 55/62 samples in 'bot.strategy'[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 12.8ms, gpu 0.0ms) | proc 3.8 rcpu 0.0 gpu 0.0 rest 12.8 | alloc 56KB | ticks 1, remote.ents 40[0m
+[lb]hitch CPU-LOGIC] 100.2ms (5 dropped @60Hz) (med 6.9, ×14.4) — ng.process 120.7ms (typ 13.0ms, 9× over) | proc 100.2 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 48KB | ticks 7, remote.ents 40 | watchdog: 73/78 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL] 124.8ms (6 dropped @60Hz) (med 6.9, ×18.0) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.6 rcpu 0.0 gpu 0.0 rest 117.2 | alloc 162KB | ticks 9, remote.ents 40[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 11.7ms, gpu 0.0ms) | proc 5.0 rcpu 0.0 gpu 0.0 rest 11.7 | alloc 40KB | ticks 1, remote.ents 40 | watchdog: 2/3 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 124.9ms (6 dropped @60Hz) (med 6.9, ×18.0) — ng.process 100.5ms (typ 13.4ms, 8× over) | proc 103.1 rcpu 0.0 gpu 0.0 rest 21.8 | alloc 56KB | ticks 9, remote.ents 40 | watchdog: 61/66 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 8.3 8.3 8.3 8.3 8.3 8.3 7.0 6.9[0m
+[lb]hitch EXTERNAL] 107.0ms (5 dropped @60Hz) (med 6.9, ×15.4) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.4 rcpu 0.0 gpu 0.0 rest 98.6 | alloc 165KB | ticks 7, remote.ents 40[0m
+[lb]frameprofile] scene: nodes 2963 objs-drawn 0 draws 0 vram 0MB[0m
+[lb]frameprofile] census: Label 876  HBoxContainer 218  Control 157  Dependent 113  Button 110  CvarCheckBox 104  VBoxContainer 78  HSlider 62  CvarSlider 58  MeshInstance3D 54[0m
+[lb]frameprofile] 403 frames: p50 6.9 p95 21.6 p99 129.1 p99.9 141.9ms (max 142.7) | 13 EXTERNAL, 13 VSYNC/PRESENT, 7 CPU-LOGIC | alloc 3MB/s heap 935.0MB | proc 8.4 gpu 0.0[0m
+[lb]frameprofile] ms/frame: ng.process 7.3  server.tick 6.8  sim.move 6.4  move.in 5.9  bot.think 5.9  bot.strategy 5.8  cw.process 1.1  cw.players 0.9  proc:other 0.7  move.pm 0.3[0m
+[lb]hitch VSYNC/PRESENT] 16.5ms (med 6.9, ×2.4) — present/vsync-bound (rest 12.5ms, gpu 0.0ms) | proc 4.0 rcpu 0.0 gpu 0.0 rest 12.5 | alloc 88KB | ticks 2, remote.ents 40 | watchdog: 5/7 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 83.3ms (4 dropped @60Hz) (med 6.9, ×12.0) — rest-dominated, game-side quiet — OS/compositor/driver | proc 12.7 rcpu 0.0 gpu 0.0 rest 70.6 | alloc 120KB | ticks 6, remote.ents 41 | watchdog: 1/4 samples in 'sim.start'[0m
+[lb]hitch VSYNC/PRESENT] 19.3ms (med 6.9, ×2.8) — present/vsync-bound (rest 16.1ms, gpu 0.0ms) | proc 3.2 rcpu 0.0 gpu 0.0 rest 16.1 | alloc 40KB | ticks 1, remote.ents 41 | watchdog: 2/6 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT ×2] 14.1–19.3ms over 0.0s (med 6.9) — present/vsync-bound (rest 16.1ms, gpu 0.0ms)[0m
+[lb]hitch EXTERNAL] 131.2ms (7 dropped @60Hz) (med 6.9, ×18.9) — rest-dominated, game-side quiet — OS/compositor/driver | proc 9.8 rcpu 0.0 gpu 0.0 rest 121.4 | alloc 56KB | ticks 9, remote.ents 40 | watchdog: 2/4 samples in 'ng.process'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 17.4ms (med 6.9, ×2.5) — present/vsync-bound (rest 13.2ms, gpu 0.0ms) | proc 4.2 rcpu 0.0 gpu 0.0 rest 13.2 | alloc 145KB | ticks 2, remote.ents 40 | watchdog: 3/6 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 112.9ms (6 dropped @60Hz) (med 6.9, ×16.3) — ng.process 137.7ms (typ 14.5ms, 10× over) | proc 112.9 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 128KB | ticks 8, remote.ents 41 | watchdog: 84/90 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 126.9ms (7 dropped @60Hz) (med 6.9, ×18.3) — rest-dominated, game-side quiet — OS/compositor/driver | proc 10.0 rcpu 0.0 gpu 0.0 rest 117.0 | alloc 72KB | ticks 9, remote.ents 40 | watchdog: 1/3 samples in 'ng.process'[0m
+[lb]hitch VSYNC/PRESENT] 13.0ms (med 6.9, ×1.9) — present/vsync-bound (rest 9.8ms, gpu 0.0ms) | proc 3.2 rcpu 0.0 gpu 0.0 rest 9.8 | alloc 40KB | ticks 1, remote.ents 40 | watchdog: 1/4 samples in 'ng.process'[0m
+[lb]hitch EXTERNAL] 95.8ms (5 dropped @60Hz) (med 6.9, ×13.8) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.3 rcpu 0.0 gpu 0.0 rest 87.5 | alloc 48KB | ticks 6, remote.ents 41[0m
+[lb]hitch]   prev: 6.7 6.7 6.7 6.7 6.7 6.7 6.7 6.7[0m
+[lb]hitch VSYNC/PRESENT] 17.2ms (med 6.9, ×2.5) — present/vsync-bound (rest 11.7ms, gpu 0.0ms) | proc 5.4 rcpu 0.0 gpu 0.0 rest 11.7 | alloc 152KB | ticks 2, remote.ents 40 | watchdog: 4/5 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 141.2ms (7 dropped @60Hz) (med 6.9, ×20.3) — rest-dominated, game-side quiet — OS/compositor/driver | proc 12.7 rcpu 0.0 gpu 0.0 rest 128.4 | alloc 56KB | ticks 10, remote.ents 41 | watchdog: 1/5 samples in 'move.pm'[0m
+[lb]hitch VSYNC/PRESENT] 21.9ms (med 6.9, ×3.2) — present/vsync-bound (rest 17.6ms, gpu 0.0ms) | proc 4.2 rcpu 0.0 gpu 0.0 rest 17.6 | alloc 64KB | ticks 2, remote.ents 41 | watchdog: 3/7 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 123.3ms (6 dropped @60Hz) (med 6.9, ×17.8) — rest-dominated, game-side quiet — OS/compositor/driver | proc 9.1 rcpu 0.0 gpu 0.0 rest 114.2 | alloc 56KB | ticks 9, remote.ents 40 | watchdog: 1/3 samples in 'net.send'[0m
+[lb]hitch]   prev: 8.4 5.6 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 18.6ms (med 6.9, ×2.7) — present/vsync-bound (rest 14.1ms, gpu 0.0ms) | proc 4.5 rcpu 0.0 gpu 0.0 rest 14.1 | alloc 144KB | ticks 1, remote.ents 40 | watchdog: 3/5 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 116.3ms (6 dropped @60Hz) (med 6.9, ×16.7) — ng.process 145.0ms (typ 16.1ms, 9× over) | proc 116.3 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 72KB | ticks 8, remote.ents 41 | watchdog: 82/92 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 133.6ms (7 dropped @60Hz) (med 6.9, ×19.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 11.1 rcpu 0.0 gpu 0.0 rest 122.5 | alloc 64KB | ticks 10, remote.ents 40 | watchdog: 1/3 samples in 'ng.process'[0m
+[lb]hitch VSYNC/PRESENT] 21.9ms (med 6.9, ×3.2) — present/vsync-bound (rest 18.2ms, gpu 0.0ms) | proc 3.7 rcpu 0.0 gpu 0.0 rest 18.2 | alloc 40KB | ticks 2, remote.ents 40 | watchdog: 3/5 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 94.9ms (5 dropped @60Hz) (med 6.9, ×13.7) — ng.process 196.2ms (typ 15.8ms, 12× over) | proc 94.9 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 48KB | ticks 7, remote.ents 40 | watchdog: 118/128 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL] 133.3ms (7 dropped @60Hz) (med 6.9, ×19.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 6.9 rcpu 0.0 gpu 0.0 rest 126.4 | alloc 172KB | ticks 9, remote.ents 40[0m
+[lb]hitch VSYNC/PRESENT] 18.6ms (med 6.9, ×2.7) — present/vsync-bound (rest 14.8ms, gpu 0.0ms) | proc 3.8 rcpu 0.0 gpu 0.0 rest 14.8 | alloc 40KB | ticks 2, remote.ents 40 | watchdog: 3/4 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT ×2] 14.7–18.6ms over 0.0s (med 6.9) — present/vsync-bound (rest 14.8ms, gpu 0.0ms)[0m
+[lb]hitch EXTERNAL] 112.5ms (6 dropped @60Hz) (med 6.9, ×16.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.7 rcpu 0.0 gpu 0.0 rest 103.8 | alloc 48KB | ticks 8, remote.ents 40 | watchdog: 2/3 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT] 16.8ms (med 6.9, ×2.4) — present/vsync-bound (rest 12.7ms, gpu 0.0ms) | proc 4.1 rcpu 0.0 gpu 0.0 rest 12.7 | alloc 56KB | ticks 1, remote.ents 40 | watchdog: 5/6 samples in '(unscoped)'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 7.7 6.9 112.5[0m
+[lb]hitch EXTERNAL] 126.0ms (7 dropped @60Hz) (med 6.9, ×18.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.4 rcpu 0.0 gpu 0.0 rest 117.6 | alloc 48KB | ticks 9, remote.ents 40[0m
+[lb]hitch EXTERNAL ×2] 126.0–142.1ms over 0.3s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch CPU-LOGIC] 99.5ms (5 dropped @60Hz) (med 6.9, ×14.3) — ng.process 131.8ms (typ 19.2ms, 7× over) | proc 99.5 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 40KB | ticks 7, remote.ents 40 | watchdog: 82/86 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.7 6.7 142.1 11.7 9.5 0.5 8.3 8.3[0m
+[lb]hitch EXTERNAL] 125.9ms (7 dropped @60Hz) (med 6.9, ×18.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 10.3 rcpu 0.0 gpu 0.0 rest 115.6 | alloc 170KB | ticks 9, remote.ents 40 | watchdog: 1/3 samples in 'ng.process'[0m
+[lb]hitch VSYNC/PRESENT] 13.4ms (med 6.9, ×1.9) — present/vsync-bound (rest 9.5ms, gpu 0.0ms) | proc 3.9 rcpu 0.0 gpu 0.0 rest 9.5 | alloc 40KB | ticks 1, remote.ents 40 | watchdog: 3/5 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 147.1ms (8 dropped @60Hz) (med 6.9, ×21.2) — ng.process 126.9ms (typ 15.0ms, 8× over) | proc 129.2 rcpu 0.0 gpu 0.0 rest 17.9 | alloc 48KB | ticks 10, remote.ents 41 | watchdog: 78/82 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 7.7 6.9 6.9 6.9 7.3 6.9[0m
+[lb]hitch CPU-LOGIC ×3] 125.4–147.1ms over 0.3s (med 6.9) — ng.process 126.9ms (typ 15.0ms, 8× over)[0m
+[lb]hitch EXTERNAL] 122.8ms (6 dropped @60Hz) (med 6.9, ×17.7) — rest-dominated, game-side quiet — OS/compositor/driver | proc 9.3 rcpu 0.0 gpu 0.0 rest 113.5 | alloc 56KB | ticks 9, remote.ents 41 | watchdog: 2/3 samples in '(unscoped)'[0m
+[lb]frameprofile] scene: nodes 2980 objs-drawn 0 draws 0 vram 0MB[0m
+[lb]frameprofile] census: Label 876  HBoxContainer 218  Control 157  Dependent 113  Button 110  CvarCheckBox 104  VBoxContainer 78  HSlider 62  CvarSlider 58  MeshInstance3D 56[0m
+[lb]frameprofile] 406 frames: p50 6.9 p95 21.9 p99 131.1 p99.9 142.1ms (max 147.1) | 13 EXTERNAL, 13 VSYNC/PRESENT, 7 CPU-LOGIC | alloc 3MB/s heap 935.3MB | proc 9.3 gpu 0.0[0m
+[lb]frameprofile] ms/frame: ng.process 7.3  server.tick 6.8  sim.move 6.3  move.in 5.9  bot.think 5.9  bot.strategy 5.8  cw.process 1.0  cw.players 0.8  proc:other 0.7  move.pm 0.3[0m
+[lb]hitch VSYNC/PRESENT] 23.8ms (med 6.9, ×3.4) — present/vsync-bound (rest 19.7ms, gpu 0.0ms) | proc 4.1 rcpu 0.0 gpu 0.0 rest 19.7 | alloc 96KB | ticks 1, remote.ents 41 | watchdog: 16/17 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 30.9ms (1 dropped @60Hz) (med 6.9, ×4.5) — rest-dominated, game-side quiet — OS/compositor/driver | proc 5.7 rcpu 0.0 gpu 0.0 rest 25.3 | alloc 48KB | ticks 3, remote.ents 41 | watchdog: 14/14 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.0ms, gpu 0.0ms) | proc 3.7 rcpu 0.0 gpu 0.0 rest 13.0 | alloc 40KB | ticks 1, remote.ents 41 | watchdog: 6/6 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT ×2] 14.2–16.7ms over 0.0s (med 6.7) — present/vsync-bound (rest 13.0ms, gpu 0.0ms)[0m
+[lb]hitch EXTERNAL] 144.0ms (8 dropped @60Hz) (med 6.7, ×21.6) — rest-dominated, game-side quiet — OS/compositor/driver | proc 10.9 rcpu 0.0 gpu 0.0 rest 133.1 | alloc 72KB | ticks 10, remote.ents 41 | watchdog: 1/4 samples in 'cw.players'[0m
+[lb]hitch]   events: anim cache HIT models/player/ignismasked.iqm[0m
+[lb]hitch]   prev: 6.7 6.7 6.7 6.7 6.7 6.7 6.7 6.7[0m
+[lb]hitch VSYNC/PRESENT] 18.4ms (med 6.7, ×2.8) — present/vsync-bound (rest 13.9ms, gpu 0.0ms) | proc 4.4 rcpu 0.0 gpu 0.0 rest 13.9 | alloc 180KB | ticks 1, remote.ents 41 | watchdog: 5/8 samples in '(unscoped)'[0m
+[lb]hitch MIXED] 15.5ms (med 6.7, ×2.3) — mixed — ng.process 3.5ms | proc 8.2 rcpu 0.0 gpu 0.0 rest 7.2 | alloc 72KB | ticks 1, remote.ents 41[0m
+[lb]hitch VSYNC/PRESENT] 16.0ms (med 6.7, ×2.4) — present/vsync-bound (rest 11.8ms, gpu 0.0ms) | proc 4.3 rcpu 0.0 gpu 0.0 rest 11.8 | alloc 32KB | ticks 1, remote.ents 41[0m
+[lb]hitch EXTERNAL] 79.9ms (4 dropped @60Hz) (med 6.7, ×12.0) — rest-dominated, game-side quiet — OS/compositor/driver | proc 5.5 rcpu 0.0 gpu 0.0 rest 74.4 | alloc 40KB | ticks 5, remote.ents 41 | watchdog: 51/56 samples in 'bot.strategy'[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.7, ×2.5) — present/vsync-bound (rest 12.0ms, gpu 0.0ms) | proc 4.6 rcpu 0.0 gpu 0.0 rest 12.0 | alloc 56KB | ticks 2, remote.ents 41[0m
+[lb]hitch EXTERNAL] 131.3ms (7 dropped @60Hz) (med 6.7, ×19.7) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.5 rcpu 0.0 gpu 0.0 rest 122.7 | alloc 56KB | ticks 9, remote.ents 40[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 21.1ms (med 6.7, ×3.2) — present/vsync-bound (rest 17.2ms, gpu 0.0ms) | proc 3.9 rcpu 0.0 gpu 0.0 rest 17.2 | alloc 154KB | ticks 2, remote.ents 40 | watchdog: 3/5 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT ×3] 12.2–21.1ms over 0.0s (med 6.7) — present/vsync-bound (rest 17.2ms, gpu 0.0ms)[0m
+[lb]hitch EXTERNAL] 117.7ms (6 dropped @60Hz) (med 6.7, ×17.6) — rest-dominated, game-side quiet — OS/compositor/driver | proc 11.0 rcpu 0.0 gpu 0.0 rest 106.7 | alloc 48KB | ticks 8, remote.ents 41 | watchdog: 1/4 samples in 'ng.process'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 20.5ms (med 6.7, ×3.1) — present/vsync-bound (rest 15.5ms, gpu 0.0ms) | proc 5.1 rcpu 0.0 gpu 0.0 rest 15.5 | alloc 161KB | ticks 2, remote.ents 41 | watchdog: 3/6 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 93.7ms (5 dropped @60Hz) (med 6.7, ×14.0) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.0 rcpu 0.0 gpu 0.0 rest 86.7 | alloc 48KB | ticks 7, remote.ents 41[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.7, ×2.5) — present/vsync-bound (rest 12.7ms, gpu 0.0ms) | proc 4.0 rcpu 0.0 gpu 0.0 rest 12.7 | alloc 56KB | ticks 1, remote.ents 41 | watchdog: 3/3 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 125.0ms (6 dropped @60Hz) (med 6.9, ×18.0) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.6 rcpu 0.0 gpu 0.0 rest 116.4 | alloc 48KB | ticks 9, remote.ents 41[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 12.7ms, gpu 0.0ms) | proc 4.0 rcpu 0.0 gpu 0.0 rest 12.7 | alloc 178KB | ticks 1, remote.ents 41 | watchdog: 3/4 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 74.3ms (3 dropped @60Hz) (med 6.9, ×10.7) — ng.process 88.7ms (typ 9.4ms, 9× over) | proc 74.3 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 48KB | ticks 5, remote.ents 41 | watchdog: 53/56 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch CPU-LOGIC ×3] 74.3–97.8ms over 0.2s (med 6.9) — ng.process 88.7ms (typ 9.4ms, 9× over)[0m
+[lb]hitch EXTERNAL] 84.4ms (4 dropped @60Hz) (med 6.9, ×12.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 4.7 rcpu 0.0 gpu 0.0 rest 79.7 | alloc 48KB | ticks 6, remote.ents 41 | watchdog: 44/51 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL ×2] 77.3–84.4ms over 0.1s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 17.3ms (med 6.9, ×2.5) — present/vsync-bound (rest 13.2ms, gpu 0.0ms) | proc 4.1 rcpu 0.0 gpu 0.0 rest 13.2 | alloc 40KB | ticks 2, remote.ents 42 | watchdog: 2/3 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 135.7ms (7 dropped @60Hz) (med 6.9, ×19.5) — ng.process 152.2ms (typ 17.0ms, 9× over) | proc 135.7 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 56KB | ticks 9, remote.ents 42 | watchdog: 91/97 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL] 125.5ms (7 dropped @60Hz) (med 6.9, ×18.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 10.3 rcpu 0.0 gpu 0.0 rest 115.2 | alloc 184KB | ticks 9, remote.ents 41 | watchdog: 2/3 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 13.6ms (med 6.9, ×2.0) — ng.process 89.3ms (typ 20.2ms, 4× over) | proc 13.6 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 40KB | ticks 1, remote.ents 41 | watchdog: 52/58 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 94.2ms (5 dropped @60Hz) (med 6.9, ×13.6) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.1 rcpu 0.0 gpu 0.0 rest 86.1 | alloc 48KB | ticks 7, remote.ents 41[0m
+[lb]hitch VSYNC/PRESENT] 17.1ms (med 6.9, ×2.5) — present/vsync-bound (rest 13.1ms, gpu 0.0ms) | proc 4.0 rcpu 0.0 gpu 0.0 rest 13.1 | alloc 40KB | ticks 1, remote.ents 41 | watchdog: 2/3 samples in '(unscoped)'[0m
+[lb]frameprofile] scene: nodes 2984 objs-drawn 0 draws 0 vram 0MB[0m
+[lb]frameprofile] census: Label 876  HBoxContainer 218  Control 157  Dependent 113  Button 110  CvarCheckBox 104  VBoxContainer 78  HSlider 62  CvarSlider 58  MeshInstance3D 57[0m
+[lb]frameprofile] 516 frames: p50 6.9 p95 15.4 p99 97.9 p99.9 135.6ms (max 144.0) | 11 EXTERNAL, 14 VSYNC/PRESENT, 5 CPU-LOGIC, 1 MIXED | alloc 4MB/s heap 938.1MB | proc 2.1 gpu 0.0[0m
+[lb]frameprofile] ms/frame: ng.process 4.1  server.tick 3.7  sim.move 3.2  move.in 2.9  bot.think 2.9  bot.strategy 2.9  cw.process 1.1  cw.players 1.0  proc:other 0.7  net.send 0.3[0m
+[lb]hitch EXTERNAL] 126.0ms (7 dropped @60Hz) (med 6.9, ×18.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.1 rcpu 0.0 gpu 0.0 rest 117.9 | alloc 48KB | ticks 9, remote.ents 42[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL ×2] 90.0–126.0ms over 0.3s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 11.6ms, gpu 0.0ms) | proc 5.0 rcpu 0.0 gpu 0.0 rest 11.6 | alloc 40KB | ticks 1, remote.ents 41[0m
+[lb]hitch EXTERNAL] 96.6ms (5 dropped @60Hz) (med 6.9, ×13.9) — rest-dominated, game-side quiet — OS/compositor/driver | proc 15.0 rcpu 0.0 gpu 0.0 rest 81.7 | alloc 136KB | ticks 7, remote.ents 43 | watchdog: 2/6 samples in 'ng.process'[0m
+[lb]hitch VSYNC/PRESENT] 20.4ms (med 6.9, ×2.9) — present/vsync-bound (rest 15.3ms, gpu 0.0ms) | proc 5.0 rcpu 0.0 gpu 0.0 rest 15.3 | alloc 48KB | ticks 1, remote.ents 43 | watchdog: 4/9 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT ×2] 13.0–20.4ms over 0.0s (med 6.9) — present/vsync-bound (rest 15.3ms, gpu 0.0ms)[0m
+[lb]hitch EXTERNAL] 136.7ms (7 dropped @60Hz) (med 6.9, ×19.7) — rest-dominated, game-side quiet — OS/compositor/driver | proc 11.4 rcpu 0.0 gpu 0.0 rest 125.4 | alloc 56KB | ticks 9, remote.ents 42 | watchdog: 2/4 samples in '(unscoped)'[0m
+[lb]hitch]   prev: 6.7 7.4 5.9 96.6 20.4 13.0 1.9 4.9[0m
+[lb]hitch VSYNC/PRESENT] 23.1ms (med 6.9, ×3.3) — present/vsync-bound (rest 19.2ms, gpu 0.0ms) | proc 3.9 rcpu 0.0 gpu 0.0 rest 19.2 | alloc 137KB | ticks 2, remote.ents 42 | watchdog: 4/6 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 132.3ms (7 dropped @60Hz) (med 6.9, ×19.0) — rest-dominated, game-side quiet — OS/compositor/driver | proc 6.0 rcpu 0.0 gpu 0.0 rest 126.3 | alloc 56KB | ticks 9, remote.ents 41 | watchdog: 72/77 samples in 'bot.strategy'[0m
+[lb]hitch VSYNC/PRESENT] 13.6ms (med 6.9, ×2.0) — present/vsync-bound (rest 9.3ms, gpu 0.0ms) | proc 4.3 rcpu 0.0 gpu 0.0 rest 9.3 | alloc 32KB | ticks 1, remote.ents 41[0m
+[lb]hitch EXTERNAL] 132.3ms (7 dropped @60Hz) (med 6.9, ×19.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 10.9 rcpu 0.0 gpu 0.0 rest 121.4 | alloc 56KB | ticks 9, remote.ents 41 | watchdog: 2/3 samples in 'ng.process'[0m
+[lb]hitch]   prev: 6.3 6.3 6.3 6.3 6.7 6.7 6.7 6.7[0m
+[lb]hitch VSYNC/PRESENT] 15.1ms (med 6.9, ×2.2) — present/vsync-bound (rest 9.9ms, gpu 0.0ms) | proc 5.2 rcpu 0.0 gpu 0.0 rest 9.9 | alloc 145KB | ticks 1, remote.ents 41 | watchdog: 3/6 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 118.8ms (6 dropped @60Hz) (med 6.9, ×17.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 6.3 rcpu 0.0 gpu 0.0 rest 112.5 | alloc 48KB | ticks 8, remote.ents 41 | watchdog: 65/71 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL ×2] 111.8–118.8ms over 0.4s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch CPU-LOGIC] 18.7ms (med 6.9, ×2.7) — ng.process 149.3ms (typ 15.3ms, 10× over) | proc 18.7 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 40KB | ticks 1, remote.ents 41 | watchdog: 91/97 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 147.9ms (8 dropped @60Hz) (med 6.9, ×21.3) — rest-dominated, game-side quiet — OS/compositor/driver | proc 11.2 rcpu 0.0 gpu 0.0 rest 136.8 | alloc 72KB | ticks 11, remote.ents 41 | watchdog: 1/4 samples in 'move.pm'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 111.8 18.7[0m
+[lb]hitch VSYNC/PRESENT] 18.7ms (med 6.9, ×2.7) — present/vsync-bound (rest 12.7ms, gpu 0.0ms) | proc 6.1 rcpu 0.0 gpu 0.0 rest 12.7 | alloc 136KB | ticks 1, remote.ents 41 | watchdog: 4/7 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 14.6ms (med 6.9, ×2.1) — ng.process 98.8ms (typ 18.6ms, 5× over) | proc 14.6 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 40KB | ticks 1, remote.ents 41 | watchdog: 57/63 samples in 'bot.strategy'[0m
+[lb]hitch CPU-LOGIC ×2] 14.6–100.0ms over 0.1s (med 6.9) — ng.process 98.8ms (typ 18.6ms, 5× over)[0m
+[lb]hitch EXTERNAL] 100.0ms (5 dropped @60Hz) (med 6.9, ×14.4) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.5 rcpu 0.0 gpu 0.0 rest 92.5 | alloc 56KB | ticks 8, remote.ents 41[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 12.9ms, gpu 0.0ms) | proc 3.8 rcpu 0.0 gpu 0.0 rest 12.9 | alloc 40KB | ticks 1, remote.ents 41 | watchdog: 3/3 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 105.6ms (5 dropped @60Hz) (med 6.9, ×15.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 22.0 rcpu 0.0 gpu 0.0 rest 83.6 | alloc 236KB | ticks 7, remote.ents 42 | watchdog: 4/10 samples in 'ng.process'[0m
+[lb]hitch]   events: anim cache HIT models/player/ignismasked.iqm[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.8 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL ×3] 33.3–127.0ms over 0.5s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 20.7ms (med 6.9, ×3.0) — present/vsync-bound (rest 14.2ms, gpu 0.0ms) | proc 6.5 rcpu 0.0 gpu 0.0 rest 14.2 | alloc 32KB | ticks 2, remote.ents 42[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 7.2 6.9 127.0[0m
+[lb]hitch VSYNC/PRESENT ×3] 12.6–20.7ms over 0.0s (med 6.9) — present/vsync-bound (rest 14.2ms, gpu 0.0ms)[0m
+[lb]hitch EXTERNAL] 132.8ms (7 dropped @60Hz) (med 6.9, ×19.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 11.7 rcpu 0.0 gpu 0.0 rest 121.0 | alloc 56KB | ticks 9, remote.ents 42 | watchdog: 2/4 samples in 'ng.process'[0m
+[lb]hitch VSYNC/PRESENT] 23.7ms (med 6.9, ×3.4) — present/vsync-bound (rest 18.4ms, gpu 0.0ms) | proc 5.3 rcpu 0.0 gpu 0.0 rest 18.4 | alloc 56KB | ticks 2, remote.ents 42 | watchdog: 4/7 samples in '(unscoped)'[0m
+[lb]hitch MIXED] 13.9ms (med 6.9, ×2.0) — mixed — ng.process 3.2ms | proc 6.4 rcpu 0.0 gpu 0.0 rest 7.4 | alloc 32KB | ticks 1, remote.ents 42[0m
+[lb]hitch EXTERNAL] 119.7ms (6 dropped @60Hz) (med 6.9, ×17.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 12.9 rcpu 0.0 gpu 0.0 rest 106.8 | alloc 56KB | ticks 9, remote.ents 42 | watchdog: 1/4 samples in 'move.pm'[0m
+[lb]hitch]   prev: 8.3 8.1 7.6 4.9 7.6 7.6 7.6 7.6[0m
+[lb]hitch VSYNC/PRESENT] 24.2ms (med 6.9, ×3.5) — present/vsync-bound (rest 20.1ms, gpu 0.0ms) | proc 4.0 rcpu 0.0 gpu 0.0 rest 20.1 | alloc 154KB | ticks 1, remote.ents 42 | watchdog: 3/7 samples in '(unscoped)'[0m
+[lb]frameprofile] scene: nodes 2994 objs-drawn 0 draws 0 vram 0MB[0m
+[lb]frameprofile] census: Label 876  HBoxContainer 218  Control 157  Dependent 113  Button 110  CvarCheckBox 104  VBoxContainer 78  HSlider 62  MeshInstance3D 58  CvarSlider 58[0m
+[lb]frameprofile] 465 frames: p50 6.9 p95 16.6 p99 127.1 p99.9 136.6ms (max 147.9) | 15 EXTERNAL, 14 VSYNC/PRESENT, 3 CPU-LOGIC, 1 MIXED | alloc 3MB/s heap 931.9MB | proc 2.7 gpu 0.0[0m
+[lb]frameprofile] ms/frame: ng.process 5.3  server.tick 4.8  sim.move 4.3  move.in 3.9  bot.think 3.9  bot.strategy 3.8  cw.process 1.4  cw.players 1.2  proc:other 0.8  net.send 0.3[0m
+[lb]hitch VSYNC/PRESENT ×2] 13.1–24.2ms over 0.0s (med 6.9) — present/vsync-bound (rest 20.1ms, gpu 0.0ms)[0m
+[lb]hitch EXTERNAL] 115.8ms (6 dropped @60Hz) (med 6.9, ×16.7) — rest-dominated, game-side quiet — OS/compositor/driver | proc 11.4 rcpu 0.0 gpu 0.0 rest 104.4 | alloc 64KB | ticks 8, remote.ents 42 | watchdog: 2/4 samples in 'ng.process'[0m
+[lb]hitch CPU-LOGIC] 20.6ms (med 6.9, ×3.0) — ng.process 150.0ms (typ 14.9ms, 10× over) | proc 20.6 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 64KB | ticks 1, remote.ents 42 | watchdog: 94/97 samples in 'bot.strategy'[0m
+[lb]hitch CPU-LOGIC ×2] 20.6–138.6ms over 0.2s (med 6.9) — ng.process 150.0ms (typ 14.9ms, 10× over)[0m
+[lb]hitch EXTERNAL] 133.1ms (7 dropped @60Hz) (med 6.9, ×19.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 11.9 rcpu 0.0 gpu 0.0 rest 121.2 | alloc 56KB | ticks 10, remote.ents 41 | watchdog: 2/4 samples in 'ng.process'[0m
+[lb]hitch]   prev: 6.7 6.7 6.7 6.7 6.7 115.8 20.6 138.6[0m
+[lb]hitch VSYNC/PRESENT] 24.3ms (med 6.9, ×3.5) — present/vsync-bound (rest 19.7ms, gpu 0.0ms) | proc 4.6 rcpu 0.0 gpu 0.0 rest 19.7 | alloc 130KB | ticks 2, remote.ents 41 | watchdog: 4/7 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 127.6ms (7 dropped @60Hz) (med 6.9, ×18.4) — rest-dominated, game-side quiet — OS/compositor/driver | proc 15.0 rcpu 0.0 gpu 0.0 rest 112.6 | alloc 72KB | ticks 9, remote.ents 42 | watchdog: 2/6 samples in 'ng.process'[0m
+[lb]hitch VSYNC/PRESENT] 22.4ms (med 6.9, ×3.2) — present/vsync-bound (rest 18.1ms, gpu 0.0ms) | proc 4.3 rcpu 0.0 gpu 0.0 rest 18.1 | alloc 64KB | ticks 2, remote.ents 42 | watchdog: 3/8 samples in '(unscoped)'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 127.6[0m
+[lb]hitch CPU-LOGIC] 134.7ms (7 dropped @60Hz) (med 6.9, ×19.4) — ng.process 249.6ms (typ 19.8ms, 13× over) | proc 134.7 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 48KB | ticks 10, remote.ents 42 | watchdog: 156/164 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL] 126.7ms (7 dropped @60Hz) (med 6.9, ×18.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 11.7 rcpu 0.0 gpu 0.0 rest 115.0 | alloc 185KB | ticks 9, remote.ents 42 | watchdog: 2/4 samples in 'cw.players'[0m
+[lb]hitch VSYNC/PRESENT] 23.3ms (med 6.9, ×3.4) — present/vsync-bound (rest 19.1ms, gpu 0.0ms) | proc 4.2 rcpu 0.0 gpu 0.0 rest 19.1 | alloc 40KB | ticks 1, remote.ents 41 | watchdog: 3/6 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 117.5ms (6 dropped @60Hz) (med 6.9, ×16.9) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.7 rcpu 0.0 gpu 0.0 rest 108.8 | alloc 48KB | ticks 8, remote.ents 41[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 7.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 20.5ms (med 6.9, ×3.0) — present/vsync-bound (rest 14.6ms, gpu 0.0ms) | proc 5.9 rcpu 0.0 gpu 0.0 rest 14.6 | alloc 169KB | ticks 2, remote.ents 41 | watchdog: 3/5 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 13.0ms (med 6.9, ×1.9) — ng.process 107.7ms (typ 6.6ms, 16× over) | proc 13.0 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 32KB | ticks 1, remote.ents 41 | watchdog: 61/70 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.0 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch CPU-LOGIC ×3] 13.0–133.3ms over 0.2s (med 6.9) — ng.process 107.7ms (typ 6.6ms, 16× over)[0m
+[lb]hitch EXTERNAL] 103.3ms (5 dropped @60Hz) (med 6.9, ×14.9) — rest-dominated, game-side quiet — OS/compositor/driver | proc 6.6 rcpu 0.0 gpu 0.0 rest 96.7 | alloc 48KB | ticks 8, remote.ents 41[0m
+[lb]hitch VSYNC/PRESENT] 13.4ms (med 6.9, ×1.9) — present/vsync-bound (rest 10.0ms, gpu 0.0ms) | proc 3.4 rcpu 0.0 gpu 0.0 rest 10.0 | alloc 48KB | ticks 1, remote.ents 40 | watchdog: 3/3 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 108.8ms (6 dropped @60Hz) (med 6.9, ×15.7) — rest-dominated, game-side quiet — OS/compositor/driver | proc 9.0 rcpu 0.0 gpu 0.0 rest 99.8 | alloc 56KB | ticks 8, remote.ents 39[0m
+[lb]hitch EXTERNAL ×2] 67.6–108.8ms over 0.4s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.4ms, gpu 0.0ms) | proc 3.2 rcpu 0.0 gpu 0.0 rest 13.4 | alloc 40KB | ticks 1, remote.ents 40 | watchdog: 52/55 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 67.6[0m
+[lb]hitch EXTERNAL] 117.0ms (6 dropped @60Hz) (med 6.9, ×16.8) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.6 rcpu 0.0 gpu 0.0 rest 109.4 | alloc 26KB | ticks 8, remote.ents 40[0m
+[lb]hitch CPU-LOGIC] 121.1ms (6 dropped @60Hz) (med 6.9, ×17.4) — ng.process 143.8ms (typ 14.6ms, 10× over) | proc 121.1 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 48KB | ticks 8, remote.ents 40 | watchdog: 80/91 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.7 6.7 6.7 6.7 6.7 6.7 6.9 6.9[0m
+[lb]hitch EXTERNAL] 133.3ms (7 dropped @60Hz) (med 6.9, ×19.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.8 rcpu 0.0 gpu 0.0 rest 125.6 | alloc 171KB | ticks 10, remote.ents 40[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.4ms, gpu 0.0ms) | proc 3.3 rcpu 0.0 gpu 0.0 rest 13.4 | alloc 32KB | ticks 1, remote.ents 40 | watchdog: 2/3 samples in '(unscoped)'[0m
+[lb]frameprofile] scene: nodes 2974 objs-drawn 0 draws 0 vram 0MB[0m
+[lb]frameprofile] census: Label 876  HBoxContainer 218  Control 157  Dependent 113  Button 110  CvarCheckBox 104  VBoxContainer 78  HSlider 62  CvarSlider 58  MeshInstance3D 55[0m
+[lb]frameprofile] 479 frames: p50 6.9 p95 10.6 p99 127.6 p99.9 134.6ms (max 138.6) | 10 EXTERNAL, 7 VSYNC/PRESENT, 7 CPU-LOGIC | alloc 3MB/s heap 933.2MB | proc 3.1 gpu 0.0[0m
+[lb]frameprofile] ms/frame: ng.process 5.3  server.tick 4.9  sim.move 4.4  move.in 4.0  bot.think 4.0  bot.strategy 3.9  cw.process 1.2  cw.players 1.1  proc:other 0.7  move.pm 0.3[0m
+[lb]hitch CPU-LOGIC] 134.7ms (7 dropped @60Hz) (med 6.9, ×19.4) — ng.process 274.0ms (typ 22.0ms, 12× over) | proc 134.7 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 450KB | ticks 10, remote.ents 41 | watchdog: 142/183 samples in 'bot.strategy'[0m
+[lb]hitch]   events: anim cache HIT models/player/gakmasked.iqm[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL] 133.3ms (7 dropped @60Hz) (med 6.9, ×19.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 17.0 rcpu 0.0 gpu 0.0 rest 116.3 | alloc 200KB | ticks 9, remote.ents 40 | watchdog: 1/7 samples in 'move.pm'[0m
+[lb]hitch VSYNC/PRESENT] 33.3ms (1 dropped @60Hz) (med 6.9, ×4.8) — present/vsync-bound (rest 20.5ms, gpu 0.0ms) | proc 12.8 rcpu 0.0 gpu 0.0 rest 20.5 | alloc 72KB | ticks 3, remote.ents 40 | watchdog: 2/5 samples in 'ng.process'[0m
+[lb]hitch VSYNC/PRESENT ×2] 16.7–33.3ms over 0.0s (med 6.9) — present/vsync-bound (rest 20.5ms, gpu 0.0ms)[0m
+[lb]hitch MIXED] 12.7ms (med 6.9, ×1.8) — mixed — ng.process 3.1ms | proc 5.8 rcpu 0.0 gpu 0.0 rest 6.8 | alloc 32KB | ticks 1, remote.ents 40[0m
+[lb]hitch CPU-LOGIC] 137.1ms (7 dropped @60Hz) (med 6.9, ×19.7) — ng.process 272.5ms (typ 24.2ms, 11× over) | proc 137.1 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 48KB | ticks 10, remote.ents 39 | watchdog: 169/178 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.7 6.7 6.7 6.7 6.7 6.7 6.7 6.7[0m
+[lb]hitch CPU-LOGIC ×2] 137.1–139.5ms over 0.3s (med 6.9) — ng.process 272.5ms (typ 24.2ms, 11× over)[0m
+[lb]hitch EXTERNAL] 133.3ms (7 dropped @60Hz) (med 6.9, ×19.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 19.0 rcpu 0.0 gpu 0.0 rest 114.3 | alloc 56KB | ticks 9, remote.ents 39 | watchdog: 5/10 samples in 'move.pm'[0m
+[lb]hitch EXTERNAL ×3] 33.3–135.7ms over 0.8s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 24.2ms (med 6.9, ×3.5) — present/vsync-bound (rest 16.8ms, gpu 0.0ms) | proc 7.4 rcpu 0.0 gpu 0.0 rest 16.8 | alloc 32KB | ticks 2, remote.ents 40[0m
+[lb]hitch]   prev: 6.9 7.7 6.9 6.9 5.4 7.4 6.9 135.7[0m
+[lb]hitch MIXED] 15.0ms (med 6.9, ×2.2) — mixed — ng.process 3.6ms | proc 6.8 rcpu 0.0 gpu 0.0 rest 8.2 | alloc 160KB | ticks 1, remote.ents 40[0m
+[lb]hitch VSYNC/PRESENT] 17.7ms (med 6.9, ×2.6) — present/vsync-bound (rest 11.5ms, gpu 0.0ms) | proc 6.2 rcpu 0.0 gpu 0.0 rest 11.5 | alloc 32KB | ticks 1, remote.ents 40[0m
+[lb]hitch VSYNC/PRESENT ×2] 16.7–17.7ms over 0.0s (med 6.9) — present/vsync-bound (rest 11.5ms, gpu 0.0ms)[0m
+[lb]hitch EXTERNAL] 143.9ms (8 dropped @60Hz) (med 6.9, ×20.7) — rest-dominated, game-side quiet — OS/compositor/driver | proc 28.1 rcpu 0.0 gpu 0.0 rest 115.8 | alloc 462KB | ticks 10, remote.ents 42 | watchdog: 3/16 samples in 'bot.steer'[0m
+[lb]hitch CPU-LOGIC] 37.8ms (1 dropped @60Hz) (med 6.9, ×5.5) — ng.process 343.4ms (typ 30.1ms, 11× over) | proc 37.8 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 72KB | ticks 3, remote.ents 41 | watchdog: 149/226 samples in 'bot.strategy'[0m
+[lb]hitch]   events: [lb]-1f] anim cache HIT models/player/gakmasked.iqm; stream: player model models/player/gakmasked.iqm (parse) built (0.0ms)[0m
+[lb]hitch]   prev: 6.7 6.7 6.7 6.7 6.7 6.7 6.7 143.9[0m
+[lb]hitch CPU-LOGIC ×3] 37.8–145.5ms over 0.3s (med 6.9) — ng.process 343.4ms (typ 30.1ms, 11× over)[0m
+[lb]hitch EXTERNAL] 129.9ms (7 dropped @60Hz) (med 6.9, ×18.7) — rest-dominated, game-side quiet — OS/compositor/driver | proc 16.2 rcpu 0.0 gpu 0.0 rest 113.6 | alloc 56KB | ticks 10, remote.ents 41 | watchdog: 3/8 samples in 'move.pm'[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 11.7ms, gpu 0.0ms) | proc 5.0 rcpu 0.0 gpu 0.0 rest 11.7 | alloc 48KB | ticks 1, remote.ents 41 | watchdog: 4/10 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 132.9ms (7 dropped @60Hz) (med 6.9, ×19.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 22.9 rcpu 0.0 gpu 0.0 rest 109.9 | alloc 64KB | ticks 9, remote.ents 42 | watchdog: 3/11 samples in 'mp.weapon'[0m
+[lb]hitch]   prev: 8.4 6.7 10.0 7.1 6.7 6.7 6.7 6.7[0m
+[lb]hitch CPU-LOGIC] 35.5ms (1 dropped @60Hz) (med 6.9, ×5.1) — ng.process 156.9ms (typ 35.5ms, 4× over) | proc 35.5 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 140KB | ticks 3, remote.ents 42 | watchdog: 94/98 samples in 'bot.strategy'[0m
+[lb]hitch CPU-LOGIC ×2] 35.5–146.6ms over 0.2s (med 6.9) — ng.process 156.9ms (typ 35.5ms, 4× over)[0m
+[lb]hitch EXTERNAL] 134.5ms (7 dropped @60Hz) (med 6.9, ×19.4) — rest-dominated, game-side quiet — OS/compositor/driver | proc 10.4 rcpu 0.0 gpu 0.0 rest 124.1 | alloc 64KB | ticks 10, remote.ents 42 | watchdog: 1/4 samples in 'ng.process'[0m
+[lb]hitch VSYNC/PRESENT] 20.9ms (med 6.9, ×3.0) — present/vsync-bound (rest 17.3ms, gpu 0.0ms) | proc 3.6 rcpu 0.0 gpu 0.0 rest 17.3 | alloc 56KB | ticks 1, remote.ents 42 | watchdog: 3/6 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT ×2] 12.8–20.9ms over 0.0s (med 6.7) — present/vsync-bound (rest 17.3ms, gpu 0.0ms)[0m
+[lb]hitch CPU-LOGIC] 123.3ms (6 dropped @60Hz) (med 6.7, ×18.5) — ng.process 165.6ms (typ 17.5ms, 9× over) | proc 123.3 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 72KB | ticks 9, remote.ents 41 | watchdog: 81/102 samples in 'bot.strategy'[0m
+[lb]hitch]   events: [lb]-1f] anim cache HIT models/player/erebus.iqm; stream: player model models/player/erebus.iqm (parse) built (0.0ms)[0m
+[lb]hitch]   prev: 6.7 6.7 6.7 6.7 6.7 6.7 6.7 6.7[0m
+[lb]hitch EXTERNAL] 129.7ms (7 dropped @60Hz) (med 6.7, ×19.5) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.4 rcpu 0.0 gpu 0.0 rest 121.3 | alloc 200KB | ticks 9, remote.ents 41[0m
+[lb]hitch CPU-LOGIC] 149.5ms (8 dropped @60Hz) (med 6.7, ×22.4) — ng.process 115.5ms (typ 25.4ms, 5× over) | proc 117.7 rcpu 0.0 gpu 0.0 rest 31.8 | alloc 48KB | ticks 11, remote.ents 41 | watchdog: 65/74 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 125.9ms (7 dropped @60Hz) (med 6.7, ×18.9) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.7 rcpu 0.0 gpu 0.0 rest 117.1 | alloc 56KB | ticks 9, remote.ents 41[0m
+[lb]hitch VSYNC/PRESENT] 12.5ms (med 6.7, ×1.9) — present/vsync-bound (rest 8.4ms, gpu 0.0ms) | proc 4.2 rcpu 0.0 gpu 0.0 rest 8.4 | alloc 32KB | ticks 1, remote.ents 41 | watchdog: 2/4 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 107.5ms (5 dropped @60Hz) (med 6.7, ×16.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.4 rcpu 0.0 gpu 0.0 rest 100.1 | alloc 56KB | ticks 7, remote.ents 41[0m
+[lb]hitch]   prev: 4.2 5.6 5.6 5.6 5.6 5.6 5.6 5.6[0m
+[lb]hitch EXTERNAL ×2] 107.5–127.6ms over 0.4s (med 6.7) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 13.1ms (med 6.7, ×2.0) — present/vsync-bound (rest 9.7ms, gpu 0.0ms) | proc 3.5 rcpu 0.0 gpu 0.0 rest 9.7 | alloc 40KB | ticks 1, remote.ents 42 | watchdog: 2/5 samples in '(unscoped)'[0m
+[lb]frameprofile] scene: nodes 2949 objs-drawn 0 draws 0 vram 0MB[0m
+[lb]frameprofile] census: Label 876  HBoxContainer 218  Control 157  Dependent 113  Button 110  CvarCheckBox 104  VBoxContainer 78  HSlider 62  CvarSlider 58  MeshInstance3D 52[0m
+[lb]frameprofile] 355 frames: p50 6.6 p95 107.6 p99 139.6 p99.9 146.6ms (max 149.5) | 12 EXTERNAL, 10 VSYNC/PRESENT, 10 CPU-LOGIC, 2 MIXED | alloc 3MB/s heap 931.4MB | proc 1.8 gpu 0.0[0m
+[lb]frameprofile] ms/frame: ng.process 12.0  server.tick 11.5  sim.move 11.0  move.in 10.1  bot.think 10.1  bot.strategy 9.9  bot.path 1.4  cw.process 1.2  cw.players 1.1  proc:other 0.7[0m
+[lb]hitch CPU-LOGIC] 101.9ms (5 dropped @60Hz) (med 6.7, ×15.3) — ng.process 263.7ms (typ 19.0ms, 14× over) | proc 101.9 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 48KB | ticks 7, remote.ents 40 | watchdog: 151/171 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL] 135.3ms (7 dropped @60Hz) (med 6.7, ×20.3) — rest-dominated, game-side quiet — OS/compositor/driver | proc 10.6 rcpu 0.0 gpu 0.0 rest 124.7 | alloc 562KB | ticks 10, remote.ents 41 | watchdog: 2/3 samples in 'cev.process'[0m
+[lb]hitch VSYNC/PRESENT] 17.6ms (med 6.7, ×2.6) — present/vsync-bound (rest 14.2ms, gpu 0.0ms) | proc 3.4 rcpu 0.0 gpu 0.0 rest 14.2 | alloc 56KB | ticks 1, remote.ents 41 | watchdog: 2/5 samples in 'cev.process'[0m
+[lb]hitch CPU-LOGIC] 136.1ms (7 dropped @60Hz) (med 6.9, ×19.6) — ng.process 217.2ms (typ 18.5ms, 12× over) | proc 136.1 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 48KB | ticks 9, remote.ents 40 | watchdog: 137/142 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL] 126.6ms (7 dropped @60Hz) (med 6.9, ×18.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 9.0 rcpu 0.0 gpu 0.0 rest 117.5 | alloc 205KB | ticks 9, remote.ents 41[0m
+[lb]hitch VSYNC/PRESENT] 12.9ms (med 6.9, ×1.9) — present/vsync-bound (rest 8.9ms, gpu 0.0ms) | proc 4.0 rcpu 0.0 gpu 0.0 rest 8.9 | alloc 48KB | ticks 1, remote.ents 41 | watchdog: 2/4 samples in 'cev.process'[0m
+[lb]hitch VSYNC/PRESENT ×2] 12.5–12.9ms over 0.0s (med 6.9) — present/vsync-bound (rest 8.9ms, gpu 0.0ms)[0m
+[lb]hitch CPU-LOGIC] 139.7ms (7 dropped @60Hz) (med 6.9, ×20.1) — ng.process 336.8ms (typ 27.5ms, 12× over) | proc 139.7 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 56KB | ticks 10, remote.ents 40 | watchdog: 182/221 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch CPU-LOGIC ×2] 130.9–139.7ms over 0.1s (med 6.9) — ng.process 336.8ms (typ 27.5ms, 12× over)[0m
+[lb]hitch EXTERNAL] 124.0ms (6 dropped @60Hz) (med 6.9, ×17.9) — rest-dominated, game-side quiet — OS/compositor/driver | proc 11.4 rcpu 0.0 gpu 0.0 rest 112.6 | alloc 48KB | ticks 9, remote.ents 40 | watchdog: 1/4 samples in 'move.pm'[0m
+[lb]hitch VSYNC/PRESENT] 15.1ms (med 6.9, ×2.2) — present/vsync-bound (rest 11.0ms, gpu 0.0ms) | proc 4.1 rcpu 0.0 gpu 0.0 rest 11.0 | alloc 40KB | ticks 1, remote.ents 40 | watchdog: 3/6 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT ×2] 13.4–15.1ms over 0.0s (med 6.9) — present/vsync-bound (rest 11.0ms, gpu 0.0ms)[0m
+[lb]hitch CPU-LOGIC] 140.0ms (7 dropped @60Hz) (med 6.9, ×20.2) — ng.process 111.3ms (typ 18.2ms, 6× over) | proc 113.4 rcpu 0.0 gpu 0.0 rest 26.6 | alloc 56KB | ticks 10, remote.ents 40 | watchdog: 63/69 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.7 6.7 6.7 6.7 6.7 6.7 6.7 6.7[0m
+[lb]hitch EXTERNAL] 121.0ms (6 dropped @60Hz) (med 6.9, ×17.4) — rest-dominated, game-side quiet — OS/compositor/driver | proc 10.3 rcpu 0.0 gpu 0.0 rest 110.7 | alloc 175KB | ticks 8, remote.ents 40 | watchdog: 2/3 samples in 'ng.process'[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.3ms, gpu 0.0ms) | proc 3.3 rcpu 0.0 gpu 0.0 rest 13.3 | alloc 40KB | ticks 2, remote.ents 40 | watchdog: 3/5 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 100.2ms (5 dropped @60Hz) (med 6.9, ×14.4) — ng.process 103.1ms (typ 11.4ms, 9× over) | proc 100.2 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 48KB | ticks 7, remote.ents 39 | watchdog: 56/64 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 5.6 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL] 108.1ms (5 dropped @60Hz) (med 6.9, ×15.6) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.1 rcpu 0.0 gpu 0.0 rest 101.0 | alloc 168KB | ticks 8, remote.ents 39[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.6ms, gpu 0.0ms) | proc 3.1 rcpu 0.0 gpu 0.0 rest 13.6 | alloc 40KB | ticks 1, remote.ents 39[0m
+[lb]hitch EXTERNAL] 140.2ms (7 dropped @60Hz) (med 6.9, ×20.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 10.4 rcpu 0.0 gpu 0.0 rest 129.8 | alloc 64KB | ticks 10, remote.ents 39 | watchdog: 1/3 samples in 'move.pm'[0m
+[lb]hitch VSYNC/PRESENT] 18.2ms (med 6.9, ×2.6) — present/vsync-bound (rest 15.1ms, gpu 0.0ms) | proc 3.2 rcpu 0.0 gpu 0.0 rest 15.1 | alloc 40KB | ticks 1, remote.ents 39 | watchdog: 2/5 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 105.6ms (5 dropped @60Hz) (med 6.9, ×15.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 6.5 rcpu 0.0 gpu 0.0 rest 99.0 | alloc 40KB | ticks 7, remote.ents 40 | watchdog: 62/65 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.0ms, gpu 0.0ms) | proc 3.7 rcpu 0.0 gpu 0.0 rest 13.0 | alloc 171KB | ticks 1, remote.ents 40 | watchdog: 3/3 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 118.9ms (6 dropped @60Hz) (med 6.9, ×17.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 11.2 rcpu 0.0 gpu 0.0 rest 107.7 | alloc 86KB | ticks 8, remote.ents 40 | watchdog: 2/3 samples in 'ng.process'[0m
+[lb]hitch VSYNC/PRESENT] 14.5ms (med 6.9, ×2.1) — present/vsync-bound (rest 10.9ms, gpu 0.0ms) | proc 3.6 rcpu 0.0 gpu 0.0 rest 10.9 | alloc 64KB | ticks 1, remote.ents 40 | watchdog: 2/5 samples in 'ng.process'[0m
+[lb]hitch CPU-LOGIC] 116.1ms (6 dropped @60Hz) (med 6.9, ×16.7) — ng.process 300.2ms (typ 23.4ms, 13× over) | proc 116.1 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 48KB | ticks 8, remote.ents 41 | watchdog: 161/195 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.7 6.7 6.7 6.7 6.7 6.7 6.7 6.7[0m
+[lb]hitch EXTERNAL] 136.2ms (7 dropped @60Hz) (med 6.9, ×19.6) — rest-dominated, game-side quiet — OS/compositor/driver | proc 9.8 rcpu 0.0 gpu 0.0 rest 126.4 | alloc 168KB | ticks 10, remote.ents 41 | watchdog: 1/3 samples in 'move.pm'[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 12.7ms, gpu 0.0ms) | proc 3.9 rcpu 0.0 gpu 0.0 rest 12.7 | alloc 40KB | ticks 1, remote.ents 41 | watchdog: 3/5 samples in '(unscoped)'[0m
+[lb]frameprofile] scene: nodes 2967 objs-drawn 0 draws 0 vram 0MB[0m
+[lb]frameprofile] census: Label 876  HBoxContainer 218  Control 157  Dependent 113  Button 110  CvarCheckBox 104  VBoxContainer 78  HSlider 62  CvarSlider 58  MeshInstance3D 54[0m
+[lb]frameprofile] 453 frames: p50 6.9 p95 15.1 p99 135.4 p99.9 140.1ms (max 140.2) | 9 EXTERNAL, 12 VSYNC/PRESENT, 7 CPU-LOGIC | alloc 4MB/s heap 933.2MB | proc 3.0 gpu 0.0[0m
+[lb]frameprofile] ms/frame: ng.process 6.9  server.tick 6.5  sim.move 6.1  move.in 5.7  bot.think 5.7  bot.strategy 5.6  cw.process 0.9  cw.players 0.8  proc:other 0.7  bot.path 0.5[0m
+[lb]hitch VSYNC/PRESENT ×2] 16.2–16.7ms over 0.0s (med 6.9) — present/vsync-bound (rest 12.7ms, gpu 0.0ms)[0m
+[lb]hitch EXTERNAL] 143.8ms (8 dropped @60Hz) (med 6.9, ×20.7) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.0 rcpu 0.0 gpu 0.0 rest 136.8 | alloc 48KB | ticks 10, remote.ents 40[0m
+[lb]hitch]   prev: 7.6 6.9 6.9 6.9 6.9 9.2 8.3 7.8[0m
+[lb]hitch VSYNC/PRESENT] 18.5ms (med 6.9, ×2.7) — present/vsync-bound (rest 15.3ms, gpu 0.0ms) | proc 3.2 rcpu 0.0 gpu 0.0 rest 15.3 | alloc 129KB | ticks 1, remote.ents 40 | watchdog: 3/3 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 95.4ms (5 dropped @60Hz) (med 6.9, ×13.7) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.2 rcpu 0.0 gpu 0.0 rest 87.2 | alloc 128KB | ticks 7, remote.ents 41[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.7ms, gpu 0.0ms) | proc 3.0 rcpu 0.0 gpu 0.0 rest 13.7 | alloc 48KB | ticks 1, remote.ents 41 | watchdog: 2/3 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 109.6ms (6 dropped @60Hz) (med 6.9, ×15.8) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.3 rcpu 0.0 gpu 0.0 rest 102.3 | alloc 48KB | ticks 8, remote.ents 40[0m
+[lb]hitch CPU-LOGIC] 107.7ms (5 dropped @60Hz) (med 6.9, ×15.5) — ng.process 113.3ms (typ 15.0ms, 8× over) | proc 107.7 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 48KB | ticks 8, remote.ents 40 | watchdog: 60/70 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 6.3 6.3 6.3 6.3 6.3 6.4 6.7 6.7[0m
+[lb]hitch EXTERNAL] 118.0ms (6 dropped @60Hz) (med 6.9, ×17.0) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.3 rcpu 0.0 gpu 0.0 rest 109.7 | alloc 148KB | ticks 8, remote.ents 40[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.5ms, gpu 0.0ms) | proc 3.2 rcpu 0.0 gpu 0.0 rest 13.5 | alloc 40KB | ticks 1, remote.ents 40 | watchdog: 2/3 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 131.7ms (7 dropped @60Hz) (med 6.9, ×19.0) — rest-dominated, game-side quiet — OS/compositor/driver | proc 16.7 rcpu 0.0 gpu 0.0 rest 115.0 | alloc 120KB | ticks 9, remote.ents 41 | watchdog: 2/7 samples in 'mp.weapon'[0m
+[lb]hitch VSYNC/PRESENT] 20.3ms (med 6.9, ×2.9) — present/vsync-bound (rest 16.7ms, gpu 0.0ms) | proc 3.6 rcpu 0.0 gpu 0.0 rest 16.7 | alloc 56KB | ticks 1, remote.ents 40 | watchdog: 2/9 samples in 'mp.weapon'[0m
+[lb]hitch CPU-LOGIC] 14.0ms (med 6.9, ×2.0) — ng.process 114.4ms (typ 20.9ms, 5× over) | proc 14.0 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 40KB | ticks 2, remote.ents 39 | watchdog: 61/63 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 111.8ms (6 dropped @60Hz) (med 6.9, ×16.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 10.0 rcpu 0.0 gpu 0.0 rest 101.9 | alloc 48KB | ticks 8, remote.ents 39[0m
+[lb]hitch VSYNC/PRESENT] 12.8ms (med 6.9, ×1.8) — present/vsync-bound (rest 10.4ms, gpu 0.0ms) | proc 2.3 rcpu 0.0 gpu 0.0 rest 10.4 | alloc 32KB | ticks 0, remote.ents 39 | watchdog: 2/4 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 125.6ms (7 dropped @60Hz) (med 6.9, ×18.1) — ng.process 127.0ms (typ 29.7ms, 4× over) | proc 125.6 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 48KB | ticks 9, remote.ents 39 | watchdog: 76/79 samples in 'bot.strategy'[0m
+[lb]hitch]   prev: 4.2 4.2 131.7 20.3 14.0 111.8 12.8 8.7[0m
+[lb]hitch EXTERNAL] 133.4ms (7 dropped @60Hz) (med 6.9, ×19.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.0 rcpu 0.0 gpu 0.0 rest 126.4 | alloc 148KB | ticks 10, remote.ents 39 | watchdog: 76/82 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL ×2] 133.3–133.4ms over 0.4s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 18.5ms (med 6.9, ×2.7) — present/vsync-bound (rest 13.7ms, gpu 0.0ms) | proc 4.8 rcpu 0.0 gpu 0.0 rest 13.7 | alloc 40KB | ticks 1, remote.ents 39 | watchdog: 3/3 samples in '(unscoped)'[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 133.3[0m
+[lb]hitch VSYNC/PRESENT ×2] 14.8–18.5ms over 0.0s (med 6.9) — present/vsync-bound (rest 13.7ms, gpu 0.0ms)[0m
+[lb]hitch EXTERNAL] 132.8ms (7 dropped @60Hz) (med 6.9, ×19.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 13.7 rcpu 0.0 gpu 0.0 rest 119.1 | alloc 56KB | ticks 9, remote.ents 40 | watchdog: 3/5 samples in 'ng.process'[0m
+[lb]hitch VSYNC/PRESENT] 20.0ms (med 6.9, ×2.9) — present/vsync-bound (rest 13.8ms, gpu 0.0ms) | proc 6.2 rcpu 0.0 gpu 0.0 rest 13.8 | alloc 64KB | ticks 2, remote.ents 40 | watchdog: 3/7 samples in 'ng.process'[0m
+[lb]hitch VSYNC/PRESENT ×2] 20.0–143.1ms over 0.3s (med 6.9) — present/vsync-bound (rest 13.8ms, gpu 0.0ms)[0m
+[lb]hitch CPU-LOGIC] 54.0ms (2 dropped @60Hz) (med 6.9, ×7.8) — ng.process 127.4ms (typ 18.4ms, 7× over) | proc 54.0 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 136KB | ticks 4, remote.ents 84 | watchdog: 78/82 samples in 'bot.strategy'[0m
+[lb]hitch]   events: [lb]-1f] anim cache HIT models/player/gakmasked.iqm; [lb]-1f] anim cache HIT models/player/erebus.iqm; [lb]-1f] anim cache HIT models/player/ignismasked.iqm; stream: player model models/player/gakmasked.iqm (parse) built (0.0ms); stream: player model models/player/erebus.iqm (parse) built (0.0ms); stream: player model models/player/ignismasked.iqm (parse) built (0.0ms)[0m
+[lb]hitch]   prev: 5.6 6.8 6.9 6.9 6.9 6.9 6.9 143.1[0m
+[lb]hitch EXTERNAL] 139.2ms (7 dropped @60Hz) (med 6.9, ×20.0) — rest-dominated, game-side quiet — OS/compositor/driver | proc 12.3 rcpu 0.0 gpu 0.0 rest 126.9 | alloc 244KB | ticks 10, remote.ents 85 | watchdog: 1/4 samples in 'cw.audio'[0m
+[lb]hitch VSYNC/PRESENT] 24.7ms (med 6.9, ×3.6) — present/vsync-bound (rest 17.9ms, gpu 0.0ms) | proc 6.9 rcpu 0.0 gpu 0.0 rest 17.9 | alloc 88KB | ticks 2, remote.ents 85[0m
+[lb]hitch EXTERNAL] 121.5ms (6 dropped @60Hz) (med 6.9, ×17.5) — rest-dominated, game-side quiet — OS/compositor/driver | proc 9.8 rcpu 0.0 gpu 0.0 rest 111.8 | alloc 72KB | ticks 9, remote.ents 85 | watchdog: 2/3 samples in '(unscoped)'[0m
+[lb]hitch]   prev: 6.7 6.7 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 22.8ms (med 6.9, ×3.3) — present/vsync-bound (rest 18.0ms, gpu 0.0ms) | proc 4.8 rcpu 0.0 gpu 0.0 rest 18.0 | alloc 164KB | ticks 1, remote.ents 85 | watchdog: 5/6 samples in '(unscoped)'[0m
+[lb]hitch CPU-LOGIC] 134.0ms (7 dropped @60Hz) (med 6.9, ×19.3) — ng.process 264.3ms (typ 25.2ms, 11× over) | proc 134.0 rcpu 0.0 gpu 0.0 rest 0.0 | alloc 56KB | ticks 9, remote.ents 84 | watchdog: 156/167 samples in 'bot.strategy'[0m
+[lb]hitch EXTERNAL] 133.5ms (7 dropped @60Hz) (med 6.9, ×19.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 10.8 rcpu 0.0 gpu 0.0 rest 122.7 | alloc 72KB | ticks 10, remote.ents 84 | watchdog: 1/3 samples in 'ng.process'[0m
+[lb]hitch VSYNC/PRESENT] 21.2ms (med 6.9, ×3.1) — present/vsync-bound (rest 17.0ms, gpu 0.0ms) | proc 4.3 rcpu 0.0 gpu 0.0 rest 17.0 | alloc 48KB | ticks 1, remote.ents 84 | watchdog: 3/5 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT ×3] 16.7–21.2ms over 0.0s (med 6.9) — present/vsync-bound (rest 17.0ms, gpu 0.0ms)[0m
+[lb]hitch EXTERNAL] 123.9ms (6 dropped @60Hz) (med 6.9, ×17.8) — rest-dominated, game-side quiet — OS/compositor/driver | proc 7.5 rcpu 0.0 gpu 0.0 rest 116.3 | alloc 64KB | ticks 9, remote.ents 84[0m
+[lb]hitch]   prev: 7.1 7.1 7.1 7.1 7.1 7.1 7.1 7.1[0m
+[lb]hitch VSYNC/PRESENT] 19.0ms (med 6.9, ×2.7) — present/vsync-bound (rest 15.5ms, gpu 0.0ms) | proc 3.5 rcpu 0.0 gpu 0.0 rest 15.5 | alloc 192KB | ticks 1, remote.ents 84 | watchdog: 5/5 samples in '(unscoped)'[0m
+=== frame profiler session summary (109s, 8594 frames) ===[0m
+  fps: avg 95.5  1%low 8  0.1%low 7  (median 6.9ms, worst 150.0ms)[0m
+  hitches: 455 total — 190 EXTERNAL, 1 ASSET-BUILD, 1 GC-PAUSE, 165 VSYNC/PRESENT, 92 CPU-LOGIC, 6 MIXED[0m
+    worst[lb]1]: 149.5ms CPU-LOGIC (ng.process) @ t=97.0s[0m
+    worst[lb]2]: 148.6ms EXTERNAL (ng.process) @ t=21.7s[0m
+    worst[lb]3]: 147.9ms EXTERNAL (ng.process) @ t=84.3s[0m
+    worst[lb]4]: 147.2ms CPU-LOGIC (ng.process) @ t=48.4s[0m
+    worst[lb]5]: 147.1ms CPU-LOGIC (ng.process) @ t=75.9s[0m
+  gc: g0+115 g1+57 g2+31, total pause 301ms[0m
+  alloc: 3.0GB total, 5MB/s recent, peak 311.2MB in one frame @ t=6.4s, heap 936.7MB[0m

@@ -54,8 +54,9 @@ last_audited: "2026-06-28"
 # game/net/ServerNet.cs:300); round-restart reset LIVE for all six movers (GameWorld.ResetMapObjects, now
 # GameWorld.cs:4216; e.Reset?.Invoke at :4234). Line numbers shifted post-Wave-9-11 but seams intact.
 summary:
-  feature_count: 17
+  feature_count: 23
   worst_gaps:
+    - "COVERAGE FOLD 2026-07-02: LODmodel_attach/LOD_customize (subs.qc server-side per-mover lodmodel1/lodmodel2 distance swap via SetCustomizer) is MISSING (the client CsqcModelLod is the separate csqcmodel player-LOD, not this); func_stardust's EF_STARDUST sparkle render on an inline-brush prop is UNVERIFIED presentation (consumer exists, brush-entity reachability untraced); func_rain/func_snow are ported+live but the dedicated ENT_CLIENT_RAINSNOW wire is replaced by the facade scan (remote-dedicated-client field sync unverified)."
     - "DOOR_ROTATING_BIDIR / BIDIR_IN_DOWN trigger-side reverse-open is NOW PORTED (DRIFT-FIX 2026-06-25, commit ff8a699): DoorUse threads the firing trigger via MapMover.CurrentUseTrigger (set by UseTargets), sets lip=666 + flips pos2 on trigger_reverse, and guards wrong-side re-open during close (Doors.cs:391-449). The HitBottom 666 undo (Doors.cs:664) is now actually reachable. This closes the unit's last real LOGIC omission — the whole unit is logic-faithful."
     - "func_breakable damage-indication colormod / waypoint sprites / bot_attack registration; train moving-sound stop; func_rotating ambient start/stop on setactive + init_for_player late-join resend — all minor presentation/audio reductions, several intended_divergence. These are now the worst remaining gaps."
     - "no CSQC ENT_CLIENT_* networking/draw for any func_* (door/plat/train/conveyor/ladder); brushes sync via engine entity state. (Net_LinkEntity is commented out in Base too — the CSQC handlers are latent there.)"

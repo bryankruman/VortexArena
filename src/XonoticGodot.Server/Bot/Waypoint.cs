@@ -539,6 +539,14 @@ public sealed class WaypointNetwork
         if (_seedTried.Length < _nodes.Count) _seedTried = new bool[_nodes.Count];
         else Array.Clear(_seedTried, 0, _nodes.Count);
 
+        // Tracewalk BUDGET per call: each attempt is a full walk-sim (a trace every ~32qu, potentially hundreds
+        // over a long approach), so even one-attempt-per-node explodes when NOTHING near the bot is reachable
+        // (a bot on a ledge/void edge burns the whole node list ≈ 100ms+ — the residual bot.strategy hitch
+        // spikes). The ring growth already orders attempts roughly near-first; after the budget the caller's
+        // straight-line fallback takes over — the same degradation QC accepts for an unreachable spot.
+        const int MaxWalkAttempts = 24;
+        int attempts = 0;
+
         for (float radius = inc; ; radius += inc)
         {
             float r2 = radius * radius;
@@ -553,7 +561,10 @@ public sealed class WaypointNetwork
                 float d2 = (cp - pos).LengthSquared();
                 if (d2 > r2)
                     continue;
+                if (canTrace && attempts >= MaxWalkAttempts)
+                    return seeds;   // budget exhausted — return whatever is reachable so far (often empty)
                 _seedTried[i] = true;
+                attempts++;
                 bool reach = !canTrace || (walkFromWp
                     ? BotTracewalk.CanWalk(pos, cp, _playerMins, _playerMaxs, wp.IsBox ? (wp.AbsMax.Z - cp.Z) : 0f)
                     : BotTracewalk.CanWalk(cp, pos, _playerMins, _playerMaxs));
@@ -887,6 +898,42 @@ public sealed class WaypointNetwork
         float c = _routeCost[gw.Index];
         if (float.IsPositiveInfinity(c)) return float.PositiveInfinity;
         return c + (gw.ClosestPoint(goal) - goal).Length() / MaxSpeed;
+    }
+
+    /// <summary>Entity-goal overload of <see cref="RouteCostTo(Vector3)"/> using the QC nearest-waypoint CACHE —
+    /// see <see cref="NearestForGoal"/>. Rating N items per strategy pass through the uncached path re-ran a
+    /// tracewalk-heavy <see cref="Nearest"/> per item per pass (the residual 100ms+ bot.strategy hitches).</summary>
+    public float RouteCostTo(Entity? target, Vector3 goal)
+    {
+        if (!_routeCostValid) return float.PositiveInfinity;
+        Waypoint? gw = target is not null ? NearestForGoal(target, goal) : Nearest(goal, walkFromWp: false);
+        if (gw is null || gw.Index < 0) return float.PositiveInfinity;
+        float c = _routeCost[gw.Index];
+        if (float.IsPositiveInfinity(c)) return float.PositiveInfinity;
+        return c + (gw.ClosestPoint(goal) - goal).Length() / MaxSpeed;
+    }
+
+    // QC .nearestwaypoint / .nearestwaypointtimeout (navigation.qc navigation_findnearestwaypoint): the goal→
+    // waypoint binding cached per goal ENTITY. Position-independent (unlike _routeCost, which re-floods per bot),
+    // so a static item binds effectively once per match; a movable goal (player/projectile) re-binds on a short
+    // timeout, exactly the QC split.
+    private readonly Dictionary<Entity, (Waypoint? Wp, float Until)> _goalWpCache = new();
+
+    /// <summary>The goal entity's nearest (walk-reachable) waypoint, via the QC nearest-waypoint cache.</summary>
+    private Waypoint? NearestForGoal(Entity target, Vector3 pos)
+    {
+        float now = XonoticGodot.Common.Gameplay.MapMover.Now();
+        if (_goalWpCache.TryGetValue(target, out (Waypoint? Wp, float Until) c))
+        {
+            if (target.IsFreed) { _goalWpCache.Remove(target); return null; }
+            if (now < c.Until) return c.Wp;
+        }
+        Waypoint? wp = Nearest(pos, walkFromWp: false);
+        // Movable goals re-bind on a short timeout (QC uses ~0.5s for players); static items bind for the match
+        // (QC sets a far-future timeout — the binding only changes on a waypoint reconnect, which clears below).
+        bool movable = (target.Flags & EntFlags.Client) != 0 || target.Velocity != Vector3.Zero;
+        _goalWpCache[target] = (wp, now + (movable ? 0.5f : 1e9f));
+        return wp;
     }
 
     // ---- per-waypoint static danger bias (QC botframe_updatedangerousobjects, navigation.qc:1874) ----

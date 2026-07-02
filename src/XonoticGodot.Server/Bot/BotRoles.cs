@@ -81,7 +81,7 @@ public sealed class GoalRater
         // cost in the same unit (distance/MaxSpeed) so the rangebias scale matches the graph path.
         float cost = float.PositiveInfinity;
         if (_routeSeeded && _routeNet is not null)
-            cost = _routeNet.RouteCostTo(goalPos);
+            cost = _routeNet.RouteCostTo(target, goalPos); // entity goals ride the QC nearest-waypoint cache
         if (float.IsPositiveInfinity(cost))
             cost = (goalPos - from).Length() / System.MathF.Max(1f, Cvars.MaxSpeed);
         float rating = f * (rangeBias / (rangeBias + cost));

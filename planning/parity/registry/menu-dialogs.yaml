@@ -17,7 +17,7 @@ summary:
   worst_gaps:
     - "Effects tab is a facade: the 5 quality-preset buttons are DEAD ('exec effects-*.cfg' has no MenuCommand handler) and nearly every graphics cvar the tab binds (picmip, texture compression, lightmaps, offset mapping, reflections, decals master/fade/distance, damage effects, all r_shadow_* lights/shadows, coronas, bloom, motion blur, sky) has no reader — MSAA 4x/aniso 8x/glow/ambient 0.6 are hardcoded in project.godot/NetGame.AddLight."
     - "Misc tab's two escalation buttons are broken: 'Advanced settings...' issues menu_showcvarsdialog which no handler/registry entry resolves (DialogCvarList is reachable ONLY via the dev --menu-screen flag), and 'Factory reset' skips the QC confirm dialog + backup ('saveconfig backup.cfg; exec default.cfg') and instead resets EVERY store cvar in memory with no backup."
-    - "QC makeMulti sibling cvars are silently dropped by every port checkbox: the Messages tab's 'Powerup notifications' should drive 14 notification_* cvars but writes 1; waypoint edge-offset should write 4 edges, writes 1; 'Just the gore' drops cl_gentle_damage; NIX/weapon-arena start-weapon override writes all 17 in the port (the one faithful multi) — everywhere else half the setting's advertised effect never happens."
+    - "QC makeMulti sibling cvars are silently dropped by nearly every port checkbox — and several dropped siblings ARE read live, so the toggle half-works: 'View bobbing' writes cl_bob but not cl_bob2 (FirstPersonView reads both), 'Gun model swaying' writes cl_followmodel but not cl_leanmodel (ViewModel reads both, default ON — unchecking leaves the lean), waypoint edge-offset writes 1 of the 4 edges WaypointSpriteLayer reads, 'Powerup notifications' writes 1 of 14 notification_* cvars, 'Just the gore' drops cl_gentle_damage; the 17-cvar start-weapon override is the one faithful multi."
     - "Audio output half is dead: snd_speed/snd_channels/snd_swapstereo/snd_spatialization_control are cosmetic (Godot mixer unconfigured), the Items (snd_channel3volume) and Pain (snd_channel6volume) sliders route to NO audio bus, snd_staticvolume is registered but never applied, and the volume sliders silently swap the QC decibel scale for linear percent."
     - "Profile 'Apply immediately' is inert: its verbatim QC command ('color -1 -1; name \"$_cl_name\"; playermodel ...; playerskin ...') hits MenuCommand's unknown-command log, so name/model/color edits only take effect through cvar replication on the NEXT connect instead of live mid-match."
 features:
@@ -70,6 +70,7 @@ features:
     divergence_rationale: null
     gaps:
       - "Resolution control is a hardcoded 6-entry 16:9 list staging _menu_vid_width/_menu_vid_height (QC enumerates real display modes via getresolution()/slider_resolution.qc); vid_pixelheight/vid_desktopfullscreen staging cvars are written but dead."
+      - "The 'Resolution scaling' slider (r_viewscale 0.5-2, dialog_settings_video.qc:79) is MISSING from the port dialog entirely (not even a dead binding; no r_viewscale reader anywhere)."
       - "DEAD rows (bound, no reader as of 2026-07-02): vid_samples (MSAA hardcoded 4x project.godot), gl_texture_anisotropy (8x hardcoded), r_stereo_redcyan, r_viewfbo, r_depthfirst, gl_finish, vid_gl20, v_brightness, v_contrast, v_gamma, v_contrastboost, r_glsl_saturation, r_ambient (hardcoded 0.6 NetGame.AddLight), r_hdr_scenebrightness, cl_minfps, cl_maxidlefps, menu_vid_scale (font/UI size does nothing)."
       - "LIVE rows: vid_fullscreen (extended: 2=exclusive), vid_borderless, vid_vsync (extended domain), cl_maxfps (with the auto-override), showfps; port ADDS showping/showposition rows QC does not have."
       - "cl_maxfps auto behavior diverges: 'Unlimited' (0) silently becomes max(144, refresh) — the menu label lies."
@@ -104,7 +105,7 @@ features:
       - "The 5 quality-preset buttons are DEAD: 'exec effects-*.cfg' reaches MenuCommand.Run's default case and only logs — no preset ever applies (and most of what the cfgs would set has no reader anyway)."
       - "DEAD rows: r_subdivisions_tolerance (patches fixed at 8 subdivisions), cl_playerdetailreduction (LOD computed then discarded), gl_picmip, gl_texturecompression, r_sky, mod_q3bsp_nolightmaps, r_glsl_deluxemapping, r_shadow_gloss, r_glsl_offsetmapping(+relief), r_water(+resolutionmultiplier), cl_decals master + cl_decals_models + r_drawdecals_drawdistance + cl_decals_fadetime (fade hardcoded 2s), cl_damageeffect, all r_shadow_realtime_* + r_shadow_usenormalmap + r_shadow_shadowmapping, r_coronas(+occlusionquery), r_bloom (glow hardcoded ON 0.8), hud_postprocessing_maxbluralpha, r_motionblur."
       - "LIVE rows: cl_particles, cl_particles_quality, r_drawparticles_drawdistance, cl_spawn_point_particles (+cl_spawn_event_particles registered); port ADDS the dual-particle rows cl_particles_modern + cl_particles_sdf_generate (port-only feature, honest addition)."
-      - "QC setDependentWeird(someShadowCvarIsEnabled) on Soft shadows and the makeMulti '!gl_flashblend' inverse write are not reproduced (cosmetic given the rows are dead)."
+      - "QC setDependentWeird(someShadowCvarIsEnabled) on Soft shadows and the makeMulti '!gl_flashblend' inverse write are not reproduced (cosmetic given the rows are dead); the hud_powerup makeMulti sibling (dialog_settings_effects.qc:216) is likewise dropped and has no reader."
     verification:
       - { kind: code, ref: "MenuCommand.Dispatch has no 'exec' case (MenuCommand.cs:112-283); ParticleCvars.Decals ('cl_decals') has zero readers; ParticleSim reads only the blood-stain/smear sub-cvars", result: fail }
       - { kind: doc, ref: "planning/graphics-settings-audit-2026-06-14.md Tables 2-4 + Table 7 items 1-3", result: pass }
@@ -139,10 +140,12 @@ features:
       - "menu_snd_attenuation_method checkbox writes the cvar but the QC apply command's alias 'snd_attenuation_method_${...}' (which sets snd_soundradius/exponent/decibel) is not expanded — the port instead ships the method-1 values as defaults, so TOGGLING the checkbox has no effect."
       - "menu_sounds / focus-sounds checkboxes bound but no menu click/hover sound exists at all (menu-core.vm.menu_music_sounds)."
       - "cl_hitsound is mode-read but the sample is broken + damagetext-coupled (fx-sounds.presentation.hitsound_sample owns that defect)."
+      - "con_chatsound ('Chat message sound') is DEAD: ChatPanel.ChatSoundEnabled (ChatPanel.cs:76) wraps the cvar but has ZERO callers — no chat beep is ever gated (or played) through it."
       - "Decibel display (QC '-xx dB') replaced by linear percent — a real UX divergence for fine low-volume control."
     verification:
       - { kind: code, ref: "ClientSettings.ApplyAudio: SetBusVolume for Master/Music/SFX/Weapon/Voice/Player/Ambient only; snd_channel3volume/6volume/staticvolume registered (RegisterEngineAudioDefaults) but never applied", result: fail }
-      - { kind: code, ref: "cl_announcer_maptime LIVE: GameWorld.cs:1002 Announcer.AnnouncerMapTime reads it; con_chatsound LIVE: ChatPanel.cs:76", result: pass }
+      - { kind: code, ref: "cl_announcer_maptime LIVE: GameWorld.cs:1002 Announcer.AnnouncerMapTime reads it", result: pass }
+      - { kind: code, ref: "con_chatsound DEAD: ChatPanel.cs:76 ChatSoundEnabled defined but grep over game/+src/ finds no caller", result: fail }
     confidence: high
     notes: "Announcer group (maptime + autotaunt) is the healthiest part; the sound-emission fidelity itself is fx-sounds' unit."
 
@@ -230,10 +233,10 @@ features:
     divergence_rationale: null
     gaps:
       - "'Enter HUD editor' diverges: QC starts 'map _hudsetup' when out of a match (after the hudconfirm Yes/No dialog) and runs '_hud_configure 1'; the port button issues menu_showhudoptions which just opens the DialogHudPanels list — no _hudsetup map, no drag/resize editor entry, and DialogHudConfirm.cs is dead code (zero callers)."
-      - "Waypoint edge-offset slider writes only g_waypointsprite_edgeoffset_bottom (QC makeMulti also writes top/left/right — three edges never move)."
-      - "g_waypointsprite_fontsize / _text (names instead of icons) / _crosshairfadealpha bound; consumption by WaypointSpriteLayer not individually verified (alpha + hide ARE verified live)."
+      - "Waypoint edge-offset slider writes only g_waypointsprite_edgeoffset_bottom (QC makeMulti also writes top/left/right — and WaypointSpriteLayer.cs:74-77 reads all FOUR edges live, so three edges stay at the default while the slider moves one)."
+      - "hud_shownames_status/_decolorize and hud_panel_scoreboard sub-opts consumption: shownames status/decolorize ARE read live (ShowNamesLayer.cs:378/390); scoreboard sub-cvars are cl-hud.panel.scoreboard's audit."
     verification:
-      - { kind: code, ref: "ShowNamesLayer reads every hud_shownames_* the tab binds (148-390); WaypointSpriteLayer reads cl_hidewaypoints + g_waypointsprite_alpha (61-66); hud_damage read by ViewEffects.cs:199", result: pass }
+      - { kind: code, ref: "ShowNamesLayer reads every hud_shownames_* the tab binds (148-390, status 378, decolorize 390); WaypointSpriteLayer reads cl_hidewaypoints (61) + g_waypointsprite_alpha/fontsize/text/edgeoffset_*/crosshairfadealpha (66-87); hud_damage read by ViewEffects.cs:199", result: pass }
       - { kind: code, ref: "grep DialogHudConfirm over game/ -> definition only (dead)", result: fail }
     confidence: high
     notes: "Scoreboard cvar consumption is cl-hud.panel.scoreboard's row; hud_dynamic_* is cl-hud.engine.dynamic_shake/follow (live there). The waypoint render stack landed with difficult-items Phase 2, which is why this tab is far more live than the 06-14 audit recorded."
@@ -253,19 +256,20 @@ features:
       values: partial
       timing: na
       presentation: partial
-      audio: unknown
+      audio: partial
       liveness: partial
     intended_divergence: false
     divergence_rationale: null
     gaps:
       - "Every makeMulti sibling set is dropped: 'Powerup notifications' writes notification_CENTER_POWERUP_INVISIBILITY but not the 13 sibling CENTER/INFO powerup cvars; weapon centerprint/info rows drop 5 siblings each; CHOICE_FRAG drops 7; INFO_QUIT_DISCONNECT drops 2; ANNCE_NUM_RESPAWN_1 drops 9; KILLSTREAK/ACHIEVEMENT drop theirs — so most toggles only affect a fraction of the messages they claim to."
-      - "The announcer toggle cvars (notification_ANNCE_*) have no reader found in game/ or src/ — respawn-countdown/killstreak/achievement sounds are not gated by these checkboxes (whether the notifs system checks per-notification cvars by name at dispatch is unverified — hence audio: unknown)."
-      - "sendCvars (push the changed notification choice to the server) not implemented for the CHOICE_* rows; server-side choice handling unverified."
-      - "notification_show_sprees IS consumed (NotificationTokens.ShowSprees); the sub-toggles (center/info/specialonly/newline) and notification_show_location unverified."
+      - "The announcer toggle cvars (notification_ANNCE_*) are CONFIRMED unread: NotificationSystem.cs has no per-notification 'notification_<NAME>' cvar lookup at dispatch — respawn-countdown/killstreak/achievement announcer checkboxes have zero effect."
+      - "con_notify ('console messages in the top left') and notification_allow_chatboxprint are bound but have NO reader — dead toggles."
+      - "notification_show_sprees IS consumed (NotifTokens.cs:146) and so are the sub-toggles: show_location (152), show_sprees_center (208) + center_specialonly (215), show_sprees_info bits (232-251) + info_newline (233) — all live via NotificationSystem.cs:430 NotifTokens.Resolve."
     verification:
-      - { kind: code, ref: "grep notification_ANNCE over game+src -> menu bindings only; NotificationTokens.cs:146 reads notification_show_sprees", result: fail }
-    confidence: medium
-    notes: "Notification-system fidelity (which cvars the dispatcher consults) belongs to the notifs unit; this row records that the dialog exists, binds the right primary cvars, and loses the multi-writes."
+      - { kind: code, ref: "grep notification_ANNCE over game+src -> menu bindings only, and NotificationSystem.cs has no dynamic per-notification cvar gate", result: fail }
+      - { kind: code, ref: "notification_CHOICE_* rows ARE pushed to the server (ClientNet.cs:969-971 PushReplicatedSet(ReplicatedChoiceCvars) — the QC ReplicateVars analogue) and consumed per-client (Commands.cs:258 IsRegisteredChoiceCvar; NotificationSystem MSG_CHOICE picks optiona/optionb by the replicated value)", result: pass }
+    confidence: high
+    notes: "Notification-system fidelity (which cvars the dispatcher consults) belongs to the notifs unit; this row records that the dialog exists, binds the right primary cvars, and loses the multi-writes. Verify pass 2026-07-02: CHOICE replication confirmed live (the old 'sendCvars unimplemented for CHOICE' gap was wrong); spree sub-toggles confirmed live; ANNCE gating confirmed absent."
 
   - id: menu-dialogs.settings.game_model
     name: "Game>Models tab: simple items, ghost items, force models/colors, body fading, gibs"
@@ -307,7 +311,7 @@ features:
       - "game/menu/dialogs/DialogSettingsGame.cs:DialogSettingsGameView.Fill (446-578)"
       - "game/client/FirstPersonView.cs (fov/zoom*/velocityzoom/eventchase/cl_bob/cl_bobfall/v_idlescale live)"
       - "game/client/ChaseCamera.cs:57 (chase_back live)"
-      - "game/net/NetGame.cs:3091 (chase_active live)"
+      - "game/net/NetGame.cs:3111 (chase_active live)"
     constants:
       - { name: "fov range", base: "60-130 step 5", port: "same; FirstPersonView reads fov", match: true }
       - { name: "cl_zoomfactor domain", base: "2-10/0.5 + 11-30/1", port: "same enumeration", match: true }
@@ -325,12 +329,13 @@ features:
       - "cl_eventchase_death checkbox writes the wrong value: QC checkBoxEx(2,...) sets 2 (chase even while the body slides); the port FlagCheckBox toggles bit 0 -> writes 1, and FirstPersonView:591 special-cases ==2 — so ticking the box actually DISABLES the default-2 behavior."
       - "cl_unpress_zoom_on_death / _on_spawn / _on_weapon_switch and cl_unpress_attack_on_weapon_switch are DEAD as cvars — the unpress-on-death behavior is hardcoded always-on (NetGame:3097 comment), not toggleable."
       - "cl_smoothviewheight is live (NetGame) but QC's chase_active in [-1,0] gating on the perspective sub-rows is reduced to single-condition binds."
+      - "'View bobbing' drops the cl_bob2 makeMulti (DialogSettingsGame.cs:476 writes cl_bob only) while FirstPersonView.cs:675 reads cl_bob2 LIVE — ticking the box enables only half the QC bob (the horizontal component stays 0)."
       - "cl_clippedspectating IS replicated + consumed server-side (Commands.cs:586 ClippedSpectatingProvider)."
     verification:
       - { kind: code, ref: "FirstPersonView reads fov(293,528)/cl_zoomfactor(277,302)/cl_zoomspeed(304)/cl_zoomsensitivity(375)/cl_zoomscroll(257,325)/cl_velocityzoom_enabled+type(545)/cl_eventchase_death(591,740)/cl_bob(651)/cl_bobfall(706)/v_idlescale(603); ChaseCamera reads chase_back(57)", result: pass }
       - { kind: code, ref: "grep cl_unpress -> menu bindings + comments only", result: fail }
     confidence: high
-    notes: "View bob / chase camera landed after the 06-14 audit (which recorded them 'not implemented'); this tab is now mostly live. chase_up consumption unverified (only chase_back seen)."
+    notes: "View bob / chase camera landed after the 06-14 audit (which recorded them 'not implemented'); this tab is now mostly live. chase_up consumption unverified (only chase_back seen). cl_reticle is bound AND live (game/client/ReticleOverlay.cs reads it)."
 
   - id: menu-dialogs.settings.game_weapons
     name: "Game>Weapons tab: priority list, cycling opts, autoswitch, viewmodel visuals, tracer teamcolor"
@@ -359,6 +364,7 @@ features:
     gaps:
       - "r_drawviewmodel is DEAD (viewmodel always drawn; only its dependents' cvars are live)."
       - "cl_weaponpriority_useforcycling and cl_unpress_attack_on_weapon_switch have no reader — dead toggles."
+      - "'Gun model swaying' drops the cl_leanmodel makeMulti (DialogSettingsGame.cs:651 writes cl_followmodel only) while ViewModel.cs:942 reads cl_leanmodel LIVE (default 1) — unchecking the box leaves the lean component ON."
       - "'Apply immediately' (sendcvar cl_weaponpriority) is inert — functionally superseded by the automatic cvar-replication list (ClientNet.cs:896-906 pushes cl_weaponpriority/cl_autoswitch to the server), so the button's absence of effect is mostly harmless but the QC immediate-push semantic is lost."
       - "Priority list lacks the QC '* = mutator weapon' row marker verification and the per-weapon cl_weaponpriorityN group editors (Base keybinder weapon groups; menu-core.keys.keybinder notes the same catalog gap)."
     verification:
@@ -377,7 +383,7 @@ features:
     port_refs:
       - "game/menu/dialogs/DialogSettingsInput.cs:Fill (32-130) + BuildKeyBinder (146)"
       - "game/menu/dialogs/DialogSettingsInput.cs:InvertMouseCheckBox (254)"
-      - "game/net/NetGame.cs:5287/5316 (sensitivity + m_pitch sign live)"
+      - "game/net/NetGame.cs:5307/5317 (sensitivity + m_pitch sign live)"
       - "game/menu/dialogs/DialogBindingsReset.cs (DEAD — no caller; reset is direct)"
     constants:
       - { name: "sensitivity range", base: "0.1-9.9 step 0.1 + linked input box", port: "same range, slider+box both bound to the cvar (event-linked)", match: true }
@@ -392,14 +398,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "DEAD mouse rows: m_filter (no smoothing path), m_accelerate + m_accelerate_minspeed/maxspeed (no accel model), vid_dgamouse, menu_mouse_absolute (Godot owns the cursor); joy_enable dead (no joystick input path). Sensitivity + invert ARE live (NetGame:5287/5316)."
+      - "DEAD mouse rows: m_filter (no smoothing path), m_accelerate + m_accelerate_minspeed/maxspeed (no accel model), vid_dgamouse, menu_mouse_absolute + its hud_cursormode makeMulti (Godot owns the cursor); joy_enable dead (no joystick input path). Sensitivity + invert ARE live (NetGame:5307/5317)."
       - "con_closeontoggleconsole has no reader — dead toggle."
       - "cl_movement_track_canjump and cl_jetpack_jump are replicated to the server (Commands.cs:228-229) — consumption is physics-player's audit; the dialog side is wired."
       - "The userbind edit dialog (dialog_settings_input_userbind.qc) is NOT ported: the 'Edit...' button only logs (DialogSettingsInput.cs:243 OpenUserbindEdit inert) — no custom press/release command binds."
       - "The bindings-reset CONFIRM dialog is dead code (DialogBindingsReset.cs has no caller); 'Reset all' resets immediately without asking."
       - "m_pitch's registered default is '1' (port), not DP's 0.022 — magnitude is meaningless in the port (only sign read) but the cvar VALUE diverges from Base for anything else that might read it."
     verification:
-      - { kind: code, ref: "NetGame.cs:5287 reads sensitivity, 5316 reads m_pitch sign; grep m_filter/m_accelerate/con_closeontoggleconsole -> menu only; DialogBindingsReset grep -> definition only", result: pass }
+      - { kind: code, ref: "NetGame.cs:5307 reads sensitivity, 5317 reads m_pitch sign; grep m_filter/m_accelerate/con_closeontoggleconsole -> menu only; DialogBindingsReset grep -> definition only", result: pass }
     confidence: high
     notes: "The keybinder widget internals (reduced 24-action catalog, single key per action, no weapon-group rows) are menu-core.keys.keybinder's row — not duplicated here."
 
@@ -462,7 +468,7 @@ features:
       - "'Advanced settings...' is DEAD: it issues menu_showcvarsdialog, which MenuCommand does not handle and MenuDialogRegistry does not know — DialogCvarList (the ported cvar editor) is unreachable from the UI (dev --menu-screen cvarlist only)."
       - "'Factory reset' diverges dangerously: no confirm dialog (dialog_settings_misc_reset.qc unported — the QC Yes/No + 'creates a backup config' promise), no backup.cfg, and cvar_resettodefaults_all resets EVERY cvar in the store (QC's exec default.cfg re-applies defaults through the cfg tree)."
       - "DEAD rows: shownetgraph (no netgraph), cl_netrepeatinput, crypto_aeslevel, cl_curl_maxdownloads/maxspeed (no HTTP download system), menu_tooltips (not consulted), menu_animations (fan animation uses fixed AnimSpeed), r_textshadow, showtime/showdate (no clock overlay; the showdate multi IS hand-reproduced via a Toggled handler)."
-      - "LIVE row: cl_movement_errorcompensation (NetGame.cs:5751, gated on cl_movement per QC; port default 0 = Base-faithful)."
+      - "cl_movement_errorcompensation is read (NetGame.cs:5772) but FORCED OFF whenever cl_movement_smoothing_faithful=1 — the port DEFAULT — so with stock config the checkbox has no effect (it only tunes the non-faithful smoothing path); port cvar default 0 = Base-faithful."
     verification:
       - { kind: code, ref: "MenuCommand.Dispatch: no menu_showcvarsdialog/exec case; Shell.cs:187 is DialogCvarList's only constructor site (dev flag); cvar_resettodefaults_all loops ResetToDefault over all names (MenuCommand.cs:170-175)", result: fail }
     confidence: high
@@ -556,7 +562,7 @@ features:
       - "menu/xonotic/dialog_multiplayer_create.qc:GameType_ConfigureSliders"
       - "menu/xonotic/dialog_multiplayer_create.qc:allowBotVsHuman/allowBotSkill"
     port_refs:
-      - "game/menu/CreateGameScreen.cs:BuildUi/BuildGametypeColumn/ModeMenus (64-233)"
+      - "game/menu/CreateGameScreen.cs:BuildUi/BuildGametypeColumn/ModeMenus (64-233); MatchConfig assembled at 534"
       - "game/Shell.cs (StartGameRequested -> listen server)"
     constants:
       - { name: "timelimit_override domain", base: "Default -1; 1-10/1, 15-30/5, 40-60/10; Infinite 0", port: "identical (CreateGameScreen.cs:199-200)", match: true }
@@ -578,7 +584,7 @@ features:
       - "QC campaign gating (setDependent g_campaign 0 on bots/Mutators rows) not reproduced (the create tab is not used for campaign in the port flow — low impact)."
       - "Maplist widget internals (permissive no-mapinfo filtering, missing type-to-search) are menu-core.create.maplist's gaps."
     verification:
-      - { kind: code, ref: "Start gathers MatchConfig{Map,Gametype,BotCount=bot_number,...} (CreateGameScreen.cs:538) and Shell starts a real listen server — the QC MapList_LoadMap analogue, verified end-to-end by the --map/--host boot path", result: pass }
+      - { kind: code, ref: "Start gathers MatchConfig{Map,Gametype,BotCount=bot_number,...} (CreateGameScreen.cs:534) and Shell starts a real listen server — the QC MapList_LoadMap analogue, verified end-to-end by the --map/--host boot path", result: pass }
     confidence: high
     notes: "timelimit_override/fraglimit_override/g_*_teams_override consumption at match start is the server unit's business; the menu writes the same cvars Base writes."
 

@@ -78,6 +78,12 @@ public partial class PortalRenderer : Node3D
     private readonly List<Portal> _portals = new();
     private Camera3D? _mainCamera;
     private bool _built;
+    private float _lastTrace = -1f;   // 1Hz gate-trace clock (sv_warpzone_trace)
+
+    /// <summary>Portal render-target size: HALF the main viewport (aspect preserved — the normalized SCREEN_UV
+    /// sampling stays aligned) at a quarter of the pixel cost; floor of 2 keeps a degenerate window sane.</summary>
+    private static Vector2I PortalViewSize(Vector2I main) =>
+        new(Mathf.Max(main.X / 2, 2), Mathf.Max(main.Y / 2, 2));
 
     /// <summary>The shared portal-window shader: unshaded, two-sided, samples the SubViewport at the fragment's
     /// MAIN-viewport screen UV so the surface shows exactly the slice of the exit view that lines up with where
@@ -111,7 +117,9 @@ public partial class PortalRenderer : Node3D
             return; // map has no warpzone surfaces
 
         Viewport? mainVp = GetViewport();
-        Vector2I size = mainVp is not null ? (Vector2I)mainVp.GetVisibleRect().Size : new Vector2I(1280, 720);
+        // HALF the main resolution (aspect preserved): SCREEN_UV sampling is normalized, so the image still
+        // lines up exactly — at a quarter of the pixel cost per portal (each portal is a full extra scene render).
+        Vector2I size = PortalViewSize(mainVp is not null ? (Vector2I)mainVp.GetVisibleRect().Size : new Vector2I(1280, 720));
 
         foreach (Node child in portalsRoot.GetChildren())
         {
@@ -138,6 +146,10 @@ public partial class PortalRenderer : Node3D
                 Name = $"PortalView_{_portals.Count}",
                 Size = size,
                 RenderTargetUpdateMode = SubViewport.UpdateMode.Always,
+                // The portal camera sits BEHIND the exit plane (inside the exit wall's brush volume): with
+                // occlusion culling the occlusion buffer would cull the whole exit room from there → a black
+                // portal whenever a config enables r_occlusion_cull. The near-clip does the real work anyway.
+                UseOcclusionCulling = false,
             };
             if (mainVp is not null)
             {
@@ -180,9 +192,10 @@ public partial class PortalRenderer : Node3D
                 exit[i] = Coords.ToGodot(t.TransformOrigin(Coords.ToQuake(cornerG)));
             }
 
-            // On-screen gate: only re-render the exit view while the window itself is visible to the main camera
-            // (the notifier also honors occlusion culling, so a wall-hidden portal costs nothing).
-            var notifier = new VisibleOnScreenNotifier3D { Aabb = local };
+            // On-screen gate: only re-render the exit view while the window itself is visible to the main camera.
+            // The window mesh is a FLAT quad (zero thickness on one axis) — grow the notifier box so the culling
+            // test never sees a degenerate AABB.
+            var notifier = new VisibleOnScreenNotifier3D { Aabb = local.Grow(0.5f) };
             surface.AddChild(notifier);
 
             _portals.Add(new Portal
@@ -230,8 +243,17 @@ public partial class PortalRenderer : Node3D
         NVec3 upQ = Coords.ToQuake(main.GlobalBasis.Y);
 
         // Track the live main-viewport size so the portal projection stays aspect-identical after a window
-        // resize (a mismatched aspect shifts/scales the screen-UV sampled image).
-        Vector2I wanted = GetViewport() is { } mainVp ? (Vector2I)mainVp.GetVisibleRect().Size : Vector2I.Zero;
+        // resize (a mismatched aspect shifts/scales the screen-UV sampled image). Half-res, see Setup.
+        Vector2I wanted = GetViewport() is { } mainVp ? PortalViewSize((Vector2I)mainVp.GetVisibleRect().Size) : Vector2I.Zero;
+
+        // 1Hz gate trace (sv_warpzone_trace): which portals render this frame, and why not — the decisive data
+        // for a "portal shows black" report (a permanently-Disabled viewport keeps its initial black texture).
+        bool trace = false;
+        if (Api.Services is not null && Api.Cvars.GetFloat("sv_warpzone_trace") != 0f)
+        {
+            float nowS = Time.GetTicksMsec() * 0.001f;
+            if (nowS - _lastTrace >= 1f) { _lastTrace = nowS; trace = true; }
+        }
 
         foreach (Portal p in _portals)
         {
@@ -240,8 +262,12 @@ public partial class PortalRenderer : Node3D
             // eye actually crosses, WarpzoneFixView owns the whole screen). Disabled viewports keep their last
             // texture — a one-frame-stale image on re-entry, imperceptible.
             bool facing = NVec3.Dot(camPosQ - p.InOriginQ, p.InForwardQ) > 0f;
-            bool visible = facing && p.Notifier.IsOnScreen();
+            bool onScreen = p.Notifier.IsOnScreen();
+            bool visible = facing && onScreen;
             p.Viewport.RenderTargetUpdateMode = visible ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
+            if (trace)
+                GD.Print($"[portal] '{p.Surface.Name}' facing={facing} onScreen={onScreen} -> {(visible ? "RENDER" : "off")}"
+                    + $" near={p.Cam.Near:F2} size={p.Viewport.Size} camQ={camPosQ} inO={p.InOriginQ} inF={p.InForwardQ}");
             if (!visible)
                 continue;
 

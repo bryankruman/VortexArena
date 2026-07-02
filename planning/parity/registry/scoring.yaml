@@ -3,8 +3,11 @@ category: scoring
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-27"
 summary:
-  feature_count: 15
+  feature_count: 22
   worst_gaps:
+    - "XonStat per-weapon accuracy export is DEAD: PlayerStats registers the acc-<w>-* event ids and exposes an AccuracyProvider seam, but no host code ever wires it (grep AccuracyProvider 2026-07-02 = definition + internal use only), so every game report ships with zero accuracy data despite Scores.WeaponAccuracy holding all six counters"
+    - "Accuracy data-share is owner-only: the spectator forward (IS_SPEC -> a.enemy) and the sv_accuracy_data_share / cl_accuracy_data_share / cl_accuracy_data_receive gate (accuracy.qc:34-36) are not ported — spectators never see the spectatee's accuracy panel"
+    - "getstatus worldstatus/clientstatus strings (WinningConditionHelper + g_full_getstatus_responses) are entirely missing — no rcon/getstatus standings response exists in the port"
     - "REMAINING_FRAG_{1,2,3} announcer LIVE for 8 of Base's 11 modes (dm/tdm/ka/ca/ft/duel/rc/tka, via the GameWorld per-frame driver); Mayhem + TeamMayhem are intended-off (Base disables their hook); Survival is the lone genuinely-missing enabled mode (Survival.cs has no CountFragsRemaining caller)"
     - "Score_NicePrint's race/cts INTERMISSION broadcast (Score_NicePrint(NULL) at sv_race.qc:203 / sv_cts.qc:150) is still not auto-emitted at intermission; the on-demand `teamstatus` standings dump and the `:scores:` score-log dump ARE both ported"
     - "WinningCondition_Scores degenerate special-cases (topscore 0 with ZERO_IS_WORST => +/-999999999; empty server forces equality=0) remain unverified in the port"
