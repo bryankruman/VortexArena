@@ -6,7 +6,7 @@ summary:
   feature_count: 31
   worst_gaps:
     - "NMM + Bulldozer session state lives in Session.Extra (NmmState/BdState) which MinigameNetState never encodes -> a remote client sees an EMPTY board for both games (renderer has no nmm/bd draw path either); only Pong gets a bespoke encode"
-    - "Bulldozer is unplayable on the live path: LoadLevel() has no live caller, the shipped minigames/bulldozer/storage_level*.txt files are never read, sv_minigames_bulldozer_startlevel is not a cvar, and the menu verbs (next/restart/edit/save) are misparsed by Bulldozer.Move as direction moves"
+    - "Bulldozer is unplayable on the live path: LoadLevel() has no live caller, the shipped minigames/bulldozer/storage_level*.txt files are never read, sv_minigames_bulldozer_startlevel is set by the shipped cfg but no code reads it, and the menu verbs (next/restart/edit/save) are misparsed by Bulldozer.Move as direction moves"
     - "Invite never notifies the target: Commands.CmdMinigame discards the session name (out _) and no Send_Notification(INFO_MINIGAME_INVITE) is dispatched (the notif template EXISTS in NotificationsList.cs:839); the in-game menu also has no Invite submenu"
     - "The 'It's your turn' prompt (minigame_prompt -> HUD_Notify_Push with the game icon) is not ported at all — opponents get no nudge when it's their move"
     - "Per-game keyboard board control (arrows/enter/space navigation in every *_client_event) is not ported for the GRID games — only Pong's paddle key-drive is wired (HudManager.DrivePongKeys -> PongMoveSink); Bulldozer, whose ONLY play input is arrow keys, therefore has no client input path at all"
@@ -84,6 +84,7 @@ features:
     layer: [shared]
     base_refs:
       - "common/minigames/minigames.qc:msle_spawn (87)"
+      - "common/minigames/minigames.qc:minigame_server_sendflags (78)"
       - "common/minigames/minigames.qc:msle_id/msle_classname (99-119)"
       - "common/minigames/sv_minigames.qc:minigame_SendEntity (64)"
       - "common/minigames/sv_minigames.qc:minigame_CheckSend (118)"
@@ -160,6 +161,7 @@ features:
       - "common/minigames/sv_minigames.qc:join_minigame (200)"
       - "common/minigames/sv_minigames.qc:minigame_addplayer (127)"
       - "common/minigames/sv_minigames.qc:minigame_rmplayer (17)"
+      - "common/minigames/sv_minigames.qc:part_minigame (216)"
       - "common/minigames/sv_minigames.qc:end_minigame/end_minigames (224/255)"
       - "common/minigames/sv_minigames.qh:minigame_sessions/.active_minigame (54-61)"
     port_refs:
@@ -222,7 +224,7 @@ features:
       - "common/minigames/sv_minigames.qh:MINIGAME_COMMON_CMD (14)"
     port_refs:
       - "src/XonoticGodot.Server/Commands.cs:CmdMinigame (1917)"
-      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:161 (subcommand completion list)"
+      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:163 (MinigameCommonCmd flood-control list)"
     constants:
       - { name: "subcommands", base: "create join list list-sessions end part invite", port: "identical set", match: true }
       - { name: "disabled msg", base: "\"Minigames are not enabled!\"", port: "identical", match: true }
@@ -311,7 +313,7 @@ features:
       - "common/minigames/cl_minigames.qh:active_minigame/minigame_self (88-90)"
     port_refs:
       - "game/net/MinigameClient.cs:OnEnvelope (63)"
-      - "game/net/NetGame.cs:OnMinigameStateReceived (5914, subscribed 1592)"
+      - "game/net/NetGame.cs:OnMinigameStateReceived (5946, subscribed 1592)"
     constants: []
     status:
       logic: faithful
@@ -338,7 +340,7 @@ features:
     port_refs:
       - "game/net/MinigameClient.cs:SendCommand (105)"
       - "game/net/MinigameClient.cs:NoteSessionListLine (90)"
-      - "game/net/NetGame.cs:5924 (PrintReceived -> NoteSessionListLine)"
+      - "game/net/NetGame.cs:5956 (PrintReceived -> NoteSessionListLine)"
     constants: []
     status:
       logic: faithful
@@ -386,7 +388,7 @@ features:
     base_refs:
       - "common/minigames/cl_minigames.qc:MUTATOR_HOOKFUNCTION(minigames, HUD_Command) (428)"
     port_refs:
-      - "game/net/NetGame.cs:5038 (M-key toggle -> MinigameClient.ToggleMenu)"
+      - "game/net/NetGame.cs:5057-5063 (M-key toggle -> MinigameClient.ToggleMenu)"
     constants:
       - { name: "invocation", base: "console 'hud minigame' (no default bind)", port: "hardcoded 'M' key toggle; no console command", match: false }
     status:
@@ -402,7 +404,7 @@ features:
       - "No 'hud minigame' console-command path (users of the Base muscle-memory/console can't open it)."
       - "QC refuses to open in demo playback (isdemo()) and force-closes during map vote (mv_active in HUD_MinigameMenu); the port has neither gate."
     verification:
-      - { kind: code, ref: "NetGame.cs:5038-5045 key toggle live; grep 'isdemo' in minigame files: none", result: pass }
+      - { kind: code, ref: "NetGame.cs:5057-5063 key toggle live (Keycode.M gated on console closed); grep 'isdemo' in minigame files: none", result: pass }
     confidence: high
     notes: ""
 
@@ -455,8 +457,8 @@ features:
       - "common/minigames/cl_minigames_hud.qc:HUD_MinigameMenu_CustomEntry (352)"
       - "common/minigames/cl_minigames_hud.qh:HUD_MinigameMenu_CustomEntry decl (10)"
     port_refs:
-      - "game/hud/MinigameMenu.cs:Rebuild/AddExpandable (123-)"
-      - "game/hud/MinigameMenu.cs:CurrentGameActions (200)"
+      - "game/hud/MinigameMenu.cs:Rebuild/AddExpandable (113/136)"
+      - "game/hud/MinigameMenu.cs:CurrentGameActions (199)"
       - "game/net/MinigameClient.cs:ctor wiring (46-59)"
     constants:
       - { name: "per-game custom entries", base: "ttt: Next Match+Single Player; pong: Start Match+Add/Remove AI; pp: Next Match; bd: Next Level+Restart+Editor+Save; c4/nmm/ps: none", port: "identical table (MinigameMenu.CurrentGameActions)", match: true }
@@ -489,7 +491,7 @@ features:
     port_refs:
       - "game/hud/MinigameRenderer.cs:_GuiInput (286, board click -> tile move)"
       - "game/hud/MinigameMenu.cs:_GuiInput (260)"
-      - "game/net/NetGame.cs:3244 (cursor ownership while board/menu shown)"
+      - "game/net/NetGame.cs:3263-3271 (cursor ownership while board/menu shown)"
     constants: []
     status:
       logic: partial
@@ -586,7 +588,7 @@ features:
       - "common/minigames/minigame/c4.qc:c4_winning_piece (37)"
       - "common/minigames/minigame/c4.qh"
     port_refs:
-      - "src/XonoticGodot.Common/Gameplay/Minigames/ConnectFour.cs:Move (44)"
+      - "src/XonoticGodot.Common/Gameplay/Minigames/ConnectFour.cs:Move (46)"
     constants:
       - { name: "grid", base: "7x6 (C4_LET_CNT x C4_NUM_CNT)", port: "Columns=7 Rows=6", match: true }
       - { name: "win count / max tiles", base: "4 / 42", port: "4 / 42", match: true }
@@ -866,7 +868,8 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Two-click select-then-jump needs the QC feedback (ps/tile_selected additive glow on the picked peg, ps/tile_available on hover, grey ghost peg at the landing cell) — none exist, and worse: the port's board click handler only fires OnMove('<tile>') per click; PegSolitaire.Move expects '<from> <to>' — a single tile click can never form a legal ps move, so Peg Solitaire is UNPLAYABLE from the live client (no two-click accumulator anywhere in game/)."
+      - "Two-click select-then-jump needs the QC feedback (ps/tile_selected additive glow on the picked peg, ps/tile_available on hover, grey ghost peg at the landing cell) — none exist, and worse: the port's board click handler only fires OnMove('<tile>') per click (MinigameClient.OnBoardMove:101 sends 'move <tile>'); PegSolitaire.Move (PegSolitaire.cs:62-70) hard-requires exactly 2 space-separated tokens — a single tile click can never form a legal ps move, so Peg Solitaire is UNPLAYABLE from the live client (no two-click accumulator anywhere in game/)."
+      - "Even the generic piece draw misses: Base ships ps art as 'ps/piece' (one peg pic), the renderer looks up 'ps/piece1' (piece+team) — pegs always render as the fallback disc."
       - "No 'Pieces left: N' status, no game-over remaining-count banner."
     verification:
       - { kind: code, ref: "MinigameClient.OnBoardMove sends 'move <tile>' (one tile); PegSolitaire.Move requires from+to — no client state accumulates the pair", result: fail }
@@ -889,7 +892,7 @@ features:
       - "src/XonoticGodot.Common/Gameplay/Minigames/Bulldozer.cs:LoadLevel/EditorPlace/CloseEditor (219/255/263)"
     constants:
       - { name: "grid", base: "20x20 (BD_LET_CNT/BD_NUM_CNT)", port: "BdState.Size=20", match: true }
-      - { name: "sv_minigames_bulldozer_startlevel", base: "\"level1\" (cvar, loads minigames/bulldozer/storage_level1.txt)", port: "cvar absent; no level ever loaded", match: false }
+      - { name: "sv_minigames_bulldozer_startlevel", base: "\"level1\" (cvar, loads minigames/bulldozer/storage_level1.txt)", port: "\"level1\" set by the shipped minigames.cfg:18 but NO code reads it; no level ever loaded", match: false }
     status:
       logic: partial
       values: partial
@@ -900,7 +903,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "UNPLAYABLE live: Start() clears the grid and no level is loaded (LoadLevel has zero live callers; the shipped minigames/bulldozer/storage_level*.txt files — present under assets/data — are never parsed; sv_minigames_bulldozer_startlevel doesn't exist). Every live bd session is an empty board with no dozer, so Move returns Invalid forever."
+      - "UNPLAYABLE live: Start() clears the grid and no level is loaded (LoadLevel has zero live callers in src/, game/, or the server host; the shipped minigames/bulldozer/storage_level*.txt files — present under assets/data/xonotic-data.pk3dir — are never parsed; sv_minigames_bulldozer_startlevel is `set` by the shipped minigames.cfg but nothing reads it). Every live bd session is an empty board with no dozer, so Move returns Invalid forever."
       - "Server cmd verbs 'next'/'restart'/'edit'/'save'/'fill' are NOT dispatched: Bulldozer.Move parses every token through DirFromName, so the menu's Editor/Save/Next Level/Restart buttons make the (nonexistent) dozer step Down instead."
       - "Level SAVE (bd_save_level file write, boulder/target count validation, nextlevel chaining) and the bd_canedit permission gate are unported (editor exists only as in-memory static helpers with no live caller)."
       - "Move-count networking (BD_SF_PLAYERMOVES) / per-player bd_moves display N/A (state not networked at all — see presentation row)."

@@ -2944,6 +2944,7 @@ public sealed partial class NetGame : Node3D
                     _viewAngles.X = Mathf.Clamp(fa.X, -89f, 89f);
                     _viewAngles.Y = fa.Y;
                     _viewAngles.Z = 0f;
+                    _lastFixApplyTime = Time.GetTicksMsec() * 0.001f; // arm the predicted replay-echo discard window
                 }
                 if (MenuState.Cvars.GetFloat("sv_warpzone_trace") != 0f)
                     GD.Print($"[wzview] authoritative {(predictedSame ? "skip (predicted already applied)" : "snap")} -> {fa}");
@@ -5353,6 +5354,22 @@ public sealed partial class NetGame : Node3D
     {
         if (_carrier is not null && _carrier.FixAngle)
         {
+            float now = Time.GetTicksMsec() * 0.001f;
+            // REPLAY-ECHO GUARD: the reconcile replay re-simulates the unacked ticks every frame, and near a
+            // warpzone seam a replay from a post-warp base can spuriously re-cross a zone the server never did —
+            // stamping a BACK-ROTATED facing (observed live: predicted 172 re-stamped right after the correct
+            // authoritative 82, leaving the view at the entry yaw — the "angles still wrong" report). Any stamp
+            // arriving within the window after a fixangle APPLY (predicted or authoritative) is such an echo of
+            // the same crossing — discard it. A genuine rapid re-crossing inside the window still gets its
+            // correct snap from the AUTHORITATIVE stamp, which is empirically always the transformed exit facing
+            // and always applies (below in _Process) when it disagrees with the last predicted value.
+            if (now - _lastFixApplyTime < 0.4f)
+            {
+                _carrier.FixAngle = false;
+                if (MenuState.Cvars.GetFloat("sv_warpzone_trace") != 0f)
+                    GD.Print($"[wzview] predicted echo discarded -> {_carrier.FixAngleAngles}");
+                return;
+            }
             _viewAngles = _carrier.FixAngleAngles;
             _viewAngles.X = Mathf.Clamp(_viewAngles.X, -89f, 89f);
             _carrier.FixAngle = false;
@@ -5361,7 +5378,8 @@ public sealed partial class NetGame : Node3D
             // mouse delta in between — a visible "view fights me" snap-back on each crossing at low fps. The
             // authoritative consume skips itself when it matches this (see the FixAngle block in _Process).
             _lastPredictedFixAngles = _viewAngles;
-            _lastPredictedFixTime = Time.GetTicksMsec() * 0.001f;
+            _lastPredictedFixTime = now;
+            _lastFixApplyTime = now;
             if (MenuState.Cvars.GetFloat("sv_warpzone_trace") != 0f)
                 GD.Print($"[wzview] predicted snap -> {_viewAngles}");
             // Tell the view-model we teleported so its lean sway re-seeds to the destination facing instead of
@@ -5376,6 +5394,9 @@ public sealed partial class NetGame : Node3D
     // recognise the same crossing's server stamp and skip the double-apply. -1 = none yet.
     private NVec3 _lastPredictedFixAngles;
     private float _lastPredictedFixTime = -1f;
+
+    // The last APPLIED fixangle of either kind (wall-clock seconds) — the replay-echo discard window's anchor.
+    private float _lastFixApplyTime = -1f;
 
     /// <summary>
     /// Per-render-frame local fire prediction + feedback, decoupled from the 1/72 s input cadence. With

@@ -335,7 +335,7 @@ features:
     constants:
       - { name: "LEAVEMATCH_CMD", base: "defer 0.4 disconnect; wait; g_campaign 0; menu_sync", port: "Disconnect hook + campaign cvar handling in Shell", match: false }
     status:
-      logic: faithful
+      logic: partial
       values: partial
       timing: na
       presentation: partial
@@ -344,12 +344,14 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Leave-match text variants (Stop demo / Leave campaign / Leave singleplayer / Leave multiplayer via isdemo/g_campaign/isServerSingleplayer) — port variant coverage not verified against all four states."
+      - "Quick menu button is INERT: PauseMenu routes 'quickmenu' through MenuCommand.Dispatch, which has no case for it and hits the default 'no client backend yet' log (MenuCommand.cs:280-282) — the menu just closes. The QuickMenuPanel backend IS live but only via the keyboard bind path (NetGame.cs:5219-5222), which menu commands never reach."
+      - "Leave-match text variants collapsed by design note: LeaveMatchButton always says 'Leave multiplayer' when in a match (PauseMenu.cs comment: single network path), vs Base's Stop demo / Leave campaign / Leave singleplayer / Leave multiplayer (isdemo/g_campaign/isServerSingleplayer)."
       - "_menu_gamemenu_dialog_available registration cvar not exported (harmless unless server QC probes it)."
     verification:
-      - { kind: code, ref: "PauseMenu fill order matches QC (Main menu/Servers/Profile/Settings/Input/Guide/Quick menu/Join!/Spectate/Leave/Quit); campaign Join!→Restart-level swap ported; commands reach the match via MenuCommand.SendGameCommand (Shell LocalRouteCommand)", result: pass }
+      - { kind: code, ref: "PauseMenu.cs:36-73 fill order matches QC (Main menu/Servers/Profile/Settings/Input/Guide/Quick menu/Join!/Spectate/Leave/Quit); campaign Join!→Restart-level swap in _Process; join/spec/resetmatch reach the match via MenuCommand case 'join'/'spec' → SendGame (MenuCommand.cs:246-252)", result: pass }
+      - { kind: code, ref: "MenuCommand.Dispatch has no 'quickmenu' case → default inert log; NetGame.cs:5219 only handles the bind path", result: fail }
     confidence: high
-    notes: "QC indented buttons use directmenu (hide-menu-on-close) — reproduced via PushResumeOnClose. Quick menu routes the 'quickmenu' command; the QuickMenuPanel HUD backend exists (cl-hud.panel.quickmenu)."
+    notes: "QC indented buttons use directmenu (hide-menu-on-close) — reproduced via PushResumeOnClose."
 
   - id: menu-core.nav.quit_dialog
     name: "Quit confirmation dialog"
@@ -475,9 +477,9 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Never triggered: in Base the client pops it when cl_allow_uid2name is -1 on a stats-enabled server ('menu_cmd directmenu Uid2Name' from CSQC); the port has no trigger (dev screen only), so the consent question is never asked — and Race record-name gating (GameWorld.cs:3184) then depends on a cvar users can only set via the Profile checkboxes."
+      - "Never triggered: in Base the client pops it when cl_allow_uid2name is -1 on a stats-enabled server ('menu_cmd directmenu Uid2Name' from CSQC); the port constructs DialogUid2Name NOWHERE — not even the --menu-screen dev switch (Shell.cs:180-184 has no 'uid2name' case) — so the consent question is never asked, and Race record-name gating then depends on a cvar users can only set via the Profile checkboxes."
     verification:
-      - { kind: code, ref: "no non-dev constructor call for DialogUid2Name; the vyes/vno vote halves log inert in MenuCommand", result: fail }
+      - { kind: code, ref: "grep DialogUid2Name over game/+src/+tests → zero references outside the class file (verified 2026-07-02); the vyes/vno vote halves would log inert in MenuCommand (default case)", result: fail }
     confidence: high
     notes: "The real effect (cl_allow_uid2name write) is implemented in the dialog."
 
@@ -629,15 +631,16 @@ features:
       - "menu/xonotic/dialog_singleplayer.qc:XonoticSingleplayerDialog_fill + InstantAction_LoadMap"
     port_refs:
       - "game/menu/SingleplayerScreen.cs:LoadCampaign/PopulateList/OnStartLevel/OnInstantAction"
-      - "game/menu/SingleplayerScreen.cs:CampaignRowButton (327)"
+      - "game/menu/SingleplayerScreen.cs:CampaignRowButton (347 alpha)"
     constants:
       - { name: "revealed rows", base: "min(campaignIndex+2, entries) — done/current/one '???' peek", port: "same (PopulateList shown = frontier+2)", match: true }
       - { name: "row alphas", base: "SELECTABLE 0.6 / CURRENT 1 / FUTURE 0.2, desc ×0.8", port: "same values", match: true }
       - { name: "g_campaign_skill radios", base: "-2/0/2 Easy/Medium/Hard", port: "same", match: true }
-      - { name: "instant-action table", base: "30% dm 2-8, 25% ctf 4-12/2, 15% tdm 4-8/2, 10% ca, 10% ft, 5% kh 6, else lms/dom(2-8/2)/ons(6-16/2)/as(4-16/2); timelimit 10; bots=p-1", port: "same weights/ranges (OnInstantAction)", match: true }
+      - { name: "instant-action table", base: "30% dm 2-8, 25% ctf 4-12/2, 15% tdm 4-8/2, 10% ca, 10% ft, 5% kh 6, else lms(2-6)/dom(2-8/2)/ons(6-16/2)/as(4-16/2); timelimit 10; bots=p-1", port: "same weights/ranges (SingleplayerScreen.cs:277-291, verified line-by-line vs dialog_singleplayer.qc)", match: true }
+      - { name: "instant-action LMS timelimit", base: "-1 (LMS rolls set timelimit_override -1, unlimited)", port: "10 (port sets TimeLimit=10 for every roll incl. lms, SingleplayerScreen.cs:313)", match: false }
     status:
       logic: faithful
-      values: faithful
+      values: partial
       timing: na
       presentation: partial
       audio: missing
@@ -645,6 +648,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
+      - "Instant action: an LMS roll should set timelimit -1 (unlimited, QC case 0); the port always sets TimeLimit 10 — LMS instant-action matches end by clock instead of lives."
       - "Campaign cycler: Base wraps around (mod(j+step, n)); the port clamps at the ends (Prev/Next disabled at first/last)."
       - "Live re-sync while open (QC draw() reloads when g_campaign<id>_index or g_campaign_name changes under it — e.g. after finishing a level in-game) not implemented; the list rebuilds only on open/cycle."
       - "Instant action singleplayer-server lockdown (makeServerSingleplayer settemp net_address 127.0.0.1) not ported."

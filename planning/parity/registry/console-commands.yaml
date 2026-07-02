@@ -336,7 +336,7 @@ features:
       - "client/command/_mod.qh"
     port_refs:
       - "src/XonoticGodot.Engine/Console/ConsoleCommands.cs:RouteUnknown (the client console's command routing)"
-      - "game/net/NetGame.cs:RunBoundCommand (5200-5260, bind-issued client command intercepts)"
+      - "game/net/NetGame.cs:RunBoundCommand (5214-5262, bind-issued client command intercepts; wired live at NetGame.cs:5134 BindInput.HandleEvent)"
       - "game/console/ConsoleOverlay.cs:107"
     constants: []
     status:
@@ -364,9 +364,9 @@ features:
     port_refs:
       - "game/hud/HudConfigEditor.cs:Configuring (114, _hud_configure live editor)"
       - "game/menu/dialogs/DialogHudConfirm.cs:60 (menu entry → map _hudsetup; _hud_configure 1)"
-      - "game/net/NetGame.cs:5203-5222 (quickmenu toggle bind + hud radar 1 / +hud_panel_radar_maximized intercepts)"
+      - "game/net/NetGame.cs:5219-5243 (quickmenu toggle bind + hud radar 1 / +hud_panel_radar_maximized intercepts)"
       - "game/hud/QuickMenuPanel.cs:Toggle"
-      - "game/hud/ScoreboardPanel.cs:EnsureColumns (479, Cmd_Scoreboard_SetFields parser)"
+      - "game/hud/ScoreboardPanel.cs:EnsureColumns (482, Cmd_Scoreboard_SetFields parser)"
       - "game/hud/HudConfigEditor.cs:323 (Ctrl+S emits 'hud save myconfig')"
     constants: []
     status:
