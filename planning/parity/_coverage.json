@@ -1,0 +1,3492 @@
+{
+ "generated": "2026-07-02",
+ "summary": {
+  "cited": {
+   "files": 588,
+   "lines": 170996
+  },
+  "excluded": {
+   "files": 11,
+   "lines": 4220
+  },
+  "deferred": {
+   "files": 393,
+   "lines": 39308
+  },
+  "unmapped": {
+   "files": 765,
+   "lines": 26701
+  }
+ },
+ "unmapped": [
+  {
+   "path": "common/effects/effectinfo_vehicles.inc",
+   "lines": 1166
+  },
+  {
+   "path": "client/hud/panel/strafehud.qc",
+   "lines": 804
+  },
+  {
+   "path": "lib/string.qh",
+   "lines": 667
+  },
+  {
+   "path": "server/pathlib/main.qc",
+   "lines": 545
+  },
+  {
+   "path": "common/debug.qh",
+   "lines": 502
+  },
+  {
+   "path": "lib/net.qh",
+   "lines": 453
+  },
+  {
+   "path": "lib/intrusivelist.qh",
+   "lines": 389
+  },
+  {
+   "path": "lib/oo.qh",
+   "lines": 368
+  },
+  {
+   "path": "common/mapobjects/func/pointparticles.qc",
+   "lines": 340
+  },
+  {
+   "path": "lib/_all.inc",
+   "lines": 330
+  },
+  {
+   "path": "common/effects/effectinfo_nades.inc",
+   "lines": 325
+  },
+  {
+   "path": "client/draw.qc",
+   "lines": 311
+  },
+  {
+   "path": "common/effects/effectinfo_buffs.inc",
+   "lines": 305
+  },
+  {
+   "path": "lib/warpzone/mathlib.qc",
+   "lines": 295
+  },
+  {
+   "path": "lib/registry.qh",
+   "lines": 270
+  },
+  {
+   "path": "server/pathlib/path_waypoint.qc",
+   "lines": 239
+  },
+  {
+   "path": "lib/matrix/matrix.qc",
+   "lines": 236
+  },
+  {
+   "path": "server/pathlib/expandnode.qc",
+   "lines": 236
+  },
+  {
+   "path": "lib/vector.qh",
+   "lines": 232
+  },
+  {
+   "path": "lib/stats.qh",
+   "lines": 217
+  },
+  {
+   "path": "server/pathlib/utility.qc",
+   "lines": 213
+  },
+  {
+   "path": "client/main.qh",
+   "lines": 211
+  },
+  {
+   "path": "lib/promise.qc",
+   "lines": 210
+  },
+  {
+   "path": "common/viewloc.qc",
+   "lines": 206
+  },
+  {
+   "path": "common/effects/effectinfo_gentle_particlegibs.inc",
+   "lines": 199
+  },
+  {
+   "path": "lib/iter.qh",
+   "lines": 192
+  },
+  {
+   "path": "server/command/common.qh",
+   "lines": 191
+  },
+  {
+   "path": "lib/color.qh",
+   "lines": 189
+  },
+  {
+   "path": "lib/deglobalization.qh",
+   "lines": 172
+  },
+  {
+   "path": "common/mapobjects/subs.qh",
+   "lines": 171
+  },
+  {
+   "path": "common/physics/movetypes/movetypes.qh",
+   "lines": 166
+  },
+  {
+   "path": "lib/spawnfunc.qh",
+   "lines": 161
+  },
+  {
+   "path": "server/weapons/accuracy.qc",
+   "lines": 160
+  },
+  {
+   "path": "server/pathlib/movenode.qc",
+   "lines": 158
+  },
+  {
+   "path": "client/hud/panel/strafehud.qh",
+   "lines": 154
+  },
+  {
+   "path": "common/monsters/sv_monsters.qh",
+   "lines": 154
+  },
+  {
+   "path": "common/animdecide.qh",
+   "lines": 147
+  },
+  {
+   "path": "server/damage.qh",
+   "lines": 147
+  },
+  {
+   "path": "common/effects/qc/modeleffects.qc",
+   "lines": 146
+  },
+  {
+   "path": "common/mapobjects/func/rainsnow.qc",
+   "lines": 143
+  },
+  {
+   "path": "server/bot/default/navigation.qh",
+   "lines": 140
+  },
+  {
+   "path": "server/scores.qh",
+   "lines": 140
+  },
+  {
+   "path": "lib/bits.qh",
+   "lines": 139
+  },
+  {
+   "path": "server/pathlib/costs.qc",
+   "lines": 135
+  },
+  {
+   "path": "client/view.qh",
+   "lines": 134
+  },
+  {
+   "path": "common/playerstats.qh",
+   "lines": 132
+  },
+  {
+   "path": "server/weapons/csqcprojectile.qc",
+   "lines": 132
+  },
+  {
+   "path": "common/monsters/monster.qh",
+   "lines": 126
+  },
+  {
+   "path": "lib/map.qh",
+   "lines": 124
+  },
+  {
+   "path": "common/effects/effectinfo_ctf.inc",
+   "lines": 123
+  },
+  {
+   "path": "common/effects/effectinfo_onslaught.inc",
+   "lines": 123
+  },
+  {
+   "path": "server/items/items.qh",
+   "lines": 123
+  },
+  {
+   "path": "common/mutators/events.qh",
+   "lines": 122
+  },
+  {
+   "path": "common/effects/effectinfo_gentle.inc",
+   "lines": 121
+  },
+  {
+   "path": "common/effects/effectinfo_gentle_morphed.inc",
+   "lines": 121
+  },
+  {
+   "path": "server/pathlib/debug.qc",
+   "lines": 121
+  },
+  {
+   "path": "client/draw.qh",
+   "lines": 119
+  },
+  {
+   "path": "common/effects/effectinfo_gentle_happy.inc",
+   "lines": 119
+  },
+  {
+   "path": "lib/warpzone/common.qh",
+   "lines": 119
+  },
+  {
+   "path": "lib/warpzone/mathlib.qh",
+   "lines": 119
+  },
+  {
+   "path": "lib/log.qh",
+   "lines": 118
+  },
+  {
+   "path": "common/turrets/sv_turrets.qh",
+   "lines": 117
+  },
+  {
+   "path": "lib/sortlist.qc",
+   "lines": 117
+  },
+  {
+   "path": "server/bot/default/bot.qh",
+   "lines": 117
+  },
+  {
+   "path": "lib/self.qh",
+   "lines": 113
+  },
+  {
+   "path": "common/weapons/config.qc",
+   "lines": 111
+  },
+  {
+   "path": "server/weapons/weaponstats.qc",
+   "lines": 111
+  },
+  {
+   "path": "common/constants.qh",
+   "lines": 110
+  },
+  {
+   "path": "server/pathlib/pathlib.qh",
+   "lines": 110
+  },
+  {
+   "path": "server/bot/default/waypoints.qh",
+   "lines": 107
+  },
+  {
+   "path": "common/net_notice.qc",
+   "lines": 104
+  },
+  {
+   "path": "common/weapons/weapon/electro.qh",
+   "lines": 104
+  },
+  {
+   "path": "lib/p2mathlib.qc",
+   "lines": 104
+  },
+  {
+   "path": "common/resources/sv_resources.qh",
+   "lines": 100
+  },
+  {
+   "path": "lib/test.qh",
+   "lines": 99
+  },
+  {
+   "path": "server/weapons/hitplot.qc",
+   "lines": 99
+  },
+  {
+   "path": "common/gametypes/gametype/onslaught/sv_onslaught.qh",
+   "lines": 97
+  },
+  {
+   "path": "common/mutators/mutator/nades/all.inc",
+   "lines": 89
+  },
+  {
+   "path": "common/turrets/config.qc",
+   "lines": 88
+  },
+  {
+   "path": "common/mutators/mutator/nades/nades.qh",
+   "lines": 87
+  },
+  {
+   "path": "common/mapobjects/trigger/jumppads.qh",
+   "lines": 85
+  },
+  {
+   "path": "lib/p99.qh",
+   "lines": 84
+  },
+  {
+   "path": "server/bot/default/scripting.qh",
+   "lines": 82
+  },
+  {
+   "path": "common/weapons/weapon/shotgun.qh",
+   "lines": 81
+  },
+  {
+   "path": "common/mutators/mutator/nades/sv_nades.qh",
+   "lines": 80
+  },
+  {
+   "path": "lib/linkedlist.qh",
+   "lines": 80
+  },
+  {
+   "path": "server/command/vote.qh",
+   "lines": 80
+  },
+  {
+   "path": "server/weapons/weaponsystem.qh",
+   "lines": 78
+  },
+  {
+   "path": "server/race.qh",
+   "lines": 77
+  },
+  {
+   "path": "common/checkextension.qc",
+   "lines": 75
+  },
+  {
+   "path": "lib/angle.qc",
+   "lines": 74
+  },
+  {
+   "path": "common/weapons/weapon/vaporizer.qh",
+   "lines": 73
+  },
+  {
+   "path": "lib/i18n.qh",
+   "lines": 70
+  },
+  {
+   "path": "server/bot/default/cvars.qh",
+   "lines": 69
+  },
+  {
+   "path": "lib/markdown.qh",
+   "lines": 67
+  },
+  {
+   "path": "server/chat.qh",
+   "lines": 67
+  },
+  {
+   "path": "client/hud/crosshair.qh",
+   "lines": 66
+  },
+  {
+   "path": "common/mutators/mutator/powerups/powerup/speed.qh",
+   "lines": 65
+  },
+  {
+   "path": "lib/arraylist.qh",
+   "lines": 65
+  },
+  {
+   "path": "lib/yenc.qh",
+   "lines": 65
+  },
+  {
+   "path": "server/items/spawning.qh",
+   "lines": 65
+  },
+  {
+   "path": "common/mutators/mutator/powerups/powerup/invisibility.qh",
+   "lines": 64
+  },
+  {
+   "path": "ecs/lib.qh",
+   "lines": 62
+  },
+  {
+   "path": "lib/accumulate.qh",
+   "lines": 62
+  },
+  {
+   "path": "server/bot/default/havocbot/havocbot.qh",
+   "lines": 62
+  },
+  {
+   "path": "common/mutators/mutator/powerups/powerup/shield.qh",
+   "lines": 61
+  },
+  {
+   "path": "server/main.qh",
+   "lines": 60
+  },
+  {
+   "path": "common/vehicles/vehicle/raptor_weapons.qh",
+   "lines": 59
+  },
+  {
+   "path": "common/mapobjects/triggers.qh",
+   "lines": 57
+  },
+  {
+   "path": "lib/sort.qh",
+   "lines": 57
+  },
+  {
+   "path": "common/mutators/mutator/nades/nades.qc",
+   "lines": 56
+  },
+  {
+   "path": "client/csqcmodel_hooks.qh",
+   "lines": 55
+  },
+  {
+   "path": "client/hud/panel/physics.qh",
+   "lines": 55
+  },
+  {
+   "path": "common/_all.inc",
+   "lines": 55
+  },
+  {
+   "path": "server/tests.qc",
+   "lines": 55
+  },
+  {
+   "path": "client/hud/panel/weapons.qh",
+   "lines": 54
+  },
+  {
+   "path": "common/state.qh",
+   "lines": 54
+  },
+  {
+   "path": "lib/compiler.qh",
+   "lines": 54
+  },
+  {
+   "path": "client/hud/panel/scoreboard.qh",
+   "lines": 53
+  },
+  {
+   "path": "lib/csqcmodel/interpolate.qh",
+   "lines": 53
+  },
+  {
+   "path": "common/effects/qc/rubble.qc",
+   "lines": 52
+  },
+  {
+   "path": "common/items/all.qh",
+   "lines": 52
+  },
+  {
+   "path": "common/mutators/mutator/nades/effects.inc",
+   "lines": 52
+  },
+  {
+   "path": "lib/csqcmodel/cl_model.qh",
+   "lines": 52
+  },
+  {
+   "path": "lib/static.qh",
+   "lines": 52
+  },
+  {
+   "path": "common/items/item/armor.qc",
+   "lines": 51
+  },
+  {
+   "path": "common/items/item/health.qc",
+   "lines": 51
+  },
+  {
+   "path": "common/physics/movelib.qh",
+   "lines": 50
+  },
+  {
+   "path": "server/weapons/accuracy.qh",
+   "lines": 50
+  },
+  {
+   "path": "client/hud/panel/racetimer.qh",
+   "lines": 49
+  },
+  {
+   "path": "common/anim.qc",
+   "lines": 49
+  },
+  {
+   "path": "lib/matrix/command.qc",
+   "lines": 49
+  },
+  {
+   "path": "lib/warpzone/anglestransform.qh",
+   "lines": 49
+  },
+  {
+   "path": "server/intermission.qh",
+   "lines": 49
+  },
+  {
+   "path": "common/gametypes/gametype/keyhunt/keyhunt.qh",
+   "lines": 48
+  },
+  {
+   "path": "common/anim.qh",
+   "lines": 47
+  },
+  {
+   "path": "common/effects/effectinfo_instagib.inc",
+   "lines": 46
+  },
+  {
+   "path": "common/mutators/mutator/_mod.inc",
+   "lines": 46
+  },
+  {
+   "path": "common/mutators/mutator/_mod.qh",
+   "lines": 46
+  },
+  {
+   "path": "server/mapvoting.qh",
+   "lines": 46
+  },
+  {
+   "path": "server/player.qh",
+   "lines": 46
+  },
+  {
+   "path": "client/teamradar.qh",
+   "lines": 45
+  },
+  {
+   "path": "common/resources/cl_resources.qh",
+   "lines": 44
+  },
+  {
+   "path": "lib/csqcmodel/cl_player.qh",
+   "lines": 44
+  },
+  {
+   "path": "lib/csqcmodel/sv_model.qh",
+   "lines": 44
+  },
+  {
+   "path": "server/bot/null/bot_null.qc",
+   "lines": 44
+  },
+  {
+   "path": "server/cheats.qh",
+   "lines": 44
+  },
+  {
+   "path": "lib/p2mathlib.qh",
+   "lines": 43
+  },
+  {
+   "path": "server/weapons/selection.qh",
+   "lines": 43
+  },
+  {
+   "path": "common/mutators/mutator/damagetext/cl_damagetext.qh",
+   "lines": 42
+  },
+  {
+   "path": "lib/functional.qh",
+   "lines": 42
+  },
+  {
+   "path": "lib/misc.qh",
+   "lines": 42
+  },
+  {
+   "path": "server/compat/wop.qc",
+   "lines": 42
+  },
+  {
+   "path": "client/hud/hud_config.qh",
+   "lines": 41
+  },
+  {
+   "path": "lib/noise.qh",
+   "lines": 41
+  },
+  {
+   "path": "common/gametypes/gametype/onslaught/sv_controlpoint.qc",
+   "lines": 40
+  },
+  {
+   "path": "common/mutators/mutator/nades/nade/napalm.qh",
+   "lines": 40
+  },
+  {
+   "path": "server/bot/default/aim.qh",
+   "lines": 40
+  },
+  {
+   "path": "lib/test.qc",
+   "lines": 39
+  },
+  {
+   "path": "server/compat/quake3.qh",
+   "lines": 39
+  },
+  {
+   "path": "lib/unsafe.qh",
+   "lines": 38
+  },
+  {
+   "path": "server/_mod.inc",
+   "lines": 38
+  },
+  {
+   "path": "server/_mod.qh",
+   "lines": 38
+  },
+  {
+   "path": "common/gametypes/gametype/keyhunt/sv_keyhunt.qh",
+   "lines": 37
+  },
+  {
+   "path": "common/vehicles/cl_vehicles.qh",
+   "lines": 36
+  },
+  {
+   "path": "server/compat/halflife.qc",
+   "lines": 36
+  },
+  {
+   "path": "server/hook.qh",
+   "lines": 36
+  },
+  {
+   "path": "server/sys-post.qh",
+   "lines": 36
+  },
+  {
+   "path": "common/mutators/mutator/nades/nade/veil.qh",
+   "lines": 35
+  },
+  {
+   "path": "common/vehicles/vehicle/racer_weapon.qh",
+   "lines": 35
+  },
+  {
+   "path": "common/mapobjects/misc/laser.qh",
+   "lines": 34
+  },
+  {
+   "path": "lib/defer.qh",
+   "lines": 34
+  },
+  {
+   "path": "client/weapons/projectile.qh",
+   "lines": 33
+  },
+  {
+   "path": "server/sys-pre.qh",
+   "lines": 33
+  },
+  {
+   "path": "common/gametypes/gametype/onslaught/onslaught.qh",
+   "lines": 32
+  },
+  {
+   "path": "common/mutators/mutator/nades/nade/ammo.qh",
+   "lines": 32
+  },
+  {
+   "path": "common/mutators/mutator/nades/nade/entrap.qh",
+   "lines": 32
+  },
+  {
+   "path": "common/mutators/mutator/nades/nade/heal.qh",
+   "lines": 32
+  },
+  {
+   "path": "lib/struct.qh",
+   "lines": 32
+  },
+  {
+   "path": "client/shownames.qh",
+   "lines": 30
+  },
+  {
+   "path": "common/mapobjects/target/music.qh",
+   "lines": 30
+  },
+  {
+   "path": "common/models/model.qh",
+   "lines": 30
+  },
+  {
+   "path": "common/mutators/mutator/buffs/buff/inferno.qh",
+   "lines": 30
+  },
+  {
+   "path": "common/mutators/mutator/buffs/buff/medic.qh",
+   "lines": 30
+  },
+  {
+   "path": "common/mutators/mutator/nades/nade/darkness.qh",
+   "lines": 30
+  },
+  {
+   "path": "common/mutators/mutator/nades/nade/ice.qh",
+   "lines": 30
+  },
+  {
+   "path": "common/weapons/all.inc",
+   "lines": 30
+  },
+  {
+   "path": "server/progs.inc",
+   "lines": 30
+  },
+  {
+   "path": "common/items/item/ammo.qc",
+   "lines": 29
+  },
+  {
+   "path": "common/mutators/mutator/nades/nade/monster.qh",
+   "lines": 29
+  },
+  {
+   "path": "common/weapons/config.qh",
+   "lines": 29
+  },
+  {
+   "path": "common/gametypes/gametype/onslaught/sv_generator.qc",
+   "lines": 28
+  },
+  {
+   "path": "common/mapobjects/trigger/impulse.qh",
+   "lines": 28
+  },
+  {
+   "path": "lib/bool.qh",
+   "lines": 28
+  },
+  {
+   "path": "lib/enumclass.qh",
+   "lines": 28
+  },
+  {
+   "path": "server/command/getreplies.qh",
+   "lines": 28
+  },
+  {
+   "path": "client/hud/panel/healtharmor.qh",
+   "lines": 27
+  },
+  {
+   "path": "common/effects/qc/damageeffects.qh",
+   "lines": 27
+  },
+  {
+   "path": "common/items/all.qc",
+   "lines": 27
+  },
+  {
+   "path": "common/mutators/mutator/buffs/buff/bash.qh",
+   "lines": 27
+  },
+  {
+   "path": "common/mutators/mutator/buffs/buff/disability.qh",
+   "lines": 27
+  },
+  {
+   "path": "common/mutators/mutator/nades/nade/spawn.qh",
+   "lines": 27
+  },
+  {
+   "path": "common/mutators/mutator/nades/nade/translocate.qh",
+   "lines": 27
+  },
+  {
+   "path": "common/turrets/config.qh",
+   "lines": 27
+  },
+  {
+   "path": "ecs/systems/cl_physics.qc",
+   "lines": 27
+  },
+  {
+   "path": "lib/promise.qh",
+   "lines": 27
+  },
+  {
+   "path": "client/hud/panel/_mod.inc",
+   "lines": 26
+  },
+  {
+   "path": "client/hud/panel/_mod.qh",
+   "lines": 26
+  },
+  {
+   "path": "common/effects/qc/gibs.qh",
+   "lines": 26
+  },
+  {
+   "path": "common/mutators/mutator/buffs/buff/vengeance.qh",
+   "lines": 26
+  },
+  {
+   "path": "common/mutators/mutator/status_effects/status_effect/burning.qh",
+   "lines": 26
+  },
+  {
+   "path": "common/mutators/mutator/status_effects/status_effect/stunned.qh",
+   "lines": 26
+  },
+  {
+   "path": "common/vehicles/all.qh",
+   "lines": 26
+  },
+  {
+   "path": "client/progs.inc",
+   "lines": 25
+  },
+  {
+   "path": "common/mutators/mutator/buffs/buff/jump.qh",
+   "lines": 25
+  },
+  {
+   "path": "common/mutators/mutator/buffs/buff/luck.qh",
+   "lines": 25
+  },
+  {
+   "path": "common/mutators/mutator/buffs/buff/resistance.qh",
+   "lines": 25
+  },
+  {
+   "path": "common/mutators/mutator/instagib/instagib.qc",
+   "lines": 25
+  },
+  {
+   "path": "ecs/components/physics.qh",
+   "lines": 25
+  },
+  {
+   "path": "lib/lazy.qh",
+   "lines": 25
+  },
+  {
+   "path": "lib/registry_net.qh",
+   "lines": 25
+  },
+  {
+   "path": "server/command/banning.qh",
+   "lines": 25
+  },
+  {
+   "path": "common/mapobjects/models.qh",
+   "lines": 24
+  },
+  {
+   "path": "common/mapobjects/trigger/_mod.inc",
+   "lines": 24
+  },
+  {
+   "path": "common/mapobjects/trigger/_mod.qh",
+   "lines": 24
+  },
+  {
+   "path": "common/mutators/mutator/buffs/buff/ammo.qh",
+   "lines": 24
+  },
+  {
+   "path": "common/mutators/mutator/buffs/buff/flight.qh",
+   "lines": 24
+  },
+  {
+   "path": "common/models/all.qh",
+   "lines": 23
+  },
+  {
+   "path": "common/mutators/mutator/buffs/buff/magnet.qh",
+   "lines": 23
+  },
+  {
+   "path": "common/mutators/mutator/buffs/buff/swapper.qh",
+   "lines": 23
+  },
+  {
+   "path": "common/mutators/mutator/buffs/buff/vampire.qh",
+   "lines": 23
+  },
+  {
+   "path": "common/mutators/mutator/instagib/items.qc",
+   "lines": 23
+  },
+  {
+   "path": "common/turrets/turret/_mod.inc",
+   "lines": 23
+  },
+  {
+   "path": "common/turrets/turret/_mod.qh",
+   "lines": 23
+  },
+  {
+   "path": "lib/macro.qh",
+   "lines": 23
+  },
+  {
+   "path": "common/gametypes/gametype/_mod.inc",
+   "lines": 22
+  },
+  {
+   "path": "common/gametypes/gametype/_mod.qh",
+   "lines": 22
+  },
+  {
+   "path": "common/mapobjects/func/door.qh",
+   "lines": 22
+  },
+  {
+   "path": "server/command/radarmap.qh",
+   "lines": 22
+  },
+  {
+   "path": "server/matrix.qc",
+   "lines": 22
+  },
+  {
+   "path": "common/gametypes/gametype/tmayhem/sv_tmayhem.qh",
+   "lines": 21
+  },
+  {
+   "path": "common/mapobjects/misc/keys.qh",
+   "lines": 21
+  },
+  {
+   "path": "lib/sortlist.qh",
+   "lines": 21
+  },
+  {
+   "path": "lib/warpzone/server.qh",
+   "lines": 21
+  },
+  {
+   "path": "server/gamelog.qh",
+   "lines": 21
+  },
+  {
+   "path": "common/effects/qc/casings.qh",
+   "lines": 20
+  },
+  {
+   "path": "common/gametypes/gametype/duel/duel.qc",
+   "lines": 20
+  },
+  {
+   "path": "common/gametypes/gametype/survival/survival.qc",
+   "lines": 20
+  },
+  {
+   "path": "common/mutators/mutator/powerups/sv_powerups.qh",
+   "lines": 20
+  },
+  {
+   "path": "common/weapons/weapon/_mod.inc",
+   "lines": 20
+  },
+  {
+   "path": "common/weapons/weapon/_mod.qh",
+   "lines": 20
+  },
+  {
+   "path": "server/compat/quake.qc",
+   "lines": 20
+  },
+  {
+   "path": "client/hud/panel/quickmenu.qh",
+   "lines": 19
+  },
+  {
+   "path": "client/items/items.qh",
+   "lines": 19
+  },
+  {
+   "path": "client/mapvoting.qh",
+   "lines": 19
+  },
+  {
+   "path": "common/gametypes/gametype/onslaught/_mod.inc",
+   "lines": 19
+  },
+  {
+   "path": "common/gametypes/gametype/onslaught/_mod.qh",
+   "lines": 19
+  },
+  {
+   "path": "common/mapobjects/func/stardust.qc",
+   "lines": 19
+  },
+  {
+   "path": "common/mapobjects/trigger/viewloc.qh",
+   "lines": 19
+  },
+  {
+   "path": "common/monsters/all.qh",
+   "lines": 19
+  },
+  {
+   "path": "common/mutators/mutator/nades/nade/normal.qh",
+   "lines": 19
+  },
+  {
+   "path": "client/_mod.inc",
+   "lines": 18
+  },
+  {
+   "path": "client/_mod.qh",
+   "lines": 18
+  },
+  {
+   "path": "common/effects/qc/rubble.qh",
+   "lines": 18
+  },
+  {
+   "path": "common/gametypes/gametype/ctf/ctf.qc",
+   "lines": 18
+  },
+  {
+   "path": "common/gametypes/gametype/keepaway/keepaway.qc",
+   "lines": 18
+  },
+  {
+   "path": "common/gametypes/gametype/lms/lms.qc",
+   "lines": 18
+  },
+  {
+   "path": "common/items/item/pickup.qc",
+   "lines": 18
+  },
+  {
+   "path": "common/mapobjects/func/_mod.inc",
+   "lines": 18
+  },
+  {
+   "path": "common/mapobjects/func/_mod.qh",
+   "lines": 18
+  },
+  {
+   "path": "common/mutators/mutator/overkill/overkill.qc",
+   "lines": 18
+  },
+  {
+   "path": "common/turrets/util.qh",
+   "lines": 18
+  },
+  {
+   "path": "server/portals.qh",
+   "lines": 18
+  },
+  {
+   "path": "client/hud/panel/ammo.qh",
+   "lines": 17
+  },
+  {
+   "path": "client/hud/panel/chat.qh",
+   "lines": 17
+  },
+  {
+   "path": "client/hud/panel/timer.qh",
+   "lines": 17
+  },
+  {
+   "path": "common/gametypes/gametype/cts/cts.qc",
+   "lines": 17
+  },
+  {
+   "path": "common/gametypes/gametype/freezetag/freezetag.qc",
+   "lines": 17
+  },
+  {
+   "path": "common/gametypes/gametype/mayhem/sv_mayhem.qh",
+   "lines": 17
+  },
+  {
+   "path": "common/gametypes/gametype/race/sv_race.qh",
+   "lines": 17
+  },
+  {
+   "path": "common/gametypes/gametype/survival/sv_survival.qh",
+   "lines": 17
+  },
+  {
+   "path": "common/gametypes/gametype/tdm/sv_tdm.qh",
+   "lines": 17
+  },
+  {
+   "path": "common/mapobjects/platforms.qh",
+   "lines": 17
+  },
+  {
+   "path": "common/mutators/mutator/status_effects/status_effect/spawnshield.qh",
+   "lines": 17
+  },
+  {
+   "path": "lib/matrix/matrix.qh",
+   "lines": 17
+  },
+  {
+   "path": "client/hud/panel/powerups.qh",
+   "lines": 16
+  },
+  {
+   "path": "common/gametypes/gametype/keyhunt/keyhunt.qc",
+   "lines": 16
+  },
+  {
+   "path": "common/gametypes/gametype/race/race.qc",
+   "lines": 16
+  },
+  {
+   "path": "common/mutators/mutator/dodging/dodging.qc",
+   "lines": 16
+  },
+  {
+   "path": "common/mutators/mutator/status_effects/status_effect/superweapons.qh",
+   "lines": 16
+  },
+  {
+   "path": "common/net_notice.qh",
+   "lines": 16
+  },
+  {
+   "path": "server/mutators/loader.qc",
+   "lines": 16
+  },
+  {
+   "path": "server/weapons/throwing.qh",
+   "lines": 16
+  },
+  {
+   "path": "common/_mod.inc",
+   "lines": 15
+  },
+  {
+   "path": "common/_mod.qh",
+   "lines": 15
+  },
+  {
+   "path": "common/gametypes/gametype/assault/assault.qc",
+   "lines": 15
+  },
+  {
+   "path": "common/gametypes/gametype/domination/domination.qc",
+   "lines": 15
+  },
+  {
+   "path": "common/gametypes/gametype/nexball/nexball.qc",
+   "lines": 15
+  },
+  {
+   "path": "common/gametypes/gametype/tdm/tdm.qc",
+   "lines": 15
+  },
+  {
+   "path": "common/mutators/mutator/nades/net.qh",
+   "lines": 15
+  },
+  {
+   "path": "lib/json.qh",
+   "lines": 15
+  },
+  {
+   "path": "server/anticheat.qh",
+   "lines": 15
+  },
+  {
+   "path": "server/clientkill.qh",
+   "lines": 15
+  },
+  {
+   "path": "client/hud/panel/pickup.qh",
+   "lines": 14
+  },
+  {
+   "path": "client/player_skeleton.qh",
+   "lines": 14
+  },
+  {
+   "path": "common/effects/qc/lightningarc.qh",
+   "lines": 14
+  },
+  {
+   "path": "common/gametypes/gametype/invasion/invasion.qc",
+   "lines": 14
+  },
+  {
+   "path": "common/gametypes/gametype/tka/tka.qc",
+   "lines": 14
+  },
+  {
+   "path": "common/mapobjects/func/door_rotating.qh",
+   "lines": 14
+  },
+  {
+   "path": "common/monsters/all.qc",
+   "lines": 14
+  },
+  {
+   "path": "common/mutators/mutator/buffs/buff/_mod.inc",
+   "lines": 14
+  },
+  {
+   "path": "common/mutators/mutator/buffs/buff/_mod.qh",
+   "lines": 14
+  },
+  {
+   "path": "common/mutators/mutator/overkill/_mod.inc",
+   "lines": 14
+  },
+  {
+   "path": "common/turrets/_mod.inc",
+   "lines": 14
+  },
+  {
+   "path": "common/turrets/_mod.qh",
+   "lines": 14
+  },
+  {
+   "path": "common/viewloc.qh",
+   "lines": 14
+  },
+  {
+   "path": "server/ipban.qh",
+   "lines": 14
+  },
+  {
+   "path": "server/weapons/spawning.qh",
+   "lines": 14
+  },
+  {
+   "path": "server/weapons/weaponstats.qh",
+   "lines": 14
+  },
+  {
+   "path": "common/mapobjects/target/_mod.inc",
+   "lines": 13
+  },
+  {
+   "path": "common/mapobjects/trigger/counter.qh",
+   "lines": 13
+  },
+  {
+   "path": "common/mapobjects/trigger/magicear.qh",
+   "lines": 13
+  },
+  {
+   "path": "common/mutators/mutator/overkill/_mod.qh",
+   "lines": 13
+  },
+  {
+   "path": "common/vehicles/vehicles.qh",
+   "lines": 13
+  },
+  {
+   "path": "lib/csqcmodel/_mod.inc",
+   "lines": 13
+  },
+  {
+   "path": "lib/csqcmodel/_mod.qh",
+   "lines": 13
+  },
+  {
+   "path": "server/command/sv_cmd.qh",
+   "lines": 13
+  },
+  {
+   "path": "server/compat/quake2.qc",
+   "lines": 13
+  },
+  {
+   "path": "client/bgmscript.qh",
+   "lines": 12
+  },
+  {
+   "path": "common/checkextension.qh",
+   "lines": 12
+  },
+  {
+   "path": "common/gametypes/gametype/nexball/_mod.inc",
+   "lines": 12
+  },
+  {
+   "path": "common/gametypes/gametype/nexball/_mod.qh",
+   "lines": 12
+  },
+  {
+   "path": "common/mapobjects/_mod.inc",
+   "lines": 12
+  },
+  {
+   "path": "common/mapobjects/_mod.qh",
+   "lines": 12
+  },
+  {
+   "path": "common/mapobjects/func/breakable.qh",
+   "lines": 12
+  },
+  {
+   "path": "common/mapobjects/target/speed.qh",
+   "lines": 12
+  },
+  {
+   "path": "common/mutators/mutator/damagetext/ui_damagetext.qh",
+   "lines": 12
+  },
+  {
+   "path": "common/mutators/mutator/nades/nade/_mod.inc",
+   "lines": 12
+  },
+  {
+   "path": "common/mutators/mutator/nades/nade/_mod.qh",
+   "lines": 12
+  },
+  {
+   "path": "common/mutators/mutator/nix/nix.qc",
+   "lines": 12
+  },
+  {
+   "path": "common/mutators/mutator/overkill/overkill.qh",
+   "lines": 12
+  },
+  {
+   "path": "common/physics/movetypes/push.qh",
+   "lines": 12
+  },
+  {
+   "path": "common/weapons/calculations.qh",
+   "lines": 12
+  },
+  {
+   "path": "ecs/main.qc",
+   "lines": 12
+  },
+  {
+   "path": "server/tests.qh",
+   "lines": 12
+  },
+  {
+   "path": "client/hud/panel/notify.qh",
+   "lines": 11
+  },
+  {
+   "path": "common/mapobjects/func/ladder.qh",
+   "lines": 11
+  },
+  {
+   "path": "common/mapobjects/func/pointparticles.qh",
+   "lines": 11
+  },
+  {
+   "path": "common/mapobjects/target/_mod.qh",
+   "lines": 11
+  },
+  {
+   "path": "common/mapobjects/trigger/swamp.qh",
+   "lines": 11
+  },
+  {
+   "path": "common/mapobjects/trigger/teleport.qh",
+   "lines": 11
+  },
+  {
+   "path": "common/mutators/mutator/damagetext/_mod.inc",
+   "lines": 11
+  },
+  {
+   "path": "common/mutators/mutator/damagetext/_mod.qh",
+   "lines": 11
+  },
+  {
+   "path": "common/mutators/mutator/nades/_mod.inc",
+   "lines": 11
+  },
+  {
+   "path": "common/mutators/mutator/nades/_mod.qh",
+   "lines": 11
+  },
+  {
+   "path": "common/mutators/mutator/status_effects/_mod.inc",
+   "lines": 11
+  },
+  {
+   "path": "common/mutators/mutator/status_effects/_mod.qh",
+   "lines": 11
+  },
+  {
+   "path": "common/mutators/mutator/status_effects/status_effect/frozen.qh",
+   "lines": 11
+  },
+  {
+   "path": "common/vehicles/_mod.inc",
+   "lines": 11
+  },
+  {
+   "path": "common/vehicles/_mod.qh",
+   "lines": 11
+  },
+  {
+   "path": "ecs/systems/physics.qh",
+   "lines": 11
+  },
+  {
+   "path": "lib/file.qh",
+   "lines": 11
+  },
+  {
+   "path": "lib/int.qh",
+   "lines": 11
+  },
+  {
+   "path": "lib/progname.qh",
+   "lines": 11
+  },
+  {
+   "path": "server/command/_mod.inc",
+   "lines": 11
+  },
+  {
+   "path": "server/command/_mod.qh",
+   "lines": 11
+  },
+  {
+   "path": "server/weapons/_mod.inc",
+   "lines": 11
+  },
+  {
+   "path": "server/weapons/_mod.qh",
+   "lines": 11
+  },
+  {
+   "path": "client/hud/panel/engineinfo.qh",
+   "lines": 10
+  },
+  {
+   "path": "client/hud/panel/vote.qh",
+   "lines": 10
+  },
+  {
+   "path": "common/gametypes/gametype/duel/sv_duel.qh",
+   "lines": 10
+  },
+  {
+   "path": "common/mutators/mutator/buffs/_mod.inc",
+   "lines": 10
+  },
+  {
+   "path": "common/mutators/mutator/buffs/_mod.qh",
+   "lines": 10
+  },
+  {
+   "path": "common/mutators/mutator/powerups/_mod.inc",
+   "lines": 10
+  },
+  {
+   "path": "common/mutators/mutator/powerups/_mod.qh",
+   "lines": 10
+  },
+  {
+   "path": "ecs/components/physics.qc",
+   "lines": 10
+  },
+  {
+   "path": "lib/nil.qh",
+   "lines": 10
+  },
+  {
+   "path": "server/bot/default/havocbot/roles.qh",
+   "lines": 10
+  },
+  {
+   "path": "server/weapons/hitplot.qh",
+   "lines": 10
+  },
+  {
+   "path": "client/hud/panel/infomessages.qh",
+   "lines": 9
+  },
+  {
+   "path": "common/gametypes/gametype/onslaught/sv_generator.qh",
+   "lines": 9
+  },
+  {
+   "path": "common/mapobjects/trigger/secret.qh",
+   "lines": 9
+  },
+  {
+   "path": "common/monsters/_mod.inc",
+   "lines": 9
+  },
+  {
+   "path": "common/monsters/_mod.qh",
+   "lines": 9
+  },
+  {
+   "path": "common/mutators/mutator/dodging/dodging.qh",
+   "lines": 9
+  },
+  {
+   "path": "common/mutators/mutator/instagib/instagib.qh",
+   "lines": 9
+  },
+  {
+   "path": "common/mutators/mutator/nix/nix.qh",
+   "lines": 9
+  },
+  {
+   "path": "common/mutators/mutator/rocketflying/rocketflying.qh",
+   "lines": 9
+  },
+  {
+   "path": "common/mutators/mutator/vampire/vampire.qh",
+   "lines": 9
+  },
+  {
+   "path": "common/mutators/mutator/walljump/walljump.qh",
+   "lines": 9
+  },
+  {
+   "path": "common/turrets/turret/ewheel_weapon.qh",
+   "lines": 9
+  },
+  {
+   "path": "common/turrets/turret/hellion_weapon.qh",
+   "lines": 9
+  },
+  {
+   "path": "common/turrets/turret/machinegun_weapon.qh",
+   "lines": 9
+  },
+  {
+   "path": "common/turrets/turret/mlrs_weapon.qh",
+   "lines": 9
+  },
+  {
+   "path": "common/turrets/turret/phaser_weapon.qh",
+   "lines": 9
+  },
+  {
+   "path": "common/turrets/turret/plasma_weapon.qh",
+   "lines": 9
+  },
+  {
+   "path": "common/turrets/turret/tesla_weapon.qh",
+   "lines": 9
+  },
+  {
+   "path": "common/turrets/turret/walker_weapon.qh",
+   "lines": 9
+  },
+  {
+   "path": "common/vehicles/vehicle/_mod.inc",
+   "lines": 9
+  },
+  {
+   "path": "common/vehicles/vehicle/_mod.qh",
+   "lines": 9
+  },
+  {
+   "path": "lib/_mod.inc",
+   "lines": 9
+  },
+  {
+   "path": "lib/_mod.qh",
+   "lines": 9
+  },
+  {
+   "path": "lib/warpzone/client.qh",
+   "lines": 9
+  },
+  {
+   "path": "server/bot/default/_mod.inc",
+   "lines": 9
+  },
+  {
+   "path": "server/bot/default/_mod.qh",
+   "lines": 9
+  },
+  {
+   "path": "client/hud/panel/checkpoints.qh",
+   "lines": 8
+  },
+  {
+   "path": "common/effects/qc/_mod.inc",
+   "lines": 8
+  },
+  {
+   "path": "common/effects/qc/_mod.qh",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/clanarena/_mod.inc",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/clanarena/_mod.qh",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/ctf/_mod.inc",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/ctf/_mod.qh",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/cts/_mod.inc",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/cts/_mod.qh",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/domination/_mod.inc",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/domination/_mod.qh",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/freezetag/_mod.inc",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/freezetag/_mod.qh",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/invasion/_mod.inc",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/invasion/_mod.qh",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/keepaway/_mod.inc",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/keepaway/_mod.qh",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/keyhunt/_mod.inc",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/keyhunt/_mod.qh",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/lms/_mod.inc",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/lms/_mod.qh",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/race/_mod.inc",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/race/_mod.qh",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/survival/_mod.inc",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/survival/_mod.qh",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/tka/_mod.inc",
+   "lines": 8
+  },
+  {
+   "path": "common/gametypes/gametype/tka/_mod.qh",
+   "lines": 8
+  },
+  {
+   "path": "common/mapobjects/bgmscript.qh",
+   "lines": 8
+  },
+  {
+   "path": "common/mapobjects/func/door_secret.qh",
+   "lines": 8
+  },
+  {
+   "path": "common/mapobjects/func/vectormamamam.qh",
+   "lines": 8
+  },
+  {
+   "path": "common/mutators/mutator/dodging/_mod.inc",
+   "lines": 8
+  },
+  {
+   "path": "common/mutators/mutator/dodging/_mod.qh",
+   "lines": 8
+  },
+  {
+   "path": "common/mutators/mutator/hook/_mod.inc",
+   "lines": 8
+  },
+  {
+   "path": "common/mutators/mutator/hook/_mod.qh",
+   "lines": 8
+  },
+  {
+   "path": "common/mutators/mutator/offhand_blaster/_mod.inc",
+   "lines": 8
+  },
+  {
+   "path": "common/mutators/mutator/offhand_blaster/_mod.qh",
+   "lines": 8
+  },
+  {
+   "path": "common/mutators/mutator/spawn_near_teammate/_mod.inc",
+   "lines": 8
+  },
+  {
+   "path": "common/mutators/mutator/spawn_near_teammate/_mod.qh",
+   "lines": 8
+  },
+  {
+   "path": "common/resources/_mod.inc",
+   "lines": 8
+  },
+  {
+   "path": "common/resources/_mod.qh",
+   "lines": 8
+  },
+  {
+   "path": "ecs/systems/_mod.inc",
+   "lines": 8
+  },
+  {
+   "path": "server/pathlib/_mod.inc",
+   "lines": 8
+  },
+  {
+   "path": "server/pathlib/_mod.qh",
+   "lines": 8
+  },
+  {
+   "path": "server/pathlib/debug.qh",
+   "lines": 8
+  },
+  {
+   "path": "server/weapons/csqcprojectile.qh",
+   "lines": 8
+  },
+  {
+   "path": "client/hud/_mod.inc",
+   "lines": 7
+  },
+  {
+   "path": "client/hud/_mod.qh",
+   "lines": 7
+  },
+  {
+   "path": "client/hud/panel/modicons.qh",
+   "lines": 7
+  },
+  {
+   "path": "client/hud/panel/pressedkeys.qh",
+   "lines": 7
+  },
+  {
+   "path": "common/gametypes/_mod.inc",
+   "lines": 7
+  },
+  {
+   "path": "common/gametypes/_mod.qh",
+   "lines": 7
+  },
+  {
+   "path": "common/gametypes/gametype/clanarena/cl_clanarena.qh",
+   "lines": 7
+  },
+  {
+   "path": "common/gametypes/gametype/nexball/cl_nexball.qh",
+   "lines": 7
+  },
+  {
+   "path": "common/gametypes/gametype/onslaught/cl_controlpoint.qh",
+   "lines": 7
+  },
+  {
+   "path": "common/gametypes/gametype/onslaught/cl_generator.qh",
+   "lines": 7
+  },
+  {
+   "path": "common/gametypes/gametype/onslaught/sv_controlpoint.qh",
+   "lines": 7
+  },
+  {
+   "path": "common/mapobjects/misc/_mod.inc",
+   "lines": 7
+  },
+  {
+   "path": "common/mapobjects/misc/_mod.qh",
+   "lines": 7
+  },
+  {
+   "path": "common/mapobjects/trigger/hurt.qh",
+   "lines": 7
+  },
+  {
+   "path": "common/mutators/mutator/powerups/powerup/_mod.inc",
+   "lines": 7
+  },
+  {
+   "path": "common/mutators/mutator/powerups/powerup/_mod.qh",
+   "lines": 7
+  },
+  {
+   "path": "common/physics/movetypes/_mod.inc",
+   "lines": 7
+  },
+  {
+   "path": "common/physics/movetypes/_mod.qh",
+   "lines": 7
+  },
+  {
+   "path": "common/physics/movetypes/all.inc",
+   "lines": 7
+  },
+  {
+   "path": "lib/warpzone/_mod.inc",
+   "lines": 7
+  },
+  {
+   "path": "lib/warpzone/_mod.qh",
+   "lines": 7
+  },
+  {
+   "path": "server/scores_rules.qh",
+   "lines": 7
+  },
+  {
+   "path": "server/steerlib.qh",
+   "lines": 7
+  },
+  {
+   "path": "client/hud/panel/score.qh",
+   "lines": 6
+  },
+  {
+   "path": "client/spawnpoints.qh",
+   "lines": 6
+  },
+  {
+   "path": "common/gametypes/gametype/ctf/cl_ctf.qh",
+   "lines": 6
+  },
+  {
+   "path": "common/gametypes/gametype/freezetag/cl_freezetag.qh",
+   "lines": 6
+  },
+  {
+   "path": "common/mapobjects/func/rotating.qh",
+   "lines": 6
+  },
+  {
+   "path": "common/mapobjects/func/train.qh",
+   "lines": 6
+  },
+  {
+   "path": "common/mapobjects/target/location.qh",
+   "lines": 6
+  },
+  {
+   "path": "common/monsters/monster/_mod.inc",
+   "lines": 6
+  },
+  {
+   "path": "common/monsters/monster/_mod.qh",
+   "lines": 6
+  },
+  {
+   "path": "common/mutators/mutator/instagib/_mod.inc",
+   "lines": 6
+  },
+  {
+   "path": "common/mutators/mutator/instagib/_mod.qh",
+   "lines": 6
+  },
+  {
+   "path": "common/mutators/mutator/nades/cl_nades.qh",
+   "lines": 6
+  },
+  {
+   "path": "common/mutators/mutator/status_effects/status_effect/_mod.inc",
+   "lines": 6
+  },
+  {
+   "path": "common/mutators/mutator/status_effects/status_effect/_mod.qh",
+   "lines": 6
+  },
+  {
+   "path": "ecs/_mod.inc",
+   "lines": 6
+  },
+  {
+   "path": "ecs/_mod.qh",
+   "lines": 6
+  },
+  {
+   "path": "lib/float.qh",
+   "lines": 6
+  },
+  {
+   "path": "server/compat/_mod.inc",
+   "lines": 6
+  },
+  {
+   "path": "server/compat/_mod.qh",
+   "lines": 6
+  },
+  {
+   "path": "server/pathlib/utility.qh",
+   "lines": 6
+  },
+  {
+   "path": "client/hud/panel.qh",
+   "lines": 5
+  },
+  {
+   "path": "client/hud/panel/minigame.qc",
+   "lines": 5
+  },
+  {
+   "path": "common/effects/_mod.inc",
+   "lines": 5
+  },
+  {
+   "path": "common/effects/_mod.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/effects/qc/modeleffects.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/gametypes/gametype/assault/_mod.inc",
+   "lines": 5
+  },
+  {
+   "path": "common/gametypes/gametype/assault/_mod.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/gametypes/gametype/deathmatch/_mod.inc",
+   "lines": 5
+  },
+  {
+   "path": "common/gametypes/gametype/deathmatch/_mod.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/gametypes/gametype/duel/_mod.inc",
+   "lines": 5
+  },
+  {
+   "path": "common/gametypes/gametype/duel/_mod.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/gametypes/gametype/mayhem/_mod.inc",
+   "lines": 5
+  },
+  {
+   "path": "common/gametypes/gametype/mayhem/_mod.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/gametypes/gametype/race/cl_race.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/gametypes/gametype/tdm/_mod.inc",
+   "lines": 5
+  },
+  {
+   "path": "common/gametypes/gametype/tdm/_mod.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/gametypes/gametype/tmayhem/_mod.inc",
+   "lines": 5
+  },
+  {
+   "path": "common/gametypes/gametype/tmayhem/_mod.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/gametypes/rules.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/items/item/_mod.inc",
+   "lines": 5
+  },
+  {
+   "path": "common/items/item/_mod.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/mapobjects/func/bobbing.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/mapobjects/func/conveyor.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/mapobjects/func/rainsnow.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/mapobjects/misc/follow.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/mapobjects/trigger/gravity.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/mapobjects/trigger/relay_teamcheck.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/monsters/sv_spawn.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/mutators/mutator/campcheck/_mod.inc",
+   "lines": 5
+  },
+  {
+   "path": "common/mutators/mutator/campcheck/_mod.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/mutators/mutator/cloaked/_mod.inc",
+   "lines": 5
+  },
+  {
+   "path": "common/mutators/mutator/cloaked/_mod.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/mutators/mutator/damagetext/damagetext.qc",
+   "lines": 5
+  },
+  {
+   "path": "common/mutators/mutator/itemstime/itemstime.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/mutators/mutator/new_toys/_mod.inc",
+   "lines": 5
+  },
+  {
+   "path": "common/mutators/mutator/new_toys/_mod.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/mutators/mutator/nix/_mod.inc",
+   "lines": 5
+  },
+  {
+   "path": "common/mutators/mutator/nix/_mod.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/mutators/mutator/pinata/_mod.inc",
+   "lines": 5
+  },
+  {
+   "path": "common/mutators/mutator/pinata/_mod.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/mutators/mutator/rocketflying/_mod.inc",
+   "lines": 5
+  },
+  {
+   "path": "common/mutators/mutator/rocketflying/_mod.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/mutators/mutator/spawn_near_teammate/spawn_near_teammate.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/mutators/mutator/touchexplode/_mod.inc",
+   "lines": 5
+  },
+  {
+   "path": "common/mutators/mutator/touchexplode/_mod.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/mutators/mutator/vampire/_mod.inc",
+   "lines": 5
+  },
+  {
+   "path": "common/mutators/mutator/vampire/_mod.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/physics/_mod.inc",
+   "lines": 5
+  },
+  {
+   "path": "common/physics/_mod.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/turrets/all.qc",
+   "lines": 5
+  },
+  {
+   "path": "common/vehicles/all.qc",
+   "lines": 5
+  },
+  {
+   "path": "ecs/components/input.qh",
+   "lines": 5
+  },
+  {
+   "path": "ecs/main.qh",
+   "lines": 5
+  },
+  {
+   "path": "lib/warpzone/util_server.qh",
+   "lines": 5
+  },
+  {
+   "path": "server/bot/_mod.inc",
+   "lines": 5
+  },
+  {
+   "path": "server/bot/_mod.qh",
+   "lines": 5
+  },
+  {
+   "path": "common/gametypes/gametype/domination/cl_domination.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/gametypes/gametype/lms/cl_lms.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/items/_mod.inc",
+   "lines": 4
+  },
+  {
+   "path": "common/items/_mod.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mapobjects/func/button.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mapobjects/trigger/heal.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mapobjects/trigger/monoflop.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mapobjects/trigger/multi.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mapobjects/trigger/relay_if.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/breakablehook/_mod.inc",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/breakablehook/_mod.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/dodging/cl_dodging.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/dodging/sv_dodging.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/dynamic_handicap/_mod.inc",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/dynamic_handicap/_mod.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/globalforces/_mod.inc",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/globalforces/_mod.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/invincibleproj/_mod.inc",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/invincibleproj/_mod.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/kick_teamkiller/_mod.inc",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/kick_teamkiller/_mod.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/melee_only/_mod.inc",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/melee_only/_mod.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/midair/_mod.inc",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/midair/_mod.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/physical_items/_mod.inc",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/physical_items/_mod.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/powerups/cl_powerups.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/random_gravity/_mod.inc",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/random_gravity/_mod.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/random_items/_mod.inc",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/random_items/_mod.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/rocketminsta/_mod.inc",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/rocketminsta/_mod.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/running_guns/_mod.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/sandbox/_mod.inc",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/sandbox/_mod.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/spawn_unique/_mod.inc",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/spawn_unique/_mod.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/stale_move_negation/_mod.inc",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/stale_move_negation/_mod.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/superspec/_mod.inc",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/superspec/_mod.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/vampirehook/_mod.inc",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/vampirehook/_mod.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/mutators/mutator/weaponarena_random/_mod.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/weapons/_mod.inc",
+   "lines": 4
+  },
+  {
+   "path": "common/weapons/_mod.qh",
+   "lines": 4
+  },
+  {
+   "path": "server/elimination.qh",
+   "lines": 4
+  },
+  {
+   "path": "server/pathlib/main.qh",
+   "lines": 4
+  },
+  {
+   "path": "common/gametypes/gametype/keepaway/cl_keepaway.qh",
+   "lines": 3
+  },
+  {
+   "path": "common/gametypes/gametype/keyhunt/cl_keyhunt.qh",
+   "lines": 3
+  },
+  {
+   "path": "common/gametypes/gametype/survival/cl_survival.qh",
+   "lines": 3
+  },
+  {
+   "path": "common/gametypes/gametype/tka/cl_tka.qh",
+   "lines": 3
+  },
+  {
+   "path": "common/monsters/sv_spawner.qh",
+   "lines": 3
+  },
+  {
+   "path": "common/mutators/_mod.inc",
+   "lines": 3
+  },
+  {
+   "path": "common/mutators/_mod.qh",
+   "lines": 3
+  },
+  {
+   "path": "common/mutators/mutator/buffs/cl_buffs.qh",
+   "lines": 3
+  },
+  {
+   "path": "common/mutators/mutator/weaponarena_random/sv_weaponarena_random.qh",
+   "lines": 3
+  },
+  {
+   "path": "common/physics/all.inc",
+   "lines": 3
+  },
+  {
+   "path": "ecs/components/_mod.inc",
+   "lines": 3
+  },
+  {
+   "path": "ecs/components/_mod.qh",
+   "lines": 3
+  },
+  {
+   "path": "ecs/components/input.qc",
+   "lines": 3
+  },
+  {
+   "path": "ecs/events/physics.qh",
+   "lines": 3
+  },
+  {
+   "path": "lib/csqcmodel/net.qh",
+   "lines": 3
+  },
+  {
+   "path": "lib/matrix/_mod.inc",
+   "lines": 3
+  },
+  {
+   "path": "lib/matrix/_mod.qh",
+   "lines": 3
+  },
+  {
+   "path": "lib/matrix/command.qh",
+   "lines": 3
+  },
+  {
+   "path": "server/bot/default/havocbot/_mod.inc",
+   "lines": 3
+  },
+  {
+   "path": "server/bot/default/havocbot/_mod.qh",
+   "lines": 3
+  },
+  {
+   "path": "server/bot/default/havocbot/scripting.qh",
+   "lines": 3
+  },
+  {
+   "path": "server/bot/null/bot_null.qh",
+   "lines": 3
+  },
+  {
+   "path": "server/impulse.qh",
+   "lines": 3
+  },
+  {
+   "path": "server/items/_mod.inc",
+   "lines": 3
+  },
+  {
+   "path": "server/items/_mod.qh",
+   "lines": 3
+  },
+  {
+   "path": "server/mutators/_mod.inc",
+   "lines": 3
+  },
+  {
+   "path": "server/mutators/_mod.qh",
+   "lines": 3
+  },
+  {
+   "path": "client/hud/panel/minigame.qh",
+   "lines": 2
+  },
+  {
+   "path": "client/items/_mod.inc",
+   "lines": 2
+  },
+  {
+   "path": "client/items/_mod.qh",
+   "lines": 2
+  },
+  {
+   "path": "client/mutators/_mod.inc",
+   "lines": 2
+  },
+  {
+   "path": "client/mutators/_mod.qh",
+   "lines": 2
+  },
+  {
+   "path": "client/weapons/_mod.inc",
+   "lines": 2
+  },
+  {
+   "path": "client/weapons/_mod.qh",
+   "lines": 2
+  },
+  {
+   "path": "common/deathtypes/_mod.inc",
+   "lines": 2
+  },
+  {
+   "path": "common/deathtypes/_mod.qh",
+   "lines": 2
+  },
+  {
+   "path": "common/impulses/_mod.inc",
+   "lines": 2
+  },
+  {
+   "path": "common/impulses/_mod.qh",
+   "lines": 2
+  },
+  {
+   "path": "common/mutators/mutator/bloodloss/_mod.inc",
+   "lines": 2
+  },
+  {
+   "path": "common/mutators/mutator/bloodloss/_mod.qh",
+   "lines": 2
+  },
+  {
+   "path": "common/mutators/mutator/bugrigs/_mod.inc",
+   "lines": 2
+  },
+  {
+   "path": "common/mutators/mutator/bugrigs/_mod.qh",
+   "lines": 2
+  },
+  {
+   "path": "common/mutators/mutator/doublejump/_mod.inc",
+   "lines": 2
+  },
+  {
+   "path": "common/mutators/mutator/doublejump/_mod.qh",
+   "lines": 2
+  },
+  {
+   "path": "common/mutators/mutator/itemstime/_mod.inc",
+   "lines": 2
+  },
+  {
+   "path": "common/mutators/mutator/itemstime/_mod.qh",
+   "lines": 2
+  },
+  {
+   "path": "common/mutators/mutator/multijump/_mod.inc",
+   "lines": 2
+  },
+  {
+   "path": "common/mutators/mutator/multijump/_mod.qh",
+   "lines": 2
+  },
+  {
+   "path": "common/mutators/mutator/powerups/powerups.qc",
+   "lines": 2
+  },
+  {
+   "path": "common/mutators/mutator/walljump/_mod.inc",
+   "lines": 2
+  },
+  {
+   "path": "common/mutators/mutator/walljump/_mod.qh",
+   "lines": 2
+  },
+  {
+   "path": "common/mutators/mutator/waypoints/_mod.inc",
+   "lines": 2
+  },
+  {
+   "path": "common/mutators/mutator/waypoints/_mod.qh",
+   "lines": 2
+  },
+  {
+   "path": "common/notifications/_mod.inc",
+   "lines": 2
+  },
+  {
+   "path": "common/notifications/_mod.qh",
+   "lines": 2
+  },
+  {
+   "path": "common/sounds/_mod.inc",
+   "lines": 2
+  },
+  {
+   "path": "common/sounds/_mod.qh",
+   "lines": 2
+  },
+  {
+   "path": "common/weapons/_all.inc",
+   "lines": 2
+  },
+  {
+   "path": "common/weapons/_all.qh",
+   "lines": 2
+  },
+  {
+   "path": "ecs/events/_mod.inc",
+   "lines": 2
+  },
+  {
+   "path": "ecs/events/_mod.qh",
+   "lines": 2
+  },
+  {
+   "path": "ecs/systems/_mod.qh",
+   "lines": 2
+  },
+  {
+   "path": "server/bot/null/_mod.inc",
+   "lines": 2
+  },
+  {
+   "path": "server/bot/null/_mod.qh",
+   "lines": 2
+  },
+  {
+   "path": "server/pathlib/costs.qh",
+   "lines": 2
+  },
+  {
+   "path": "client/hud/panel.qc",
+   "lines": 1
+  },
+  {
+   "path": "client/mutators/events.qc",
+   "lines": 1
+  },
+  {
+   "path": "common/campaign_file.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/campaign_setup.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/effects/effectinfo.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/gametypes/gametype/cts/cl_cts.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/gametypes/gametype/invasion/cl_invasion.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/gametypes/gametype/nexball/sv_weapon.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/gametypes/gametype/nexball/weapon.qc",
+   "lines": 1
+  },
+  {
+   "path": "common/gametypes/gametype/onslaught/controlpoint.qc",
+   "lines": 1
+  },
+  {
+   "path": "common/gametypes/gametype/onslaught/controlpoint.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/gametypes/gametype/onslaught/generator.qc",
+   "lines": 1
+  },
+  {
+   "path": "common/gametypes/gametype/onslaught/generator.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/gametypes/rules.qc",
+   "lines": 1
+  },
+  {
+   "path": "common/impulses/all.qc",
+   "lines": 1
+  },
+  {
+   "path": "common/mapobjects/bgmscript.qc",
+   "lines": 1
+  },
+  {
+   "path": "common/mapobjects/func/fourier.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mapobjects/func/pendulum.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mapobjects/func/plat.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mapobjects/func/stardust.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mapobjects/misc/corner.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mapobjects/misc/dynlight.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mapobjects/misc/teleport_dest.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mapobjects/target/kill.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mapobjects/target/levelwarp.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mapobjects/target/spawn.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mapobjects/target/voicescript.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mapobjects/trigger/delay.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mapobjects/trigger/disablerelay.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mapobjects/trigger/flipflop.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mapobjects/trigger/gamestart.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mapobjects/trigger/keylock.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mapobjects/trigger/multivibrator.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mapobjects/trigger/relay.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mapobjects/trigger/relay_activators.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/models/_mod.inc",
+   "lines": 1
+  },
+  {
+   "path": "common/models/_mod.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/breakablehook/sv_breakablehook.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/bugrigs/bugrigs.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/campcheck/campcheck.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/campcheck/sv_campcheck.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/cloaked/sv_cloaked.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/damagetext/sv_damagetext.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/dynamic_handicap/sv_dynamic_handicap.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/globalforces/sv_globalforces.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/hook/cl_hook.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/hook/sv_hook.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/invincibleproj/sv_invincibleproj.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/kick_teamkiller/sv_kick_teamkiller.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/melee_only/sv_melee_only.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/midair/sv_midair.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/new_toys/sv_new_toys.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/nix/sv_nix.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/offhand_blaster/cl_offhand_blaster.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/offhand_blaster/sv_offhand_blaster.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/overkill/cl_overkill.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/physical_items/sv_physical_items.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/pinata/sv_pinata.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/powerups/cl_powerups.qc",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/random_gravity/sv_random_gravity.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/rocketflying/sv_rocketflying.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/rocketminsta/sv_rocketminsta.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/running_guns/sv_running_guns.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/sandbox/sv_sandbox.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/spawn_near_teammate/cl_spawn_near_teammate.qc",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/spawn_near_teammate/cl_spawn_near_teammate.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/spawn_near_teammate/sv_spawn_near_teammate.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/stale_move_negation/sv_stale_move_negation.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/status_effects/all.qc",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/status_effects/cl_status_effects.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/status_effects/sv_status_effects.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/superspec/sv_superspec.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/touchexplode/sv_touchexplode.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/vampire/sv_vampire.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/mutators/mutator/vampirehook/sv_vampirehook.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/physics/movetypes/follow.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/physics/movetypes/step.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/physics/movetypes/toss.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/physics/movetypes/walk.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/turrets/checkpoint.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/turrets/cl_turrets.qh",
+   "lines": 1
+  },
+  {
+   "path": "common/turrets/targettrigger.qh",
+   "lines": 1
+  },
+  {
+   "path": "ecs/events/physics.qc",
+   "lines": 1
+  },
+  {
+   "path": "lib/angle.qh",
+   "lines": 1
+  },
+  {
+   "path": "lib/csqcmodel/model.qh",
+   "lines": 1
+  },
+  {
+   "path": "lib/csqcmodel/player.qh",
+   "lines": 1
+  },
+  {
+   "path": "server/bot/api.qc",
+   "lines": 1
+  },
+  {
+   "path": "server/bot/default/cvars.qc",
+   "lines": 1
+  },
+  {
+   "path": "server/command/reg.qc",
+   "lines": 1
+  },
+  {
+   "path": "server/compat/halflife.qh",
+   "lines": 1
+  },
+  {
+   "path": "server/compat/quake.qh",
+   "lines": 1
+  },
+  {
+   "path": "server/compat/quake2.qh",
+   "lines": 1
+  },
+  {
+   "path": "server/compat/wop.qh",
+   "lines": 1
+  },
+  {
+   "path": "server/matrix.qh",
+   "lines": 1
+  },
+  {
+   "path": "server/mutators/events.qc",
+   "lines": 1
+  },
+  {
+   "path": "server/mutators/loader.qh",
+   "lines": 1
+  },
+  {
+   "path": "server/pathlib/expandnode.qh",
+   "lines": 1
+  },
+  {
+   "path": "server/pathlib/movenode.qh",
+   "lines": 1
+  },
+  {
+   "path": "server/pathlib/path_waypoint.qh",
+   "lines": 1
+  },
+  {
+   "path": "lib/csqcmodel/model.qc",
+   "lines": 0
+  },
+  {
+   "path": "lib/csqcmodel/player.qc",
+   "lines": 0
+  }
+ ],
+ "deferred": [
+  "client/command/_mod.inc",
+  "client/command/_mod.qh",
+  "client/command/cl_cmd.qc",
+  "client/command/cl_cmd.qh",
+  "client/hud/panel/strafehud/_mod.inc",
+  "client/hud/panel/strafehud/_mod.qh",
+  "client/hud/panel/strafehud/draw.qc",
+  "client/hud/panel/strafehud/draw.qh",
+  "client/hud/panel/strafehud/draw_core.qc",
+  "client/hud/panel/strafehud/draw_core.qh",
+  "client/hud/panel/strafehud/extra.qc",
+  "client/hud/panel/strafehud/extra.qh",
+  "client/hud/panel/strafehud/util.qc",
+  "client/hud/panel/strafehud/util.qh",
+  "common/command/_mod.inc",
+  "common/command/_mod.qh",
+  "common/command/command.qh",
+  "common/command/generic.qc",
+  "common/command/generic.qh",
+  "common/command/markup.qc",
+  "common/command/markup.qh",
+  "common/command/reg.qc",
+  "common/command/reg.qh",
+  "common/command/rpn.qc",
+  "common/command/rpn.qh",
+  "common/effects/qc/damageeffects.qc",
+  "common/mapinfo.qc",
+  "common/mapinfo.qh",
+  "common/minigames/_mod.inc",
+  "common/minigames/_mod.qh",
+  "common/minigames/cl_minigames.qc",
+  "common/minigames/cl_minigames.qh",
+  "common/minigames/cl_minigames_hud.qh",
+  "common/minigames/minigame/_mod.inc",
+  "common/minigames/minigame/_mod.qh",
+  "common/minigames/minigame/all.qh",
+  "common/minigames/minigame/bd.qc",
+  "common/minigames/minigame/bd.qh",
+  "common/minigames/minigame/c4.qc",
+  "common/minigames/minigame/c4.qh",
+  "common/minigames/minigame/nmm.qc",
+  "common/minigames/minigame/nmm.qh",
+  "common/minigames/minigame/pong.qc",
+  "common/minigames/minigame/pong.qh",
+  "common/minigames/minigame/pp.qc",
+  "common/minigames/minigame/pp.qh",
+  "common/minigames/minigame/ps.qc",
+  "common/minigames/minigame/ps.qh",
+  "common/minigames/minigame/ttt.qc",
+  "common/minigames/minigame/ttt.qh",
+  "common/minigames/minigames.qc",
+  "common/minigames/minigames.qh",
+  "common/minigames/sv_minigames.qc",
+  "common/minigames/sv_minigames.qh",
+  "lib/json.qc",
+  "lib/urllib.qc",
+  "menu/_mod.inc",
+  "menu/_mod.qh",
+  "menu/anim/_mod.inc",
+  "menu/anim/_mod.qh",
+  "menu/anim/animation.qc",
+  "menu/anim/animation.qh",
+  "menu/anim/animhost.qc",
+  "menu/anim/animhost.qh",
+  "menu/anim/easing.qc",
+  "menu/anim/easing.qh",
+  "menu/anim/keyframe.qc",
+  "menu/anim/keyframe.qh",
+  "menu/command/_mod.inc",
+  "menu/command/_mod.qh",
+  "menu/command/menu_cmd.qc",
+  "menu/command/menu_cmd.qh",
+  "menu/draw.qc",
+  "menu/draw.qh",
+  "menu/gamesettings.qh",
+  "menu/item.qc",
+  "menu/item.qh",
+  "menu/item/_mod.inc",
+  "menu/item/_mod.qh",
+  "menu/item/borderimage.qc",
+  "menu/item/borderimage.qh",
+  "menu/item/button.qc",
+  "menu/item/button.qh",
+  "menu/item/checkbox.qc",
+  "menu/item/checkbox.qh",
+  "menu/item/container.qc",
+  "menu/item/container.qh",
+  "menu/item/dialog.qc",
+  "menu/item/dialog.qh",
+  "menu/item/image.qc",
+  "menu/item/image.qh",
+  "menu/item/inputbox.qc",
+  "menu/item/inputbox.qh",
+  "menu/item/inputcontainer.qc",
+  "menu/item/inputcontainer.qh",
+  "menu/item/label.qc",
+  "menu/item/label.qh",
+  "menu/item/listbox.qc",
+  "menu/item/listbox.qh",
+  "menu/item/mixedslider.qc",
+  "menu/item/mixedslider.qh",
+  "menu/item/modalcontroller.qc",
+  "menu/item/modalcontroller.qh",
+  "menu/item/nexposee.qc",
+  "menu/item/nexposee.qh",
+  "menu/item/radiobutton.qc",
+  "menu/item/radiobutton.qh",
+  "menu/item/slider.qc",
+  "menu/item/slider.qh",
+  "menu/item/tab.qc",
+  "menu/item/tab.qh",
+  "menu/item/textslider.qc",
+  "menu/item/textslider.qh",
+  "menu/matrix.qc",
+  "menu/matrix.qh",
+  "menu/menu.qc",
+  "menu/menu.qh",
+  "menu/mutators/_mod.inc",
+  "menu/mutators/_mod.qh",
+  "menu/mutators/events.qc",
+  "menu/mutators/events.qh",
+  "menu/progs.inc",
+  "menu/skin-customizables.inc",
+  "menu/skin.qh",
+  "menu/xonotic/_mod.inc",
+  "menu/xonotic/_mod.qh",
+  "menu/xonotic/bigbutton.qc",
+  "menu/xonotic/bigbutton.qh",
+  "menu/xonotic/bigcommandbutton.qc",
+  "menu/xonotic/bigcommandbutton.qh",
+  "menu/xonotic/button.qc",
+  "menu/xonotic/button.qh",
+  "menu/xonotic/campaign.qc",
+  "menu/xonotic/campaign.qh",
+  "menu/xonotic/charmap.qc",
+  "menu/xonotic/charmap.qh",
+  "menu/xonotic/checkbox.qc",
+  "menu/xonotic/checkbox.qh",
+  "menu/xonotic/checkbox_slider_invalid.qc",
+  "menu/xonotic/checkbox_slider_invalid.qh",
+  "menu/xonotic/checkbox_string.qc",
+  "menu/xonotic/checkbox_string.qh",
+  "menu/xonotic/colorbutton.qc",
+  "menu/xonotic/colorbutton.qh",
+  "menu/xonotic/colorpicker.qc",
+  "menu/xonotic/colorpicker.qh",
+  "menu/xonotic/colorpicker_string.qc",
+  "menu/xonotic/colorpicker_string.qh",
+  "menu/xonotic/commandbutton.qc",
+  "menu/xonotic/commandbutton.qh",
+  "menu/xonotic/credits.qc",
+  "menu/xonotic/credits.qh",
+  "menu/xonotic/crosshairpicker.qc",
+  "menu/xonotic/crosshairpicker.qh",
+  "menu/xonotic/crosshairpreview.qc",
+  "menu/xonotic/crosshairpreview.qh",
+  "menu/xonotic/cvarlist.qc",
+  "menu/xonotic/cvarlist.qh",
+  "menu/xonotic/datasource.qc",
+  "menu/xonotic/datasource.qh",
+  "menu/xonotic/demolist.qc",
+  "menu/xonotic/demolist.qh",
+  "menu/xonotic/dialog.qc",
+  "menu/xonotic/dialog.qh",
+  "menu/xonotic/dialog_credits.qc",
+  "menu/xonotic/dialog_credits.qh",
+  "menu/xonotic/dialog_firstrun.qc",
+  "menu/xonotic/dialog_firstrun.qh",
+  "menu/xonotic/dialog_gamemenu.qc",
+  "menu/xonotic/dialog_gamemenu.qh",
+  "menu/xonotic/dialog_hudpanel_ammo.qc",
+  "menu/xonotic/dialog_hudpanel_ammo.qh",
+  "menu/xonotic/dialog_hudpanel_centerprint.qc",
+  "menu/xonotic/dialog_hudpanel_centerprint.qh",
+  "menu/xonotic/dialog_hudpanel_chat.qc",
+  "menu/xonotic/dialog_hudpanel_chat.qh",
+  "menu/xonotic/dialog_hudpanel_checkpoints.qc",
+  "menu/xonotic/dialog_hudpanel_checkpoints.qh",
+  "menu/xonotic/dialog_hudpanel_engineinfo.qc",
+  "menu/xonotic/dialog_hudpanel_engineinfo.qh",
+  "menu/xonotic/dialog_hudpanel_healtharmor.qc",
+  "menu/xonotic/dialog_hudpanel_healtharmor.qh",
+  "menu/xonotic/dialog_hudpanel_infomessages.qc",
+  "menu/xonotic/dialog_hudpanel_infomessages.qh",
+  "menu/xonotic/dialog_hudpanel_itemstime.qc",
+  "menu/xonotic/dialog_hudpanel_itemstime.qh",
+  "menu/xonotic/dialog_hudpanel_modicons.qc",
+  "menu/xonotic/dialog_hudpanel_modicons.qh",
+  "menu/xonotic/dialog_hudpanel_notification.qc",
+  "menu/xonotic/dialog_hudpanel_notification.qh",
+  "menu/xonotic/dialog_hudpanel_physics.qc",
+  "menu/xonotic/dialog_hudpanel_physics.qh",
+  "menu/xonotic/dialog_hudpanel_pickup.qc",
+  "menu/xonotic/dialog_hudpanel_pickup.qh",
+  "menu/xonotic/dialog_hudpanel_powerups.qc",
+  "menu/xonotic/dialog_hudpanel_powerups.qh",
+  "menu/xonotic/dialog_hudpanel_pressedkeys.qc",
+  "menu/xonotic/dialog_hudpanel_pressedkeys.qh",
+  "menu/xonotic/dialog_hudpanel_quickmenu.qc",
+  "menu/xonotic/dialog_hudpanel_quickmenu.qh",
+  "menu/xonotic/dialog_hudpanel_racetimer.qc",
+  "menu/xonotic/dialog_hudpanel_racetimer.qh",
+  "menu/xonotic/dialog_hudpanel_radar.qc",
+  "menu/xonotic/dialog_hudpanel_radar.qh",
+  "menu/xonotic/dialog_hudpanel_score.qc",
+  "menu/xonotic/dialog_hudpanel_score.qh",
+  "menu/xonotic/dialog_hudpanel_strafehud.qc",
+  "menu/xonotic/dialog_hudpanel_strafehud.qh",
+  "menu/xonotic/dialog_hudpanel_timer.qc",
+  "menu/xonotic/dialog_hudpanel_timer.qh",
+  "menu/xonotic/dialog_hudpanel_vote.qc",
+  "menu/xonotic/dialog_hudpanel_vote.qh",
+  "menu/xonotic/dialog_hudpanel_weapons.qc",
+  "menu/xonotic/dialog_hudpanel_weapons.qh",
+  "menu/xonotic/dialog_hudsetup_exit.qc",
+  "menu/xonotic/dialog_hudsetup_exit.qh",
+  "menu/xonotic/dialog_media.qc",
+  "menu/xonotic/dialog_media.qh",
+  "menu/xonotic/dialog_media_demo.qc",
+  "menu/xonotic/dialog_media_demo.qh",
+  "menu/xonotic/dialog_media_demo_startconfirm.qc",
+  "menu/xonotic/dialog_media_demo_startconfirm.qh",
+  "menu/xonotic/dialog_media_demo_timeconfirm.qc",
+  "menu/xonotic/dialog_media_demo_timeconfirm.qh",
+  "menu/xonotic/dialog_media_guide.qc",
+  "menu/xonotic/dialog_media_guide.qh",
+  "menu/xonotic/dialog_media_musicplayer.qc",
+  "menu/xonotic/dialog_media_musicplayer.qh",
+  "menu/xonotic/dialog_media_screenshot.qc",
+  "menu/xonotic/dialog_media_screenshot.qh",
+  "menu/xonotic/dialog_media_screenshot_viewer.qc",
+  "menu/xonotic/dialog_media_screenshot_viewer.qh",
+  "menu/xonotic/dialog_monstertools.qc",
+  "menu/xonotic/dialog_monstertools.qh",
+  "menu/xonotic/dialog_multiplayer.qc",
+  "menu/xonotic/dialog_multiplayer.qh",
+  "menu/xonotic/dialog_multiplayer_create.qc",
+  "menu/xonotic/dialog_multiplayer_create.qh",
+  "menu/xonotic/dialog_multiplayer_create_mapinfo.qc",
+  "menu/xonotic/dialog_multiplayer_create_mapinfo.qh",
+  "menu/xonotic/dialog_multiplayer_create_mutators.qh",
+  "menu/xonotic/dialog_multiplayer_join.qc",
+  "menu/xonotic/dialog_multiplayer_join.qh",
+  "menu/xonotic/dialog_multiplayer_join_serverinfo.qc",
+  "menu/xonotic/dialog_multiplayer_join_serverinfo.qh",
+  "menu/xonotic/dialog_multiplayer_join_serverinfotab.qc",
+  "menu/xonotic/dialog_multiplayer_join_serverinfotab.qh",
+  "menu/xonotic/dialog_multiplayer_join_termsofservice.qc",
+  "menu/xonotic/dialog_multiplayer_join_termsofservice.qh",
+  "menu/xonotic/dialog_multiplayer_profile.qc",
+  "menu/xonotic/dialog_multiplayer_profile.qh",
+  "menu/xonotic/dialog_quit.qc",
+  "menu/xonotic/dialog_quit.qh",
+  "menu/xonotic/dialog_sandboxtools.qh",
+  "menu/xonotic/dialog_settings.qc",
+  "menu/xonotic/dialog_settings.qh",
+  "menu/xonotic/dialog_settings_audio.qc",
+  "menu/xonotic/dialog_settings_audio.qh",
+  "menu/xonotic/dialog_settings_bindings_reset.qc",
+  "menu/xonotic/dialog_settings_bindings_reset.qh",
+  "menu/xonotic/dialog_settings_effects.qc",
+  "menu/xonotic/dialog_settings_effects.qh",
+  "menu/xonotic/dialog_settings_game.qc",
+  "menu/xonotic/dialog_settings_game.qh",
+  "menu/xonotic/dialog_settings_game_crosshair.qc",
+  "menu/xonotic/dialog_settings_game_crosshair.qh",
+  "menu/xonotic/dialog_settings_game_hud.qc",
+  "menu/xonotic/dialog_settings_game_hud.qh",
+  "menu/xonotic/dialog_settings_game_hudconfirm.qc",
+  "menu/xonotic/dialog_settings_game_hudconfirm.qh",
+  "menu/xonotic/dialog_settings_game_messages.qh",
+  "menu/xonotic/dialog_settings_game_model.qc",
+  "menu/xonotic/dialog_settings_game_model.qh",
+  "menu/xonotic/dialog_settings_game_view.qc",
+  "menu/xonotic/dialog_settings_game_view.qh",
+  "menu/xonotic/dialog_settings_game_weapons.qh",
+  "menu/xonotic/dialog_settings_input.qc",
+  "menu/xonotic/dialog_settings_input.qh",
+  "menu/xonotic/dialog_settings_input_userbind.qc",
+  "menu/xonotic/dialog_settings_input_userbind.qh",
+  "menu/xonotic/dialog_settings_misc.qc",
+  "menu/xonotic/dialog_settings_misc.qh",
+  "menu/xonotic/dialog_settings_misc_cvars.qc",
+  "menu/xonotic/dialog_settings_misc_cvars.qh",
+  "menu/xonotic/dialog_settings_misc_reset.qc",
+  "menu/xonotic/dialog_settings_misc_reset.qh",
+  "menu/xonotic/dialog_settings_user.qc",
+  "menu/xonotic/dialog_settings_user.qh",
+  "menu/xonotic/dialog_settings_user_languagewarning.qc",
+  "menu/xonotic/dialog_settings_user_languagewarning.qh",
+  "menu/xonotic/dialog_settings_video.qc",
+  "menu/xonotic/dialog_settings_video.qh",
+  "menu/xonotic/dialog_singleplayer.qc",
+  "menu/xonotic/dialog_singleplayer.qh",
+  "menu/xonotic/dialog_singleplayer_winner.qc",
+  "menu/xonotic/dialog_singleplayer_winner.qh",
+  "menu/xonotic/dialog_teamselect.qc",
+  "menu/xonotic/dialog_teamselect.qh",
+  "menu/xonotic/dialog_termsofservice.qc",
+  "menu/xonotic/dialog_termsofservice.qh",
+  "menu/xonotic/dialog_uid2name.qc",
+  "menu/xonotic/dialog_uid2name.qh",
+  "menu/xonotic/dialog_welcome.qc",
+  "menu/xonotic/dialog_welcome.qh",
+  "menu/xonotic/gametypelist.qc",
+  "menu/xonotic/gametypelist.qh",
+  "menu/xonotic/guide/_mod.inc",
+  "menu/xonotic/guide/_mod.qh",
+  "menu/xonotic/guide/description.qc",
+  "menu/xonotic/guide/description.qh",
+  "menu/xonotic/guide/entries.qc",
+  "menu/xonotic/guide/entries.qh",
+  "menu/xonotic/guide/guide.qc",
+  "menu/xonotic/guide/guide.qh",
+  "menu/xonotic/guide/pages.qc",
+  "menu/xonotic/guide/pages.qh",
+  "menu/xonotic/guide/topics.qc",
+  "menu/xonotic/guide/topics.qh",
+  "menu/xonotic/hudskinlist.qc",
+  "menu/xonotic/hudskinlist.qh",
+  "menu/xonotic/image.qc",
+  "menu/xonotic/image.qh",
+  "menu/xonotic/inputbox.qc",
+  "menu/xonotic/inputbox.qh",
+  "menu/xonotic/keybinder.qc",
+  "menu/xonotic/keybinder.qh",
+  "menu/xonotic/languagelist.qc",
+  "menu/xonotic/languagelist.qh",
+  "menu/xonotic/leavematchbutton.qc",
+  "menu/xonotic/leavematchbutton.qh",
+  "menu/xonotic/listbox.qc",
+  "menu/xonotic/listbox.qh",
+  "menu/xonotic/mainwindow.qc",
+  "menu/xonotic/mainwindow.qh",
+  "menu/xonotic/maplist.qc",
+  "menu/xonotic/maplist.qh",
+  "menu/xonotic/mixedslider.qc",
+  "menu/xonotic/mixedslider.qh",
+  "menu/xonotic/nexposee.qc",
+  "menu/xonotic/nexposee.qh",
+  "menu/xonotic/picker.qc",
+  "menu/xonotic/picker.qh",
+  "menu/xonotic/playerlist.qc",
+  "menu/xonotic/playerlist.qh",
+  "menu/xonotic/playermodel.qc",
+  "menu/xonotic/playermodel.qh",
+  "menu/xonotic/playlist.qc",
+  "menu/xonotic/playlist.qh",
+  "menu/xonotic/radiobutton.qc",
+  "menu/xonotic/radiobutton.qh",
+  "menu/xonotic/rootdialog.qc",
+  "menu/xonotic/rootdialog.qh",
+  "menu/xonotic/screenshotimage.qc",
+  "menu/xonotic/screenshotimage.qh",
+  "menu/xonotic/screenshotlist.qc",
+  "menu/xonotic/screenshotlist.qh",
+  "menu/xonotic/scrollpanel.qc",
+  "menu/xonotic/scrollpanel.qh",
+  "menu/xonotic/serverlist.qc",
+  "menu/xonotic/serverlist.qh",
+  "menu/xonotic/skinlist.qc",
+  "menu/xonotic/skinlist.qh",
+  "menu/xonotic/slider.qc",
+  "menu/xonotic/slider.qh",
+  "menu/xonotic/slider_decibels.qc",
+  "menu/xonotic/slider_decibels.qh",
+  "menu/xonotic/slider_picmip.qc",
+  "menu/xonotic/slider_picmip.qh",
+  "menu/xonotic/slider_resolution.qc",
+  "menu/xonotic/slider_resolution.qh",
+  "menu/xonotic/slider_sbfadetime.qc",
+  "menu/xonotic/slider_sbfadetime.qh",
+  "menu/xonotic/soundlist.qc",
+  "menu/xonotic/soundlist.qh",
+  "menu/xonotic/statslist.qc",
+  "menu/xonotic/statslist.qh",
+  "menu/xonotic/tab.qc",
+  "menu/xonotic/tab.qh",
+  "menu/xonotic/tabcontroller.qc",
+  "menu/xonotic/tabcontroller.qh",
+  "menu/xonotic/textbox.qc",
+  "menu/xonotic/textbox.qh",
+  "menu/xonotic/textlabel.qc",
+  "menu/xonotic/textlabel.qh",
+  "menu/xonotic/textslider.qc",
+  "menu/xonotic/textslider.qh",
+  "menu/xonotic/util.qc",
+  "menu/xonotic/util.qh",
+  "menu/xonotic/weaponarenacheckbox.qc",
+  "menu/xonotic/weaponarenacheckbox.qh",
+  "menu/xonotic/weaponslist.qc",
+  "menu/xonotic/weaponslist.qh",
+  "server/command/getreplies.qc"
+ ],
+ "stale_citations": [
+  "client/hud/panel/crosshair.qc",
+  "client/hud/panel/itemstime.qc",
+  "client/hud/strafehud.qc",
+  "common/gamemodes/gamemode/ctf/sv_ctf.qc",
+  "common/gamemodes/gamemode/freezetag/sv_freezetag.qc",
+  "common/gamemodes/gamemode/keyhunt/sv_keyhunt.qc",
+  "common/gamemodes/gamemode/lms/sv_lms.qc",
+  "common/mutators/mutator/itemstime/sv_itemstime.qc",
+  "common/t_items.qc",
+  "lib/util.qc",
+  "server/mutators/mutator/gamemode_ctf.qc",
+  "server/mutators/mutator/gamemode_onslaught.qc"
+ ]
+}

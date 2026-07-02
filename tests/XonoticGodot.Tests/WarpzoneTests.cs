@@ -111,6 +111,54 @@ public class WarpzoneTests
     }
 
     [Fact]
+    public void Teleport_Client_ClearsOnGround()
+    {
+        // QC WarpZone_TeleportPlayer (server.qc:65-66): `if (IS_PLAYER(player)) BITCLR_ASSIGN(player.flags,
+        // FL_ONGROUND)` — a player crossing the seam is airborne until the next ground trace. Regression for the
+        // "momentum eaten at the seam" report: the PREDICTED crossing cleared the flag but the authoritative one
+        // didn't, so the server kept ground friction/step-snap for a tick and the reconcile rubber-banded the exit.
+        var mgr = new WarpzoneManager();
+        var a = mgr.Spawn(new Vector3(0, 0, 0), new Vector3(0, 0, 0), "wzA", "wzB", new Vector3(-8, -64, -64), new Vector3(8, 64, 64));
+        mgr.Spawn(new Vector3(100, 0, 0), new Vector3(0, 180, 0), "wzB", "wzA", new Vector3(-8, -64, -64), new Vector3(8, 64, 64));
+        mgr.Link();
+
+        var e = new Entity
+        {
+            Flags = EntFlags.Client | EntFlags.OnGround,
+            Origin = new Vector3(0, 0, 0),
+            ViewOfs = new Vector3(-1, 0, 0),
+            Velocity = new Vector3(-200, 0, 0),
+        };
+        Assert.True(mgr.Teleport(e, a));
+        Assert.True((e.Flags & EntFlags.OnGround) == 0, "client OnGround must be cleared across the seam (Base FL_ONGROUND clear)");
+    }
+
+    [Fact]
+    public void Teleport_TransformsEyePoint_NotFeet_OnFloorZone()
+    {
+        // QC WarpZone_Teleport (server.qc:84/88/137): `o0 = origin + view_ofs` is what warps; the body is placed at
+        // `o1 - view_ofs`. Distinguishable only on a NON-upright pair: a FLOOR zone (IN forward straight UP, pitch
+        // −90) exiting a WALL (+X). Standing eye (0,0,−1) just past the plane → warps to 1qu out of the exit plane
+        // (501,0,0); the body hangs view_ofs BELOW the warped eye: (501,0,−45). Warping the feet instead would put
+        // the body at (546,0,0) — 45qu sideways along the exit normal, visibly wrong on any floor/ceiling zone.
+        var mgr = new WarpzoneManager();
+        var floor = mgr.Spawn(new Vector3(0, 0, 0), new Vector3(-90, 0, 0), "wzA", "wzB", new Vector3(-64, -64, -8), new Vector3(64, 64, 8));
+        mgr.Spawn(new Vector3(500, 0, 0), new Vector3(0, 0, 0), "wzB", "wzA", new Vector3(-8, -64, -64), new Vector3(8, 64, 64));
+        mgr.Link();
+
+        var e = new Entity
+        {
+            Flags = EntFlags.Client,
+            Origin = new Vector3(0, 0, -46),
+            ViewOfs = new Vector3(0, 0, 45),   // standing eye height — the point Base warps
+            Velocity = new Vector3(0, 0, -100), // falling through the floor zone
+        };
+        Assert.True(mgr.Teleport(e, floor));
+        Assert.True((e.Origin - new Vector3(501, 0, -45)).Length() < 0.01f,
+            $"body must land at warped-eye − view_ofs (501,0,−45), was {e.Origin}");
+    }
+
+    [Fact]
     public void Teleport_NonClient_DoesNotStampFixAngle()
     {
         // A projectile (no Client flag) warps origin/velocity/angles but must NOT stamp the view-snap fixangle.

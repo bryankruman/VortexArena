@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Godot;
 using XonoticGodot.Formats.Bsp;
+using XonoticGodot.Formats.Materials;
 using XonoticGodot.Engine.Collision;
 using XonoticGodot.Game.Loaders;
 using NVec3 = System.Numerics.Vector3;
@@ -172,7 +173,7 @@ public static class MapLoader
             if (ShouldSkip(bsp, assets, face.TextureIndex))
                 continue;
 
-            if (IsWarpzoneShader(bsp, face.TextureIndex))
+            if (IsPortalCameraShader(bsp, assets, face.TextureIndex))
             {
                 portalFaces.Add(fi); // its own MeshInstance3D below; kept OUT of the cell mesh (no double-draw)
                 continue;
@@ -341,18 +342,25 @@ public static class MapLoader
 
     // ---- Warpzone / portal surfaces (the see-through portal "window" meshes) ----------------------------------
 
-    /// <summary>Name-based warpzone/portal/mirror shader test — the SAME name patterns
-    /// <see cref="XonoticGodot.Game.Loaders.HeroMaterials"/> classifies as <c>HeroKind.Portal</c> (the dpcamera
-    /// flag needs a parsed ShaderDef we don't have here, so match the shader NAME). Conservative — only clear
-    /// portal/warpzone/mirror shaders — so ordinary world surfaces are never pulled out of the merged mesh, and so
-    /// every pulled-out face is guaranteed the portal hero material from <see cref="ResolveSurfaceMaterial"/>.</summary>
-    private static bool IsWarpzoneShader(BspData bsp, int textureIndex)
+    /// <summary>True when the face's shader is a CAMERA/portal surface — Base only camera-renders a surface whose
+    /// shader carries the <c>dpcamera</c> directive (DP's r_water portal pass; e.g. <c>effects_warpzone/wavy</c>),
+    /// so consult the parsed <see cref="ShaderDef.Camera"/> first. The sibling warpzone decor — the additive
+    /// <c>blueedge</c>/<c>rededge</c> rims and the opaque <c>warpzone_backdrop</c> — carries NO dpcamera and must
+    /// stay in the normal merged-mesh pipeline with its authored material (previously the name test pulled ALL
+    /// <c>effects_warpzone/</c> faces out as portal windows: the coplanar rim then z-fought the real window with a
+    /// duplicate portal quad, and the interior backdrop rendered as a bogus third portal). The name patterns remain
+    /// only as the fallback for a portal-ish shader with no parsed def (a mirror without a script).</summary>
+    private static bool IsPortalCameraShader(BspData bsp, AssetSystem assets, int textureIndex)
     {
         if (textureIndex < 0 || textureIndex >= bsp.Textures.Length)
             return false;
-        string n = (bsp.Textures[textureIndex].ShaderName ?? string.Empty).Replace('\\', '/').ToLowerInvariant();
+        string name = (bsp.Textures[textureIndex].ShaderName ?? string.Empty).Replace('\\', '/');
+        ShaderDef? def = assets.GetShader(name);
+        if (def is not null)
+            return def.Dp.Camera; // authoritative: dpcamera == a portal window; rims/backdrops stay normal faces
+        string n = name.ToLowerInvariant();
         return n.Contains("/portals/") || n.StartsWith("portals/", StringComparison.Ordinal)
-            || n.Contains("portals_") || n.Contains("/effects_warpzone/") || n.Contains("mirror");
+            || n.Contains("portals_") || n.Contains("mirror");
     }
 
     /// <summary>

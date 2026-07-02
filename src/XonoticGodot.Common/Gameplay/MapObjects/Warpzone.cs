@@ -323,7 +323,11 @@ public sealed class WarpzoneManager
         if (Vector3.Dot(point - wz.Transform.InOrigin, wz.Transform.InForward) >= 0f)
             return false; // not yet across the seam
 
-        Vector3 newOrigin = wz.Transform.TransformOrigin(e.Origin);
+        // QC WarpZone_Teleport (server.qc:84/88/137): the transform is applied to the EYE point (`o0 = origin +
+        // view_ofs`) and the entity is placed at `o1 - view_ofs` — view_ofs is a local upright offset that does NOT
+        // rotate with the crossing. Identical to transforming the origin for an upright zone pair (R·view_ofs ==
+        // view_ofs) and degenerate for non-clients (view_ofs '0 0 0'), but a TILTED zone warps the eye, not the feet.
+        Vector3 newOrigin = wz.Transform.TransformOrigin(e.Origin + e.ViewOfs) - e.ViewOfs;
         e.Velocity = wz.Transform.TransformVelocity(e.Velocity);
         e.Angles = wz.Transform.TransformAngles(e.Angles);
         // QC WarpZone_TeleportPlayer (server.qc:51) — `player.fixangle = true`. The exit facing is
@@ -349,6 +353,13 @@ public sealed class WarpzoneManager
         // networked teleport bit so the client cancels its model interpolation across the seam (no stretch on the
         // remote model crossing a zone).
         e.Effects ^= EffectFlags.Teleport;
+        // QC WarpZone_TeleportPlayer (server.qc:65-66) — `if (IS_PLAYER(player)) BITCLR_ASSIGN(player.flags,
+        // FL_ONGROUND)`: a player crossing the seam is airborne until the next ground trace re-grounds them. The
+        // PREDICTED crossing (TriggerTouch.PredictWarpzonesAmbient) already clears it; without the same clear HERE
+        // the server keeps ground friction + step-snap for a tick while the prediction doesn't — the reconcile then
+        // rubber-bands the exit and eats momentum at the seam.
+        if ((e.Flags & EntFlags.Client) != 0)
+            e.Flags &= ~EntFlags.OnGround;
 
         // QC Portal_Think_TryTeleportPlayer (server/portals.qc:248-262): when a player crosses a Porto portal, any
         // grappling-hook chain they have OUT is relocated through the SAME transform so it stays latched across the
@@ -1033,7 +1044,11 @@ public sealed class WarpzoneManager
             if (e.IsFreed) { _teleportFinishTime.Remove(e); }
             else if (now <= finish) return;
         }
-        Vector3 newOrigin = wz.Transform.TransformOrigin(e.Origin);
+        // QC WarpZone_Teleport (server.qc:84/88/137): the transform is applied to the EYE point (`o0 = origin +
+        // view_ofs`) and the entity is placed at `o1 - view_ofs` — view_ofs is a local upright offset that does NOT
+        // rotate with the crossing. Identical to transforming the origin for an upright zone pair (R·view_ofs ==
+        // view_ofs) and degenerate for non-clients (view_ofs '0 0 0'), but a TILTED zone warps the eye, not the feet.
+        Vector3 newOrigin = wz.Transform.TransformOrigin(e.Origin + e.ViewOfs) - e.ViewOfs;
         e.Velocity = wz.Transform.TransformVelocity(e.Velocity);
         e.Angles = wz.Transform.TransformAngles(e.Angles);
         // QC WarpZone_TeleportPlayer fixangle — a free-flying observer has a view too; snap it to the exit facing

@@ -222,7 +222,10 @@ public static class TriggerTouch
             if (Vector3.Dot(point - t.InOrigin, t.InForward) >= 0f)
                 continue; // not yet across the seam
 
-            Vector3 newOrigin = t.TransformOrigin(mover.Origin);
+            // QC WarpZone_Teleport (server.qc:84/88/137): warp the EYE point (origin + view_ofs) and place the body
+            // at `o1 - view_ofs` — MUST match WarpzoneManager.Teleport exactly (upright zones degenerate to a plain
+            // origin transform; a tilted pair warps the eye, not the feet) or the reconcile re-introduces the snap.
+            Vector3 newOrigin = t.TransformOrigin(mover.Origin + mover.ViewOfs) - mover.ViewOfs;
             mover.Velocity = t.TransformVelocity(mover.Velocity);
             mover.AVelocity = t.TransformVelocity(mover.AVelocity);
             Vector3 newAngles = t.TransformAngles(mover.Angles);
