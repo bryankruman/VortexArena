@@ -3,8 +3,10 @@ category: effect
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-28"
 summary:
-  feature_count: 10
+  feature_count: 18
   worst_gaps:
+    - "CTF capture burst never renders: Ctf.cs:787 emits the effectinfo name '<team>_cap' through the RegistryName-keyed Emit(string) overload -> Effects.ByName returns null -> request silently dropped (registry names are CAP_RED/...)"
+    - "Whole catalog families are present-but-never-requested: nade_* trail/burn/explode (NadeBoom substitutes generic EXPLOSION_*), gentle/happy/morphed/particlegibs damage_* (no gentle gib-splash selection ported), vehicle impact/explode blocks (no client damageeffects DamageInfo handler), onslaught generator gib, CTF flag_touch/pass"
     - "No unit test covers the effectinfo.txt parser / keyword table / baseline defaults, nor a wire-protocol encode/decode round-trip; verified by code read only (confirmed: only ParticleParityTests/ParticleAnalyticTrace exist, neither hits EffectInfo.Parse/ApplyKeyword/EffectNetProtocol)"
     - "Heuristic fallback BuildFromInfo clamps derived life to [0.05,6]s + midpoint (intended; only when faithful/modern backend un-routed)"
     - "te_* helper -> registry-name mapping is a port convention; caller coverage of these specific wrappers not exhaustively traced (beam/arc temp-effects route to BeamRenderer, not the particle catalog)"
@@ -315,3 +317,220 @@ features:
       - { kind: code, ref: "EffectEmitter Te* helpers resolve to registered effect names; TeCsqcLightningArc/TeBeam ride the by-name path and are drawn by the beam renderer", result: pass }
     confidence: low
     notes: "Added by adversarial pass (draft omitted a row; only the spec port-mapping table mentioned te_*). Caller coverage of these specific wrappers not exhaustively traced; weapon/combo emission largely uses Emit(Effect,...) directly."
+
+  - id: fx-effectinfo.catalog.generator_sources
+    name: "QC generator sources (.inc DEF/SUB blocks) + dumpeffectinfo regen tool"
+    layer: [presentation]
+    base_refs:
+      - "common/effects/effectinfo.qh"
+      - "common/effects/effectinfo.qc:dumpeffectinfo"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: true
+    divergence_rationale: "The QC .inc DEF/SUB blocks (gated by ENABLE_EFFECTINFO) are only the dev-time dumpeffectinfo round-trip tool that REGENERATES effectinfo.txt; stock Xonotic never compiles or runs them at runtime (the DP engine parses the shipped txt directly, as does the port). A regen tool has no runtime behavior to port."
+    gaps: []
+    verification:
+      - { kind: code, ref: "effectinfo.qh is a 1-line '#pragma once' header for the generator; runtime consumption is the shipped effectinfo.txt (see fx-effectinfo.catalog.file), which is byte-identical between Base and port (diff -q)", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). Cited so the coverage ledger counts effectinfo.qh; the per-domain effectinfo_*.inc files are audited as their own catalog rows below."
+
+  - id: fx-effectinfo.catalog.vehicles
+    name: "Vehicle effect blocks (spiderbot/wakizashi/raptor muzzle+trail+impact+explode)"
+    layer: [presentation]
+    base_refs:
+      - "common/effects/effectinfo_vehicles.inc"
+    port_refs:
+      - "assets/data/xonotic-data.pk3dir/effectinfo.txt"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:160-178"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs:610"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Racer.cs:462"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:583"
+      - "game/client/ProjectileCatalog.cs:216-218"
+    constants:
+      - { name: "effect names / block counts", base: "16 DEF names, 60 SUB blocks", port: "all 16 names present, 60 'effect' blocks total (byte-identical shipped file)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Impact/explode blocks never requested by the port: spiderbot_minigun_impact, spiderbot_rocket_explode, wakizashi_gun_impact, wakizashi_rocket_explode, raptor_cannon_impact, raptor_bomb_impact. Base plays them from the client DamageInfo handler (common/effects/qc/damageeffects.qc:325-367); the port has no damageeffects DamageInfo consumer and vehicle death/projectile explosions substitute generic EXPLOSION_SMALL/MEDIUM/BIG (Spiderbot.cs:455,523, Racer.cs:656, Raptor.cs:500). Fix belongs to the vehicles/damageeffects units; the catalog side is complete."
+    verification:
+      - { kind: value, ref: "grep port effectinfo.txt: all 16 names present, per-name block counts sum to 60 (matches .inc SUB count); shipped file diff-identical to Base", result: pass }
+      - { kind: code, ref: "live emits: SPIDERBOT_MINIGUN_MUZZLEFLASH (Spiderbot.cs:610), SPIDERBOT_ROCKETLAUNCH (:746), RACER_BOOSTER/MUZZLEFLASH/ROCKETLAUNCH (Racer.cs:462,735,753), RAPTOR_MUZZLEFLASH/BOMB_SPREAD (Raptor.cs:583,640), rocket trails via ProjectileCatalog SPIDERBOT_ROCKET_TRAIL/RACER_ROCKET_TRAIL (:216-218); no emit site for the 6 impact/explode names", result: fail }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). spiderbot_minigun_trail has no live caller in Base either (spiderbot.qc:275 trailparticles is commented out) — parity holds vacuously for that one."
+
+  - id: fx-effectinfo.catalog.nades
+    name: "Nade effect blocks (nade_<color> trail / _burn / _explode)"
+    layer: [presentation]
+    base_refs:
+      - "common/effects/effectinfo_nades.inc"
+    port_refs:
+      - "assets/data/xonotic-data.pk3dir/effectinfo.txt"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeBoom.cs:172-192"
+    constants:
+      - { name: "8 colors x (trail 3 blocks + burn 4 + explode 9)", base: "generated blocks", port: "identical blocks in shipped file (incl. the Base quirk: nade_green_burn is defined in the .inc but absent from the shipped txt in BOTH trees — stale upstream regen)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No port code ever requests a nade_* block: the team-variant EFFECT_NADE_TRAIL/_TRAIL_BURN/_EXPLODE registry entries (Base common/mutators/mutator/nades/effects.inc) are not registered in EffectsList, NadeBoom.EmitDetonationFx substitutes EXPLOSION_MEDIUM/EXPLOSION_BIG/ICEORGLASS/HEALING/AMMO_REGEN (NadeBoom.cs:181-188), and nade projectiles fly with no per-color trail (ProjectileCatalog nade descs have TrailEffect \"\", :245-276). Catalog content is faithful; the consumer divergence belongs to the nades unit."
+    verification:
+      - { kind: value, ref: "grep port effectinfo.txt: nade_<color> 3 blocks, nade_<color>_burn 4, nade_<color>_explode 9 for all 8 colors (green_burn 0 — matches Base shipped file exactly)", result: pass }
+      - { kind: code, ref: "grep src+game for nade_ effect emission: only DeathTypes/NadeRegistry icon strings; no Emit/EmitByEffectInfoName of any nade_* name", result: fail }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold)."
+
+  - id: fx-effectinfo.catalog.gentle_variants
+    name: "Gentle/particle-gib replacement blocks (damage_hit/damage_dissolve name families)"
+    layer: [presentation]
+    base_refs:
+      - "common/effects/effectinfo_gentle.inc"
+      - "common/effects/effectinfo_gentle_morphed.inc"
+      - "common/effects/effectinfo_gentle_happy.inc"
+      - "common/effects/effectinfo_gentle_particlegibs.inc"
+    port_refs:
+      - "assets/data/xonotic-data.pk3dir/effectinfo.txt"
+    constants:
+      - { name: "name families", base: "damage_hit/damage_dissolve + morphed_/happy_/particlegibs_ prefixed variants", port: "all 8 names present with matching block counts (3/3, 2/4, 3/3, 3/5)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Nothing in the port composes these names: Base's net_gibsplash handler (common/effects/qc/gibs.qc:214-240) picks the prefix (morphed_ default, '' when cl_gentle_gibs==2, happy_ when ==3, particlegibs_ when cl_particlegibs) and pointparticles(prefix+damage_hit/damage_dissolve). The port's gib path (game/client/ModelGibs.cs) has no gentle-mode or particle-gib effect selection at all, so these blocks parse but are never requested. Consumer gap belongs to the gibs/damageeffects unit."
+    verification:
+      - { kind: value, ref: "grep port effectinfo.txt: damage_dissolve 3 / damage_hit 3 / morphed_ 4+2 / happy_ 3+3 / particlegibs_ 5+3 blocks; shipped file byte-identical to Base", result: pass }
+      - { kind: code, ref: "grep src+game for morphed_/happy_/particlegibs_/damage_dissolve/damage_hit: zero hits outside menu cvar wiring (cl_gentle_gibs checkbox)", result: fail }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). cl_gentle/cl_gentle_gibs menu cvars exist (DialogSettingsUser.cs:80) but no gameplay code reads them for gib effects."
+
+  - id: fx-effectinfo.catalog.onslaught
+    name: "Onslaught generator gib blocks (gib_explode / gib_flame)"
+    layer: [presentation]
+    base_refs:
+      - "common/effects/effectinfo_onslaught.inc"
+    port_refs:
+      - "assets/data/xonotic-data.pk3dir/effectinfo.txt"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:233"
+    constants:
+      - { name: "block counts", base: "onslaught_generator_gib_explode 3 blocks, _gib_flame 3 blocks", port: "3 + 3 (identical file)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "ONS_GENERATOR_GIB is registered (EffectsList.cs:233) but has zero emit callers — Base plays it per generator-gib from the client (common/gametypes/gametype/onslaught/cl_generator.qc:91); the port's Onslaught.cs/OnslaughtControlPoint.cs emit no effects at all. Generator-destruction presentation gap belongs to the onslaught unit."
+    verification:
+      - { kind: code, ref: "grep src+game for ONS_GENERATOR_GIB / onslaught_generator_gib: only the EffectsList registration; no Emit site", result: fail }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). onslaught_generator_gib_flame has no QC consumer in Base either (grep of qcsrc finds only the .inc + generated txt) — vacuous parity for that name."
+
+  - id: fx-effectinfo.catalog.buffs
+    name: "Buff relic_* effect blocks (17 legacy relic visuals)"
+    layer: [presentation]
+    base_refs:
+      - "common/effects/effectinfo_buffs.inc"
+    port_refs:
+      - "assets/data/xonotic-data.pk3dir/effectinfo.txt"
+    constants:
+      - { name: "17 relic_* names, 1 block each", base: "17 DEF/SUB", port: "17 blocks present (identical file)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Base at this rev is itself dead here: buff_Effect (common/mutators/mutator/buffs/sv_buffs.qc:103) has ZERO callers and no buff definition references a relic_* name (grep of qcsrc); the live buff effects are ITEM_PICKUP/ITEM_RESPAWN/ELECTRO_COMBO, which BuffsMutator.cs mirrors (:344,438,556,936). Port matching by never requesting relic_* = faithful", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). Orphaned catalog content inherited from the removed relics mutator; liveness na because there is no live Base caller to match."
+
+  - id: fx-effectinfo.catalog.instagib
+    name: "Instagib rocketminsta_laser_* trail blocks"
+    layer: [presentation]
+    base_refs:
+      - "common/effects/effectinfo_instagib.inc"
+    port_refs:
+      - "assets/data/xonotic-data.pk3dir/effectinfo.txt"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:285"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:405"
+      - "game/client/ProjectileCatalog.cs:234"
+    constants:
+      - { name: "5 team variants x 2 blocks", base: "rocketminsta_laser_{red,blue,yellow,pink,neutral}", port: "all 10 blocks present; only the neutral variant is registered (ROCKETMINSTA_LASER, isTrail) — Base comments out the per-team registry entries (all.inc:250-253) identically", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "live chain: Vaporizer.RocketMinstaLaserBarrage tags the bolt netname 'rocketminsta' (Vaporizer.cs:405) -> ProjectileCatalog resolves ProjectileType.RocketMinstaLaser with TrailEffect ROCKETMINSTA_LASER (:234,316-317); team tint rides colormod, matching Base's neutral-effect+colormap approach", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold)."
+
+  - id: fx-effectinfo.catalog.ctf
+    name: "CTF flag effect blocks (flag_touch / pass trail / cap burst)"
+    layer: [presentation]
+    base_refs:
+      - "common/effects/effectinfo_ctf.inc"
+    port_refs:
+      - "assets/data/xonotic-data.pk3dir/effectinfo.txt"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:207-223"
+      - "src/XonoticGodot.Common/Gameplay/Effects/Effect.cs:106-108"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:787"
+    constants:
+      - { name: "block coverage", base: "flag_touch x5 teams, _pass x5 (3 blocks each), _cap x4 (2 blocks each; NO neutral_cap block despite EFFECT_CAP_NEUTRAL being registered — Base quirk)", port: "identical file; port also registers CAP_NEUTRAL -> neutral_cap (EffectsList.cs:223), matching Base all.inc:192", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "BUG — capture burst never renders: Ctf.cs:787 emits $\"{TeamName(team)}_cap\" (an effectinfo name, e.g. 'red_cap') through the Emit(string) overload, which resolves via Effects.ByName = RegistryName lookup ('CAP_RED'); the lookup misses, Emit(null,...) drops silently. Should use Effects.Cap(team) (Effect.cs:108) or EmitByEffectInfoName. Flagged for fix (spawn_task 2026-07-02)."
+      - "flag_touch and pass effects never emitted: the team-variant resolvers Effect.FlagTouch/Pass exist (Effect.cs:106-107) but have zero callers — Base plays EFFECT_FLAG_TOUCH on pickup and the EFFECT_PASS trail on a thrown/passed flag (sv_ctf.qc). Belongs to the ctf unit's presentation backlog."
+    verification:
+      - { kind: code, ref: "Emit(string) -> Effects.ByName (EffectEmitter.cs:246-248) -> Registry<Effect>.ByName keyed by RegistryName (Registry.cs:37); EffectsList registers ('CAP_RED','red_cap') so ByName('red_cap') is null -> WriteEffect never fires. Grep confirms no Effect.FlagTouch/Pass/Cap callers anywhere in src/ or game/", result: fail }
+      - { kind: value, ref: "grep port effectinfo.txt: {red,blue,yellow,pink,neutral}flag_touch 1 block each, *_pass 3 each, {red,blue,yellow,pink}_cap 2 each, neutral_cap 0 — matches Base shipped file exactly", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). Catalog + registry entries are faithful; both live-path defects are consumer-side (ctf unit) but recorded here because this audit found them."

@@ -679,3 +679,211 @@ features:
       - { kind: liveness, ref: "SpawnFuncs.Register(trigger_conveyor/func_conveyor/func_ladder/func_water)", result: pass }
     confidence: medium
     notes: "Unchanged by Wave-1/2. Producer is code-read live; the FULL chain (volume tag -> PlayerPhysics consumer) is not exercised end-to-end by a test here. Conveyor generic_netlinked_reset applied at spawn; its round-restart wiring shares the dead-reset issue but is cosmetic (active-state only)."
+
+  - id: mapobject-func.rainsnow.spawn
+    name: "func_rain / func_snow — weather volume spawnfuncs (dest/cnt/count defaults + clamps)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/rainsnow.qc:spawnfunc(func_rain)"
+      - "common/mapobjects/func/rainsnow.qc:spawnfunc(func_snow)"
+      - "common/mapobjects/func/rainsnow.qh:RAINSNOW_SNOW"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/RainSnow.cs:RainSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/RainSnow.cs:SnowSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/RainSnow.cs:Setup"
+    constants:
+      - { name: "rain default fall dir", base: "'0 0 -700'", port: "(0,0,-700)", match: true }
+      - { name: "snow default fall dir", base: "'0 0 -300'", port: "(0,0,-300)", match: true }
+      - { name: "cnt (palette colorbase) default", base: "12", port: "12", match: true }
+      - { name: "count (density) default / clamp", base: "2000 / 1..65535", port: "2000 / 1..65535", match: true }
+      - { name: "state enum", base: "RAINSNOW_SNOW=0 / RAINSNOW_RAIN=1", port: "StateSnow=0 / StateRain=1", match: true }
+      - { name: "movetype/solid", base: "MOVETYPE_NONE / SOLID_NOT", port: "MoveType.None / Solid.Not", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "rainsnow.qc:31-97 vs RainSnow.cs:29-68 — dest<-velocity swap (entity never moves), default fall dirs, cnt 12, count 2000 clamp 1..65535, state RAIN=1/SNOW=0, brush model set; QC .state reused via MoverState", result: pass }
+      - { kind: unit_test, ref: "MusicSystemTests.cs:256-268 — func_rain spawned through the live entity-lump dict path carries velocity->Dest, count, cnt", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_rain/func_snow) MapObjectsRegistry.cs:185-186 on the standard BSP spawn path", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). RainSnow.cs header notes no shipped stock map places func_rain/func_snow (31-BSP census) — live path exists but is exercised only by tests/custom maps."
+
+  - id: mapobject-func.rainsnow.net_draw
+    name: "ENT_CLIENT_RAINSNOW wire + Draw_RainSnow client weather particle rendering"
+    layer: [presentation]
+    base_refs:
+      - "common/mapobjects/func/rainsnow.qc:rainsnow_SendEntity"
+      - "common/mapobjects/func/rainsnow.qc:NET_HANDLE(ENT_CLIENT_RAINSNOW)"
+      - "common/mapobjects/func/rainsnow.qc:Draw_RainSnow"
+    port_refs:
+      - "game/client/WeatherSystem.cs:Build"
+      - "game/client/WeatherSystem.cs:UpdateVolume"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/RainSnow.cs:DrawCount"
+    constants:
+      - { name: "cl_rainsnow_maxdrawdist default", base: "1000 (autocvar)", port: "1000 (registered WeatherSystem.cs:62; RainSnow.DefaultMaxDrawDist fallback)", match: true }
+      - { name: "per-box density formula", base: "bound(1, 0.1*count*(sx/1024)*(sy/1024), 65535)", port: "RainSnow.DrawCount — same", match: true }
+      - { name: "drawdist source", base: "fade_end if set else cvar", port: "e.FadeEndDist>0 ? it : cvar", match: true }
+      - { name: "DP rain count multiplier / alphas", base: "count*4; rain alpha 32-64, snow 64-128 (cl_particles.c)", port: "*4f rain; aMin/aMax 32/64 rain, 64/128 snow", match: true }
+      - { name: "cl_particles_rain / cl_particles_snow gate", base: "default 1 (DP engine)", port: "registered default 1, gates Emitting", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: partial
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The dedicated ENT_CLIENT_RAINSNOW Net_LinkEntity wire (state/org/size/compressed dest/count/cnt/fade_end) is replaced by the shared-entity facade: WeatherSystem rescans Api.Entities.FindByClass(func_rain/func_snow) every 2s and reads the server entity fields directly (the same listen-server/demo seam as LaserRenderer). Per-frame te_particlerain/te_particlesnow spawning is replaced by one pooled GpuParticles3D per volume whose emission box is the same view-clipped effbox and whose budget is rate-matched to the QC density formula."
+    gaps:
+      - "whether Dest/ParticleCount/Cnt/FadeEndDist reach a REMOTE dedicated-server client over the generic entity wire is unverified (facade scan is exact only where server entities are locally visible — listen server/demo)."
+      - "per-frame emission is a continuous emitter sized perSec*lifetime, not DP's floor(mycount*drawframetime+random()) per-frame batch — rate-equivalent, not per-frame-exact (timing partial)."
+      - "visuals approximated: rain streak quad 0.5x24 vs DP spark-stretch, snow ±16/axis drift modeled as Spread 8, Quake palette reduced to the 16-gray ramp; MaxAmountPerVolume 4000 cap."
+    verification:
+      - { kind: code_read, ref: "Draw_RainSnow (rainsnow.qc:101-119) vs WeatherSystem.UpdateVolume: effbox = volume clipped to view±drawdist, boxesoverlap early-out (Emitting=false), density via RainSnow.DrawCount, fade_end override, cvar gates", result: pass }
+      - { kind: liveness, ref: "WeatherSystem hosted by ClientWorld (ClientWorld.cs:453-454, ViewOriginProvider wired), _Process rescans every 2s", result: pass }
+    confidence: medium
+    notes: "added 2026-07-02 (coverage fold). No stock map carries these volumes so the node idles at zero cost; remote-client sync gap is untestable on stock content."
+
+  - id: mapobject-func.stardust
+    name: "func_stardust — EF_STARDUST sparkle prop with 0.25s csqcmodel autoupdate heartbeat"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mapobjects/func/stardust.qc:spawnfunc(func_stardust)"
+      - "common/mapobjects/func/stardust.qc:func_stardust_think"
+      - "common/mapobjects/func/stardust.qh"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Stardust.cs:StardustSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Stardust.cs:StardustThink"
+      - "game/client/CsqcModelEffects.cs:139 (EF_STARDUST particle consumer)"
+    constants:
+      - { name: "think interval (s)", base: "0.25", port: "ThinkInterval 0.25f", match: true }
+      - { name: "EF_STARDUST bit", base: "2048 (dpextensions)", port: "EffectFlags.Stardust 2048 / CsqcModelEffectFlags.EF_STARDUST 2048", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: unknown
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "QC CSQCMODEL_AUTOINIT/AUTOUPDATE (per-entity Net_LinkEntity re-send each 0.25s) is subsumed by the port's shared-entity facade — the entity fields ARE the csqcmodel channel, so StardustThink is a reschedule-only heartbeat. The server contract (Effects=EF_STARDUST) is what matters and is set."
+    gaps:
+      - "presentation UNVERIFIED: the EF_STARDUST particle consumer is live for entities in the client _entityNodes pass (CsqcModelEffects.Apply called at ClientWorld.cs:1351), but whether an inline-BRUSH func_stardust prop enters _entityNodes (vs only item/player/monster models) was not traced — the sparkle field may never render over a brush stardust."
+    verification:
+      - { kind: code_read, ref: "stardust.qc:3-18 vs Stardust.cs:25-50 — model precache/set, effects=EF_STARDUST (assignment, not OR — matches QC), think+0.25 reschedule", result: pass }
+      - { kind: unit_test, ref: "MapObjectLongTailTests.cs:55-57 — func_stardust spawn on the registry path", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_stardust) MapObjectsRegistry.cs:204 (server half live); client brush-entity reachability NOT traced (see gap)", result: pass }
+    confidence: medium
+    notes: "added 2026-07-02 (coverage fold). stardust.qh is an empty '#pragma once' stub (cited for coverage)."
+
+  - id: mapobject-func.driver.subs_helpers
+    name: "subs.qh generic helpers — SUB_SetFade/SUB_SetFade_Think/SUB_VanishOrRemove (+ SUB_NullThink, SUB_Friction)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/subs.qh:SUB_SetFade"
+      - "common/mapobjects/subs.qh:SUB_VanishOrRemove"
+      - "common/mapobjects/subs.qh:SUB_Friction"
+      - "common/mapobjects/subs.qc:SUB_SetFade_Think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:SubSetFade (:1190)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:SubSetFadeThink (:1200)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/EntityMapObjectStateExtra.cs:140 (.fade_rate)"
+    constants:
+      - { name: "vanish semantics", base: "client -> alpha=-1 invisible; non-client -> remove", port: "SubSetFadeThink: client Alpha=-1, else Remove", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "SUB_Friction is declared+defined in Base but has ZERO Base callers (grep: only subs.qh:5 decl + subs.qc:24 def) — not ported, faithful to its own deadness."
+      - "SUB_NullThink not ported as a symbol — the port leaves Think null where QC parks SUB_NullThink 'for PushMove' (equivalent: MoveTypePhysics runs Push movers regardless of Think)."
+      - "Spiderbot.cs:562 carries a private duplicate FadeGib re-implementation of SUB_SetFade rather than calling MapMover.SubSetFade (cosmetic code-reuse nit, both faithful)."
+    verification:
+      - { kind: code_read, ref: "subs.qc SUB_SetFade/SUB_SetFade_Think/SUB_VanishOrRemove vs MapObjectsCommon.cs:1186-1213 — fade_rate decrement per think, vanish-or-remove floor; live caller Breakable.LaunchDebris (Breakable.cs:197) on the breakable debris path", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). subs.qh's remaining content is field decls (finaldest/state/pos1/pos2/target2-4/itemkeys/key_door_messagetime/TSPEED_* etc.) — the contract side of behaviors audited in the driver.calcmove/door/train rows."
+
+  - id: mapobject-func.driver.lodmodel
+    name: "LODmodel_attach / LOD_customize — server-side per-mover lodmodel1/lodmodel2 distance LOD swap"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mapobjects/subs.qh:LODmodel_attach"
+      - "common/mapobjects/subs.qc:LODmodel_attach"
+      - "common/mapobjects/subs.qc:LOD_customize"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "SetBrushEntityModel(with_lod) -> InitializeEntity(LODmodel_attach, INITPRIO_FINDTARGET) -> SetCustomizer(LOD_customize) (subs.qc:436/473/530) is not ported: a map's lodmodel1/lodmodel2/loddistance1/loddistance2 keys on brush entities do nothing (the full-detail model always shows). NOT the same thing as the ported client CsqcModelLod (cl_playerdetailreduction csqcmodel player LOD, CsqcModelLod.cs) — that one is unrelated to these map keys."
+      - "per-client customizeentityforclient has no port seam (the entity wire sends one model to all), so a faithful port would need a per-client model-index override channel."
+    verification:
+      - { kind: code_read, ref: "grep lodmodel/loddistance/lodtarget across src/ + game/: only CsqcModelLod.cs + ClientWorld.cs:1548 (cl_loddistance* player-model LOD) — no map-key consumer; MEMORY graphics-settings note independently records player LOD as bugged-dead", result: pass }
+    confidence: medium
+    notes: "added 2026-07-02 (coverage fold). Impact limited to custom maps using lodmodel keys on func_* brushes; harmless (renders full detail) but a perf/visual parity gap there. The spec's presentation section already flagged 'LODmodel_attach not ported' — now a tracked row."
+
+  - id: mapobject-func.contracts.headers
+    name: "func_* header contracts — spawnflag bits / state enums / IL decls (.qh files)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/door.qh"
+      - "common/mapobjects/func/door_rotating.qh"
+      - "common/mapobjects/func/door_secret.qh"
+      - "common/mapobjects/func/breakable.qh"
+      - "common/mapobjects/func/button.qh"
+      - "common/mapobjects/func/rotating.qh"
+      - "common/mapobjects/func/bobbing.qh"
+      - "common/mapobjects/func/fourier.qh"
+      - "common/mapobjects/func/vectormamamam.qh"
+      - "common/mapobjects/func/conveyor.qh"
+      - "common/mapobjects/func/ladder.qh"
+      - "common/mapobjects/func/rainsnow.qh"
+      - "common/mapobjects/func/stardust.qh"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs:34-51 (door + rotating + key bits)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Breakable.cs:31-32 (STATE_ALIVE/BROKEN)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Buttons.cs (DONTACCUMULATEDMG)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MovingBrushes.cs (rotating/bobbing axis bits)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/AdvancedMovers.cs (PROJECT_ON_* / TIMESTEP)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs (door_secret bits)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/RainSnow.cs:22-23 (RAINSNOW_*)"
+    constants:
+      - { name: "door.qh bits", base: "START_OPEN 1 / DONT_LINK 4 / GOLD 8 / SILVER 16 / TOGGLE 32 / NONSOLID 1024 / CRUSH 2048", port: "Doors.cs:34-41 identical (verified this pass)", match: true }
+      - { name: "breakable.qh states", base: "STATE_ALIVE 0 / STATE_BROKEN 1", port: "Breakable.cs:31-32 (MoverState slot)", match: true }
+      - { name: "remaining per-family bits", base: "door_rotating/door_secret/button/rotating/bobbing/vectormamamam .qh consts", port: "verified in each family row's constants table (door.rotating, door_secret, button, rotating, bobbing, vectormamamam)", match: true }
+    status:
+      logic: na
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "door.qh sv_doors_always_open autocvar + Q3_DOOR_CRUSHER are q3compat — omitted per repo policy (documented intended divergence in the spec, not re-flagged)."
+      - "conveyor.qh g_conveyed / ladder.qh g_ladderents IntrusiveLists are replaced by per-producer held-set dictionaries (the mapobject-func.conveyor_ladder row's recorded intended divergence); ladder.qh .ladder_entity -> Entity.LadderEntity is ported+live there."
+      - "door.qh CSQC .door_finished preload field has no port CSQC half (door networking latent in Base too)."
+    verification:
+      - { kind: code_read, ref: "door.qh/breakable.qh consts read against Doors.cs:34-51 + Breakable.cs:31-32 this pass; the other headers' consts were already verified inside the per-family rows (door.rotating BIDIR/axis bits, door_secret 5 bits, button BIT(7), rotating BIT(2-4), bobbing BIT(0-1), vectormamamam PROJECT_ON_*+TIMESTEP, rainsnow RAIN/SNOW enum). fourier.qh + stardust.qh are empty '#pragma once' stubs", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). Pure-declaration coverage row: cites the 13 .qh files so the coverage ledger counts them; the behavior audits live in the per-family rows."

@@ -19,9 +19,9 @@ GameTypes: 20[0m
 [NetTransport.Client] connecting to 127.0.0.1:26000 …
 [EffectSystem] effectinfo: 301 effects, particlefont atlas: loaded, style overlay: 0 effects
 [Particles] backend=original (cl_particles_modern=0)
-[MapLoader] occluder: 90035 verts / 107970 tris (r_occlusion_cull A/B)
-[MapLoader] 'stormkeep' materials: lightmapped=35 vertexLit=3 plain=9 glow=4 normalMapped=34 (deluxe=True, internalPages=0, atlas=1p, cellSize=131072, cells=8, surfaces=194)
-[MapLoader] 'stormkeep' portal surfaces: 2 (from 2 faces)
+[MapLoader] occluder: 90016 verts / 107956 tris (r_occlusion_cull A/B)
+[MapLoader] 'stormkeep' materials: lightmapped=34 vertexLit=3 plain=8 glow=4 normalMapped=34 (deluxe=True, internalPages=0, atlas=1p, cellSize=131072, cells=8, surfaces=188)
+[MapLoader] 'stormkeep' portal surfaces: 2 (from 2 faces), pocket decor: 5 (from 5 faces)
 [DecalSplats] geometry: 106027 render triangles, 502 grid cells
 [Skybox] loaded 'env/extragalactic/asteroids'.
 [PortalRenderer] 2 live portal(s)
@@ -29,18 +29,20 @@ GameTypes: 20[0m
 [NetGame] precached 24 weapon models, skipped 0 (lazy), 24 muzzle tags.
 [NetGame] precached 36 combat sounds, 10 player models (rendered for pipeline warm).
 [NetGame] listen server on 127.0.0.1:26000 (map 'stormkeep', dm, 0 bots) — self-connecting.
-[ServerNet] peer 582921628 connected (awaiting handshake).
-[ServerNet] peer 582921628 accepted as 'player' (netId 582921628, id d78c7329).
+[ServerNet] peer 171604943 connected (awaiting handshake).
+[ServerNet] peer 171604943 accepted as 'player' (netId 171604943, id 78739974).
 [ClientNet] handshake accepted by 'Xonotic  Server': netId 1, tickrate 72 Hz.
 [NetGame] handshake accepted by 'Xonotic  Server': netId 1.
-[lb]hitch EXTERNAL] 52.1ms (2 dropped @60Hz) (med 6.9, ×7.5) — rest-dominated, game-side quiet — OS/compositor/driver | proc 11.7 rcpu 0.0 gpu 0.0 rest 40.4 | alloc 924KB | ticks 4, remote.ents 21 | watchdog: 3/5 samples in 'ng.process'[0m
+[lb]hitch EXTERNAL] 62.5ms (3 dropped @60Hz) (med 6.9, ×9.0) — rest-dominated, game-side quiet — OS/compositor/driver | proc 13.2 rcpu 0.0 gpu 0.0 rest 49.3 | alloc 916KB | ticks 4, remote.ents 21 | watchdog: 4/6 samples in 'ng.process'[0m
 [lb]hitch]   events: [lb]-1f] net: PREDICTION DESYNC 1067qu (predicted vs acked-replay origin)[0m
 [lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
-[lb]hitch VSYNC/PRESENT] 21.9ms (med 6.9, ×3.2) — present/vsync-bound (rest 18.5ms, gpu 0.0ms) | proc 3.4 rcpu 0.0 gpu 0.0 rest 18.5 | alloc 213KB | ticks 1, remote.ents 21 | watchdog: 8/11 samples in '(unscoped)'[0m
-=== frame profiler session summary (19s, 300 frames) ===[0m
-  fps: avg 61.4  1%low 7  0.1%low 7  (median 6.9ms, worst 150.0ms)[0m
-  hitches: 2 total — 1 EXTERNAL, 1 VSYNC/PRESENT[0m
-    worst[lb]1]: 52.1ms EXTERNAL (ng.process) @ t=18.0s[0m
-    worst[lb]2]: 21.9ms VSYNC/PRESENT (ng.process) @ t=18.0s[0m
-  gc: g0+73 g1+52 g2+30, total pause 216ms[0m
-  alloc: 2.0GB total, 10MB/s recent, peak 311.3MB in one frame @ t=5.9s, heap 192.9MB[0m
+[lb]hitch EXTERNAL ×2] 28.0–62.5ms over 0.0s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 15.1ms (med 6.9, ×2.2) — present/vsync-bound (rest 9.9ms, gpu 0.0ms) | proc 5.3 rcpu 0.0 gpu 0.0 rest 9.9 | alloc 151KB | ticks 1, remote.ents 21[0m
+=== frame profiler session summary (21s, 300 frames) ===[0m
+  fps: avg 60.8  1%low 7  0.1%low 7  (median 6.9ms, worst 150.0ms)[0m
+  hitches: 3 total — 2 EXTERNAL, 1 VSYNC/PRESENT[0m
+    worst[lb]1]: 62.5ms EXTERNAL (ng.process) @ t=19.5s[0m
+    worst[lb]2]: 28.0ms EXTERNAL (ng.process) @ t=19.5s[0m
+    worst[lb]3]: 15.1ms VSYNC/PRESENT (ng.process) @ t=19.5s[0m
+  gc: g0+73 g1+52 g2+30, total pause 236ms[0m
+  alloc: 2.0GB total, 9MB/s recent, peak 311.2MB in one frame @ t=6.7s, heap 192.8MB[0m

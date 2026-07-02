@@ -1003,3 +1003,137 @@ features:
       - { kind: code, ref: "StatusEffects.Write/Read layout matches QC; major/minor group constants unchanged; live Flush wiring not traced in this unit", result: pass }
     confidence: low
     notes: "Unchanged. Defer the live-send confirmation to the status_effects parity unit."
+
+  - id: buffs.defs.registration
+    name: "Per-buff class definitions (REGISTER_BUFF: netname + m_skin + m_color for all 13 buffs)"
+    layer: [shared]
+    base_refs:
+      - "common/mutators/mutator/buffs/buff/ammo.qh:REGISTER_BUFF(AMMO) / AmmoBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/bash.qh:REGISTER_BUFF(BASH) / BashBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/disability.qh:REGISTER_BUFF(DISABILITY) / DisabilityBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/flight.qh:REGISTER_BUFF(FLIGHT) / FlightBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/inferno.qh:REGISTER_BUFF(INFERNO) / InfernoBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/jump.qh:REGISTER_BUFF(JUMP) / JumpBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/luck.qh:REGISTER_BUFF(LUCK) / LuckBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/magnet.qh:REGISTER_BUFF(MAGNET) / MagnetBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/medic.qh:REGISTER_BUFF(MEDIC) / MedicBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/resistance.qh:REGISTER_BUFF(RESISTANCE) / ResistanceBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/swapper.qh:REGISTER_BUFF(SWAPPER) / SwapperBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/vampire.qh:REGISTER_BUFF(VAMPIRE) / VampireBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/vengeance.qh:REGISTER_BUFF(VENGEANCE) / VengeanceBuff ATTRIBs"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:RegisterAll (buff defs, 240-252)"
+      - "src/XonoticGodot.Common/GameInit.cs:26 (RegisterAll call)"
+    constants:
+      - { name: "m_skin per buff (13)", base: "ammo 3 / bash 5 / disability 7 / flight 11 / inferno 16 / jump 10 / luck 19 / magnet 18 / medic 1 / resistance 0 / swapper 17 / vampire 2 / vengeance 15", port: "Skin = identical 13 values (StatusEffects.cs:240-252)", match: true }
+      - { name: "m_color per buff (13)", base: "e.g. bash '1 0.39 0', medic '1 0.12 0', luck '0.17 0.85 0.12'", port: "Color = identical 13 triples (StatusEffects.cs:240-252)", match: true }
+      - { name: "netname set", base: "ammo bash disability flight inferno jump luck magnet medic resistance swapper vampire vengeance", port: "buff_<netname> x13, IsBuff=true; no extras registered as buffs", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "each .qh REGISTER_BUFF + m_skin/m_color read from Base and compared field-by-field against StatusEffects.cs:240-252 — all 13 skins + all 13 color triples exact; RegisterAll called at boot (GameInit.cs:26)", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). The data contract of the 13 buff/*.qh headers: registry membership + per-buff skin/color. All values bit-exact in the port catalog; consumption of skin (item), color (waypoint tint vs missing item tint) is tracked in buffs.item.spawnfunc / buffs.waypoint. m_name/m_icon consumption is buffs.defs.hud_identity; the .qh SVQC autocvars are recorded on each perk row (+ buffs.defs.qh_autocvar_fallbacks for the code-fallback outliers)."
+
+  - id: buffs.defs.compat_mapping
+    name: "Q3/QL/WOP compat classname -> buff type mapping (BUFF_SPAWNFUNC_Q3COMPAT per .qh)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/buff/ammo.qh:BUFF_SPAWNFUNC_Q3COMPAT(item_ammoregen, BUFF_AMMO)"
+      - "common/mutators/mutator/buffs/buff/bash.qh:BUFF_SPAWNFUNC_Q3COMPAT(item_scout, BUFF_BASH)"
+      - "common/mutators/mutator/buffs/buff/flight.qh:BUFF_SPAWNFUNC_Q3COMPAT(item_flight, BUFF_FLIGHT)"
+      - "common/mutators/mutator/buffs/buff/inferno.qh:BUFF_SPAWNFUNC_Q3COMPAT(item_doubler, BUFF_INFERNO)"
+      - "common/mutators/mutator/buffs/buff/jump.qh:BUFF_SPAWNFUNC_Q3COMPAT(item_jumper, BUFF_JUMP)"
+      - "common/mutators/mutator/buffs/buff/medic.qh:BUFF_SPAWNFUNC_Q3COMPAT(item_regen + item_revival, BUFF_MEDIC)"
+      - "common/mutators/mutator/buffs/buff/resistance.qh:BUFF_SPAWNFUNC_Q3COMPAT(item_guard, BUFF_RESISTANCE)"
+      - "common/mutators/mutator/buffs/buff/swapper.qh:BUFF_SPAWNFUNC_Q3COMPAT(holdable_teleporter, BUFF_SWAPPER)"
+      - "common/mutators/mutator/buffs/buff/vampire.qh:BUFF_SPAWNFUNC_Q3COMPAT(holdable_invulnerability, BUFF_VAMPIRE)"
+      - "common/mutators/mutator/buffs/buff/vengeance.qh:BUFF_SPAWNFUNC_Q3COMPAT(holdable_kamikaze, BUFF_VENGEANCE)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemSpawnFuncs.cs:BuffCompatClassnames (189-202)"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemSpawnFuncs.cs:RegisterBuffSpawnFuncs (223-227)"
+    constants:
+      - { name: "compat map (11 classnames)", base: "ammoregen->ammo scout->bash flight->flight doubler->inferno jumper->jump regen/revival->medic guard->resistance teleporter->swapper invulnerability->vampire kamikaze->vengeance", port: "identical 11-entry table", match: true }
+      - { name: "buffs with NO compat classname", base: "disability, luck, magnet (no Q3COMPAT line)", port: "absent from the table (correct)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "each .qh Q3COMPAT line compared against ItemSpawnFuncs.BuffCompatClassnames — all 11 classname->type pairs exact, no extras/omissions; registered via RegisterBuffSpawnFuncs -> SpawnFuncs.Register -> BuffsMutator.SpawnMapBuff on the live map-spawn dispatch (same path verified live in buffs.item.spawnfunc)", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). buffs.item.spawnfunc records that the compat SET matches; this row pins the per-.qh classname->buff-type PAIRING, which is where a silent mis-map would hide (e.g. item_doubler must be inferno, not bash). All 11 verified exact."
+
+  - id: buffs.defs.hud_identity
+    name: "Per-buff HUD identity (m_name label + m_icon + m_color on the held-buff powerups-panel entry)"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/buffs/cl_buffs.qh (client include pulling the buff registry into CSQC)"
+      - "common/mutators/mutator/buffs/buff/bash.qh:ATTRIB m_name _(\"Bash\") / m_icon \"buff_bash\" (pattern identical across all 13 .qh)"
+    port_refs:
+      - "game/hud/PowerupsPanel.cs:BuffLabel (277-281)"
+      - "game/hud/PowerupsPanel.cs:227-239 (buff branch: label/icon/color)"
+    constants:
+      - { name: "m_icon", base: "\"buff_<netname>\" x13", port: "icon = def.Name (\"buff_<netname>\") — identical string", match: true }
+      - { name: "m_name", base: "_(\"Ammo\")..._(\"Vengeance\") — netname capitalized for all 13", port: "BuffLabel strips buff_ + capitalizes — identical for all 13", match: true }
+      - { name: "entry tint", base: "per-buff m_color", port: "generic (0.4, 1, 0.6) for every buff", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: unknown
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The held-buff HUD entry is tinted a single generic green (0.4,1,0.6) instead of the per-buff m_color; the code comment 'no per-buff color in the C# def' is STALE — StatusEffectDef.Color IS populated for all 13 buffs (StatusEffects.cs:240-252), the panel just doesn't read it."
+      - "Liveness not claimed: the panel (registered live, HudManager.cs:141) iterates the local player's Entity.StatusEffects, but whether the client-side entity's buff effects are populated over the net was not traced here (buffs.networking has the same unknown; powerups display via the same list was fixed to work per the file's port note)."
+    verification:
+      - { kind: code, ref: "PowerupsPanel buff branch: label=BuffLabel(def.Name) (capitalized netname, matches all 13 QC m_name strings), icon=def.Name (matches QC m_icon buff_<netname>), color=generic — vs each .qh's ATTRIBs; panel live via HudManager.cs:141", result: pass }
+    confidence: medium
+    notes: "added 2026-07-02 (coverage fold). Covers the m_name/m_icon halves of the .qh contract (skins/colors on the item are buffs.defs.registration + buffs.item.spawnfunc). cl_buffs.qh itself is a 3-line include-only header — its observable effect is exactly this client-side availability of the buff registry (icons/labels/waypoint colors)."
+
+  - id: buffs.defs.qh_autocvar_fallbacks
+    name: "Code-level autocvar fallback defaults (luck.qh =0.15/=3, magnet.qh range_buff =100)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/buff/luck.qh:autocvar_g_buffs_luck_chance = 0.15 / autocvar_g_buffs_luck_damagemultiplier = 3"
+      - "common/mutators/mutator/buffs/buff/magnet.qh:autocvar_g_buffs_magnet_range_buff = 100"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:56-59 (field defaults 0.15/2/250/100)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:122-125 (cvar refresh)"
+    constants:
+      - { name: "g_buffs_luck_chance", base: ".qh fallback 0.15 == mutators.cfg 0.15", port: "0.15", match: true }
+      - { name: "g_buffs_luck_damagemultiplier (effective)", base: "mutators.cfg 2 (the .qh fallback 3 is shadowed on any stock install)", port: "2", match: true }
+      - { name: "g_buffs_luck_damagemultiplier (code fallback, cfg absent)", base: "3 (luck.qh)", port: "2 (field default)", match: false }
+      - { name: "g_buffs_magnet_range_buff", base: ".qh fallback 100 == mutators.cfg 100", port: "100", match: true }
+    status:
+      logic: na
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Only divergence is unreachable on a stock install: if mutators.cfg were NOT executed, Base luck would crit at x3 (the .qh autocvar fallback) while the port falls back to x2. With the shipped cfg both are 2 — effective behavior identical."
+    verification:
+      - { kind: code, ref: "luck.qc:6-8 reads autocvar_g_buffs_luck_damagemultiplier (fallback 3 in luck.qh); mutators.cfg:407-410 sets 2/0.15; BuffsMutator fields default 0.15/2 + refreshed from cvars (122-125) and consumed on the live damage path (OnDamageCalculate:763-766)", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). CORRECTS the spec's 2026-06-22 claim that 'buff/luck.qc reads the cvar directly with no AUTOCVAR default' — luck.qh DOES declare = 3 on this rev; luck.qc reads the autocvar. The effective default is still 2 because mutators.cfg always executes on stock installs, so the existing buffs.luck constants stay correct. The other .qh SVQC declarations (fields buff_flight_oldgravity/crouchheld, buff_ammo_prev_infitems/prev_clipload; un-defaulted autocvars) are already covered by the per-perk rows."

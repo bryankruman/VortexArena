@@ -151,6 +151,14 @@ public static class MapLoader
         // live SubViewport render. Empty on the vast majority of maps (no portals) → zero overhead.
         var portalFaces = new List<int>();
 
+        // Warpzone POCKET DECOR — the authored backdrop (`warpzone_backdrop`, the dark quad ~64qu behind each
+        // window) and the additive rims (`blueedge`/`rededge`). They render normally for the player, but the
+        // PORTAL CAMERA sits inside that pocket (behind the exit plane) and the backdrop otherwise fills the
+        // whole exit view (the "portal shows black" report — the near-clip can't save it at viewing angles, when
+        // the min-corner depth collapses). Pulled into their own nodes so PortalRenderer can layer them OFF the
+        // portal cameras, exactly like the window quads themselves.
+        var decorFaces = new List<int>();
+
         // Faces belonging to a filtered-out "*N" brush model (resolved from the models lump's face ranges).
         bool[]? dropFace = BuildDroppedFaceMask(bsp, droppedSubmodels);
 
@@ -176,6 +184,11 @@ public static class MapLoader
             if (IsPortalCameraShader(bsp, assets, face.TextureIndex))
             {
                 portalFaces.Add(fi); // its own MeshInstance3D below; kept OUT of the cell mesh (no double-draw)
+                continue;
+            }
+            if (IsWarpzoneDecorShader(bsp, assets, face.TextureIndex))
+            {
+                decorFaces.Add(fi); // warpzone pocket decor (backdrop/rims) — own node so portal cams can skip it
                 continue;
             }
 
@@ -335,7 +348,7 @@ public static class MapLoader
                  $", atlas={(atlas is not null ? $"{atlas.PageCount}p" : "none")}, cellSize={cellSize:0}, cells={cellCount}, surfaces={drawSurfaces})");
 
         // Build the warpzone/portal "window" meshes (no-op when the map has none).
-        BuildPortalSurfaces(root, bsp, assets, mapName, deluxe, portalFaces);
+        BuildPortalSurfaces(root, bsp, assets, mapName, deluxe, portalFaces, decorFaces);
 
         return root;
     }
@@ -363,6 +376,20 @@ public static class MapLoader
             || n.Contains("portals_") || n.Contains("mirror");
     }
 
+    /// <summary>True for warpzone pocket DECOR — an <c>effects_warpzone/</c> shader WITHOUT <c>dpcamera</c> (the
+    /// backdrop + blueedge/rededge rims). Rendered normally for the player, but pulled into its own node so the
+    /// portal cameras (which sit inside the pocket, behind the exit plane) can cull it — the backdrop otherwise
+    /// fills the portal view (see <see cref="XonoticGodot.Game.Client.PortalRenderer"/>).</summary>
+    private static bool IsWarpzoneDecorShader(BspData bsp, AssetSystem assets, int textureIndex)
+    {
+        if (textureIndex < 0 || textureIndex >= bsp.Textures.Length)
+            return false;
+        string name = (bsp.Textures[textureIndex].ShaderName ?? string.Empty).Replace('\\', '/');
+        if (!name.ToLowerInvariant().Contains("/effects_warpzone/"))
+            return false;
+        return assets.GetShader(name) is not { Dp.Camera: true }; // the camera window itself is NOT decor
+    }
+
     /// <summary>
     /// Rebuild the warpzone/portal faces as their own <see cref="MeshInstance3D"/> nodes under a "Portals" child
     /// (one per coplanar group = one warpzone surface), each tagged via node metadata with its plane (QUAKE origin
@@ -371,23 +398,44 @@ public static class MapLoader
     /// PortalRenderer (or an unmatched surface) renders EXACTLY as before — this only adds addressable meshes.
     /// </summary>
     private static void BuildPortalSurfaces(Node3D root, BspData bsp, AssetSystem assets, string mapName, bool deluxe,
-        List<int> portalFaces)
+        List<int> portalFaces, List<int> decorFaces)
     {
-        if (portalFaces.Count == 0)
+        if (portalFaces.Count == 0 && decorFaces.Count == 0)
             return;
 
+        var portalsRoot = new Node3D { Name = "Portals" };
+        int built = BuildPortalGroup(portalsRoot, bsp, assets, mapName, deluxe, portalFaces, decor: false, 0);
+        int decor = BuildPortalGroup(portalsRoot, bsp, assets, mapName, deluxe, decorFaces, decor: true, built);
+        if (built + decor > 0)
+            root.AddChild(portalsRoot);
+        GD.Print($"[MapLoader] '{mapName}' portal surfaces: {built} (from {portalFaces.Count} faces)"
+            + (decor > 0 ? $", pocket decor: {decor} (from {decorFaces.Count} faces)" : ""));
+    }
+
+    /// <summary>One coplanar-grouped build pass for <see cref="BuildPortalSurfaces"/>: window faces get the
+    /// <c>wz_origin</c>/<c>wz_normal</c> plane metas (PortalRenderer matches + swaps in the live render); DECOR
+    /// faces (backdrop/rims) get <c>wz_decor</c> and keep their authored material — PortalRenderer only moves
+    /// them onto the portal-excluded render layer. Returns the number of nodes built.</summary>
+    private static int BuildPortalGroup(Node3D portalsRoot, BspData bsp, AssetSystem assets, string mapName,
+        bool deluxe, List<int> faces, bool decor, int nameBase)
+    {
+        if (faces.Count == 0)
+            return 0;
+
         // Coplanar grouping: quantize each face's plane (Quake normal direction + plane distance) so the (often
-        // several) faces of one warpzone surface collapse into a single window mesh.
-        var groupFaces = new Dictionary<(long, long, long, long), List<int>>();
-        var groupPlane = new Dictionary<(long, long, long, long), (NVec3 NSum, NVec3 OSum, int N, int Lm)>();
-        foreach (int fi in portalFaces)
+        // several) faces of one warpzone surface collapse into a single window mesh. Decor also groups by texture
+        // (a rim and a backdrop must not merge even if somehow coplanar).
+        var groupFaces = new Dictionary<(long, long, long, long, int), List<int>>();
+        var groupPlane = new Dictionary<(long, long, long, long, int), (NVec3 NSum, NVec3 OSum, int N, int Lm)>();
+        foreach (int fi in faces)
         {
             BspFace face = bsp.Faces[fi];
             FacePlaneQuake(bsp, face, out NVec3 nq, out NVec3 oq);
             NVec3 nn = nq.LengthSquared() > 1e-9f ? NVec3.Normalize(nq) : new NVec3(0f, 0f, 1f);
             var key = (
                 (long)MathF.Round(nn.X * 32f), (long)MathF.Round(nn.Y * 32f), (long)MathF.Round(nn.Z * 32f),
-                (long)MathF.Round(NVec3.Dot(oq, nn) / 8f)); // 8-unit plane-distance buckets
+                (long)MathF.Round(NVec3.Dot(oq, nn) / 8f), // 8-unit plane-distance buckets
+                decor ? face.TextureIndex : 0);
             if (!groupFaces.TryGetValue(key, out List<int>? list))
             {
                 list = new List<int>();
@@ -399,9 +447,8 @@ public static class MapLoader
             groupPlane[key] = (acc.NSum + nn, acc.OSum + oq, acc.N + 1, acc.Lm);
         }
 
-        var portalsRoot = new Node3D { Name = "Portals" };
         int built = 0;
-        foreach (KeyValuePair<(long, long, long, long), List<int>> kv in groupFaces)
+        foreach (KeyValuePair<(long, long, long, long, int), List<int>> kv in groupFaces)
         {
             var sb = new SurfaceBuilder();
             int tex = bsp.Faces[kv.Value[0]].TextureIndex;
@@ -410,30 +457,37 @@ public static class MapLoader
             if (sb.Indices.Count == 0 || sb.Positions.Count == 0)
                 continue;
 
-            var mesh = new ArrayMesh();
-            PackSurface(mesh, sb, lightmapped: false, withTangents: false, withColor: false);
-            mesh.SurfaceSetMaterial(0, ResolveSurfaceMaterial(bsp, assets, new SurfaceKey(tex, groupPlane[kv.Key].Lm), mapName, deluxe));
-
             (NVec3 NSum, NVec3 OSum, int N, int Lm) acc = groupPlane[kv.Key];
+            var mesh = new ArrayMesh();
+            // Decor keeps its authored (potentially lightmapped) look; the window gets the placeholder that the
+            // PortalRenderer material override replaces.
+            PackSurface(mesh, sb, lightmapped: decor && acc.Lm >= 0, withTangents: false, withColor: false);
+            mesh.SurfaceSetMaterial(0, ResolveSurfaceMaterial(bsp, assets, new SurfaceKey(tex, acc.Lm), mapName, deluxe));
+
             NVec3 planeN = acc.NSum.LengthSquared() > 1e-9f ? NVec3.Normalize(acc.NSum) : new NVec3(0f, 0f, 1f);
             NVec3 planeO = acc.OSum / MathF.Max(1, acc.N);
 
             var mi = new MeshInstance3D
             {
-                Name = $"Portal_{built}",
+                Name = decor ? $"PortalDecor_{nameBase + built}" : $"Portal_{nameBase + built}",
                 Mesh = mesh,
                 CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
             };
-            // QUAKE-space plane (stored raw in a Vector3 holder), for PortalRenderer to match against the
-            // WarpzoneManager zones (also Quake). NOT Coords-converted — the renderer reads them back as Quake.
-            mi.SetMeta("wz_origin", new Vector3(planeO.X, planeO.Y, planeO.Z));
-            mi.SetMeta("wz_normal", new Vector3(planeN.X, planeN.Y, planeN.Z));
+            if (decor)
+            {
+                mi.SetMeta("wz_decor", true);
+            }
+            else
+            {
+                // QUAKE-space plane (stored raw in a Vector3 holder), for PortalRenderer to match against the
+                // WarpzoneManager zones (also Quake). NOT Coords-converted — the renderer reads them back as Quake.
+                mi.SetMeta("wz_origin", new Vector3(planeO.X, planeO.Y, planeO.Z));
+                mi.SetMeta("wz_normal", new Vector3(planeN.X, planeN.Y, planeN.Z));
+            }
             portalsRoot.AddChild(mi);
             built++;
         }
-        if (built > 0)
-            root.AddChild(portalsRoot);
-        GD.Print($"[MapLoader] '{mapName}' portal surfaces: {built} (from {portalFaces.Count} faces)");
+        return built;
     }
 
     /// <summary>Area-unweighted plane of a BSP face in QUAKE space (centroid + averaged vertex normal).</summary>

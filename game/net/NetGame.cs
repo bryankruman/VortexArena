@@ -2950,6 +2950,10 @@ public sealed partial class NetGame : Node3D
                     _viewAngles.Y = fa.Y;
                     _viewAngles.Z = 0f;
                     _lastFixApplyTime = Time.GetTicksMsec() * 0.001f; // arm the predicted replay-echo discard window
+                    // Re-seed the view-model sway to the new facing (warpzone crossings now snap ONLY through
+                    // this authoritative path — the predicted warp no longer stamps a view snap).
+                    if (_viewModel is not null && GodotObject.IsInstanceValid(_viewModel))
+                        _viewModel.NotifyTeleported();
                 }
                 if (MenuState.Cvars.GetFloat("sv_warpzone_trace") != 0f)
                     GD.Print($"[wzview] authoritative {(predictedSame ? "skip (predicted already applied)" : "snap")} -> {fa}");

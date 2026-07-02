@@ -249,12 +249,14 @@ public static class TriggerTouch
             mover.OldOrigin = newOrigin;            // QC: cancel interpolation across the seam (a teleport, not a slide)
             mover.Flags &= ~EntFlags.OnGround;      // QC UNSET_ONGROUND
 
-            // QC player.fixangle = true: snap the local view to the rotated facing across the seam this tick
-            // (the host reads FixAngle/FixAngleAngles off the carrier after the prediction step). This is the
-            // PREDICTED snap; the server stamps its own AUTHORITATIVE fixangle in WarpzoneManager.Teleport, which
-            // is what the listen host actually relies on (this one-shot flag is cleared by every replayed tick).
-            mover.FixAngle = true;
-            mover.FixAngleAngles = newAngles;
+            // The predicted crossing warps POSITION/VELOCITY/angles only — it deliberately does NOT stamp the
+            // FixAngle view-snap. The reconcile replay can spuriously re-cross a zone the server never did (a
+            // post-warp base + a pre-warp recorded input drifts the carrier back through the partner plane), and
+            // a wrong predicted snap visibly yanks the view to a back-rotated facing (observed live). The
+            // AUTHORITATIVE stamp (WarpzoneManager.Teleport → the host's FixAngle consume) was correct in every
+            // traced crossing and lands within 1-3 render frames — Base's model too: the server drives the view
+            // change and the client never independently invents one (server.qc:150-170). Teleporters, whose
+            // destination is static and un-replayable-into, keep their predicted snap (PredictTeleportsAmbient).
             PredictedWarpBudget--; // consume this frame's predicted crossing (see the field doc)
             return; // one warp per tick — the mover has moved off this (fixed) overlap box
         }

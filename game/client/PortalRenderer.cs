@@ -123,7 +123,17 @@ public partial class PortalRenderer : Node3D
 
         foreach (Node child in portalsRoot.GetChildren())
         {
-            if (child is not MeshInstance3D surface || !surface.HasMeta("wz_origin"))
+            if (child is not MeshInstance3D surface)
+                continue;
+            // Warpzone pocket DECOR (the authored backdrop + rims, see MapLoader.BuildPortalSurfaces): visible to
+            // the player as authored, EXCLUDED from every portal camera — the camera sits inside the pocket and
+            // the backdrop otherwise fills the whole exit view (the "portal shows black" report).
+            if (surface.HasMeta("wz_decor"))
+            {
+                surface.Layers |= PortalSurfaceLayerBit;
+                continue;
+            }
+            if (!surface.HasMeta("wz_origin"))
                 continue;
             if (_portals.Count >= MaxPortals)
             {

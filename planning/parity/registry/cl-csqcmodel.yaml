@@ -3,7 +3,7 @@ category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-28"  # re-verified after warpzone wave (NO cl-csqcmodel change: only NetGame/ServerNet portal-render + wepent crosshair-ring HUD edits touched these files; every feature row unchanged vs the 2026-06-27 Wave 16/17 re-audit)
 summary:
-  feature_count: 12
+  feature_count: 18
   worst_gaps:
     - "LOD swap is STILL a no-op (UNCHANGED, re-verified 2026-06-27): SelectLodIndex is computed faithfully (ClientWorld.cs:1324 `_ = CsqcModelLod.SelectLodIndex(...)`) but discarded — stock player models (erebus/gak/gakmasked) AND monsters (golem/spider/...) ship _lod1/_lod2, so with default cl_playerdetailreduction 4 distant players/monsters always render full-detail lod0 (real regression, persists). This is now the dominant open gap."
     - "MAJOR FIX (drift 2026-06-27): the upper-body ACTION state machine (shoot/melee/pain/draw/taunt/die torso overlays) — formerly the dominant baseline gap — is now FULLY PORTED AND LIVE end-to-end. Server producers latch actions (WeaponFireGate shoot/melee, WeaponFireDriver draw, DamageSystem pain1/pain2 + die1/die2, SoundSystem taunt) via AnimDecide.SetAction; the action+start are networked via the new EntityField.AnimAction bit (1<<18, NetEntity.UpperAction/AnimActionTime); the client decodes (ClientEntityView) and PlayerModel.Pose plays the torso action clip via LocomotionBlend.SelectTorsoAction with the priority cascade (DEAD>ACTIVE>IDLE) in AnimDecide.GetUpperAnim, and the per-anim framerates (die 0.5/shoot 5/jump 10/draw 3/taunt 0.33) are now USED (AnimDecide.SpecFor in PlayerModel.BuildClipTable ActionClip). The 8-direction + duck-variant LOCOMOTION (the prior drift fix) also remains faithful and live."
@@ -447,3 +447,186 @@ features:
       - { kind: code, ref: "grep anim_state-locomotion/colormod/scale/v_angle/traileffect across net layer: ABSENT — the rest of the contract still unmapped", result: fail }
     confidence: high
     notes: "FIX (drift 2026-06-27): the upper-body anim ACTION block (UpperAction/AnimActionTime via EntityField.AnimAction 1<<18) and the exterior-weapon (wepent) block are now networked end-to-end, joining alpha (1<<17) and UsingJetpack (1<<8) from the prior wave. The rest of the CSQCMODEL extra-properties contract (colormod for ALL entities, scale, non-jetpack modelflags, traileffect, v_angle, anim_state/anim_lower locomotion, networked colormap proper) is unchanged-missing — but locomotion is inferred client-side as Base does, so its absence is not a defect. Status stays partial because the spine is still mostly unmapped; liveness materially improved again (anim actions + wepent now live). Layer=shared."
+  - id: cl-csqcmodel.anim.animstate_set_update
+    name: "Generic entity frame-animation machinery (anim_set / anim_update animstate)"
+    layer: [shared]
+    base_refs:
+      - "common/anim.qh"
+      - "common/anim.qc:anim_set"
+      - "common/anim.qc:anim_update"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:DriveAnimFrame"
+      - "src/XonoticGodot.Common/Gameplay/EntityClasses.cs:AnimFrame"
+      - "game/client/ModelAnimator.cs"
+      - "game/client/ViewModel.cs:PlayReload"
+    constants:
+      - { name: "start shifted -0.1*frametime into the past (float-hiccup guard)", base: "anim.qc:25", port: "none (no shared animstate; client self-times each group)", match: false }
+      - { name: "1-frame ZYM restart via EF_RESTARTANIM_BIT XOR", base: "anim.qc:18", port: "bit defined (CsqcModelEffectFlags.cs:43) + set at spawn (SpawnSystem.cs:868) but client anim restart is a documented no-op (ServerNet.cs:2163 comment: stateless procedural anim)", match: false }
+      - { name: "anim_update frame advance bound(0,(time-start)*fps,numframes-1)", base: "anim.qc:47-48", port: "server networks only the group START frame (Entity.Frame); the client ModelAnimator advances within the group by its own clock", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No shared anim_set/anim_update machinery: each consumer re-implements the semantics. Monsters stamp the frame-GROUP start onto the networked Entity.Frame (MonsterAI.DriveAnimFrame + per-descriptor EntityClasses.AnimFrame variant lookup, QC mr_anim/setanim) and the client ModelAnimator plays the group by its own clock — Base's server-side per-tick anim_update frame offset (and the animstate_override one-cycle latch) is not reproduced as state; the override/one-shot discipline is approximated per consumer (e.g. Zombie/Wyvern DeathLanded, ViewModel idle re-assert after a non-looping clip)."
+      - "EF_RESTARTANIM_BIT is set server-side at spawn (SpawnSystem.cs:868) but consuming it to restart a 1-frame ZYM anim is a no-op on the client (ServerNet.cs:2163 states this explicitly)."
+      - "animstate_endtime IS honored where gameplay depends on it (monster spawn_time gating, zombie block windows — see the monster units), but as hand-computed durations, not a generic animstate."
+    verification:
+      - { kind: code, ref: "MonsterAI.cs:1464-1469 DriveAnimFrame writes the descriptor group start frame to the networked Entity.Frame on the live monster think path (called from 5 sites incl. 1302/1348/1406); EntityClasses.cs:78-84 variant-aware lookup (QC setanim(random ? pain1 : pain2))", result: pass }
+      - { kind: code, ref: "ViewModel.cs:703-736 PlayReload + idle re-assert documents itself against viewmodel_draw 335-337 anim_set(anim_idle) — the viewmodel consumer is live", result: pass }
+    confidence: medium
+    notes: "added 2026-07-02 (coverage fold). anim.qh/anim.qc are the generic animstate engine consumed by monsters (sv_monsters + per-monster mr_* setanim), the viewmodel (client/view.qc + weapons/all.qc wframe), and physics. The port has no single counterpart — the semantics are distributed (networked group-start Frame + client-side group playback + per-consumer duration bookkeeping). Observable monster/viewmodel animation is live and largely correct (verified per-monster in the monster-* units); the row is partial on the machinery-level divergences above, not on missing visible animation."
+  - id: cl-csqcmodel.animdecide.frame_registry
+    name: "Player animation framename registry + frame lookup (REGISTER_ANIMATION / ModelAnimation.getframe)"
+    layer: [presentation]
+    base_refs:
+      - "common/animdecide.qh:ModelAnimation.getframe"
+      - "common/animdecide.qh:anim_vec"
+      - "common/animdecide.qh:REGISTER_ANIMATION (31-entry framename table)"
+    port_refs:
+      - "game/client/PlayerModel.cs:BuildClipTable"
+    constants:
+      - { name: "~31 registered player framegroups (die1..duckwalkbackleft)", base: "animdecide.qh:52-104", port: "BuildClipTable resolves the same locomotion set (21 leg clips) + the 8 upper-body action clips; dead1/dead2 static-corpse groups collapse into one Dead pick (death/dead/die)", match: false }
+      - { name: "multi-synonym framename lookup (e.g. 'duckwalkstrafeleft duckstrafeleft groupified_25_anim')", base: "FOREACH_WORD over m_framenames + frameforname", port: "Pick() Contains-match over the PRIMARY name only; legacy synonyms (duckstrafeleft, dieone/dietwo) and the groupified_N_anim ZYM names are not probed", match: false }
+      - { name: "miss fallback", base: "getframe returns -1 + LOG_DEBUGF; animfixfps substitutes the fallback anim", port: "Pick keyword chain ends at groups[0] / whole-range clip (same fallback discipline, no miss log)", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Only the canonical framegroup name is matched (substring, case-insensitive): a model whose groups carry only the legacy synonym ('duckstrafeleft') or the ZYM 'groupified_N_anim' names resolves to the groups[0] fallback instead of the right clip. Stock IQM players (erebus/gak/gakmasked) ship canonical names, so default content is unaffected."
+      - "dead1/dead2 (static corpse poses) are not distinct picks — the legs Dead clip is a single Pick('death','dead','die')."
+    verification:
+      - { kind: code, ref: "PlayerModel.cs:423-432 Pick() Contains-match; :434-467 the 21-clip locomotion table with the animdecide.qc:80-95 fallback chains baked per entry; :476-492 the 8 action clips — built on the live skeletal-player model-build path (see animdecide.state_machine row for the live Pose consumer)", result: pass }
+    confidence: medium
+    notes: "added 2026-07-02 (coverage fold). The registry MACRO layer (REGISTRY/Animations, WriteAnimation net helpers) is QC infrastructure with no port analogue needed; the observable contract is the framename->clip resolution, which BuildClipTable reproduces for canonical names with the correct fallback cascade. The behavioral state machine consuming these clips is the existing cl-csqcmodel.animdecide.state_machine row."
+  - id: cl-csqcmodel.animdecide.explicit_setstate
+    name: "Explicit networked anim states (animdecide_setstate: DEAD1/DEAD2/DUCK/FROZEN/FOLLOW)"
+    layer: [shared, presentation]
+    base_refs:
+      - "common/animdecide.qh:animdecide_setstate"
+      - "common/animdecide.qh:ANIMSTATE_DEAD1..ANIMSTATE_FOLLOW (125-129)"
+    port_refs:
+      - "game/net/ClientEntityView.cs:193 (IsDucked <- NetEntityFlags.Crouched)"
+      - "game/net/ClientEntityView.cs:207 (DeadState <- NetEntityFlags.Dead)"
+      - "game/client/ClientWorld.cs:1090-1092 (FrozenHold)"
+      - "src/XonoticGodot.Engine/Simulation/LocomotionBlend.cs:SelectLegsDirectional"
+    constants:
+      - { name: "ANIMSTATE_DUCK -> duckwalk/duckjump/duckidle variants", base: "BIT(2) in the networked anim_state", port: "NetEntityFlags.Crouched -> e.IsDucked -> SelectLegsDirectional ducked switch", match: true }
+      - { name: "ANIMSTATE_DEAD1 vs DEAD2 (die1/die2 base frames)", base: "BIT(0)/BIT(1)", port: "single Dead flag (DeadFlag.Dead) for the legs; the die1/die2 VARIANT reaches the client only via the torso UpperAction (Die1/Die2)", match: false }
+      - { name: "ANIMSTATE_FROZEN -> force idle", base: "BIT(3)", port: "FrozenHold: holds the CURRENT skeletal pose static while encased (ClientWorld.cs:1090-1092), not a forced idle clip", match: false }
+      - { name: "ANIMSTATE_FOLLOW -> force idle", base: "BIT(4)", port: "not implemented", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No anim_state byte on the wire (see networking.csqcmodel_contract row): the port substitutes discrete flags — Dead + Crouched are networked and live; the die1/die2 LEG distinction is lost (single Dead pose), the torso overlay carries the variant instead."
+      - "FROZEN diverges visibly from Base: Base forces the idle clip; the port freezes the current pose under the ice shell (arguably closer to 'encased in ice', but not Base's behavior)."
+      - "FOLLOW (spectator-follow force-idle) has no counterpart."
+    verification:
+      - { kind: code, ref: "ClientEntityView.cs:193/207 decode Crouched/Dead flags on the live snapshot path; ClientWorld.cs:1090-1092 sets pm.FrozenHold from the networked StatusEffects Frozen; LocomotionBlend ducked switch verified in the animdecide.state_machine row", result: pass }
+    confidence: medium
+    notes: "added 2026-07-02 (coverage fold). animdecide_setstate's SERVER-side write sites (death, duck, freeze) exist in the port as the flag producers (DamageSystem dead flag, physics crouch flag, StatusEffects frozen); what is missing is the unified networked anim_state byte and the FOLLOW/force-idle semantics."
+  - id: cl-csqcmodel.hooks.header_contract
+    name: "csqcmodel_hooks.qh header contract (autocvar defaults + EF_/MF_ bit constants + csqcmodel_isdead consumer)"
+    layer: [presentation]
+    base_refs:
+      - "client/csqcmodel_hooks.qh"
+    port_refs:
+      - "src/XonoticGodot.Engine/Simulation/CsqcModelEffectFlags.cs"
+      - "game/client/ClientWorld.cs:1548-1549"
+      - "game/client/ShowNamesLayer.cs:628-631"
+    constants:
+      - { name: "cl_loddistance1 (inline qh default 768, cfg seta 1024)", base: "768 inline, 1024 live (xonotic-client.cfg:892)", port: "CvarF('cl_loddistance1', 1024) — bare default = the LIVE cfg value, comment documents the qh 768", match: true }
+      - { name: "cl_loddistance2 (inline 2048, cfg seta 3072)", base: "2048 inline, 3072 live (xonotic-client.cfg:893)", port: "CvarF('cl_loddistance2', 3072)", match: true }
+      - { name: "cl_deathglow_min", base: "0.5", port: "0.5 (verified in glowmod.deathfade_ghost row)", match: true }
+      - { name: "cl_jetpack_attenuation", base: "2", port: "2 (verified in effects.jetpack_loop row)", match: true }
+      - { name: "EF_BRIGHTFIELD..EF_TELEPORT_BIT + MF_ROCKET..MF_TRACER3 bit values", base: "csqcmodel_hooks.qh:23-39", port: "CsqcModelEffectFlags.cs mirrors the bit table (incl. EF_RESTARTANIM_BIT=BIT(20) at :43)", match: true }
+      - { name: "csqcmodel_isdead consumed by shownames (entcs_IsDead)", base: "yes (qh:45)", port: "ShowNamesLayer reads the networked Dead flag (NetEntityFlags.Dead) — same observable gate", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "ClientWorld.cs:1548-1549 reads cl_loddistance1/2 with live-cfg bare defaults 1024/3072 on the per-frame ApplyLod path; ShowNamesLayer.cs:628-631 gates the name fade on the networked Dead flag citing csqcmodel_isdead; CsqcModelEffectFlags.cs carries the EF_/MF_ bit table (light/trail values verified in effects.ef_mf_trail_lights)", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). Pure header: its behaviors are executed by the sibling rows (LOD, deathfade, jetpack, effects, shownames); this row pins the header-owned DEFAULTS and bit constants. Note the qh inline defaults (768/2048) are dead in Base too — xonotic-client.cfg always overrides to 1024/3072, and the port's bare defaults equal the live cfg values."
+  - id: cl-csqcmodel.skeleton.bone_class_contract
+    name: "Skeleton entity-class contract (bone_upperbody / bone_weapon / bone_aim+weights / fixbone)"
+    layer: [presentation]
+    base_refs:
+      - "client/player_skeleton.qh"
+    port_refs:
+      - "src/XonoticGodot.Engine/Simulation/PlayerSkeleton.cs:14-44 (PlayerSkeletonConfig)"
+      - "game/client/PlayerModel.cs:396 (_boneWeaponIndex -> tag_weapon marker)"
+    constants:
+      - { name: "field set: bone_upperbody, bone_weapon, bone_aim[]/bone_aimweight[], fixbone", base: "player_skeleton.qh:10-14", port: "PlayerSkeletonConfig.BoneUpperBody + AimBones (bone,weight) list + FixBone; bone_weapon = PlayerModel._boneWeaponIndex driving the _tagWeapon marker", match: true }
+      - { name: "MAX_AIM_BONES fixed-array cap", base: "MAX_AIM_BONES (common/util.qh)", port: "unbounded List (superset; model-parameter files supply few aim bones in practice)", match: false }
+      - { name: "fixbone disabled when no upper-body split", base: "yes", port: "PlayerSkeleton.cs:34 `if (cfg.BoneUpperBody == 0) cfg.FixBone = false`", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "PlayerSkeleton.cs:14-44 resolves BoneUpperBody/AimBones(+weights)/FixBone from the model parameters (skeleton_loadinfo analogue); consumed at :102/:130-173 (split + fixbone + aim bend) on the live Pose path already verified in skeleton.upper_lower_aim", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). Header for player_skeleton.qc (already audited faithful+live in skeleton.upper_lower_aim); this row cites the class-field contract itself. The only structural difference is the unbounded aim-bone list vs the QC fixed array — behaviorally a superset."
+  - id: cl-csqcmodel.prediction.csqcplayer_contract
+    name: "Client-side player prediction contract (csqcplayer / csqcplayer_status / cl_movement / stair-smoothing API)"
+    layer: [shared]
+    base_refs:
+      - "lib/csqcmodel/cl_player.qh"
+    port_refs:
+      - "game/net/ClientNet.cs:16-26 (PredictionBuffer + Reconciler; PredictedOrigin :89)"
+      - "game/net/ClientNet.cs:198-224 (PredictedStairOffset / ConfigureStairSmoothing)"
+      - "game/net/NetGame.cs:5763-5806 (faithful CSQCPlayer_ApplySmoothing seam + stair cvars)"
+    constants:
+      - { name: "cl_movement default (prediction on)", base: "true (cl_player.qh:24)", port: "prediction ALWAYS on — the port has no unpredicted (engine-interpolated local player) fallback; 'cl_movement' is read only as a menu dependency gate (DialogSettingsMisc.cs:38)", match: false }
+      - { name: "csqcplayer_status tri-state (UNPREDICTED/FROMSERVER/PREDICTED)", base: "cl_player.qh:27-30", port: "no explicit tri-state; the Reconciler holds server-state + replayed-prediction internally", match: false }
+      - { name: "CSQCModel_ApplyStairSmoothing seam", base: "declared here, impl cl_player.qc", port: "PredictedStairOffset / ConfigureStairSmoothing (port path) + NetGame faithful-smoothing path (cl_stairsmoothspeed 200)", match: true }
+      - { name: "pmove_flags PMF_JUMP_HELD read-only contract", base: "qh:35-36", port: "jump-held tracked inside the shared movement sim (not exposed as a pmove_flags field)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: unknown
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "cl_movement 0 (turn OFF client prediction, fall back to engine-interpolated local player) has no port counterpart — the local player is always predicted; only the menu dependency binding consumes the cvar."
+      - "The smoothing-knob DEFAULTS around this contract diverge on the port path (port cl_movement_errorcompensation=1 vs Base 0 + extra port-only stair knobs) — tracked in depth by the camera/render-smoothing work (see planning notes) and the cl-view smoothing rows; NetGame.cs:5763+ also carries a faithful CSQCPlayer_ApplySmoothing path."
+    verification:
+      - { kind: code, ref: "ClientNet.cs:16 'predicted + reconciled (via PredictionBuffer + Reconciler)'; NetGame reads PredictedOrigin (+PredictedStairOffset) for the local camera each frame (ClientNet.cs:26 contract, NetGame.cs:5675/5795) — the prediction contract is live on the only local-player path", result: pass }
+      - { kind: code, ref: "grep '\"cl_movement\"' across game+src: only DialogSettingsMisc.cs:35-38 (menu dependency) — no gameplay consumer, so the prediction-off path is absent", result: fail }
+    confidence: medium
+    notes: "added 2026-07-02 (coverage fold). This header owns the csqcmodel PREDICTION contract (csqcplayer entity, status tri-state, cl_movement gate, SetCamera/stair-smoothing decls). The VIEW half of cl_player.qc (CSQCPlayer_ApplyChase/CalcRefdef/bobbing/smoothing) is audited in cl-view (which cites cl_player.qc); the prediction/reconcile core itself is live in ClientNet. timing left unknown: the port's per-frame vs Base's engine-callback prediction cadence was not diffed here (the camera/render-smoothing planning docs own that)."

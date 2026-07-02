@@ -3,7 +3,7 @@ category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
 last_audited: "2026-06-28"  # Re-verify x2 (opus parity-diff, claude/parity-port-waves): re-read FirstPersonView/ChaseCamera/ViewEffects/ReticleOverlay + NetGame wiring + ClientNet/ServerNet against current source AGAIN this wave. NO DRIFT — all feature scores hold. Live wiring re-confirmed at current line numbers: own-player UpdateView NetGame:5578, spectate UpdateView 5458; CameraMode from chase_active 3044 (own) / 5447 (spectate); Spectating=true 5446 then reset 5461; TriggerSpawnZoom 3022; NotifyZoomScroll on wheel 4904; ZoomScriptCaught->reticle 3084-3086; UpdateEffects 3116 + UpdateFrozenOverlay 3125. Punch seam intact: owner block order PressedKeys(ClientNet:1023)->PunchAngle(1024)->PunchVector(1025); ServerNet writes PunchVector:2783; ViewState PunchOriginQuake=_client.PunchVector NetGame:5563 (own, first-person-only). ViewEffects damage flash uses gfx/blood splatter (MakeBloodSplat:114, TextureCache.Get("gfx/blood")) + gentle path (cl_gentle/cl_gentle_damage:256). ChaseCamera.cs (extracted classic+event chase primitives) live via FirstPersonView. port_ref line numbers in feature rows below shifted again (warpzone/wepent waves) but left as-is except where edited.
 summary:
-  feature_count: 21
+  feature_count: 27
   worst_gaps:
     - "Spectator-camera SERVER mode toggle (STAT(CAMERA_SPECTATOR) 1/2 + IMP_weapon_drop cycling, View_SpectatorCamera's chase_active<=0 auto-switch path) is not ported — the user chase_active-driven third-person spectate IS now live (NetGame UpdateCamera sets _view.Spectating + Chase, anchored to the spectatee pose) and chase_front is now reachable, but pressing weapon-drop to cycle the server-side spectator camera mode is absent."
     - "GLSL blur/sharpen post-process (damage/content blur, powerup edge-sharpen, View_BlurTest) and night-vision are not implemented (engine shader cvars, no Godot analogue)."
@@ -666,3 +666,192 @@ features:
       - { kind: code, ref: "cl_lockview is now ported: FirstPersonView.ApplyViewLock (FirstPersonView:825) freezes the final Quake render origin/angles (lock_type>=1 pins origin to freeze_org; ==1 also pins angles to freeze_ang; ==2 origin-only with continuous capture while off), called every frame from UpdateCamera:413 (live on the net path via UpdateView). The other 4 features (demo cam / orthoview / viewloc / FPS report) remain unimplemented in src/ or game/.", result: pass }
     confidence: high
     notes: "PARTIAL FIX since the 2026-06-27 baseline: cl_lockview (View_Lock) is now ported and live — it freezes the rendered view at the captured origin/angles (lock_type 1=both, 2=origin-only), read live each frame from the cvar (default 0=off so a stock match is unaffected). The remaining four features (demo free camera, orthoview radar render, viewloc 2.5D camera, server FPS report) are still unported — none are on the normal-match camera path. Status is partial (was missing) because this row bundles five features and only lockview landed."
+
+  - id: cl-view.zoom.header_defaults
+    name: "view.qh bare autocvar defaults gating live zoom paths (spawnzoom / velocityzoom_type / zoomscroll)"
+    layer: [presentation]
+    base_refs:
+      - "client/view.qh:23-25 (cl_spawnzoom 1 / _speed 1 / _factor 2)"
+      - "client/view.qh:29 (cl_velocityzoom_type 3)"
+      - "client/view.qh:35-37 (cl_zoomscroll 1 / _scale 0.2 / _speed 16)"
+      - "client/spawnpoints.qc:85 (spawnzoom_factor bound 1..16 at the seed site)"
+    port_refs:
+      - "game/net/NetGame.cs:1769-1771 (SeedViewCvars registers cl_spawnzoom 1 / _speed 1 / _factor 2)"
+      - "game/client/FirstPersonView.cs:221-224 (spawnzoom read, factor bound 1..16 matching spawnpoints.qc:85)"
+      - "game/client/FirstPersonView.cs:256-257 + 324-335 (cl_zoomscroll 1 / 0.2 / 16 read live)"
+      - "game/client/FirstPersonView.cs:545-552 (cl_velocityzoom_type fallback 3)"
+    constants:
+      - { name: "cl_spawnzoom / _speed / _factor", base: "1 / 1 / 2", port: "1 / 1 / 2 (seeded + matching fallbacks)", match: true }
+      - { name: "cl_velocityzoom_type", base: "3", port: "3 (read-live fallback)", match: true }
+      - { name: "cl_zoomscroll / _scale / _speed", base: "1 / 0.2 / 16", port: "1 / 0.2 / 16 (read-live fallbacks)", match: true }
+    status:
+      logic: na
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "port fallbacks/seeds re-read at the cited lines; behavior itself audited in cl-view.zoom.spawn_zoom / velocity_zoom / zoom_scroll (all live)", result: pass }
+    confidence: high
+    notes: "Declaration-surface row for client/view.qh: the header's bare autocvar defaults are exactly the values the live port paths seed or fall back to. Behavioral audits live in the owning rows (zoom.spawn_zoom / zoom.velocity_zoom / zoom.zoom_scroll). The header's other declaration families are owned elsewhere: camera_* -> cl-view.demo.camera_cvars; hud_contents_blur*/hud_damage_blur*/hud_postprocessing_* -> cl-view.screen.postprocess_nightvision (intended omission); cl_eventchase_vehicle* -> the vehicle-chase gap in cl-view.chase.event_death_cam; cl_hitsound_* -> the hitsound/sound units. added 2026-07-02 (coverage fold)"
+
+  - id: cl-view.zoom.unpress_defaults
+    name: "Zoom/attack unpress-on-event defaults (cl_unpress_zoom_on_spawn/death/weapon_switch, cl_unpress_attack_on_weapon_switch)"
+    layer: [presentation]
+    base_refs:
+      - "client/main.qh:7-10 (defaults: true / true / true / false)"
+      - "client/spawnpoints.qc:88-92 (localcmd -zoom + button_zoom=false on own spawn)"
+      - "client/view.qc:View_CheckButtonStatus (1483 death, 1531-1536 weapon switch)"
+    port_refs:
+      - "game/net/NetGame.cs:3106 (zoomActive = ... Health > 0 — continuous dead-suppression standing in for unpress-on-death)"
+      - "game/menu/dialogs/DialogSettingsGame.cs:573-577, 620 (menu checkboxes exist; no gameplay reader)"
+    constants:
+      - { name: "cl_unpress_zoom_on_spawn", base: "true (forced -zoom release on own spawn)", port: "none (ZoomHeld re-derived from raw key state; no forced release)", match: false }
+      - { name: "cl_unpress_zoom_on_death", base: "true", port: "approximated (Health>0 gate zooms out while dead)", match: true }
+      - { name: "cl_unpress_zoom_on_weapon_switch", base: "true", port: "none", match: false }
+      - { name: "cl_unpress_attack_on_weapon_switch", base: "false", port: "none (default-off in Base too)", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No forced -zoom release on spawn: the port recomputes ZoomHeld from live key state each frame, so a player physically holding +zoom across a respawn stays zoomed (Base with cl_unpress_zoom_on_spawn 1 releases the button and requires a re-press; it also lets the spawn-zoom ease play uncancelled)."
+      - "Weapon-switch unpress (zoom + attack buttons) absent — same gap already noted in cl-view.zoom.zoomscript_buttonstatus."
+      - "All four cvars have menu checkboxes (DialogSettingsGame) but zero gameplay readers, so toggling them changes nothing."
+    verification:
+      - { kind: code, ref: "grep unpress over src/+game/: only menu widgets + comments; NetGame:3106 is the sole death-side analogue; no -zoom-on-spawn logic near TriggerSpawnZoom (NetGame:3092-3096)", result: fail }
+    confidence: medium
+    notes: "main.qh carries the defaults; the on-death suppression is behaviorally equivalent for the common case (zoom always drops while dead) but is a continuous gate, not a one-shot button release. The on-spawn divergence is observable only while deliberately holding +zoom through a respawn. Two of these constants were already tracked in cl-view.zoom.zoomscript_buttonstatus; this row owns the main.qh defaults + the spawn branch (spawnpoints.qc:88). added 2026-07-02 (coverage fold)"
+
+  - id: cl-view.demo.camera_cvars
+    name: "Demo free-camera cvar family (camera_enable/free/chase_smoothly/speed_*/look_*/mouse_threshold/reset)"
+    layer: [presentation]
+    base_refs:
+      - "client/view.qh:5-16 (camera_* autocvar declarations)"
+      - "client/view.qc:CSQC_Demo_Camera (1896, sole consumer)"
+    port_refs: []
+    constants:
+      - { name: "camera_enable", base: "0 (off; demo playback only)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The entire camera_* demo free-camera cvar surface (enable/free/chase_smoothly/speed_chase/speed_free/speed_attenuation/speed_roll/look_player/look_attenuation/mouse_threshold/reset) has no port counterpart — grep over src/+game/ finds no reader."
+    verification:
+      - { kind: grep, ref: "camera_free|camera_speed|camera_chase_smoothly|camera_enable -> zero matches in port .cs", result: fail }
+    confidence: high
+    notes: "Declaration surface of CSQC_Demo_Camera, whose absence is already tracked in cl-view.demo.free_camera_lockview_ortho; this row adds the view.qh cvar family citation. Demo replay is being built separately on the demo-cinematics branch (T62-T66) — the free camera belongs there. Only reachable during demo playback, never in a normal match. added 2026-07-02 (coverage fold)"
+
+  - id: cl-view.spawn.event_effects
+    name: "Spawn-event presentation (spawn flash particles + spawn sound + spawn-point idle glow, cl_spawn_* gating)"
+    layer: [presentation]
+    base_refs:
+      - "client/spawnpoints.qh:3-6 (cl_spawn_event_particles / cl_spawn_event_sound true / cl_spawn_point_particles / cl_spawn_point_dist_max 1200)"
+      - "client/spawnpoints.qc:Spawn_Draw (8-22, spawn-point idle glow + dist cull)"
+      - "client/spawnpoints.qc:NET_HANDLE(ENT_CLIENT_SPAWNEVENT) (40-95, team-colored spawn flash + SND_SPAWN)"
+    port_refs:
+      - "game/client/SpawnPointParticles.cs:65, 90 (reads cl_spawn_point_particles + cl_spawn_point_dist_max live)"
+      - "game/client/ClientWorld.cs:451-452 (SpawnPointParticles node added — live)"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:849-861 (team-colored SPAWN burst + SND SPAWN on CH_TRIGGER, gated on g_spawn_alloweffects)"
+      - "game/menu/framework/ClientSettings.cs:189-190 (registers cl_spawn_point_particles 1 / cl_spawn_event_particles 1)"
+    constants:
+      - { name: "cl_spawn_point_particles", base: "1 (xonotic-client.cfg:76; effects-low/med presets set 0)", port: "1 (registered; read live)", match: true }
+      - { name: "cl_spawn_point_dist_max", base: "1200 (cull glow beyond 1200qu; 0 = no cull)", port: "UNREGISTERED -> GetFloat reads 0 -> no distance cull", match: false }
+      - { name: "cl_spawn_event_particles", base: "1", port: "1 (registered, but NO reader — burst always renders)", match: true }
+      - { name: "cl_spawn_event_sound", base: "1 (true, spawnpoints.qh:4)", port: "none (sound gated server-side only)", match: false }
+      - { name: "g_spawn_alloweffects", base: "3 (particles|sound)", port: "3 (CvarOr fallback, SpawnSystem:860)", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: partial
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "cl_spawn_point_dist_max is never registered: an unset cvar reads 0 = no distance cull, so the spawn-point glow renders at ANY distance (Base default culls beyond 1200qu) — the code's own comment assumes GetFloat-0 means 'draw everything', which silently drops the Base default."
+      - "cl_spawn_event_particles is registered (default 1, matching) but has no reader — the spawn flash renders regardless, so turning it off does nothing (knob dead; default-equivalent)."
+      - "cl_spawn_event_sound has no port counterpart — the spawn sound is gated only by the server's g_spawn_alloweffects bit1 (SpawnSystem models the client cvar as always-on); a client cannot locally mute spawn sounds."
+      - "Spawn-point glow pulses on a 0.2s accumulator instead of Base's per-frame frametime-scaled boxparticles (documented approximation in the file header)."
+    verification:
+      - { kind: code, ref: "SpawnPointParticles._Process: cl_spawn_point_particles gate (65), distMax read (90, no Register anywhere per grep); SpawnSystem:849-861 burst+sound live on the server spawn path; team coloring matches Team_ColorRGB / entcs color split", result: pass }
+    confidence: high
+    notes: "Both halves are live: the idle spawn-point glow (Spawn_Draw port, team-colored, added by ClientWorld) and the spawn flash + sound (modeled SERVER-side in SpawnSystem instead of the ENT_CLIENT_SPAWNEVENT client entity — the client-side cvar gating collapses, which is what kills the two client toggles). spawnpoints.qc:82-92 local spawn actions (spawn-zoom seed, unpress-zoom) are owned by cl-view.zoom.spawn_zoom / cl-view.zoom.unpress_defaults; the cl_autodemo_delete branch (75-79) belongs to the demo-cinematics track. added 2026-07-02 (coverage fold)"
+
+  - id: cl-view.race.cptimes_defaults
+    name: "Race checkpoint-times display defaults (cl_race_cptimes_* AUTOCVAR_SAVE set + splits-console print)"
+    layer: [presentation]
+    base_refs:
+      - "client/main.qh:24-30 (AUTOCVAR_SAVE cl_race_checkpoint_splits_console 1 / cptimes_showspeed 0 / _showspeed_unit 1 / _namesize 10; bare _onlyself / _showself 0)"
+    port_refs:
+      - "game/hud/RaceTimerPanel.cs:141-144 (registers showspeed 0 / showspeed_unit 1 / showself 0 / namesize 10)"
+      - "game/hud/RaceTimerPanel.cs:259, 344-349, 437 (live reads in the race-timer draw path)"
+    constants:
+      - { name: "cl_race_checkpoint_splits_console", base: "1 (print checkpoint splits to console)", port: "none", match: false }
+      - { name: "cl_race_cptimes_showspeed", base: "0", port: "0 (registered + read)", match: true }
+      - { name: "cl_race_cptimes_showspeed_unit", base: "1", port: "1 (registered + read)", match: true }
+      - { name: "cl_race_cptimes_namesize", base: "10", port: "10 (registered + read)", match: true }
+      - { name: "cl_race_cptimes_showself", base: "0", port: "0 (registered + read)", match: true }
+      - { name: "cl_race_cptimes_onlyself", base: "false (bare)", port: "none (no reader)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "cl_race_checkpoint_splits_console (default 1 — checkpoint splits printed to the console every lap) has no port counterpart: splits render only in the HUD panels."
+      - "cl_race_cptimes_onlyself (suppress other players' checkpoint messages) has no port reader — default-off in Base, so default-equivalent, but the opt-in filter is absent."
+    verification:
+      - { kind: code, ref: "RaceTimerPanel.cs:141-144 registers the four cptimes cvars with Base defaults and reads them in the draw path (259/344-349/437); grep checkpoint_splits_console over port .cs -> zero matches", result: pass }
+    confidence: medium
+    notes: "Defaults row for the main.qh race-display autocvars (the AUTOCVAR_SAVE branch is the live one; the #if 0 branch is dead upstream). Behavioral audit of the race checkpoint messages/panels belongs to the race unit (registry/race.yaml) + hud-panels — cross-ref; this row pins the main.qh defaults and the two missing knobs. liveness: live only in race/cts (the panel is gametype-gated). added 2026-07-02 (coverage fold)"
+
+  - id: cl-view.client.welcome_dialog
+    name: "Welcome dialog on connect (cl_welcome gate + Welcome_Message_Show_Try)"
+    layer: [presentation]
+    base_refs:
+      - "client/main.qh:31 (cl_welcome = true)"
+      - "client/main.qc:Welcome_Message_Show_Try (1455-1476; gated on intermission/isdemo/cl_welcome)"
+      - "client/view.qc:1808 (per-frame show-try call)"
+    port_refs:
+      - "game/menu/dialogs/DialogWelcome.cs (faithful UI port of dialog_welcome.qc — documented INERT: placeholder body, no connect backend)"
+      - "game/Shell.cs:184 (menu route \"welcome\")"
+      - "src/XonoticGodot.Server/GameWorld.cs:1397-1554 (welcome CONTENT — campaign line / mutators / MOTD — rerouted to per-player console prints)"
+    constants:
+      - { name: "cl_welcome", base: "1 (show Welcome dialog when connecting)", port: "none (cvar unregistered, no reader)", match: false }
+    status:
+      logic: stub
+      values: missing
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The cl_welcome-gated auto-show on connect is not wired: nothing opens DialogWelcome when joining a server; it is reachable only via the menu route."
+      - "DialogWelcome's body is a placeholder — the server-supplied hostname/MOTD/welcome blob (net_handle_ServerWelcome) has no networked channel; the welcome content is instead surfaced as console prints (GameWorld SendCampaignWelcome/SendMutatorsWelcome — see campaign-flow rows)."
+    verification:
+      - { kind: code, ref: "DialogWelcome.cs header documents INERT status (no connect backend); grep cl_welcome over port .cs -> zero matches; Shell.cs:184 is the only instantiation site", result: fail }
+    confidence: medium
+    notes: "main.qh's cl_welcome + the main.qc show-try loop are the client half of the server SendWelcomeMessage seam already audited in GameWorld.cs (welcome content rerouted to console prints as a documented substitution). The dialog UI itself is a faithful widget port awaiting the networked welcome channel. Remaining main.qh content is infrastructure (spectatee_status/zoom globals owned by the rows above; hud_showbinds -> HUD keybind display; cl_autodemo_* -> demo-cinematics track; menu_gamemenu -> menu unit). added 2026-07-02 (coverage fold)"
