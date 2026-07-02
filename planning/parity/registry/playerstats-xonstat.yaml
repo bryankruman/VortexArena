@@ -1,0 +1,381 @@
+unit: playerstats-xonstat
+category: net
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-07-02"
+# NOTE on scope boundaries: registry/scoring.yaml row `scoring.report.playerstats` owns the
+# GameReport PIPELINE verdict (Init/Finalize/GameReport call order from GameWorld); this unit owns
+# the finer-grained truth underneath it — the event FEEDS, consent gating, the V9 payload field set,
+# the HTTP/URI layer, and the client-side profile/skill fetches. registry/sv-world-rules.yaml row
+# `sv-world-rules.entity.pingplreport` owns the LATENCY_THINKRATE=10s latency accumulation feed
+# (CS(p).latency_sum/latency_cnt) that this unit's avglatency row consumes.
+# Base file note: the prompt's "server/playerstats.qc" does not exist at this rev — playerstats
+# lives at common/playerstats.qc/.qh (SVQC+MENUQC sections in one file).
+summary:
+  feature_count: 11
+  worst_gaps:
+    - "No HTTP submission layer exists: PlayerStats.GameReport builds the V9 report body but BOTH live call sites (GameWorld.cs:4067 end-of-match, :1823 shutdown) discard the returned string — nothing is ever sent to XonStat. Worse than 'off by default': the live boot execs the shipped xonotic-server.cfg (GameWorld.cs:472 dedicated / MenuState.cs:106 listen), whose line 636 sets g_playerstats_gamereport_uri to the Base default https://stats.xonotic.org/stats/submit — so stats accumulation runs and a full report is built then silently discarded EVERY match (the Cvars.cs:431 '' fallback is only reached with no assets mounted, i.e. bare tests)."
+    - "Most report events are registered but NEVER FED: kills-<victimid>, achievement-* (kill sprees, firstblood/firstvictim, botlike), total-<label> / scoreboard-<label> score columns, team Q sections (EventTeam has zero callers) and acc-* accuracy are all permanently absent from the report — AccuracyProvider / ScoreColumnsProvider / PingProvider are declared on PlayerStats but never wired in GameWorld (only 6 of 9 providers wired at GameWorld.cs:1250-1255)."
+    - "Privacy consent is ignored on the server: AddPlayer keys the report to the crypto UID without Base's cvar_cl_allow_uidtracking==1 gate, _netname is written without the cl_allow_uid2name==1 gate, and the 'r' (cl_allow_uidranking) line is never emitted — the menu checkboxes exist and the server CAN read replicated client cvars (race records do), but PlayerStats never asks."
+    - "The XonStat player-skill fetch (PlayerStats_PlayerBasic: JSON mu/sigma -> SP_SKILL, feeding g_balance_teams_skill team balance and sv_showskill) is missing — the SKILL scoreboard column is registered in GameScores but never fed."
+    - "The menu profile/rankings fetch (PlayerStats_PlayerDetail) is missing — 'menu_cmd playerstats_update' is logged inert, the Profile dialog stats list is an honest placeholder; and the V9 payload itself lacks the R/I/C/U/RP/L/r lines, G is always blank (reads a never-set cvar), D is absolute sim time instead of time-game_starttime."
+features:
+  - id: playerstats-xonstat.gamereport.accumulator_db
+    name: "Game-report event DB (Init / AddPlayer / AddTeam / AddEvent / Event accumulator / Reset_All)"
+    layer: [authority]
+    base_refs:
+      - "common/playerstats.qc:PlayerStats_GameReport_Init (288)"
+      - "common/playerstats.qc:PlayerStats_GameReport_AddPlayer (79)"
+      - "common/playerstats.qc:PlayerStats_GameReport_AddTeam (117)"
+      - "common/playerstats.qc:PlayerStats_GameReport_AddEvent (136)"
+      - "common/playerstats.qc:PlayerStats_GameReport_Event (155)"
+      - "common/playerstats.qc:PlayerStats_GameReport_Reset_All (36)"
+      - "common/playerstats.qh:PLAYERSTATS_* event-id constants (32-56)"
+    port_refs:
+      - "src/XonoticGodot.Server/PlayerStats.cs:Init (93)"
+      - "src/XonoticGodot.Server/PlayerStats.cs:AddPlayer (157)"
+      - "src/XonoticGodot.Server/PlayerStats.cs:AddEvent (146) / AddTeam (177) / Event (191) / ResetAll (132)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1256 (Init at match boot), 1443 (AddPlayer on connect), 4662 (ResetAll on readyrestart)"
+    constants:
+      - { name: "enabled iff g_playerstats_gamereport_uri != \"\"", base: "yes (Init returns early)", port: "Enabled flag (PlayerStats.cs:101)", match: true }
+      - { name: "event-id strings", base: "alivetime/avglatency/wins/matches/joins/scoreboardvalid/scoreboardpos/rank/handicapgiven/handicaptaken/total-/scoreboard-/achievement-*/acc-<wep>-{real,hit,fired,cnt-hit,cnt-fired,frags}/kills-<id>", port: "identical strings (PlayerStats.cs:25-34,105-128)", match: true }
+      - { name: "unregistered events dropped", base: "yes (Event on unknown prefix key still stored but report loops the registered EVL only)", port: "same effect: report loops _eventIds only", match: true }
+      - { name: "missing key reads 0; Event returns new total", base: "stof(db_get)+value", port: "TryGetValue-or-0 + value (PlayerStats.cs:195)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:444-490 (disabled-without-uri, accumulate+build, warmup discard); live callers GameWorld.cs:1256/1443/1611/1645/4067/4662", result: pass }
+    confidence: high
+    notes: "The dictionary-backed accumulator replaces QC's db_* string DB but preserves the observable contract (registered-event ordering, dedupe, per-match unique player-id fallback). Pipeline-level verdict owned by scoring.yaml scoring.report.playerstats; this row records the accumulator contract itself."
+
+  - id: playerstats-xonstat.gamereport.identity_consent
+    name: "Player identity + privacy consent (crypto UID iff cl_allow_uidtracking; _netname iff cl_allow_uid2name; _ranked from cl_allow_uidranking)"
+    layer: [authority, shared]
+    base_refs:
+      - "common/playerstats.qc:PlayerStats_GameReport_AddPlayer (86-97)"
+      - "common/playerstats.qc:PlayerStats_GameReport_FinalizePlayer (196-223)"
+      - "common/playerstats.qc:REPLICATE cvar_cl_allow_uid2name/uidranking/uidtracking (20-27)"
+      - "common/playerstats.qh:playerstats_id / REPLICATE_INIT (90, 126-132)"
+    port_refs:
+      - "src/XonoticGodot.Server/PlayerStats.cs:AddPlayer (157-174)"
+      - "src/XonoticGodot.Server/PlayerStats.cs:FinalizePlayer (248-287)"
+      - "game/menu/dialogs/DialogMultiplayerProfile.cs:121-133 (the three consent checkboxes)"
+      - "game/menu/dialogs/DialogFirstRun.cs:100-113 (first-run cl_allow_uid2name prompt)"
+    constants:
+      - { name: "bot stats id", base: "bot#<skill>#<cleanname>, fallback bot#<playerid>", port: "bot#{Skill}#{NetName}, fallback bot#{PlayerId} (PlayerStats.cs:164,169)", match: true }
+      - { name: "human fallback id", base: "player#<playerid>", port: "player#{PlayerId}", match: true }
+      - { name: "uid used only when cvar_cl_allow_uidtracking == 1", base: "yes (playerstats.qc:86)", port: "NO gate: PersistentId used unconditionally", match: false }
+      - { name: "_netname only when cvar_cl_allow_uid2name == 1 || bot", base: "yes (playerstats.qc:196)", port: "NO gate: NetName always written (PlayerStats.cs:256)", match: false }
+      - { name: "_ranked (r line) from cvar_cl_allow_uidranking", base: "yes, real clients (playerstats.qc:223)", port: "never written", match: false }
+      - { name: "re-AddPlayer on cl_allow_uidtracking change", base: "REPLICATE_APPLYCHANGE (playerstats.qc:26)", port: "absent", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "AddPlayer keys the report to the player's persistent crypto UID without asking cl_allow_uidtracking — a player who opted out is still UID-tracked in the built report."
+      - "_netname is recorded for every player (Base requires cl_allow_uid2name == 1 for humans); the ranked-consent 'r' line is never emitted; the REPLICATE_APPLYCHANGE re-registration on a mid-match consent change is absent."
+      - "The plumbing to honor consent exists — GameWorld.cs:3190 reads the replicated cl_allow_uidtracking/uid2name for race records via Commands.GetClientCvarFloat — but PlayerStats never uses it."
+    verification:
+      - { kind: code, ref: "PlayerStats.cs:161 uses p.PersistentId with no consent read; grep 'allow_uid' in src/ hits only Race/GameWorld race-record gating; menu checkboxes live (DialogMultiplayerProfile.cs:121)", result: fail }
+    confidence: high
+    notes: "Only matters once a submission layer exists (nothing leaves the process today), but the built report is already consent-violating — and it IS built by default every live match (the shipped cfg turns the uri on; see http_upload row). The three cl_allow_uid* cvars ARE settable client-side (menu + first-run dialog) and replicate to the server on the race-records path."
+
+  - id: playerstats-xonstat.gamereport.event_feeds
+    name: "Per-match stat feeds: kills-<victim>, achievements (sprees/firstblood/botlike), total-/scoreboard- score columns, team sections, per-weapon accuracy"
+    layer: [authority]
+    base_refs:
+      - "server/damage.qc:66 (kills-<victimid> per murder)"
+      - "server/damage.qc:343-359 (KILL_SPREE achievements + FIRSTBLOOD/FIRSTVICTIM)"
+      - "server/damage.qc:475 (ACHIEVEMENT_BOTLIKE)"
+      - "server/scores.qc:375 (total-<label> on every PlayerScore_Add)"
+      - "server/scores.qc:952-967 (PlayerScore_PlayerStats scoreboard-<label> + team Q events)"
+      - "common/playerstats.qc:PlayerStats_GameReport_Accuracy (167)"
+      - "server/anticheat.qc:221-224 (anticheat-* feed)"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:1250-1255 (provider wiring: IsWarmup/AnticheatReporter/RankProvider/ScoreboardPosProvider/WinnerPredicate/HandicapReportProvider — AccuracyProvider/ScoreColumnsProvider/PingProvider NOT wired)"
+      - "src/XonoticGodot.Server/PlayerStats.cs:EventTeam (204) — zero callers"
+      - "src/XonoticGodot.Server/Scores.cs:WeaponAccuracy (176) — tracks all six QC columns but is never connected to PlayerStats"
+      - "src/XonoticGodot.Server/AntiCheat.cs:RegisterPlayerStats (337) / ReportToPlayerStats (348)"
+    constants:
+      - { name: "kill-spree milestones", base: "3/5/10/15/20/25/30", port: "event ids registered (PlayerStats.cs:119) but never incremented", match: false }
+      - { name: "accuracy suffixes", base: "real/hit/fired/cnt-hit/cnt-fired/frags per weapon netname", port: "ids registered (PlayerStats.cs:111-116); WeaponAccuracy holds the values; no bridge", match: false }
+      - { name: "anticheat feed", base: "anticheat-_time + per-detector at FinalizePlayer", port: "wired + live (GameWorld.cs:1251)", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "kills-<victimid> is never incremented (only the event slot is registered at GameWorld.cs:1445); Base bumps it on every murder (damage.qc:66)."
+      - "achievement-kill-spree-N / firstblood / firstvictim / botlike are never fed — the port's spree/firstblood/botlike logic exists in Scores.cs but only fires announcer notifications (Scores.cs:707/878), never PlayerStats events."
+      - "total-<label> (accumulated on every score add, scores.qc:375) and scoreboard-<label> (end-of-match columns, scores.qc:952) are never emitted: ScoreColumnsProvider is declared but unwired, and no PlayerScore_Add hook feeds totals."
+      - "Team 'Q team#N' report sections are always empty: EventTeam has zero callers and PlayerScore_TeamStats (scores.qc:967) has no port counterpart feeding stats."
+      - "acc-<weapon>-* never emitted: WeaponAccuracy (Scores.cs:176) faithfully tracks all six columns for the scoreboard, but AccuracyProvider is never set."
+    verification:
+      - { kind: code, ref: "grep EventPlayer/EventTeam outside PlayerStats.cs: zero emitter call sites; grep 'total-'/'acc-'/'kills-' in src+game: registration only; GameWorld.cs:1250-1255 wires 6 of 9 providers", result: fail }
+    confidence: high
+    notes: "What IS live: rank, scoreboardvalid/pos, wins, matches, joins, alivetime, handicapgiven/taken, anticheat-*. Everything a XonStat page actually ranks on (frags per weapon, kill sprees, per-column scores) is absent. The fix is wiring, not new systems — WeaponAccuracy and the score table already hold the data."
+
+  - id: playerstats-xonstat.gamereport.alivetime
+    name: "Alivetime accounting (per-life accumulation + 30s AFK exclusion)"
+    layer: [authority]
+    base_refs:
+      - "common/playerstats.qc:PlayerStats_GameReport_FinalizePlayer alivetime flush (188-191)"
+      - "server/client.qc:329 (flush on becoming observer)"
+      - "server/player.qc:456 (flush on death)"
+      - "common/playerstats.qh:PLAYERSTATS_ALIVETIME (32)"
+    port_refs:
+      - "src/XonoticGodot.Server/PlayerStats.cs:BeginAlivetime (211) / AdvanceAliveStart (221) / FlushAlivetime (229)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1611 (begin at spawn), 1981 (per-frame AFK advance), 1645 (finalize on disconnect)"
+    constants:
+      - { name: "AFK idle threshold", base: "30 s (client.qc PlayerFrame: idle >= 30 -> alivetime_start += frametime)", port: "AdvanceAliveStart(frameTime) — port advances the start stamp; caller gates the 30s (GameWorld.cs:1981)", match: true }
+      - { name: "flush points", base: "death + observer transition + finalize", port: "finalize only", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No flush on death/observe: BeginAlivetime re-stamps the start on EVERY spawn (GameWorld.cs:1611 InfraClientSpawn) but FlushAlivetime is only called inside FinalizePlayer — every life except the last is silently discarded, so reported alivetime = final life segment, not the match total. Base flushes at each death (player.qc:456) and observer transition (client.qc:329)."
+    verification:
+      - { kind: code, ref: "grep FlushAlivetime in src/: only the FinalizePlayer-internal call; InfraClientSpawn overwrites _alivetimeStart[p] unconditionally", result: fail }
+    confidence: high
+    notes: "The AFK-exclusion mechanism itself is a faithful re-expression (timestamp advanced forward instead of QC's accumulator) — the defect is purely the missing per-life flush."
+
+  - id: playerstats-xonstat.gamereport.avglatency
+    name: "Average-latency record (avglatency from the 10s latency sampler, reconnect averaging)"
+    layer: [authority]
+    base_refs:
+      - "common/playerstats.qc:PlayerStats_GameReport_FinalizePlayer latency block (208-224)"
+      - "common/playerstats.qh:PLAYERSTATS_AVGLATENCY (33)"
+    port_refs:
+      - "src/XonoticGodot.Server/PlayerStats.cs:FinalizePlayer latency block (278-284)"
+      - "src/XonoticGodot.Server/PlayerStats.cs:PingProvider (57) — default 0, never wired"
+    constants:
+      - { name: "reconnect averaging", base: "new = !prev ? latency : (prev+latency)/2", port: "same formula (PlayerStats.cs:282)", match: true }
+      - { name: "latency source", base: "CS(p).latency_sum / latency_cnt (10s PingPLReport sampler, world.qc)", port: "PingProvider default 0 — no sampler exists", match: false }
+    status:
+      logic: faithful
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The averaging code is faithful but starved: PingProvider is never assigned in GameWorld (grep: only AntiCheat.PingProvider is wired, to a constant 0), so pingMs is always 0 and the avglatency branch never executes. The upstream 10s latency sampler is itself unported (owned by sv-world-rules.entity.pingplreport — LATENCY_THINKRATE constant row already records it)."
+    verification:
+      - { kind: code, ref: "PlayerStats.cs:57 default lambda 0; GameWorld.cs:1250-1255 does not assign PlayerStats.PingProvider; sv-world-rules.yaml pingplreport row confirms no latency feed exists", result: fail }
+    confidence: high
+    notes: "Cross-reference: sv-world-rules.entity.pingplreport owns the sampler; this row owns the FinalizePlayer consumption. Both halves currently dead."
+
+  - id: playerstats-xonstat.report.payload_v9
+    name: "V9 report serializer — header/team/player line set (V R G O M I S C U D RP L Q P i n t r e)"
+    layer: [authority]
+    base_refs:
+      - "common/playerstats.qc:PlayerStats_GameReport_Handler URL_READY_CANWRITE (414-485)"
+      - "common/playerstats.qc:PlayerStats_GetGametype duel hack (346-357)"
+    port_refs:
+      - "src/XonoticGodot.Server/PlayerStats.cs:BuildReport (343-382)"
+    constants:
+      - { name: "format version line", base: "V 9", port: "V 9", match: true }
+      - { name: "e-line filter", base: "value != 0 only, %g format", port: "v != 0f, 0.###### invariant", match: true }
+      - { name: "G gametype", base: "PlayerStats_GetGametype() (GetGametype + duel hack when g_maxplayers==2 && <=2 players)", port: "cvar g_playerstats_gametype — set NOWHERE, always blank", match: false }
+      - { name: "D duration", base: "max(0, time - game_starttime)", port: "max(0, now) where now = absolute sim time (GameWorld.cs:4067 passes Time)", match: false }
+      - { name: "R release / I matchid / C purechanges / U port / RP rounds / L ladder / r ranked", base: "all emitted (R via WATERMARK, RP if rounds_played>0, L if g_playerstats_gamereport_ladder set)", port: "none emitted", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Missing lines: R (release watermark), I (matchid — the port has no matchid concept), C (cvar_purechanges_count — CommandReplies.cs tracks purechanges but isn't consulted), U (UDP port), RP (rounds played — RoundHandler.cs:129 RoundsPlayed tracks it), L (ladder cvar — default '' in both, xonotic-server.cfg:637, so absence only diverges when an admin sets it), r (ranked consent, see identity_consent row)."
+      - "G is always the empty string: BuildReport reads cvar 'g_playerstats_gametype' which no code ever sets (grep: PlayerStats.cs:347 is the only reference); the duel detection hack is also unported. XonStat would reject or mis-file a report with a blank gametype."
+      - "D is absolute sim time, not match duration: callers pass GameWorld.Time; GameStartTime exists (GameWorld.cs:344) but isn't subtracted."
+    verification:
+      - { kind: code, ref: "BuildReport line-by-line diff vs playerstats.qc:414-485; grep g_playerstats_gametype -> single read, zero writes; ServerInfraTests.cs:454 exercises the serializer shape", result: fail }
+    confidence: high
+    notes: "Structure (header -> Q team sections -> P player sections with i/n/t + e lines, trailing blank line) matches. The team/e-line content gaps are owned by the event_feeds row; this row owns the header/meta field set."
+
+  - id: playerstats-xonstat.submission.http_upload
+    name: "XonStat report submission (HTTPS POST via url_multi_fopen, async DelayMapVote clear, SERVERFLAG_PLAYERSTATS)"
+    layer: [authority]
+    base_refs:
+      - "common/playerstats.qc:PlayerStats_GameReport upload kickoff (271-286)"
+      - "common/playerstats.qc:PlayerStats_GameReport_Handler CANREAD/CLOSED/ERROR (493-529)"
+      - "common/playerstats.qc:PlayerStats_GameReport_Init serverflags (290-306)"
+      - "common/playerstats.qh:autocvar_g_playerstats_gamereport_uri default (96)"
+    port_refs: []
+    constants:
+      - { name: "g_playerstats_gamereport_uri default", base: "https://stats.xonotic.org/stats/submit", port: "SAME url on the live path — shipped xonotic-server.cfg:636 is exec'd at boot (GameWorld.cs:472 via ConfigLoader.ServerEntry; MenuState.cs:106 for the listen-server shared store). The Cvars.cs:431 code fallback '' is only reached with no assets mounted (bare tests / serverbench.cfg sets '' explicitly)", match: true }
+      - { name: "SERVERFLAG_PLAYERSTATS / _CUSTOM", base: "BIT(2)/BIT(3), set at Init (requires DP_CRYPTO + DP_QC_URI_POST for the official flag)", port: "bits defined (ServerFlags.cs:29-33) but never set anywhere", match: false }
+      - { name: "DelayMapVote cleared by async CLOSED/ERROR callback", base: "yes (playerstats.qc:508/521)", port: "cleared synchronously in GameReport (intended: vote never blocked)", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "There is no upload at all: PlayerStats.GameReport RETURNS the V9 body 'so a host that DOES implement upload can send it' (PlayerStats.cs:293) — but both live callers (GameWorld.cs:4067, :1823) invoke it as a statement and discard the string. No HttpClient/POST code exists anywhere in src/ or game/ for stats (grep urllib/HttpClient/WebRequest)."
+      - "This is the DEFAULT live behavior, not an opt-in: the shipped xonotic-server.cfg:636 (exec'd at boot) sets the uri to the Base XonStat URL, so PlayerStats.Enabled is true out of the box — every match accumulates, builds the report, and silently drops it (no log). The response-handling states (CANREAD debug echo, CLOSED success, ERROR 'Player stats writing failed') have no counterpart."
+      - "SERVERFLAG_PLAYERSTATS is never advertised, so server-browser clients can't see the server as stats-enabled."
+    verification:
+      - { kind: code, ref: "GameWorld.cs:4067 + 1823 statement calls; grep HttpClient/WebRequest in src+game: only generated global-usings, zero call sites; live uri default verified via GameWorld.cs:472 LoadServerConfig -> assets xonotic-server.cfg:636", result: fail }
+    confidence: high
+    notes: "The synchronous DelayMapVote clear is a reasonable interim (documented in scoring.yaml's intended_divergence for the pipeline), but the missing POST itself is a genuine gap, not a divergence: the whole point of the subsystem is the submission. CORRECTED on adversarial re-verify: the original 'off by default / honest' claim was wrong — the live boot execs xonotic-server.cfg which sets the uri ON, so the port silently pretends to be a stats server (and would advertise nothing to the browser since SERVERFLAG_PLAYERSTATS is never set)."
+
+  - id: playerstats-xonstat.playerbasic.skill_fetch
+    name: "Server-side player skill fetch (PlayerStats_PlayerBasic: /skill?game_type_cd&hashkey JSON -> SP_SKILL)"
+    layer: [authority]
+    base_refs:
+      - "common/playerstats.qc:PlayerStats_PlayerBasic (532-584)"
+      - "common/playerstats.qc:PlayerStats_PlayerBasic_CheckUpdate (601-620)"
+      - "common/playerstats.qc:PlayerStats_PlayerBasic_Handler (622-677)"
+      - "common/playerstats.qh:PS_B_STATUS_* + autocvar_g_playerstats_playerbasic_uri (98-108)"
+      - "common/state.qc:55 (live caller: ClientState_attach -> CheckUpdate on join)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:166 (SP_SKILL field registered, NotSortable, survives PlayerScore_Clear per :597 — but never fed)"
+    constants:
+      - { name: "g_playerstats_playerbasic_uri default", base: "https://stats.xonotic.org", port: "same value sits in the live store (shipped xonotic-server.cfg:638, exec'd at boot) but NO code ever reads it", match: false }
+      - { name: "activation gate", base: "uri != \"\" && (g_balance_teams_skill || sv_showskill)", port: "none", match: false }
+      - { name: "skill mapping", base: "m_skill_var = sigma^2; m_skill_mu = max(0, mu); SP_SKILL = mu + 1 (json '0.game_type_cd' must match gametype); unknown = -1", port: "none (SKILL column stays at its cleared value)", match: false }
+      - { name: "status codes", base: "PS_B_STATUS ERROR=-2 IDLE=-1 WAITING=0 RECEIVED=1 UPDATING=2", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: stub
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No fetch exists: nothing requests <uri>/skill?game_type_cd=<gt>&hashkey=<idfp> on player join, so skill-based team balancing (g_balance_teams_skill) and sv_showskill can never see XonStat skill; the SP_SKILL scoreboard column is registered (GameScores.cs:166) but permanently unfed (= stub/dead)."
+      - "Tdm.cs:14 already documents 'inverse-variance skill weighting (g_balance_teams_skill)' as deferred — this row is the upstream data source for that."
+    verification:
+      - { kind: code, ref: "grep playerbasic/skill fetch in src+game: zero hits; GameScores.cs:166/597 registers+preserves the column only", result: fail }
+    confidence: high
+    notes: "Depends on the urllib.http_client row (GET path) and a JSON parse (json row). Base only fires this when a server admin enables skill balancing/display, so it is off the default live path even in Base."
+
+  - id: playerstats-xonstat.playerdetail.profile_fetch
+    name: "Menu player-profile / rankings fetch (PlayerStats_PlayerDetail -> Profile dialog stats list)"
+    layer: [presentation]
+    base_refs:
+      - "common/playerstats.qc:PlayerStats_PlayerDetail (715-746)"
+      - "common/playerstats.qc:PlayerStats_PlayerDetail_CheckUpdate (748-772)"
+      - "common/playerstats.qc:PlayerStats_PlayerDetail_Handler (774-902)"
+      - "common/playerstats.qc:PlayerStats_PlayerDetail_AddItem (693-713)"
+      - "common/playerstats.qh:PS_D_* status/state + autocvar_g_playerstats_playerdetail_uri/-autoupdatetime (110-123)"
+    port_refs:
+      - "game/menu/dialogs/DialogMultiplayerProfile.cs:134-151 (honest placeholder list + inert 'menu_cmd playerstats_update' on show)"
+      - "game/menu/framework/MenuCommand.cs:281 (unrecognized menu_cmd logged '[MenuCommand] ... has no client backend yet (inert)')"
+    constants:
+      - { name: "g_playerstats_playerdetail_uri default", base: "https://stats.xonotic.org/player/me", port: "same value sits in the live store (shipped xonotic-server.cfg:639, exec'd at menu boot) but NO code ever reads it", match: false }
+      - { name: "autoupdate interval", base: "g_playerstats_playerdetail_autoupdatetime = 1800 s, also refetch when cl_matchcount increases", port: "1800 in the store (xonotic-server.cfg:640) but no refetch logic exists to consume it", match: false }
+      - { name: "request body", base: "V 1 + R watermark + l language + n _cl_name + m _cl_playermodel _cl_playerskin", port: "none", match: false }
+      - { name: "response keys", base: "V/R/T/S/P/n/i general+player info; G switches gametype namespace; 'e <event> <data>' -> '<gametype>/<event>' items", port: "none", match: false }
+      - { name: "activation gate", base: "uri != \"\" && crypto_getmyidstatus(0) > 0", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: partial
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The player-rankings screen never shows data: the Profile dialog builds the stats ItemList and fires the QC showNotify-equivalent update, but 'playerstats_update' has no backend (boot log: \"[MenuCommand] 'playerstats_update' has no client backend yet (inert)\") — no fetch, no PS_D_IN_DB equivalent, no statslist rendering of per-gametype elo/rank entries."
+      - "The port shows an honest 'fetch backend pending' placeholder label instead (deliberate honesty, but the feature is absent)."
+    verification:
+      - { kind: code, ref: "DialogMultiplayerProfile.cs:136-151 comment + placeholder; MenuCommand.cs:281 inert path; grep playerstats_update: single call site", result: fail }
+    confidence: high
+    notes: "Base consumer is menu/xonotic/statslist.qc:297 (XonoticStatsList draining PS_D_IN_DB) — that widget belongs to the menu unit; this row owns the fetch/parse/DB. presentation: partial because the dialog chrome + consent checkboxes exist and are live."
+
+  - id: playerstats-xonstat.urllib.http_client
+    name: "urllib async HTTP client (url_single_fopen GET/POST, url_fclose POST-commit, slot pool, url_multi_fopen failover)"
+    layer: [shared]
+    base_refs:
+      - "lib/urllib.qc:url_single_fopen (90)"
+      - "lib/urllib.qc:url_fclose (209)"
+      - "lib/urllib.qc:url_fgets (291) / url_fputs (312)"
+      - "lib/urllib.qc:url_URI_Get_Callback (28)"
+      - "lib/urllib.qc:url_multi_fopen (360) / url_multi_ready (331)"
+      - "lib/urllib.qh:URI_GET_URLLIB slot range + URL_READY_* codes (4-19)"
+    port_refs: []
+    constants:
+      - { name: "request slot pool", base: "URI_GET_URLLIB 128..191 (64 concurrent), _urllib_nextslot round-robin persisted as a cvar across map changes", port: "none", match: false }
+      - { name: "URL_READY codes", base: "ERROR=-1 (or -HTTP status), CLOSED=0, CANWRITE=1, CANREAD=2", port: "none", match: false }
+      - { name: "multi-URI failover", base: "space-separated URI list tried in order; HTTP 422 aborts the chain (urllib.qc:336)", port: "none", match: false }
+      - { name: "POST content type", base: "text/plain via crypto_uri_postbuf (DP_QC_URI_POST)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No async HTTP facility exists in the port (grep urllib/HttpClient/WebRequest/crypto_uri in src+game: only comments). Everything that rides urllib in Base is therefore inert: XonStat game-report POST, playerbasic skill GET, playerdetail profile POST/read, and sv_weaponstats_file uploads (weaponstats — outside this unit, same dependency)."
+    verification:
+      - { kind: code, ref: "grep -rn 'urllib|HttpClient|crypto_uri|WebRequest' src game: comment hits only (DialogMultiplayerProfile.cs:136, DialogServerInfo.cs:185)", result: fail }
+    confidence: high
+    notes: "A port would sensibly implement the CONTRACT (async open -> CANWRITE -> fclose commits POST -> CANREAD lines -> CLOSED, plus multi-URI failover and the 422 abort) on System.Net.Http rather than the buffer/slot mechanism — the slot-pool internals are engine workarounds, the callback state machine and failover semantics are the ported surface."
+
+  - id: playerstats-xonstat.json.parser
+    name: "QC JSON parser (json_parse -> flat key-path buffer, json_get) [coverage row]"
+    layer: [shared]
+    base_refs:
+      - "lib/json.qc:json_parse (266) / json_get (323)"
+      - "lib/json.qc:_json_parse_object/_array/_value/_string/_number (21-263)"
+      - "lib/json.qh:parser entry points (1-16)"
+    port_refs: []
+    constants:
+      - { name: "key-path flattening", base: "nested keys join with '.', arrays index 0..n + '<ns>.length'; true/false/null -> 1/0/\"\"", port: "n/a", match: false }
+      - { name: "escape support", base: "\\\" \\\\ \\n \\t \\/ (\\u unimplemented TODO)", port: "n/a", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: true
+    divergence_rationale: "lib/json.qc is a QC-VM workaround for the engine's lack of a JSON facility (hand-rolled recursive descent over a string iterator into a flat bufstr). .NET has System.Text.Json (already used elsewhere in the port, e.g. game/net/CameraTrace.cs:65); re-implementing the QC parser would be pure waste. The only Base consumers relevant to gameplay are the playerbasic skill handler (this unit's skill_fetch row — the '0.game_type_cd'/'0.mu'/'0.sigma' key-path reads map to trivial JsonDocument access) and lib/matrix (out of scope). Cited here so the coverage ledger accounts for the file; the observable behavior is owned by playerstats-xonstat.playerbasic.skill_fetch."
+    gaps: []
+    verification:
+      - { kind: code, ref: "Base consumers: playerstats.qc:646 json_parse(_json_parse_array) + lib/matrix/matrix.qc:66/114; port JSON use = System.Text.Json (CameraTrace.cs)", result: pass }
+    confidence: high
+    notes: "Behavior-free infra from the player's perspective; quirks (leading-zero int rejection, \\u TODO) would NOT be reproduced by a System.Text.Json-based fetch — acceptable, XonStat emits standard JSON."

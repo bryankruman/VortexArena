@@ -1,6 +1,6 @@
 # Base coverage ledger
 
-_Generated 2026-07-02 by `tools/parity-coverage.py` from 158 registry shards against `C:\Users\Bryan\Projects\Xonotic\Base\data\xonotic-data.pk3dir\qcsrc`._
+_Generated 2026-07-02 by `tools/parity-coverage.py` from 161 registry shards against `C:\Users\Bryan\Projects\Xonotic\Base\data\xonotic-data.pk3dir\qcsrc`._
 
 A Base file is **cited** when any registry row's `base_refs` names it, **excluded** when
 [coverage-scope.yaml](coverage-scope.yaml) declares it out of parity scope (with rationale),
@@ -12,23 +12,23 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 
 | bucket | files | lines | % of lines |
 |---|---:|---:|---:|
-| cited | 608 | 176544 | 73.2% |
+| cited | 786 | 204177 | 84.6% |
 | excluded | 11 | 4220 | 1.7% |
-| deferred | 378 | 34892 | 14.5% |
-| UNMAPPED | 760 | 25569 | 10.6% |
+| deferred | 202 | 7478 | 3.1% |
+| UNMAPPED | 758 | 25350 | 10.5% |
 | **total** | 1757 | 241225 | 100% |
 
 ## Per-directory
 
 | dir | total files | cited | excluded | deferred | UNMAPPED files | UNMAPPED lines |
 |---|---:|---:|---:|---:|---:|---:|
-| `client/` | 109 | 53 | 0 | 4 | 52 | 1674 |
-| `common/` | 1000 | 463 | 0 | 37 | 500 | 11466 |
+| `client/` | 109 | 57 | 0 | 0 | 52 | 1674 |
+| `common/` | 1000 | 500 | 0 | 0 | 500 | 11466 |
 | `dpdefs/` | 12 | 1 | 11 | 0 | 0 | 0 |
 | `ecs/` | 21 | 2 | 0 | 0 | 19 | 196 |
 | `lib/` | 101 | 21 | 0 | 0 | 80 | 7116 |
-| `menu/` | 340 | 4 | 0 | 336 | 0 | 0 |
-| `server/` | 174 | 64 | 0 | 1 | 109 | 5117 |
+| `menu/` | 340 | 138 | 0 | 202 | 0 | 0 |
+| `server/` | 174 | 67 | 0 | 0 | 107 | 4898 |
 
 ## Largest UNMAPPED files (top 50)
 
@@ -59,7 +59,6 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | `common/viewloc.qc` | 206 |
 | `common/effects/effectinfo_gentle_particlegibs.inc` | 199 |
 | `lib/iter.qh` | 192 |
-| `server/command/common.qh` | 191 |
 | `lib/color.qh` | 189 |
 | `lib/deglobalization.qh` | 172 |
 | `common/mapobjects/subs.qh` | 171 |
@@ -84,174 +83,58 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | `common/effects/effectinfo_onslaught.inc` | 123 |
 | `server/items/items.qh` | 123 |
 | `common/mutators/events.qh` | 122 |
+| `common/effects/effectinfo_gentle.inc` | 121 |
 
 ## Deferred (audit scheduled)
 
 | file | lines | note |
 |---|---:|---|
-| `common/minigames/minigame/bd.qc` | 1457 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/serverlist.qc` | 1201 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/menu.qc` | 1115 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/util.qc` | 835 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/minigame/nmm.qc` | 788 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/credits.qc` | 751 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/minigame/ttt.qc` | 727 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/minigame/pong.qc` | 721 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `common/command/generic.qc` | 702 | console-commands unit — 2026-07-02 unmapped-area audit wave |
-| `client/command/cl_cmd.qc` | 668 | console-commands unit — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/minigame/ps.qc` | 652 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/minigame/pp.qc` | 627 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/keybinder.qc` | 626 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `common/command/rpn.qc` | 623 | console-commands unit — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/minigame/c4.qc` | 540 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/cl_minigames.qc` | 444 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `menu/item/listbox.qc` | 415 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/sv_minigames.qc` | 414 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `menu/draw.qc` | 408 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `server/command/getreplies.qc` | 406 | console-commands unit — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/maplist.qc` | 404 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/item/container.qc` | 375 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/item/inputbox.qc` | 355 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/mainwindow.qc` | 337 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/cvarlist.qc` | 318 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/statslist.qc` | 316 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/item/nexposee.qc` | 297 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/item/slider.qc` | 287 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/skin-customizables.inc` | 282 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/campaign.qc` | 282 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/playlist.qc` | 272 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/hudskinlist.qc` | 260 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/screenshotlist.qc` | 254 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_effects.qc` | 253 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/slider_resolution.qc` | 242 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/item/modalcontroller.qc` | 237 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_multiplayer_join_serverinfo.qc` | 236 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_multiplayer_create.qc` | 230 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/languagelist.qc` | 222 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_game_hud.qc` | 208 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/demolist.qc` | 196 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/item/image.qc` | 194 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_video.qc` | 194 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/playermodel.qc` | 192 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/command/menu_cmd.qc` | 190 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/guide/pages.qc` | 190 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_audio.qc` | 187 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_input.qc` | 186 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/guide/entries.qc` | 184 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_game_crosshair.qc` | 182 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_singleplayer.qc` | 178 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/skinlist.qc` | 177 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/picker.qc` | 174 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_strafehud.qc` | 172 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/item/label.qc` | 168 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudsetup_exit.qc` | 167 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/serverlist.qh` | 166 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_multiplayer_profile.qc` | 165 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/item/button.qc` | 163 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_game_view.qc` | 157 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_media_screenshot_viewer.qc` | 156 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_game.qc` | 145 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/weaponslist.qc` | 145 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/soundlist.qc` | 142 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/minigames.qc` | 141 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `menu/item/dialog.qc` | 137 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/gametypelist.qc` | 136 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_welcome.qc` | 134 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/guide/guide.qh` | 133 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/_mod.inc` | 132 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/_mod.qh` | 132 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/item/inputcontainer.qc` | 129 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/colorpicker.qc` | 127 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/anim/animhost.qc` | 124 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/playerlist.qc` | 124 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/cl_minigames.qh` | 123 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/minigames.qh` | 122 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `common/command/markup.qc` | 117 | console-commands unit — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_misc.qc` | 109 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_multiplayer_join_serverinfotab.qc` | 106 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/minigame/all.qh` | 105 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `menu/item.qc` | 105 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/charmap.qc` | 102 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/item/mixedslider.qc` | 100 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_termsofservice.qc` | 99 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/radiobutton.qc` | 99 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_firstrun.qc` | 98 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/slider_decibels.qc` | 98 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/textslider.qc` | 98 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/colorpicker_string.qc` | 97 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_multiplayer_join.qc` | 96 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_weapons.qc` | 93 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_multiplayer_create_mapinfo.qc` | 93 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_physics.qc` | 92 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_radar.qc` | 90 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/anim/keyframe.qc` | 88 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/item/borderimage.qc` | 87 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/item/listbox.qh` | 87 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_misc_cvars.qc` | 87 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/checkbox.qc` | 84 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/textbox.qc` | 84 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_user.qc` | 83 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_media_musicplayer.qc` | 81 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_game_model.qc` | 80 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/colorbutton.qc` | 79 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/sv_minigames.qh` | 78 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_media_guide.qc` | 78 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/guide/topics.qc` | 75 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/item/dialog.qh` | 74 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/guide/description.qc` | 73 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/anim/animation.qc` | 72 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_gamemenu.qc` | 72 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_media_screenshot.qc` | 70 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/util.qh` | 70 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/inputbox.qc` | 68 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/screenshotimage.qc` | 68 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_media_demo.qc` | 65 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/crosshairpicker.qc` | 64 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_centerprint.qc` | 64 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/slider.qc` | 62 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/menu.qh` | 59 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_multiplayer_join_termsofservice.qc` | 58 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/maplist.qh` | 57 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/item/textslider.qc` | 56 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/leavematchbutton.qc` | 54 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/mixedslider.qc` | 54 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/anim/easing.qc` | 52 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_pickup.qc` | 52 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/item/slider.qh` | 51 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/item/container.qh` | 50 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/item/modalcontroller.qh` | 50 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/cvarlist.qh` | 50 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/campaign.qh` | 49 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_game.qh` | 49 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_healtharmor.qc` | 48 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/item/nexposee.qh` | 46 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/scrollpanel.qc` | 46 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/item/inputbox.qh` | 45 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/mutators/events.qh` | 45 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/screenshotlist.qh` | 45 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/draw.qh` | 44 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/crosshairpreview.qc` | 44 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_ammo.qc` | 43 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_itemstime.qc` | 43 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_input_userbind.qc` | 43 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_teamselect.qc` | 43 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/slider_picmip.qc` | 43 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `common/command/generic.qh` | 42 | console-commands unit — 2026-07-02 unmapped-area audit wave |
 | `menu/item/button.qh` | 42 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/checkbox_string.qc` | 42 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/checkbox_slider_invalid.qc` | 41 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_infomessages.qc` | 41 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_powerups.qc` | 41 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/weaponarenacheckbox.qc` | 41 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_monstertools.qc` | 40 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/guide/pages.qh` | 40 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/datasource.qc` | 39 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/hudskinlist.qh` | 39 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/keybinder.qh` | 39 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/playlist.qh` | 39 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/item/checkbox.qc` | 38 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/item/label.qh` | 38 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_notification.qc` | 37 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/guide/entries.qh` | 37 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/inputbox.qh` | 37 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/languagelist.qh` | 37 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
@@ -259,19 +142,14 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | `menu/xonotic/soundlist.qh` | 35 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/datasource.qh` | 34 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_multiplayer_join_serverinfo.qh` | 34 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/commandbutton.qc` | 33 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/demolist.qh` | 33 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/skinlist.qh` | 33 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/slider_sbfadetime.qc` | 33 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/item.qh` | 32 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_game_hudconfirm.qc` | 32 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_chat.qc` | 31 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/picker.qh` | 31 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_checkpoints.qc` | 30 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/mainwindow.qh` | 30 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/slider.qh` | 30 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/checkbox.qh` | 29 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_quickmenu.qc` | 29 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_multiplayer_join_serverinfotab.qh` | 29 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/guide/topics.qh` | 29 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/mixedslider.qh` | 29 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
@@ -279,36 +157,22 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | `menu/xonotic/textslider.qh` | 29 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/item/image.qh` | 28 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/item/mixedslider.qh` | 28 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/matrix.qc` | 28 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/skin.qh` | 28 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/button.qc` | 28 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_modicons.qc` | 28 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_pressedkeys.qc` | 28 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/tabcontroller.qc` | 28 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/anim/animation.qh` | 27 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_multiplayer_create_mapinfo.qh` | 27 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_settings.qc` | 27 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/tab.qh` | 27 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `client/command/cl_cmd.qh` | 26 | console-commands unit — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_timer.qc` | 26 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/gametypelist.qh` | 26 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/guide/guide.qc` | 26 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/radiobutton.qh` | 26 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/textbox.qh` | 26 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/gamesettings.qh` | 25 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/item/borderimage.qh` | 25 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/item/tab.qh` | 25 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/checkbox_string.qh` | 25 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_engineinfo.qc` | 25 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_welcome.qh` | 25 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/weaponslist.qh` | 25 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/item/radiobutton.qc` | 24 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/checkbox_slider_invalid.qh` | 24 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_media_demo_startconfirm.qc` | 24 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_media_demo_timeconfirm.qc` | 24 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/scrollpanel.qh` | 24 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/statslist.qh` | 24 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `common/command/reg.qh` | 23 | console-commands unit — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/colorpicker_string.qh` | 23 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/credits.qh` | 23 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_hudsetup_exit.qh` | 23 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
@@ -316,15 +180,9 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | `menu/xonotic/guide/description.qh` | 23 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_media_screenshot_viewer.qh` | 22 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/playerlist.qh` | 22 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_score.qc` | 21 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_multiplayer.qc` | 21 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_singleplayer_winner.qc` | 21 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/textlabel.qc` | 21 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/button.qh` | 20 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/charmap.qh` | 20 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/colorpicker.qh` | 20 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_credits.qc` | 20 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_vote.qc` | 20 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_bindings_reset.qc` | 20 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_misc_reset.qc` | 20 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_user_languagewarning.qc` | 20 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
@@ -333,18 +191,14 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | `menu/xonotic/colorbutton.qh` | 19 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_media_guide.qh` | 19 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_multiplayer_create.qh` | 19 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_quit.qc` | 19 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/listbox.qh` | 19 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/screenshotimage.qh` | 19 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/item/_mod.inc` | 18 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/item/_mod.qh` | 18 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/commandbutton.qh` | 18 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_media.qc` | 18 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_teamselect.qh` | 18 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_uid2name.qc` | 18 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_firstrun.qh` | 17 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_input_userbind.qh` | 17 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/listbox.qc` | 17 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/anim/keyframe.qh` | 16 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/item/checkbox.qh` | 16 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/item/inputcontainer.qh` | 16 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
@@ -353,17 +207,12 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | `menu/xonotic/rootdialog.qh` | 16 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/slider_resolution.qh` | 16 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_media_screenshot.qh` | 15 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `common/command/rpn.qh` | 14 | console-commands unit — 2026-07-02 unmapped-area audit wave |
 | `menu/anim/easing.qh` | 14 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/crosshairpicker.qh` | 14 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_credits.qh` | 14 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_multiplayer_create_mutators.qh` | 14 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_multiplayer_profile.qh` | 14 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/weaponarenacheckbox.qh` | 14 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `common/command/command.qh` | 13 | console-commands unit — 2026-07-02 unmapped-area audit wave |
-| `common/command/markup.qh` | 13 | console-commands unit — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/_mod.inc` | 13 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/_mod.qh` | 13 | minigames unit — 2026-07-02 unmapped-area audit wave |
 | `menu/progs.inc` | 13 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_hudpanel_ammo.qh` | 13 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_hudpanel_centerprint.qh` | 13 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
@@ -378,7 +227,6 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | `menu/xonotic/dialog_hudpanel_pickup.qh` | 13 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_hudpanel_powerups.qh` | 13 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_hudpanel_pressedkeys.qh` | 13 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog_hudpanel_racetimer.qc` | 13 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_hudpanel_racetimer.qh` | 13 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_hudpanel_radar.qh` | 13 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_hudpanel_score.qh` | 13 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
@@ -396,8 +244,6 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | `menu/xonotic/dialog_settings_game_weapons.qh` | 13 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_singleplayer.qh` | 13 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_uid2name.qh` | 13 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/image.qc` | 13 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/bigcommandbutton.qc` | 12 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/crosshairpreview.qh` | 12 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_hudpanel_itemstime.qh` | 12 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_hudpanel_quickmenu.qh` | 12 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
@@ -409,8 +255,6 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | `menu/xonotic/dialog_settings_game_view.qh` | 12 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_misc_cvars.qh` | 12 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_singleplayer_winner.qh` | 12 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/nexposee.qc` | 12 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/rootdialog.qc` | 12 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/tabcontroller.qh` | 12 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/_mod.inc` | 11 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/_mod.qh` | 11 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
@@ -426,7 +270,6 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | `menu/xonotic/dialog_settings_user_languagewarning.qh` | 11 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_video.qh` | 11 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/textlabel.qh` | 11 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/cl_minigames_hud.qh` | 10 | minigames unit — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_effects.qh` | 10 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_misc.qh` | 10 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/dialog_settings_user.qh` | 10 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
@@ -435,38 +278,19 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 | `menu/xonotic/bigcommandbutton.qh` | 9 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/leavematchbutton.qh` | 9 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/slider_sbfadetime.qh` | 9 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/minigame/_mod.inc` | 8 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/minigame/_mod.qh` | 8 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/bigbutton.qc` | 8 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/bigbutton.qh` | 8 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/dialog.qc` | 7 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/image.qh` | 7 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/nexposee.qh` | 7 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/xonotic/tab.qc` | 7 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/guide/_mod.inc` | 6 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/xonotic/guide/_mod.qh` | 6 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `common/command/_mod.inc` | 5 | console-commands unit — 2026-07-02 unmapped-area audit wave |
-| `common/command/_mod.qh` | 5 | console-commands unit — 2026-07-02 unmapped-area audit wave |
 | `menu/anim/_mod.inc` | 5 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/anim/_mod.qh` | 5 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `client/command/_mod.inc` | 4 | console-commands unit — 2026-07-02 unmapped-area audit wave |
-| `client/command/_mod.qh` | 4 | console-commands unit — 2026-07-02 unmapped-area audit wave |
 | `menu/command/menu_cmd.qh` | 3 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/command/_mod.inc` | 2 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/command/_mod.qh` | 2 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/mutators/_mod.inc` | 2 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/mutators/_mod.qh` | 2 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `common/command/reg.qc` | 1 | console-commands unit — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/minigame/bd.qh` | 1 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/minigame/c4.qh` | 1 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/minigame/nmm.qh` | 1 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/minigame/pong.qh` | 1 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/minigame/pp.qh` | 1 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/minigame/ps.qh` | 1 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `common/minigames/minigame/ttt.qh` | 1 | minigames unit — 2026-07-02 unmapped-area audit wave |
-| `menu/item/tab.qc` | 1 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 | `menu/matrix.qh` | 1 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
-| `menu/mutators/events.qc` | 1 | menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave |
 
 ## Exclusions (deliberately out of scope)
 
@@ -476,6 +300,10 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 
 ## Defer entries now satisfied (remove from coverage-scope.yaml)
 
+- `client/command/_mod.inc` is now cited
+- `client/command/_mod.qh` is now cited
+- `client/command/cl_cmd.qc` is now cited
+- `client/command/cl_cmd.qh` is now cited
 - `client/hud/panel/strafehud/_mod.inc` is now cited
 - `client/hud/panel/strafehud/_mod.qh` is now cited
 - `client/hud/panel/strafehud/draw.qc` is now cited
@@ -486,21 +314,192 @@ file; it does not by itself prove row-level completeness (the adversarial verify
 - `client/hud/panel/strafehud/extra.qh` is now cited
 - `client/hud/panel/strafehud/util.qc` is now cited
 - `client/hud/panel/strafehud/util.qh` is now cited
+- `common/command/_mod.inc` is now cited
+- `common/command/_mod.qh` is now cited
+- `common/command/command.qh` is now cited
+- `common/command/generic.qc` is now cited
+- `common/command/generic.qh` is now cited
+- `common/command/markup.qc` is now cited
+- `common/command/markup.qh` is now cited
+- `common/command/reg.qc` is now cited
+- `common/command/reg.qh` is now cited
+- `common/command/rpn.qc` is now cited
+- `common/command/rpn.qh` is now cited
 - `common/mapinfo.qc` is now cited
 - `common/mapinfo.qh` is now cited
+- `common/minigames/_mod.inc` is now cited
+- `common/minigames/_mod.qh` is now cited
+- `common/minigames/cl_minigames.qc` is now cited
+- `common/minigames/cl_minigames.qh` is now cited
 - `common/minigames/cl_minigames_hud.qc` is now cited
+- `common/minigames/cl_minigames_hud.qh` is now cited
+- `common/minigames/minigame/_mod.inc` is now cited
+- `common/minigames/minigame/_mod.qh` is now cited
+- `common/minigames/minigame/all.qh` is now cited
+- `common/minigames/minigame/bd.qc` is now cited
+- `common/minigames/minigame/bd.qh` is now cited
+- `common/minigames/minigame/c4.qc` is now cited
+- `common/minigames/minigame/c4.qh` is now cited
+- `common/minigames/minigame/nmm.qc` is now cited
+- `common/minigames/minigame/nmm.qh` is now cited
+- `common/minigames/minigame/pong.qc` is now cited
+- `common/minigames/minigame/pong.qh` is now cited
+- `common/minigames/minigame/pp.qc` is now cited
+- `common/minigames/minigame/pp.qh` is now cited
+- `common/minigames/minigame/ps.qc` is now cited
+- `common/minigames/minigame/ps.qh` is now cited
+- `common/minigames/minigame/ttt.qc` is now cited
+- `common/minigames/minigame/ttt.qh` is now cited
+- `common/minigames/minigames.qc` is now cited
+- `common/minigames/minigames.qh` is now cited
+- `common/minigames/sv_minigames.qc` is now cited
+- `common/minigames/sv_minigames.qh` is now cited
 - `lib/json.qc` is now cited
 - `lib/urllib.qc` is now cited
+- `menu/anim/animation.qc` is now cited
+- `menu/anim/animhost.qc` is now cited
+- `menu/anim/easing.qc` is now cited
+- `menu/anim/keyframe.qc` is now cited
+- `menu/command/menu_cmd.qc` is now cited
+- `menu/draw.qc` is now cited
+- `menu/item.qc` is now cited
+- `menu/item/borderimage.qc` is now cited
+- `menu/item/button.qc` is now cited
+- `menu/item/checkbox.qc` is now cited
+- `menu/item/container.qc` is now cited
+- `menu/item/dialog.qc` is now cited
+- `menu/item/image.qc` is now cited
+- `menu/item/inputbox.qc` is now cited
+- `menu/item/inputcontainer.qc` is now cited
+- `menu/item/label.qc` is now cited
+- `menu/item/listbox.qc` is now cited
+- `menu/item/mixedslider.qc` is now cited
+- `menu/item/modalcontroller.qc` is now cited
+- `menu/item/nexposee.qc` is now cited
+- `menu/item/radiobutton.qc` is now cited
+- `menu/item/slider.qc` is now cited
+- `menu/item/tab.qc` is now cited
+- `menu/item/textslider.qc` is now cited
+- `menu/matrix.qc` is now cited
+- `menu/menu.qc` is now cited
+- `menu/mutators/events.qc` is now cited
+- `menu/mutators/events.qh` is now cited
+- `menu/xonotic/bigbutton.qc` is now cited
+- `menu/xonotic/bigcommandbutton.qc` is now cited
+- `menu/xonotic/button.qc` is now cited
+- `menu/xonotic/campaign.qc` is now cited
+- `menu/xonotic/charmap.qc` is now cited
+- `menu/xonotic/checkbox.qc` is now cited
+- `menu/xonotic/checkbox_slider_invalid.qc` is now cited
+- `menu/xonotic/checkbox_string.qc` is now cited
+- `menu/xonotic/colorbutton.qc` is now cited
+- `menu/xonotic/colorpicker.qc` is now cited
+- `menu/xonotic/colorpicker_string.qc` is now cited
+- `menu/xonotic/commandbutton.qc` is now cited
+- `menu/xonotic/credits.qc` is now cited
+- `menu/xonotic/crosshairpicker.qc` is now cited
+- `menu/xonotic/crosshairpreview.qc` is now cited
+- `menu/xonotic/cvarlist.qc` is now cited
+- `menu/xonotic/datasource.qc` is now cited
+- `menu/xonotic/demolist.qc` is now cited
+- `menu/xonotic/dialog.qc` is now cited
+- `menu/xonotic/dialog_credits.qc` is now cited
+- `menu/xonotic/dialog_firstrun.qc` is now cited
+- `menu/xonotic/dialog_gamemenu.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_ammo.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_centerprint.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_chat.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_checkpoints.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_engineinfo.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_healtharmor.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_infomessages.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_itemstime.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_modicons.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_notification.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_physics.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_pickup.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_powerups.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_pressedkeys.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_quickmenu.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_racetimer.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_radar.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_score.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_strafehud.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_timer.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_vote.qc` is now cited
+- `menu/xonotic/dialog_hudpanel_weapons.qc` is now cited
+- `menu/xonotic/dialog_hudsetup_exit.qc` is now cited
+- `menu/xonotic/dialog_media.qc` is now cited
+- `menu/xonotic/dialog_media_demo.qc` is now cited
+- `menu/xonotic/dialog_media_demo_startconfirm.qc` is now cited
+- `menu/xonotic/dialog_media_demo_timeconfirm.qc` is now cited
+- `menu/xonotic/dialog_media_guide.qc` is now cited
+- `menu/xonotic/dialog_media_musicplayer.qc` is now cited
+- `menu/xonotic/dialog_media_screenshot.qc` is now cited
+- `menu/xonotic/dialog_media_screenshot_viewer.qc` is now cited
+- `menu/xonotic/dialog_monstertools.qc` is now cited
+- `menu/xonotic/dialog_multiplayer.qc` is now cited
 - `menu/xonotic/dialog_multiplayer_create_mutators.qc` is now cited
+- `menu/xonotic/dialog_quit.qc` is now cited
 - `menu/xonotic/dialog_sandboxtools.qc` is now cited
+- `menu/xonotic/dialog_settings.qc` is now cited
 - `menu/xonotic/dialog_settings_game_messages.qc` is now cited
 - `menu/xonotic/dialog_settings_game_weapons.qc` is now cited
+- `menu/xonotic/dialog_singleplayer.qc` is now cited
+- `menu/xonotic/dialog_singleplayer_winner.qc` is now cited
+- `menu/xonotic/dialog_teamselect.qc` is now cited
+- `menu/xonotic/dialog_termsofservice.qc` is now cited
+- `menu/xonotic/dialog_uid2name.qc` is now cited
+- `menu/xonotic/dialog_welcome.qc` is now cited
+- `menu/xonotic/gametypelist.qc` is now cited
+- `menu/xonotic/guide/description.qc` is now cited
+- `menu/xonotic/guide/entries.qc` is now cited
+- `menu/xonotic/guide/guide.qc` is now cited
+- `menu/xonotic/guide/pages.qc` is now cited
+- `menu/xonotic/guide/topics.qc` is now cited
+- `menu/xonotic/hudskinlist.qc` is now cited
+- `menu/xonotic/image.qc` is now cited
+- `menu/xonotic/inputbox.qc` is now cited
+- `menu/xonotic/keybinder.qc` is now cited
+- `menu/xonotic/languagelist.qc` is now cited
+- `menu/xonotic/leavematchbutton.qc` is now cited
+- `menu/xonotic/listbox.qc` is now cited
+- `menu/xonotic/mainwindow.qc` is now cited
+- `menu/xonotic/maplist.qc` is now cited
+- `menu/xonotic/mixedslider.qc` is now cited
+- `menu/xonotic/nexposee.qc` is now cited
+- `menu/xonotic/picker.qc` is now cited
+- `menu/xonotic/playerlist.qc` is now cited
+- `menu/xonotic/playermodel.qc` is now cited
+- `menu/xonotic/playlist.qc` is now cited
+- `menu/xonotic/radiobutton.qc` is now cited
+- `menu/xonotic/rootdialog.qc` is now cited
+- `menu/xonotic/screenshotimage.qc` is now cited
+- `menu/xonotic/screenshotlist.qc` is now cited
+- `menu/xonotic/scrollpanel.qc` is now cited
+- `menu/xonotic/serverlist.qc` is now cited
+- `menu/xonotic/skinlist.qc` is now cited
+- `menu/xonotic/slider.qc` is now cited
+- `menu/xonotic/slider_decibels.qc` is now cited
+- `menu/xonotic/slider_picmip.qc` is now cited
+- `menu/xonotic/slider_resolution.qc` is now cited
+- `menu/xonotic/slider_sbfadetime.qc` is now cited
+- `menu/xonotic/soundlist.qc` is now cited
+- `menu/xonotic/statslist.qc` is now cited
+- `menu/xonotic/tab.qc` is now cited
+- `menu/xonotic/tabcontroller.qc` is now cited
+- `menu/xonotic/textbox.qc` is now cited
+- `menu/xonotic/textlabel.qc` is now cited
+- `menu/xonotic/textslider.qc` is now cited
+- `menu/xonotic/util.qc` is now cited
+- `menu/xonotic/weaponarenacheckbox.qc` is now cited
+- `menu/xonotic/weaponslist.qc` is now cited
+- `server/command/getreplies.qc` is now cited
 
 ## STALE citations (base_refs path matches no Base file — fix the row)
 
 - `client/hud/panel/crosshair.qc`
 - `client/hud/panel/itemstime.qc`
-- `client/hud/strafehud.qc`
 - `common/gamemodes/gamemode/ctf/sv_ctf.qc`
 - `common/gamemodes/gamemode/freezetag/sv_freezetag.qc`
 - `common/gamemodes/gamemode/keyhunt/sv_keyhunt.qc`

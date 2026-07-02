@@ -1219,6 +1219,18 @@ public partial class ClientWorld : Node3D
         float m = Mathf.Max(CvarF("r_pvs_cull_entities_margin", 64f), 0f);
         var margin = new NVec3(m, m, m);
 
+        // ACTIVE portal exit viewpoints (PortalRenderer.ActiveExitViewsQuake): SetPvsVisible(false) hides the
+        // node from EVERY viewport sharing the World3D, so an entity standing at a portal's exit must stay
+        // visible while that portal renders — union its cluster in, exactly like WorldPvsCuller's cell pass.
+        _entityPvsExtraClusters.Clear();
+        var portalViews = XonoticGodot.Game.Client.PortalRenderer.ActiveExitViewsQuake;
+        for (int i = 0; i < portalViews.Count; i++)
+        {
+            int pc = Pvs!.LeafCluster(Pvs.FindLeaf(portalViews[i]));
+            if (pc >= 0 && !_entityPvsExtraClusters.Contains(pc))
+                _entityPvsExtraClusters.Add(pc);
+        }
+
         foreach (var kv in _entityNodes)
         {
             EntityNode node = kv.Value;
@@ -1234,9 +1246,14 @@ public partial class ClientWorld : Node3D
             // wrongly culling a visible enemy is far worse than under-culling one solidly behind a wall).
             NVec3 o = e.Origin;
             bool visible = Pvs!.BoxAnyClusterVisibleFrom(viewerCluster, o - margin, o + margin);
+            for (int i = 0; i < _entityPvsExtraClusters.Count && !visible; i++)
+                visible = Pvs!.BoxAnyClusterVisibleFrom(_entityPvsExtraClusters[i], o - margin, o + margin);
             node.SetPvsVisible(visible);
         }
     }
+
+    // Scratch for ApplyEntityPvsCull's portal-exit cluster union (rebuilt per frame; empty when no portal renders).
+    private readonly List<int> _entityPvsExtraClusters = new();
 
     /// <summary>
     /// Port of the per-frame CSQCModel PreDraw hooks (<c>CSQCModel_Hook_PreDraw</c>, csqcmodel_hooks.qc:674) for

@@ -307,7 +307,8 @@ public sealed class BotBrain
             return Emit(bot, Vector3.Zero, jumpHeld, crouch: false, attack: false, attack2: false, dt);
 
         // 1) target selection (throttled; SUPERBOT reacts fast)
-        ChooseEnemy(now);
+        using (XonoticGodot.Common.Diagnostics.Prof.Sample("bot.enemy")) // [profiling] enemy scan + vis traces
+            ChooseEnemy(now);
 
         // 1b) weapon selection: pick the best owned weapon for the enemy's range (QC havocbot_chooseweapon).
         if (now >= _chooseWeaponTime)
@@ -321,8 +322,15 @@ public sealed class BotBrain
         // empty, or a clearroute forced a re-plan (QC navigation_goalrating_timeout/_force inside the roles).
         if (StrategyTokenHeld)
         {
+            using var _stratScope = XonoticGodot.Common.Diagnostics.Prof.Sample("bot.strategy"); // [profiling] flood + role rating
             float strategyInterval = Cvars.FloatOr("bot_ai_strategyinterval", 7f);
-            if (_strategyForced || !Nav.HasGoal || now >= _strategyTime)
+            // QC navigation_goalrating_timeout (navigation.qc:44-47): the re-rate is INTERVAL-gated ONLY — there is
+            // no "no goal → re-rate now" bypass; a goal-less bot waits out the timer (roaming meanwhile) and the
+            // forced path (navigation_goalrating_timeout_force → strategytime = 0) is _strategyForced. The old
+            // `!Nav.HasGoal` bypass here re-ran the full seed-flood + role rating EVERY THINK whenever routing
+            // failed (e.g. no tracewalk-reachable seed at the bot's spot) — with a few bots that was a
+            // 50-350ms/frame bot.strategy melt (the stormkeep "very slow with bots" report).
+            if (_strategyForced || now >= _strategyTime)
             {
                 _strategyTime = now + strategyInterval;
                 _strategyForced = false;
@@ -345,6 +353,10 @@ public sealed class BotBrain
                             // SetGoal's multi-seed search uses Base's on-ground vs in-air seed-radius growth.
                             Nav.SetGoal(bot.Origin, g.Position, Network, g.Target, bot.OnGround);
                 }
+                // QC navigation_goalrating_timeout_expire(2) idiom: a pass that produced NO route (nothing rated,
+                // or SetGoal found no path) retries SOON — but on the timer, never per-think (see the gate above).
+                if (!Nav.HasGoal)
+                    _strategyTime = now + 2f;
             }
             OnStrategyTokenUsed?.Invoke(); // QC bot_strategytoken_taken = true (used this frame)
         }
@@ -358,7 +370,9 @@ public sealed class BotBrain
 
         // 3) navigation: steer toward current goal -> wish-move + jump/crouch
         bool onGround = bot.OnGround;
-        Vector3 move = Nav.Steer(bot, Aim.ViewAngles.Y, onGround);
+        Vector3 move;
+        using (XonoticGodot.Common.Diagnostics.Prof.Sample("bot.steer")) // [profiling] waypoint steering + tracewalks
+            move = Nav.Steer(bot, Aim.ViewAngles.Y, onGround);
 
         // 3b) no-progress watchdog (QC havocbot_checkgoaldistance): >0.5s without closing on the goal →
         // drop the route and force a re-rate on the next token hold (covers navigation_unstuck's main value).
@@ -373,6 +387,7 @@ public sealed class BotBrain
         // the goal is unreachable (clear + ignore it for bot_ai_ignoregoal_timeout).
         bool dangerBrakeEngaged = false; // QC do_break/evadedanger this frame (forbids bunnyhop, havocbot.qc:1315)
         _triggerHurtEscape = false;      // QC trigger_hurt escape intent (skill>6), set by the danger probe below
+        using (XonoticGodot.Common.Diagnostics.Prof.Sample("bot.danger")) // [profiling] danger probes (ground/hazard traces)
         if (Nav.Current is Vector3 cur)
         {
             Vector3 flat = new(cur.X - bot.Origin.X, cur.Y - bot.Origin.Y, 0f);
@@ -436,6 +451,7 @@ public sealed class BotBrain
         // 4) aim
         bool wantAttack = false;
         bool wantAttack2 = false;
+        using var _aimScope = XonoticGodot.Common.Diagnostics.Prof.Sample("bot.aim"); // [profiling] aim + fire decision + dodge (rest of think)
         Aim.UpdateShotVectors(bot.Origin);
         if (now >= _aimTime)
             _aimTime = now + AimInterval;

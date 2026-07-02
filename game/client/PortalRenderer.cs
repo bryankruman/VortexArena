@@ -53,6 +53,15 @@ public partial class PortalRenderer : Node3D
     /// The main camera's default cull mask includes layer 20, so the windows stay visible to the player.</summary>
     private const uint PortalSurfaceLayerBit = 1u << 19;
 
+    /// <summary>The ACTIVE portals' exit-side viewpoints (Quake) — one point 8qu in front of each rendering
+    /// portal's exit window. The PVS cullers (<see cref="WorldPvsCuller"/> / ClientWorld's entity cull) UNION
+    /// these with the main camera's cluster: they hide nodes via <c>Visible=false</c>, which applies to EVERY
+    /// viewport sharing the World3D — without the union the exit room's cells are hidden for the portal camera
+    /// too (the main camera can't see them) and the portal renders BLACK. Anything visible THROUGH the window
+    /// is covered by the window-point cluster (every through-window sightline crosses the window plane).
+    /// Rebuilt every frame by the live renderer; empty when no portal is rendering (menus, remote clients).</summary>
+    public static readonly List<NVec3> ActiveExitViewsQuake = new();
+
     private sealed class Portal
     {
         public MeshInstance3D Surface = null!;
@@ -63,6 +72,7 @@ public partial class PortalRenderer : Node3D
         public VisibleOnScreenNotifier3D Notifier = null!;
         public NVec3 InOriginQ, InForwardQ;        // the matched zone's IN plane (Quake) — the facing gate
         public Vector3[] ExitCorners = null!;      // exit-side window corners (Godot) — the near-clip bound
+        public NVec3 ExitViewQuake;                // exit window center +8qu out — the PVS-union viewpoint
     }
 
     private readonly List<Portal> _portals = new();
@@ -179,6 +189,7 @@ public partial class PortalRenderer : Node3D
             {
                 Surface = surface, Transform = t, Viewport = vp, Cam = cam, Material = mat,
                 Notifier = notifier, InOriginQ = t.InOrigin, InForwardQ = t.InForward, ExitCorners = exit,
+                ExitViewQuake = t.OutOrigin + t.OutForward * 8f, // just inside the exit room's airspace
             });
         }
 
@@ -196,8 +207,17 @@ public partial class PortalRenderer : Node3D
         return string.IsNullOrWhiteSpace(s) || Api.Cvars.GetFloat("cl_portal_render") != 0f;
     }
 
+    public override void _ExitTree()
+    {
+        // Drop the published exit viewpoints with the renderer (a stale entry would feed the NEXT map's PVS
+        // cullers clusters from the WRONG tree).
+        ActiveExitViewsQuake.Clear();
+    }
+
     public override void _Process(double delta)
     {
+        // Rebuilt every frame: only portals that actually render this frame contribute a PVS-union viewpoint.
+        ActiveExitViewsQuake.Clear();
         if (_portals.Count == 0 || _mainCamera is null)
             return;
 
@@ -224,6 +244,8 @@ public partial class PortalRenderer : Node3D
             p.Viewport.RenderTargetUpdateMode = visible ? SubViewport.UpdateMode.Always : SubViewport.UpdateMode.Disabled;
             if (!visible)
                 continue;
+
+            ActiveExitViewsQuake.Add(p.ExitViewQuake); // PVS-union viewpoint for the cullers (see the field doc)
 
             if (wanted.X > 0 && p.Viewport.Size != wanted)
                 p.Viewport.Size = wanted;

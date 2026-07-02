@@ -323,6 +323,11 @@ public sealed class WarpzoneManager
         if (Vector3.Dot(point - wz.Transform.InOrigin, wz.Transform.InForward) >= 0f)
             return false; // not yet across the seam
 
+        // sv_warpzone_trace 1 — one-line crossing dump (entry→exit origin/velocity/angles + the zone planes) for
+        // diagnosing exit-angle/momentum reports live. Default off. Captured pre-transform; printed post.
+        bool traceCross = Api.Services is not null && Api.Cvars.GetFloat("sv_warpzone_trace") != 0f;
+        Vector3 preO = e.Origin, preV = e.Velocity, preA = e.Angles;
+
         // QC WarpZone_Teleport (server.qc:84/88/137): the transform is applied to the EYE point (`o0 = origin +
         // view_ofs`) and the entity is placed at `o1 - view_ofs` — view_ofs is a local upright offset that does NOT
         // rotate with the crossing. Identical to transforming the origin for an upright zone pair (R·view_ofs ==
@@ -330,6 +335,10 @@ public sealed class WarpzoneManager
         Vector3 newOrigin = wz.Transform.TransformOrigin(e.Origin + e.ViewOfs) - e.ViewOfs;
         e.Velocity = wz.Transform.TransformVelocity(e.Velocity);
         e.Angles = wz.Transform.TransformAngles(e.Angles);
+        if (traceCross)
+            System.Console.WriteLine(
+                $"[wz] cross client={(e.Flags & EntFlags.Client) != 0} '{e.ClassName}' o {preO}->{newOrigin} v {preV}->{e.Velocity} a {preA}->{e.Angles}"
+                + $" | in o={wz.Transform.InOrigin} f={wz.Transform.InForward} | out o={wz.Transform.OutOrigin} f={wz.Transform.OutForward}");
         // QC WarpZone_TeleportPlayer (server.qc:51) — `player.fixangle = true`. The exit facing is
         // SERVER-AUTHORITATIVE in Base: the engine snaps the client view to the teleported `player.angles`. Stamp
         // the same fixangle channel here so the listen host snaps the LOCAL view to the rotated facing
@@ -344,8 +353,19 @@ public sealed class WarpzoneManager
         {
             e.FixAngle = true;
             e.FixAngleAngles = e.Angles;
+            // QC WarpZone_TeleportPlayer (server.qc:54-58): a BOT's aim state must follow the seam — Base sets
+            // `player.v_angle = player.angles` + bot_aim_reset for bot clients. The port's BotBrain re-seeds its
+            // aim from bot.ViewAngles at think start (and writes it back over .Angles at think end), so a STALE
+            // ViewAngles steers the bot straight back INTO the zone it just exited — an endless cross→re-cross
+            // loop that also thrashes navigation (route clears + forced strategy re-rates every crossing).
+            // Human clients get ViewAngles re-stamped from input every tick, so this is human-harmless.
+            e.ViewAngles = e.Angles;
         }
         e.AVelocity = wz.Transform.TransformVelocity(e.AVelocity);
+        // QC WarpZone_TeleportPlayer (server.qc:46-47): stamp the teleport bookkeeping — lastteleport_origin is
+        // the PRE-warp origin, lastteleporttime the crossing time (anti-stuck + bot-nav consumers read these).
+        e.LastTeleportOrigin = e.Origin;
+        e.LastTeleportTime = now;
         if (Api.Services is not null) Api.Entities.SetOrigin(e, newOrigin);
         else e.Origin = newOrigin;
         e.OldOrigin = newOrigin; // QC: cancel interpolation across the seam (a teleport, not a slide)
@@ -1058,8 +1078,12 @@ public sealed class WarpzoneManager
         {
             e.FixAngle = true;
             e.FixAngleAngles = e.Angles;
+            e.ViewAngles = e.Angles; // QC server.qc:54-58 — the bot aim conduit (see Teleport); human-harmless
         }
         e.AVelocity = wz.Transform.TransformVelocity(e.AVelocity);
+        // QC WarpZone_TeleportPlayer (server.qc:46-47) teleport bookkeeping (pre-warp origin + crossing time).
+        e.LastTeleportOrigin = e.Origin;
+        e.LastTeleportTime = now;
         if (Api.Services is not null) Api.Entities.SetOrigin(e, newOrigin);
         else e.Origin = newOrigin;
         e.OldOrigin = newOrigin;

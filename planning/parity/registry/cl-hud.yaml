@@ -607,7 +607,7 @@ features:
     name: "Strafe HUD panel"
     layer: [presentation]
     base_refs:
-      - "client/hud/strafehud.qc:HUD_StrafeHUD"
+      - "client/hud/panel/strafehud.qc:HUD_StrafeHUD"
     port_refs:
       - "game/hud/StrafeHudPanel.cs"
     constants:
@@ -620,7 +620,7 @@ features:
     verification:
       - { kind: code, ref: "NetGame feeds StrafeHudPanel; show-mode 3 gated", result: pass }
     confidence: low
-    notes: "Strafe bar present and fed; faithful-to-stock-strafehud detail unverified."
+    notes: "SUPERSEDED by registry/cl-strafehud.yaml (2026-07-02 per-feature audit, adversarially verified) — read that unit instead; this row kept only as the cl-hud ledger anchor."
 
   - id: cl-hud.panel.pickup
     name: "Pickup panel (#26)"

@@ -1,0 +1,963 @@
+unit: minigames
+category: misc
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-07-02"
+summary:
+  feature_count: 31
+  worst_gaps:
+    - "NMM + Bulldozer session state lives in Session.Extra (NmmState/BdState) which MinigameNetState never encodes -> a remote client sees an EMPTY board for both games (renderer has no nmm/bd draw path either); only Pong gets a bespoke encode"
+    - "Bulldozer is unplayable on the live path: LoadLevel() has no live caller, the shipped minigames/bulldozer/storage_level*.txt files are never read, sv_minigames_bulldozer_startlevel is not a cvar, and the menu verbs (next/restart/edit/save) are misparsed by Bulldozer.Move as direction moves"
+    - "Invite never notifies the target: Commands.CmdMinigame discards the session name (out _) and no Send_Notification(INFO_MINIGAME_INVITE) is dispatched (the notif template EXISTS in NotificationsList.cs:839); the in-game menu also has no Invite submenu"
+    - "The 'It's your turn' prompt (minigame_prompt -> HUD_Notify_Push with the game icon) is not ported at all — opponents get no nudge when it's their move"
+    - "Per-game keyboard board control (arrows/enter/space navigation in every *_client_event) is not ported for the GRID games — only Pong's paddle key-drive is wired (HudManager.DrivePongKeys -> PongMoveSink); Bulldozer, whose ONLY play input is arrow keys, therefore has no client input path at all"
+features:
+
+  # ============================================================
+  # framework: common/minigames/minigames.qc/.qh (+ minigame/all.qh)
+  # ============================================================
+
+  - id: minigames.framework.registry
+    name: "Minigame registry + descriptor lookup (REGISTER_MINIGAME, minigame_get_descriptor)"
+    layer: [shared]
+    base_refs:
+      - "common/minigames/minigames.qc:minigame_get_descriptor (5)"
+      - "common/minigames/minigames.qc:minigame_count_players (121)"
+      - "common/minigames/minigames.qh:minigame_event contract (44-97)"
+      - "common/minigames/sv_minigames.qh:REGISTER_MINIGAME (70)"
+      - "common/minigames/cl_minigames.qh:REGISTER_MINIGAME (111)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Minigames/Minigame.cs:Minigames.RegisterAll (364)"
+      - "src/XonoticGodot.Common/Gameplay/Minigames/Minigame.cs:Minigames.ByName (351)"
+      - "src/XonoticGodot.Common/Gameplay/Minigames/Minigame.cs:Minigame (abstract descriptor, 271)"
+    constants:
+      - { name: "registered_games", base: "7 (nmm ttt c4 pong ps pp bd)", port: "8 (adds Snake, an original non-Base game)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The QC string-event dispatcher (minigame_event(mg,\"start\"...)) becomes C# virtuals (Start/Join/Part/Move/End); the port also registers an 8th original game (Snake) that Base does not ship. Both deliberate."
+    gaps:
+      - "The extra 'snake' entry appears in `cmd minigame list` / the Create menu — a Base client would never see it (cosmetic-only divergence, flagged so cvar/asset diffs don't trip on it)."
+    verification:
+      - { kind: test, ref: "tests/XonoticGodot.Tests/MinigameSessionTests.cs:Create_RegistersSession_AndSeatsCreatorOnTeam1", result: pass }
+      - { kind: code, ref: "GameWorld.cs:929 builds MinigameSessionManager; Commands.cs:1949 lists Minigames.All", result: pass }
+    confidence: high
+    notes: "minigame_count_players -> MinigameSession.PlayerCount. Registry ordering fixed by Registry<Minigame>.Sort()."
+
+  - id: minigames.framework.tile_math
+    name: "Tile-name math (letter/number/pos/buildname/relative_tile/tile_name, next/prev team)"
+    layer: [shared]
+    base_refs:
+      - "common/minigames/minigames.qc:minigame_tile_letter (12)"
+      - "common/minigames/minigames.qc:minigame_tile_pos (27)"
+      - "common/minigames/minigames.qc:minigame_relative_tile (40)"
+      - "common/minigames/minigames.qc:minigame_tile_name (54)"
+      - "common/minigames/minigames.qc:minigame_next_team (65)"
+      - "common/minigames/minigames.qh:declarations (8-35)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Minigames/Minigame.cs:MinigameTiles (99-127)"
+      - "src/XonoticGodot.Common/Gameplay/Minigames/Minigame.cs:MinigameSession.NextTeam (255)"
+    constants:
+      - { name: "tile_id_format", base: "\"<letter><1-based-number>\", row 0 = bottom", port: "identical (BuildName/Letter/Number)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "minigame_prev_team has no port counterpart (also unused by all 7 Base games — QC dead code)."
+    verification:
+      - { kind: test, ref: "MinigameSessionTests TTT/C4 end-to-end place moves resolve tiles by these helpers", result: pass }
+    confidence: high
+    notes: "minigame_tile_pos (relative center of a tile) is subsumed by the renderer's CellRect (MinigameRenderer.cs:75), same bottom-up row convention."
+
+  - id: minigames.framework.msle_networking
+    name: "Minigame entity networking (msle_spawn/MSLE table, minigame_SendEntity/CheckSend/resend, ENT_CLIENT_MINIGAME read)"
+    layer: [shared]
+    base_refs:
+      - "common/minigames/minigames.qc:msle_spawn (87)"
+      - "common/minigames/minigames.qc:msle_id/msle_classname (99-119)"
+      - "common/minigames/sv_minigames.qc:minigame_SendEntity (64)"
+      - "common/minigames/sv_minigames.qc:minigame_CheckSend (118)"
+      - "common/minigames/sv_minigames.qc:minigame_resend (108)"
+      - "common/minigames/cl_minigames.qc:NET_HANDLE(ENT_CLIENT_MINIGAME) (179)"
+      - "common/minigames/cl_minigames.qc:minigame_read_owner (169)"
+      - "common/minigames/minigame/all.qh:MINIGAME_SIMPLELINKED_ENTITIES (100-105)"
+      - "common/minigames/minigames.qh:MINIG_SF_* (108-112)"
+    port_refs:
+      - "game/net/MinigameNetState.cs:Encode/Decode (22/98)"
+      - "game/net/MinigameNetState.cs:EncodeEnvelope/DecodeEnvelope (211/239)"
+      - "game/net/ServerNet.cs:SendMinigameState (921, called 490 each net frame)"
+      - "game/net/ClientNet.cs:HandleMinigameState (569)"
+      - "src/XonoticGodot.Common/Gameplay/Minigames/MinigameSessionManager.cs:MarkDirty/DrainDirty (111/114)"
+    constants:
+      - { name: "send_model", base: "per-entity delta (SendFlags byte + MSLE fields), gated per-client by minigame_CheckSend", port: "whole-session snapshot per participating peer on a reliable channel, dirty-flag driven", match: false }
+    status:
+      logic: partial
+      values: na
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The port deliberately replaces the per-entity MSLE delta protocol with a per-peer whole-session snapshot (Envelope carries netname + the peer's own team). Reconstruction-complete for grid games + Pong; simpler and reliable-channel safe."
+    gaps:
+      - "Session.Extra state is NOT serialized except Pong: NmmState ('nmm') and BdState ('bd') never reach the client, so NMM and Bulldozer boards are invisible remotely (see the per-game presentation rows)."
+      - "Spectator peers who merely watch a session get snapshots only via Participants(); QC additionally let any client join as SPECTATOR_TEAM and receive entities — port does seat spectators (team 255) so envelopes flow, but a non-participant never sees boards (QC ditto: CheckSend gates to players) — parity OK, noted for clarity."
+    verification:
+      - { kind: code, ref: "ServerNet.cs:926 DrainDirty->EncodeEnvelope per Participants; ClientNet raises MinigameStateReceived; NetGame.cs:1592 subscribes", result: pass }
+    confidence: high
+    notes: "QC resend-everything (MINIG_SF_ALL) == the port's every-snapshot-is-full model. Departed players get a null envelope (QC entity removal -> deactivate)."
+
+  - id: minigames.framework.infra_files
+    name: "coverage: build-glue includes (_mod.inc/_mod.qh, per-game one-line .qh headers, panel decl header)"
+    layer: [shared]
+    base_refs:
+      - "common/minigames/_mod.inc"
+      - "common/minigames/_mod.qh"
+      - "common/minigames/minigame/_mod.inc"
+      - "common/minigames/minigame/_mod.qh"
+      - "common/minigames/minigame/bd.qh"
+      - "common/minigames/minigame/c4.qh"
+      - "common/minigames/minigame/nmm.qh"
+      - "common/minigames/minigame/pong.qh"
+      - "common/minigames/minigame/pp.qh"
+      - "common/minigames/minigame/ps.qh"
+      - "common/minigames/minigame/ttt.qh"
+    port_refs: []
+    constants: []
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: true
+    divergence_rationale: "Behavior-free build glue: the genmod.sh include chains and one-line '#pragma once' game headers. C# assemblies replace the QC include model; nothing to port. Cited so the coverage ledger counts every scoped file."
+    gaps: []
+    verification: []
+    confidence: high
+    notes: "minigame/all.qh is NOT in this row — its MSLE table is real behavior, cited in minigames.framework.msle_networking."
+
+  # ============================================================
+  # server: common/minigames/sv_minigames.qc/.qh
+  # ============================================================
+
+  - id: minigames.sv.session_lifecycle
+    name: "Session lifecycle (start/join/part/end/end_minigames, addplayer/rmplayer, sessions list)"
+    layer: [authority]
+    base_refs:
+      - "common/minigames/sv_minigames.qc:start_minigame (164)"
+      - "common/minigames/sv_minigames.qc:join_minigame (200)"
+      - "common/minigames/sv_minigames.qc:minigame_addplayer (127)"
+      - "common/minigames/sv_minigames.qc:minigame_rmplayer (17)"
+      - "common/minigames/sv_minigames.qc:end_minigame/end_minigames (224/255)"
+      - "common/minigames/sv_minigames.qh:minigame_sessions/.active_minigame (54-61)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Minigames/MinigameSessionManager.cs:Create/JoinByName/AddPlayer/RemovePlayer/End/EndAll (146-338)"
+      - "src/XonoticGodot.Server/GameWorld.cs:929 (manager built + PlayBanned wired)"
+      - "src/XonoticGodot.Server/GameWorld.cs:4773 (EndAll on match teardown)"
+    constants:
+      - { name: "sv_minigames default", base: "1 (minigames.cfg)", port: "1 (assets minigames.cfg exec'd; ConfigTests.cs:258 asserts 1)", match: true }
+      - { name: "session netname", base: "\"<gameid>_<etof(ent)>\"", port: "\"<gameid>_<counter>\"", match: true }
+      - { name: "only-player-leaves", base: "end_minigame (no part event)", port: "End() when CountHumanPlayers<=1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "GameLogEcho ':minigame:start/join/part/end/invite' event-log lines are downgraded to Log.Trace — they never reach the sv_eventlog game log (Base writes them there)."
+    verification:
+      - { kind: test, ref: "MinigameSessionTests: Create_*, Join_*, Part_LastPlayer_EndsSession, Part_OneOfTwo, EndAll_ClearsEveryLiveSession, Create_WhileInAnotherGame_PartsTheFirst", result: pass }
+    confidence: high
+    notes: "IS_REAL_CLIENT gate ported (IsRealClient: client flag + !bot; Create_RejectedForBot test). Rejected-first-join -> End+null matches QC start_minigame."
+
+  - id: minigames.sv.observer_forcing
+    name: "Minigame players forced to observer/spectator (sv_minigames_observer, player_clear_minigame movetype restore)"
+    layer: [authority]
+    base_refs:
+      - "common/minigames/sv_minigames.qc:minigame_addplayer observer branch (150-153)"
+      - "common/minigames/sv_minigames.qc:player_clear_minigame (6)"
+      - "common/minigames/sv_minigames.qh:autocvar_sv_minigames_observer (18)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Minigames/MinigameSessionManager.cs:AddPlayer observer branch (231-233)"
+      - "src/XonoticGodot.Common/Gameplay/Minigames/MinigameSessionManager.cs:ObserverForcer/ClearForcer seams (53/57)"
+    constants:
+      - { name: "sv_minigames_observer default", base: "0 (minigames.cfg)", port: "0 (same cfg mounted)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "ObserverForcer and ClearForcer are NEVER wired by the host (GameWorld comment defers to 'T44'): setting sv_minigames_observer 1/2 does nothing, and a leaving player's MOVETYPE_WALK / TEAM_FORCE_DEFAULT restore never runs. Dormant at the shipped default (0) but the admin knob is dead."
+    verification:
+      - { kind: code, ref: "grep: no assignment to Minigames.ObserverForcer/ClearForcer anywhere in src/ or game/", result: fail }
+    confidence: high
+    notes: "The cvar-read plumbing exists and is correct; only the host-side sink is missing."
+
+  - id: minigames.sv.client_command
+    name: "'cmd minigame' dispatcher (create/join/list/list-sessions/end/part/invite + usage + playban gate)"
+    layer: [authority]
+    base_refs:
+      - "common/minigames/sv_minigames.qc:ClientCommand_minigame (310)"
+      - "common/minigames/sv_minigames.qh:MINIGAME_COMMON_CMD (14)"
+    port_refs:
+      - "src/XonoticGodot.Server/Commands.cs:CmdMinigame (1917)"
+      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:161 (subcommand completion list)"
+    constants:
+      - { name: "subcommands", base: "create join list list-sessions end part invite", port: "identical set", match: true }
+      - { name: "disabled msg", base: "\"Minigames are not enabled!\"", port: "identical", match: true }
+      - { name: "g_playban_minigames default", base: "0", port: "0 (gate at Commands.cs:1934 + manager Invite)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC re-tokenizes the tail and forwards ('cmd' event returns handled?); the port's ForwardMove forwards the whole tail string — equivalent for all shipped games, but the QC CENTER_JOIN_PREVENT_MINIGAME centerprint on a failed join is only a plain print here, and CENTER_JOIN_PLAYBAN on the playban gate is likewise print-only."
+    verification:
+      - { kind: test, ref: "MinigameSessionTests: Command_MinigameVerb_CreateJoinListPartEnd, Command_Minigame_RejectedWhenOff_AndFromConsole, Command_Minigame_JoinFailurePrints", result: pass }
+    confidence: high
+    notes: "Usage block text matches QC (the Base 'exising' typo faithfully reproduced — verified in Commands.cs:2027)."
+
+  - id: minigames.sv.invite
+    name: "Invite a player (validation chain + INFO_MINIGAME_INVITE notification to the target)"
+    layer: [authority]
+    base_refs:
+      - "common/minigames/sv_minigames.qc:invite_minigame (263)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Minigames/MinigameSessionManager.cs:Invite (351)"
+      - "src/XonoticGodot.Server/Commands.cs:2000-2013 (invite verb)"
+    constants:
+      - { name: "error strings", base: "Invalid minigame / Invalid player / You can't invite yourself / banned / already playing", port: "identical strings", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The TARGET is never notified: QC fires Send_Notification(NOTIF_ONE, player, INFO_MINIGAME_INVITE, session, inviter) — the port's Invite returns the session name via out param and Commands.CmdMinigame DISCARDS it (out _); the INFO_MINIGAME_INVITE template exists (NotificationsList.cs:839) but has no send site. Invites are therefore only visible to the inviter."
+      - "No in-game menu Invite submenu either (see minigames.hud.menu), so the whole invite flow is console-only and half-silent."
+    verification:
+      - { kind: test, ref: "MinigameSessionTests:Invite_Contract (error strings)", result: pass }
+      - { kind: code, ref: "grep MINIGAME_INVITE: only the NotificationsList definition — zero senders", result: fail }
+    confidence: high
+    notes: "QC success sprint uses descriptor.message; port prints DisplayName — same value."
+
+  - id: minigames.sv.impulse
+    name: "MinigameImpulse (impulses forwarded to the active game)"
+    layer: [authority]
+    base_refs:
+      - "common/minigames/sv_minigames.qc:MinigameImpulse (296)"
+      - "common/minigames/sv_minigames.qc:minigame_find_player (285)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Minigames/MinigameSessionManager.cs:Impulse (389)"
+      - "src/XonoticGodot.Server/Commands.cs:2100 (impulse dispatch calls it first)"
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC routes the raw impulse number into the game's 'impulse' event (none of the 7 shipped games handle it — the hook is for modded games); the port forwards the impulse DIGIT as a Move string, which every shipped game rejects. Net effect identical for shipped content, but a numeric move token could theoretically alias (no shipped game parses digits)."
+    verification:
+      - { kind: code, ref: "Commands.cs:2100 'if (_world.Minigames.Impulse(caller, imp)) return true;' — live on the impulse path", result: pass }
+    confidence: medium
+    notes: "Zero-behavior delta for shipped games since no Base game implements the impulse event."
+
+  # ============================================================
+  # client glue: common/minigames/cl_minigames.qc/.qh
+  # ============================================================
+
+  - id: minigames.cl.session_activation
+    name: "Client session activate/deactivate (active_minigame, minigame_self, local-slot detection, autoclean)"
+    layer: [presentation]
+    base_refs:
+      - "common/minigames/cl_minigames.qc:activate_minigame (114)"
+      - "common/minigames/cl_minigames.qc:deactivate_minigame (83)"
+      - "common/minigames/cl_minigames.qc:minigame_player_entremove (150)"
+      - "common/minigames/cl_minigames.qh:active_minigame/minigame_self (88-90)"
+    port_refs:
+      - "game/net/MinigameClient.cs:OnEnvelope (63)"
+      - "game/net/NetGame.cs:OnMinigameStateReceived (5914, subscribed 1592)"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "QC detects 'this is MY player_pointer' from the networked slot to self-activate; the port's per-peer envelope carries LocalTeam explicitly. Same observable result (board opens on join, closes on leave/end)."
+    gaps:
+      - "QC auto-opens the minigame MENU on activation (auto_close_minigamemenu) and re-runs CurrentButton on deactivate; the port opens only the board overlay — the menu must be toggled manually ('M')."
+    verification:
+      - { kind: code, ref: "MinigameClient.OnEnvelope: null session -> hide board + menu.SetActive(null); non-null -> Show + LocalTeam", result: pass }
+    confidence: high
+    notes: "Client-side entity autoclean is moot (no client entities — whole-session snapshot replaces them)."
+
+  - id: minigames.cl.cmd_forwarding
+    name: "minigame_cmd (client -> 'cmd minigame ...' command channel) + session list tracking"
+    layer: [presentation]
+    base_refs:
+      - "common/minigames/cl_minigames.qc:minigame_cmd_workaround (405)"
+      - "common/minigames/cl_minigames.qh:minigame_cmd macro (93)"
+    port_refs:
+      - "game/net/MinigameClient.cs:SendCommand (105)"
+      - "game/net/MinigameClient.cs:NoteSessionListLine (90)"
+      - "game/net/NetGame.cs:5924 (PrintReceived -> NoteSessionListLine)"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The Join list is scraped from ServerPrint lines of 'list-sessions' (a heuristic single-token-with-underscore filter) instead of QC's direct entity walk — a session named oddly or a print race could miss entries."
+    verification:
+      - { kind: code, ref: "board click -> OnBoardMove -> 'minigame move <tile>' -> ClientNet.SendStringCommand (wired NetGame:1591)", result: pass }
+    confidence: high
+    notes: ""
+
+  - id: minigames.cl.turn_prompt
+    name: "'It's your turn' prompt (minigame_prompt -> HUD notify push with the game icon)"
+    layer: [presentation]
+    base_refs:
+      - "common/minigames/cl_minigames.qc:minigame_prompt (416)"
+    port_refs: []
+    constants:
+      - { name: "notify icon", base: "minigames/<game>/icon_notif", port: "none", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Not ported: QC pushes an HUD notification ('It's your turn' + game icon) whenever a turn-update arrives for your team while the minigame menu is closed (called from c4/ttt/pp/nmm network_receive). The port's only cue is the pulsing status line on the board overlay itself — if the board is hidden there is no prompt at all."
+    verification:
+      - { kind: code, ref: "no HUD_Notify_Push analogue / minigame notif icon anywhere in game/; the only turn cue is MinigameRenderer.DrawStatus's on-board pulsing line", result: fail }
+    confidence: high
+    notes: ""
+
+  - id: minigames.cl.hud_command_toggle
+    name: "HUD 'minigame' console command (menu toggle mutator hook, demo-mode gate)"
+    layer: [presentation]
+    base_refs:
+      - "common/minigames/cl_minigames.qc:MUTATOR_HOOKFUNCTION(minigames, HUD_Command) (428)"
+    port_refs:
+      - "game/net/NetGame.cs:5038 (M-key toggle -> MinigameClient.ToggleMenu)"
+    constants:
+      - { name: "invocation", base: "console 'hud minigame' (no default bind)", port: "hardcoded 'M' key toggle; no console command", match: false }
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base ships NO default bind for the minigame menu (players type 'hud minigame'); the port binds 'M' for usability. Deliberate, noted in NetGame comment."
+    gaps:
+      - "No 'hud minigame' console-command path (users of the Base muscle-memory/console can't open it)."
+      - "QC refuses to open in demo playback (isdemo()) and force-closes during map vote (mv_active in HUD_MinigameMenu); the port has neither gate."
+    verification:
+      - { kind: code, ref: "NetGame.cs:5038-5045 key toggle live; grep 'isdemo' in minigame files: none", result: pass }
+    confidence: high
+    notes: ""
+
+  - id: minigames.cl.draw_helpers
+    name: "Shared draw helpers (wrapped/truncated strings, centered pics, skin texture resolution, spectator list)"
+    layer: [presentation]
+    base_refs:
+      - "common/minigames/cl_minigames.qc:minigame_drawstring_wrapped (345)"
+      - "common/minigames/cl_minigames.qc:minigame_texture (49)"
+      - "common/minigames/cl_minigames.qc:minigame_show_allspecs (249)"
+      - "common/minigames/cl_minigames.qc:minigame_hud_simpleboard (4)"
+      - "common/minigames/cl_minigames.qh:minigame_hud_fitsqare (7)"
+    port_refs:
+      - "game/hud/MinigameRenderer.cs:Art (316, skin->default->override resolution)"
+      - "game/hud/MinigameRenderer.cs:BoardSquare (67, fitsqare analogue)"
+      - "game/hud/MinigameHelpPanel.cs (wrapped color-coded text via HudText)"
+    constants:
+      - { name: "texture path", base: "gfx/hud/<menu_skin>/minigames/<name>, default-skin fallback", port: "gfx/hud/<HudSkin=luma>/minigames/... -> gfx/hud/default/... -> res:// fallback", match: true }
+      - { name: "board square", base: "centered square = min(w,h) of the panel", port: "centered square = min(vp)*0.7 of the full screen", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "minigame_show_allspecs (the 'Spectators: name, name...' list above the board) is not ported — spectators are invisible to players."
+      - "Board geometry ignores the hud_panel_minigameboard_pos/_size cvars (fixed centered 0.7*viewport square instead of the panel rect; the panel cvar shells are cl-hud.panel.minigame's row, but the geometry consumer here bypasses them)."
+    verification:
+      - { kind: code, ref: "MinigameRenderer.Art resolves the same Base pic paths; allspecs grep: none", result: pass }
+    confidence: high
+    notes: "Word-wrap/color-code drawing exists generically in HudText (used by MinigameHelpPanel); the QC-specific getWrappedLine fork is not needed 1:1."
+
+  # ============================================================
+  # HUD menu/input: common/minigames/cl_minigames_hud.qc/.qh
+  # (panel shells BOARD/STATUS/HELP/MENU are owned by cl-hud.panel.minigame — not duplicated here)
+  # ============================================================
+
+  - id: minigames.hud.menu
+    name: "Minigame menu behavior (Create/Join/Current Game trees, per-game custom entries, Quit, Invite submenu)"
+    layer: [presentation]
+    base_refs:
+      - "common/minigames/cl_minigames_hud.qc:HUD_MinigameMenu_Open/Close (441/382)"
+      - "common/minigames/cl_minigames_hud.qc:HUD_MinigameMenu_ClickCreate/ClickJoin (255/279)"
+      - "common/minigames/cl_minigames_hud.qc:HUD_MinigameMenu_ClickCurrentGame (362)"
+      - "common/minigames/cl_minigames_hud.qc:HUD_MinigameMenu_ClickInvite (321)"
+      - "common/minigames/cl_minigames_hud.qc:HUD_MinigameMenu_CustomEntry (352)"
+      - "common/minigames/cl_minigames_hud.qh:HUD_MinigameMenu_CustomEntry decl (10)"
+    port_refs:
+      - "game/hud/MinigameMenu.cs:Rebuild/AddExpandable (123-)"
+      - "game/hud/MinigameMenu.cs:CurrentGameActions (200)"
+      - "game/net/MinigameClient.cs:ctor wiring (46-59)"
+    constants:
+      - { name: "per-game custom entries", base: "ttt: Next Match+Single Player; pong: Start Match+Add/Remove AI; pp: Next Match; bd: Next Level+Restart+Editor+Save; c4/nmm/ps: none", port: "identical table (MinigameMenu.CurrentGameActions)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No Invite submenu (QC lists every other connected player -> minigame_cmd(\"invite #n\")) — invites are console-only."
+      - "No game icons on entries (QC draws minigames/<id>/icon at 22px next to Create/Join/Current entries)."
+      - "QC's exact visual language (expand-highlight fill, active-item additive bar, 'Minigames' header, 'Exit Menu' entry) replaced by a Godot-native list; 'Exit Menu' absent (Esc/M closes)."
+    verification:
+      - { kind: code, ref: "menu SendCommand -> MinigameClient -> 'cmd minigame create/join/<token>' live; RequestSessionList round-trips list-sessions", result: pass }
+    confidence: high
+    notes: "Panel registration/position cvars for MINIGAMEMENU are cl-hud.panel.minigame's ownership."
+
+  - id: minigames.hud.board_input
+    name: "Board input routing (mouse move/click into game events, menu keyboard navigation, key fallthrough rules)"
+    layer: [presentation]
+    base_refs:
+      - "common/minigames/cl_minigames_hud.qc:HUD_Minigame_InputEvent (614)"
+      - "common/minigames/cl_minigames_hud.qc:HUD_Minigame_Mouse (745)"
+      - "common/minigames/cl_minigames_hud.qc:HUD_MinigameMenu_MouseInput (457)"
+      - "common/minigames/cl_minigames_hud.qh:HUD_Minigame_InputEvent decl (3)"
+    port_refs:
+      - "game/hud/MinigameRenderer.cs:_GuiInput (286, board click -> tile move)"
+      - "game/hud/MinigameMenu.cs:_GuiInput (260)"
+      - "game/net/NetGame.cs:3244 (cursor ownership while board/menu shown)"
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Menu keyboard navigation (up/down/home/end/enter/esc in HUD_Minigame_InputEvent) is not ported — the port menu is mouse-only."
+      - "Mouse-move hover events never reach the games (QC forwards mouse_moved so every game draws a hover/ghost piece at the cursor tile); the port has no hover feedback."
+      - "QC lets console-toggle binds fall through and swallows MOUSE2; the port relies on Godot focus rules instead (unverified edge behavior)."
+    verification:
+      - { kind: code, ref: "MinigameRenderer._GuiInput converts click->tile->OnMove; only Left pressed handled", result: pass }
+    confidence: high
+    notes: "Per-game ARROW-KEY board control lives in each game's client_event — tracked in the per-game presentation rows (worst for bd, whose only input is keys; Pong is the one EXCEPTION — its paddle key-drive is wired via HudManager.DrivePongKeys)."
+
+  # ============================================================
+  # games: common/minigames/minigame/*.qc
+  # ============================================================
+
+  - id: minigames.game.ttt.rules
+    name: "Tic Tac Toe rules (place/win/draw/next-match/singleplayer AI)"
+    layer: [authority]
+    base_refs:
+      - "common/minigames/minigame/ttt.qc:ttt_server_event (137)"
+      - "common/minigames/minigame/ttt.qc:ttt_move (80)"
+      - "common/minigames/minigame/ttt.qc:ttt_winning_piece (39)"
+      - "common/minigames/minigame/ttt.qc:ttt_next_match (110)"
+      - "common/minigames/minigame/ttt.qc:ttt_ai_choose_simple/ttt_aimove (468/485)"
+      - "common/minigames/minigame/ttt.qh"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Minigames/TicTacToe.cs:Move/Place (53/82)"
+      - "src/XonoticGodot.Common/Gameplay/Minigames/TicTacToe.cs:IsWinningPiece (145)"
+      - "src/XonoticGodot.Common/Gameplay/Minigames/TicTacToe.cs:ChooseSimple/AiMove (256/288)"
+    constants:
+      - { name: "grid", base: "3x3 (TTT_LET_CNT/TTT_NUM_CNT)", port: "Size=3", match: true }
+      - { name: "ai policy", base: "win > block > random (ttt_ai_choose_simple)", port: "identical (Block3/RandomFlag)", match: true }
+      - { name: "won-match counter", base: "++player.minigame_flags on win", port: "player.Score++", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "QC runs the singleplayer AI CLIENT-side (ttt_aimove in CSQC, moves applied locally); the port runs it server-side inside Place so there is one rules path. Same policy, same observable play."
+    gaps:
+      - "QC multiplayer next-match needs BOTH players to confirm (TTT_TURN_NEXT handshake); the port's NextMatch resets immediately on the first 'next' (no two-player confirmation phase)."
+      - "QC join REFUSES (return false -> 'Cannot join') into a singleplayer-vs-AI session (ttt.qc:160-162); the port's Join doesn't check the AI flag — the AI occupies the second seat so PlayerCount>=MaxPlayers and a second human is seated as SPECTATOR (team 255) instead of the join failing (TicTacToe.cs:44)."
+    verification:
+      - { kind: test, ref: "MinigameSessionTests: TicTacToe_EndToEnd_Win, TicTacToe_RejectsOutOfTurnAndOccupied, TicTacToe_SinglePlayer_SeatsAi_AndAiResponds", result: pass }
+    confidence: high
+    notes: "AI random uses the port's deterministic Prandom vs QC RandomSelection — distribution-equivalent."
+
+  - id: minigames.game.ttt.presentation
+    name: "Tic Tac Toe board/status draw (piece pics, hover ghost, winglow, score column, turn messages)"
+    layer: [presentation]
+    base_refs:
+      - "common/minigames/minigame/ttt.qc:ttt_hud_board/ttt_hud_status (232/286)"
+      - "common/minigames/minigame/ttt.qc:ttt_turn_to_string (327)"
+      - "common/minigames/minigame/ttt.qc:ttt_client_event key/mouse (566)"
+    port_refs:
+      - "game/hud/MinigameRenderer.cs:DrawGrid/DrawPiece/DrawStatus (106/126/260)"
+      - "game/hud/MinigameHelpPanel.cs (per-game help blurb)"
+    constants:
+      - { name: "piece art", base: "ttt/piece1|piece2 + ttt/winglow + ttt/board", port: "same paths via Art(); colored-disc fallback", match: true }
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Winning-line glow never shows: the renderer keys winglow on cell Flags!=0 but TicTacToe never sets piece flags on a win (QC recomputes ttt_winning_piece client-side and dims losers to 0.4 icon_color — no dim either)."
+      - "No hover ghost piece on your turn, no arrow-key tile cursor, no status-panel score column (won-matches next to each player name), no localized Base strings ('Wait for your opponent...', 'You win!' etc. — generic 'Player N's turn' instead)."
+    verification:
+      - { kind: code, ref: "MinigameRenderer generic grid draw is the only ttt view; flags never set (grep Flags in TicTacToe.cs: none)", result: pass }
+    confidence: high
+    notes: ""
+
+  - id: minigames.game.c4.rules
+    name: "Connect Four rules (gravity drop, 4-in-a-row win, draw at 42)"
+    layer: [authority]
+    base_refs:
+      - "common/minigames/minigame/c4.qc:c4_server_event (189)"
+      - "common/minigames/minigame/c4.qc:c4_move/c4_get_lowest_tile (156/140)"
+      - "common/minigames/minigame/c4.qc:c4_winning_piece (37)"
+      - "common/minigames/minigame/c4.qh"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Minigames/ConnectFour.cs:Move (44)"
+    constants:
+      - { name: "grid", base: "7x6 (C4_LET_CNT x C4_NUM_CNT)", port: "Columns=7 Rows=6", match: true }
+      - { name: "win count / max tiles", base: "4 / 42", port: "4 / 42", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No rematch path at all: QC c4 has no 'next' either (Base parity), but QC lets you re-create; noted only that the win state is terminal in both."
+    verification:
+      - { kind: test, ref: "MinigameSessionTests:ConnectFour_EndToEnd_Win", result: pass }
+    confidence: high
+    notes: "Win check rewritten as bidirectional run-count per axis (documented equivalent of QC's walk-to-extreme-then-count)."
+
+  - id: minigames.game.c4.presentation
+    name: "Connect Four board draw (under/over board layers, column hover ghost, winglow/dim)"
+    layer: [presentation]
+    base_refs:
+      - "common/minigames/minigame/c4.qc:c4_hud_board/c4_hud_status (252/329)"
+      - "common/minigames/minigame/c4.qc:c4_turn_to_string (377)"
+    port_refs:
+      - "game/hud/MinigameRenderer.cs:DrawGrid (106)"
+    constants:
+      - { name: "board art", base: "c4/board_under + pieces + c4/board_over overlay", port: "single 'c4/board' lookup (misses the under/over split)", match: false }
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC draws board_under, pieces, then board_over so discs sit INSIDE the frame; the port looks up 'c4/board' (a file that doesn't exist — Base ships board_under/board_over) so C4 falls back to the flat grid-lines board."
+      - "No lowest-free-cell hover ghost on your turn, no win glow/dim (same Flags issue as ttt), no winner banner ('%s won the game!'), no status player rows."
+    verification:
+      - { kind: code, ref: "Art('c4','board') vs Base gfx/hud/luma/minigames/c4/board_under.tga — name mismatch", result: fail }
+    confidence: high
+    notes: ""
+
+  - id: minigames.game.pong.rules
+    name: "Pong simulation (ball physics, paddle drive, goals/own-goals, join-as-paddle, AI paddles, part->AI swap)"
+    layer: [authority]
+    base_refs:
+      - "common/minigames/minigame/pong.qc:pong_server_event (343)"
+      - "common/minigames/minigame/pong.qc:pong_ball_think (155)"
+      - "common/minigames/minigame/pong.qc:pong_paddle_bounce/pong_paddle_hit (103/122)"
+      - "common/minigames/minigame/pong.qc:pong_add_score (77)"
+      - "common/minigames/minigame/pong.qc:pong_ai_think (211)"
+      - "common/minigames/minigame/pong.qh"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Minigames/Pong.cs:PongState.Tick (181)"
+      - "src/XonoticGodot.Common/Gameplay/Minigames/Pong.cs:Move (417)"
+      - "src/XonoticGodot.Common/Gameplay/Minigames/Pong.cs:AiDecide (319)"
+      - "src/XonoticGodot.Server/GameWorld.cs:2689 (Minigames.Tick each frame)"
+    constants:
+      - { name: "sv_minigames_pong_paddle_size", base: "0.3 (cvar)", port: "0.3 HARDCODED (PongState.PaddleSize; cvar never read)", match: true }
+      - { name: "sv_minigames_pong_paddle_speed", base: "1 (cvar)", port: "1 hardcoded", match: true }
+      - { name: "sv_minigames_pong_ball_wait/speed/radius/number", base: "1 / 1 / 0.03125 / 1 (cvars)", port: "same values hardcoded", match: true }
+      - { name: "sv_minigames_pong_ai_thinkspeed/tolerance", base: "0.1 / 0.33 (cvars)", port: "same values hardcoded", match: true }
+      - { name: "throw angle", base: "reject |sin|<0.17 or |cos|<0.17", port: "identical rejection loop", match: true }
+      - { name: "bounce jitter", base: "±(2π/6)/2 uniform", port: "identical", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "All 8 sv_minigames_pong_* cvars are dead knobs: PongState hardcodes the shipped defaults and never reads the cvar facade — an admin tuning ball speed/number sees no effect."
+      - "QC steps balls/paddles on sys_ticrate thinks; the port advances with the server frame dt (Simulation.FrameTime). Equivalent integration for linear motion, but bounce/goal detection granularity differs at high dt."
+    verification:
+      - { kind: test, ref: "MinigameSessionTests: Pong_ThrowThenTick_BallSpawnsAndEntersPlayAndMoves, Pong_Throw_RejectedFromSpectator", result: pass }
+    confidence: high
+    notes: "part -> paddle.IsAi=true keeps the leaver's score on the paddle (QC copies pong_score to the spawned pong_ai) — score carry matches. pong_aimore/pong_ailess ported."
+
+  - id: minigames.game.pong.presentation
+    name: "Pong board draw (ball + team-glow sprites, rotated paddle pics, score rows, wait message)"
+    layer: [presentation]
+    base_refs:
+      - "common/minigames/minigame/pong.qc:pong_hud_board/pong_hud_status (536/583)"
+      - "common/minigames/minigame/pong.qc:pong_message (621)"
+      - "common/minigames/minigame/pong.qc:pong_client_event keys (643)"
+    port_refs:
+      - "game/hud/MinigameRenderer.cs:DrawPong (186)"
+      - "game/hud/HudManager.cs:DrivePongKeys (445, driven per-frame at 313)"
+      - "game/net/NetGame.cs:1598 (PongMoveSink -> SendStringCommand 'minigame move <bits>')"
+    constants:
+      - { name: "team colors", base: "1 red, 2 blue, 3 yellow, 4 magenta", port: "1 red, 2 blue, 3 yellow, 4 pink", match: true }
+      - { name: "paddle key bits", base: "PONG_KEY_DECREASE=up/left(2), PONG_KEY_INCREASE=down/right(1), both=cancel", port: "identical (0x02/0x01, DecodeKeys cancels 0x3)", match: true }
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Flat rects/circles instead of the Base sprites (pong/ball + additive ball-glow at 4x radius, rotated pong/paddle + paddle-glow pics)."
+      - "No per-player score/status rows with the self-highlight border; no 'Press Start Match...' wait message."
+      - "Key drive uses raw Key.Up/Left/Down/Right polls, not the player's actual +forward/+back binds (QC reads LOCAL_MOVE_UP/DOWN from the movement binds) — a remapped player must still use arrows."
+    verification:
+      - { kind: code, ref: "HudManager.DrivePongKeys (445) polls arrows while the pong board is shown -> PongMoveSink (NetGame.cs:1598) -> 'minigame move <bits>' -> Pong.Move DecodeKeys — paddle control IS live", result: pass }
+    confidence: high
+    notes: "An earlier draft of this row claimed Pong had no client input path — WRONG: the key-drive emitter lives in HudManager (game/hud), not the renderer. Verified live 2026-07-02."
+
+  - id: minigames.game.nmm.rules
+    name: "Nine Men's Morris rules (place/move/fly/take phases, mills, win conditions)"
+    layer: [authority]
+    base_refs:
+      - "common/minigames/minigame/nmm.qc:nmm_server_event (219)"
+      - "common/minigames/minigame/nmm.qc:nmm_in_mill/nmm_tile_adjacent/nmm_tile_canmove (188/151/162)"
+      - "common/minigames/minigame/nmm.qc:nmm_spawn_tile_square (100)"
+      - "common/minigames/minigame/nmm.qh"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Minigames/NineMensMorris.cs:NmmState + Move handler"
+    constants:
+      - { name: "pieces per side", base: "7 (QC spawns 7 per team — NOT the classical 9)", port: "7 (header documents 'Each team has 7 pieces')", match: true }
+      - { name: "board", base: "3 concentric squares on 7x7, distances 3/2/1", port: "same recursive construction (per header)", match: true }
+    status:
+      logic: unknown
+      values: unknown
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Untested (no NMM cases in MinigameSessionTests) and the Move-handler body was not line-verified this audit — phase transitions (TAKE/TAKEANY, fly-at-3, no-move-loss) need a verify pass."
+    verification:
+      - { kind: code, ref: "registered in Minigames.RegisterAll; reachable via cmd minigame create nmm -> ForwardMove; body unverified", result: pass }
+    confidence: medium
+    notes: "Structure (NmmPhase enum incl. TakeAny, NmmPiece Home/Board/Dead, hmill/vmill strings) mirrors QC 1:1 per the file header; only the deep move-validation equivalence is unverified."
+
+  - id: minigames.game.nmm.presentation
+    name: "Nine Men's Morris client view (tile graph draw, selection/available highlights, home/dead piece rows)"
+    layer: [presentation]
+    base_refs:
+      - "common/minigames/minigame/nmm.qc:nmm_hud_board/nmm_hud_status (433/502)"
+      - "common/minigames/minigame/nmm.qc:nmm_valid_selection/nmm_draw_avaliable (392/421)"
+      - "common/minigames/minigame/nmm.qc:nmm_turn_to_string (602)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "NMM is INVISIBLE to clients: NmmState lives in Session.Extra which MinigameNetState.Encode never serializes (only Pong is bespoke-encoded), the session has no MinigameBoard, and MinigameRenderer.DrawBespoke only handles pong/snake — a client in an nmm session sees an empty dark square."
+      - "Consequently none of the QC view exists: nmm/board pic, tile_active/tile_available/tile_selected highlights, piece rows dimmed by HOME/BOARD/DEAD state, winner banner, keyboard tile-walk."
+    verification:
+      - { kind: code, ref: "MinigameNetState.cs:55 only Pong.StateOf checked; MinigameRenderer.cs:178 switch has pong/snake only", result: fail }
+    confidence: high
+    notes: "Rules run fine server-side; the whole client leg is the gap."
+
+  - id: minigames.game.pp.rules
+    name: "Push-Pull rules (adjacent placement chain, captures, disabled pieces, surround end, score win, rematch)"
+    layer: [authority]
+    base_refs:
+      - "common/minigames/minigame/pp.qc:pp_server_event (202)"
+      - "common/minigames/minigame/pp.qc:pp_move/pp_valid_move/pp_winning_piece (98/70/51)"
+      - "common/minigames/minigame/pp.qc:pp_setup_pieces (149)"
+      - "common/minigames/minigame/pp.qc:pp_next_match (172)"
+      - "common/minigames/minigame/pp.qh"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Minigames/PushPull.cs:PpState + Move handler"
+    constants:
+      - { name: "grid", base: "7x7", port: "Size=7", match: true }
+      - { name: "disabled team marker", base: "team 5", port: "PpState.Disabled=5", match: true }
+      - { name: "edge setup", base: "team1 on rows 0/6 (cols 1-5), team2 on cols 0/6 (rows 1-5)", port: "same predicate (header)", match: true }
+    status:
+      logic: unknown
+      values: unknown
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Untested and the Move body was not line-verified this audit (capture scoring direction, draw-on-equal-scores, the both-players rematch handshake)."
+    verification:
+      - { kind: code, ref: "registered + reachable via cmd minigame create pp; body unverified", result: pass }
+    confidence: medium
+    notes: "pp DOES use MinigameBoard, so unlike nmm/bd its board networks and renders generically."
+
+  - id: minigames.game.pp.presentation
+    name: "Push-Pull client view (current-piece splat marker, valid-move ghost, team-tinted pieces, scores)"
+    layer: [presentation]
+    base_refs:
+      - "common/minigames/minigame/pp.qc:pp_hud_board/pp_hud_status (283/382)"
+      - "common/minigames/minigame/pp.qc:pp_turn_to_string (444)"
+    port_refs:
+      - "game/hud/MinigameRenderer.cs:DrawGrid (106, generic path)"
+    constants:
+      - { name: "piece tint", base: "team1 '1 .3 .3', team2 '.3 .3 1', team5 = pp/piece_taken pic", port: "generic TeamColor; team 5 renders as white disc", match: false }
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Disabled (team-5) pieces draw as a plain white disc, not the pp/piece_taken splat; the current piece has no pp/piece_current marker — the player cannot SEE which piece the adjacency rule chains from, making the game near-unplayable visually."
+      - "No hover ghost/valid-move feedback, no team scores in a status panel, no rematch prompt strings."
+    verification:
+      - { kind: code, ref: "generic DrawPiece uses Art('pp','piece5') (exists in Base? pieces are piece1/piece2/piece_taken/piece_current) -> likely fallback disc", result: fail }
+    confidence: medium
+    notes: ""
+
+  - id: minigames.game.ps.rules
+    name: "Peg Solitaire rules (cross board, jump-capture, win-on-empty vs no-moves draw)"
+    layer: [authority]
+    base_refs:
+      - "common/minigames/minigame/ps.qc:ps_server_event (222)"
+      - "common/minigames/minigame/ps.qc:ps_move/ps_move_piece (158/137)"
+      - "common/minigames/minigame/ps.qc:ps_winning_piece/ps_draw (73/26)"
+      - "common/minigames/minigame/ps.qc:ps_tile_blacklisted/ps_setup_pieces (38/117)"
+      - "common/minigames/minigame/ps.qh"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Minigames/PegSolitaire.cs:Move + SetupPieces"
+    constants:
+      - { name: "grid", base: "7x7 minus 2x2 corners (English cross), centre empty", port: "same blacklist + centre-empty setup (read)", match: true }
+      - { name: "max players", base: "1", port: "MaxPlayers=1", match: true }
+    status:
+      logic: unknown
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Untested; the four-direction jump validation body was skimmed, not line-verified. NOTE a Base quirk to preserve: QC 'WIN' only when zero pegs remain (ps_draw inverted — any pegs left = DRAW 'No more valid moves'), which is unreachable in practice (last peg always remains) — verify the port didn't 'fix' this."
+    verification:
+      - { kind: code, ref: "registered + reachable; SetupPieces/blacklist read and matches", result: pass }
+    confidence: medium
+    notes: "Uses MinigameBoard -> networks/renders generically."
+
+  - id: minigames.game.ps.presentation
+    name: "Peg Solitaire client view (selection/available highlights, ghost landing peg, remaining count)"
+    layer: [presentation]
+    base_refs:
+      - "common/minigames/minigame/ps.qc:ps_hud_board/ps_hud_status (282/438)"
+      - "common/minigames/minigame/ps.qc:ps_turn_to_string (494)"
+    port_refs:
+      - "game/hud/MinigameRenderer.cs:DrawGrid (106, generic path)"
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Two-click select-then-jump needs the QC feedback (ps/tile_selected additive glow on the picked peg, ps/tile_available on hover, grey ghost peg at the landing cell) — none exist, and worse: the port's board click handler only fires OnMove('<tile>') per click; PegSolitaire.Move expects '<from> <to>' — a single tile click can never form a legal ps move, so Peg Solitaire is UNPLAYABLE from the live client (no two-click accumulator anywhere in game/)."
+      - "No 'Pieces left: N' status, no game-over remaining-count banner."
+    verification:
+      - { kind: code, ref: "MinigameClient.OnBoardMove sends 'move <tile>' (one tile); PegSolitaire.Move requires from+to — no client state accumulates the pair", result: fail }
+    confidence: high
+    notes: ""
+
+  - id: minigames.game.bd.rules
+    name: "Bulldozer rules (dozer push, boulder-on-target win, level load/save, editor, next-level chain)"
+    layer: [authority]
+    base_refs:
+      - "common/minigames/minigame/bd.qc:bd_server_event (849)"
+      - "common/minigames/minigame/bd.qc:bd_move/bd_move_dozer (339/252)"
+      - "common/minigames/minigame/bd.qc:bd_check_winner (178)"
+      - "common/minigames/minigame/bd.qc:bd_load_level/bd_save_level (782/724)"
+      - "common/minigames/minigame/bd.qc:bd_editor_place/bd_do_fill (382/506)"
+      - "common/minigames/minigame/bd.qc:bd_next_match/bd_restart_match (613/622)"
+      - "common/minigames/minigame/bd.qh"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Minigames/Bulldozer.cs:Move (133)"
+      - "src/XonoticGodot.Common/Gameplay/Minigames/Bulldozer.cs:LoadLevel/EditorPlace/CloseEditor (219/255/263)"
+    constants:
+      - { name: "grid", base: "20x20 (BD_LET_CNT/BD_NUM_CNT)", port: "BdState.Size=20", match: true }
+      - { name: "sv_minigames_bulldozer_startlevel", base: "\"level1\" (cvar, loads minigames/bulldozer/storage_level1.txt)", port: "cvar absent; no level ever loaded", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "UNPLAYABLE live: Start() clears the grid and no level is loaded (LoadLevel has zero live callers; the shipped minigames/bulldozer/storage_level*.txt files — present under assets/data — are never parsed; sv_minigames_bulldozer_startlevel doesn't exist). Every live bd session is an empty board with no dozer, so Move returns Invalid forever."
+      - "Server cmd verbs 'next'/'restart'/'edit'/'save'/'fill' are NOT dispatched: Bulldozer.Move parses every token through DirFromName, so the menu's Editor/Save/Next Level/Restart buttons make the (nonexistent) dozer step Down instead."
+      - "Level SAVE (bd_save_level file write, boulder/target count validation, nextlevel chaining) and the bd_canedit permission gate are unported (editor exists only as in-memory static helpers with no live caller)."
+      - "Move-count networking (BD_SF_PLAYERMOVES) / per-player bd_moves display N/A (state not networked at all — see presentation row)."
+    verification:
+      - { kind: code, ref: "grep LoadLevel callers: only Bulldozer.cs itself + none in game/src hosts; Move dispatch read (Bulldozer.cs:133-158)", result: fail }
+    confidence: high
+    notes: "The core push/win logic itself (MoveDozer/CheckWinner) reads faithful to bd_move_dozer/bd_check_winner — it's the surrounding lifecycle that's dead."
+
+  - id: minigames.game.bd.presentation
+    name: "Bulldozer client view (tile pics, rotated dozer, boulder-on-target swap, editor cursor/palette, win banner)"
+    layer: [presentation]
+    base_refs:
+      - "common/minigames/minigame/bd.qc:bd_hud_board/bd_hud_status (987/1127)"
+      - "common/minigames/minigame/bd.qc:bd_get_tile_pic (966)"
+      - "common/minigames/minigame/bd.qc:bd_turn_to_string (1178)"
+      - "common/minigames/minigame/bd.qc:bd_client_event keys/editor (1257)"
+      - "common/minigames/minigame/bd.qc:bd_controller_send/NET_HANDLE(ENT_CLIENT_BD_CONTROLLER) (114/151)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Nothing renders: BdState is in Session.Extra (not serialized by MinigameNetState) and MinigameRenderer has no 'bd' branch — clients see an empty square. The dedicated ENT_CLIENT_BD_CONTROLLER per-column brick networking has no port analogue."
+      - "No input either: bd is driven purely by arrow keys in QC (bd_make_move 'move u/d/l/r'); the port board sends only tile clicks, which bd doesn't take."
+      - "Whole editor UX absent (spacebar tile palette cycle, ghost tile at cursor, mouse2 flood fill, dozer rotation)."
+    verification:
+      - { kind: code, ref: "MinigameNetState.Encode: no bd branch; MinigameRenderer switch: pong/snake only", result: fail }
+    confidence: high
+    notes: ""
+
+  - id: minigames.port.snake
+    name: "coverage: port-only Snake minigame (no Base counterpart)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/minigames/minigame/_mod.inc (registry anchor: Base ships exactly 7 games)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Minigames/Snake.cs"
+      - "game/hud/MinigameRenderer.cs:DrawSnake (233)"
+    constants: []
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "An ORIGINAL port addition (documented in Snake.cs header): Base ships no Snake. Tracked so parity diffs don't flag it as an unmapped Base feature; it has no Base spec to diverge from."
+    gaps: []
+    verification:
+      - { kind: code, ref: "Snake.cs header states 'Xonotic ships no Snake minigame'; registered in RegisterAll", result: pass }
+    confidence: high
+    notes: "Not networked (single-player, and SnakeState is Extra-only like nmm/bd) — remote clients can't see it either; acceptable for an original extra."

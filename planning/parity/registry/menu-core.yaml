@@ -1,0 +1,1115 @@
+unit: menu-core
+category: menu
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-07-02"
+# Scope: menu VM lifecycle (menu/menu.qc, draw.qc, command/menu_cmd.qc), the QC widget toolkit
+# (menu/item/*.qc + menu/anim/*.qc — one intended-divergence row), and menu/xonotic/*.qc EXCEPT
+# dialog_settings_* and dialog_multiplayer_* (those belong to the menu-dialogs unit).
+# Boundaries: sv-campaign owns campaign FILE/logic (this unit owns the campaign SCREEN);
+# cl-hud owns the in-game HUD editor (hud_config.qc) — this unit owns the menu-side
+# dialog_hudpanel_* config dialogs; sv-mapvoting owns the in-match vote screen (no overlap).
+summary:
+  feature_count: 35
+  worst_gaps:
+    - "Server/event-triggered dialogs are ALL dead: Welcome/MOTD on connect, Team-select, uid2name stats-consent, first-run+ToS, campaign Winner — the ported UI exists (DialogWelcome/DialogTeamSelect/DialogUid2Name/DialogFirstRun/DialogTermsOfService/DialogWinner) but nothing on the live path ever opens them (only the dev --menu-screen flag)."
+    - "The update-notification system (util.qc updateCheck: update.xonotic.org checkupdate.txt, version banner, banned/promoted/recommended server lists, ToS-version push, hotfix pk3 auto-download) is entirely missing."
+    - "Menu audio is entirely missing: no menu music (m_draw 'cd loop $menu_cdtrack') and no click/focus sounds (m_play_click_sound/m_play_focus_sound, menu_sounds cvar is bound in the Audio dialog but nothing plays)."
+    - "Demo browser is a stub (no *.dem enumeration, no playdemo/timedemo backend, no disconnect-confirm dialogs) and the player-stats list (statslist.qc) is missing outright."
+    - "Server browser gaps vs serverlist.qc: no category headings/recommended/promoted rows, no banned-server masks, favorites stored in a port-private favorites.cfg by plain address instead of net_slist_favorites with crypto-id keys, no per-row mod/AES/stats icons, no gametype-prefix text filter."
+features:
+  - id: menu-core.vm.lifecycle_toggle
+    name: "Menu VM lifecycle: init, draw loop, toggle/display/hide, disconnect reset, m_goto"
+    layer: [presentation]
+    base_refs:
+      - "menu/menu.qc:m_init (61)"
+      - "menu/menu.qc:m_draw (753)"
+      - "menu/menu.qc:m_toggle (981)"
+      - "menu/menu.qc:m_display (954)"
+      - "menu/menu.qc:m_hide (969)"
+      - "menu/menu.qc:m_goto (1056)"
+    port_refs:
+      - "game/menu/MenuRoot.cs:ShowScreen/Push/Pop"
+      - "game/Shell.cs:HandleToggleMenu (MenuCommand.ToggleMenu)"
+      - "game/Shell.cs:OpenMenuDialog (m_goto true/false split)"
+    constants:
+      - { name: "MIN_DISCONNECTION_TIME", base: "1 s (disconnect reset debounce)", port: "none", match: false }
+      - { name: "menuAlpha fade rate", base: "5/s in, 5/s out; logo 2/s", port: "no menu fade", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: partial
+      audio: missing
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The QC menu is an immediate-mode VM redrawn every frame (m_draw); the port is a Godot Control scene graph (MenuRoot screen stack). The architecture swap is deliberate; behavior-level flows (toggle semantics, m_goto hide-on-close vs keep-open, escape handling) are ported on top of it."
+    gaps:
+      - "On disconnect Base reopens the menu and runs 'menu_cmd directmenu Welcome RESET' after 1 s (m_draw); the port returns to the main menu via Shell.ReturnToMainMenu but never routes through a Welcome reset, and the g_campaign-reset+m_sync on disconnect is handled elsewhere (LEAVEMATCH_CMD analogue)."
+      - "No menu fade-in/out (menuAlpha 5/s, _menu_alpha cvar export for engine dimming) and no intro logo fade (menuLogoAlpha)."
+      - "menu_slowmo, cl_capturevideo frametime override, and menu_mouse_absolute/menu_mouse_speed handling are absent (Godot supplies OS mouse handling — partially intended)."
+    verification:
+      - { kind: code, ref: "Shell.cs:139-143 builds MenuRoot on boot; WireCommandHooks wires ToggleMenu/OpenDialog/OpenDialogOverlay/CloseDialog", result: pass }
+    confidence: high
+    notes: "Escape-at-root closes only when a match is live (QC m_keydown unhandled-ESC gating on GAME_ISSERVER|GAME_CONNECTED) — reproduced by Shell's resume path. m_sync/loadAllCvars equivalent is the cvar-store Changed events feeding live widgets."
+
+  - id: menu-core.vm.menu_music_sounds
+    name: "Menu music (cd loop $menu_cdtrack) + click/focus sounds (menu_sounds)"
+    layer: [presentation]
+    base_refs:
+      - "menu/menu.qc:m_draw (809-818 cd loop $menu_cdtrack)"
+      - "menu/menu.qc:m_play_focus_sound (1102)"
+      - "menu/menu.qc:m_play_click_sound (1111)"
+    port_refs: []
+    constants:
+      - { name: "menu_sounds", base: "0 (1=click, 2=click+hover)", port: "cvar bound in Audio dialog, never read by a sound player", match: false }
+      - { name: "focus sound debounce", base: "0.25 s", port: "none", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: missing
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No menu music: Base plays the menu_cdtrack loop once per menu reload (unless menu_no_music_nor_welcome); the port's menu is silent."
+      - "No MENU_SOUND_OPEN/SELECT/EXECUTE/CLEAR/WINNER click sounds and no focus (hover) sound; menu_sounds and menu_cdtrack cvars exist but drive nothing."
+    verification:
+      - { kind: code, ref: "grep AudioStreamPlayer/menu_sounds over game/menu → only the Audio dialog checkbox binding", result: fail }
+    confidence: high
+    notes: "DialogSettingsAudio.cs:97-102 binds menu_sounds 1/2 faithfully as UI, so the setting exists but is inert."
+
+  - id: menu-core.vm.tooltips
+    name: "Tooltip system incl. advanced mode (cvar name/value/default + dependency reasons)"
+    layer: [presentation]
+    base_refs:
+      - "menu/menu.qc:m_tooltip (586)"
+      - "menu/menu.qc:gettooltip (529)"
+      - "menu/xonotic/util.qc:setZonedTooltip (257)"
+    port_refs:
+      - "game/menu/framework/CvarControls.cs:Widgets.* (TooltipText on every widget)"
+    constants:
+      - { name: "menu_tooltips", base: "1 (0=off, 1=standard, 2=advanced w/ cvar info)", port: "cvar bound in Misc dialog, not consulted by tooltip display", match: false }
+      - { name: "tooltip fade", base: "in 5/s, out 2/s, MAX_TOOLTIP_LINES 16", port: "Godot default tooltip", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "menu_tooltips is not consulted: tooltips can't be disabled and there is no advanced mode 2 (cvar list + current value + [default] + 'Requires X in range...' dependency explanations from gettooltip)."
+      - "util.qc setZonedTooltip's fallback to the engine cvar_description when no explicit tooltip (English only) is absent — port tooltips are only the hand-written strings."
+    verification:
+      - { kind: code, ref: "Widgets.CheckBox/Slider set TooltipText (CvarControls.cs:25-41); no reader of menu_tooltips outside DialogSettingsMisc", result: pass }
+    confidence: high
+    notes: "Standard tooltips (mode 1) are effectively live via Godot's built-in tooltip; skinned tooltip box/positioning (SKINGFX_TOOLTIP, m_allocatetooltipbox) replaced by Godot's, acceptable presentation divergence."
+
+  - id: menu-core.vm.draw_primitives
+    name: "Menu draw primitives + transform stack (coverage: replaced by Godot 2D)"
+    layer: [presentation]
+    base_refs:
+      - "menu/draw.qc:draw_reset/draw_Picture/draw_Text/draw_BorderPicture"
+      - "menu/matrix.qc:draw_shift/draw_scale transforms"
+      - "menu/menu.qc:drawBackground (342) + draw_Picture_Aligned (312)"
+    port_refs:
+      - "game/menu/framework/MenuSkin.cs (skin textures/theme)"
+      - "game/menu/MenuRoot.cs:BuildBackground (background c5h5 crop-cover)"
+    constants:
+      - { name: "MENU_ASPECT", base: "1280/1024 canvas", port: "MenuMetrics.ConWidth/ConHeight + DesignHeight 1080 scaling", match: false }
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "QC's software draw layer (pictures, border-images, text with color codes, clip stack) is replaced wholesale by Godot Controls + a Theme built from the same skin assets (MenuSkin). Only observable output parity matters; the skin background/border/cursor art is loaded from the same gfx/menu/<skin> files."
+    gaps:
+      - "Multi-layer background (SKINGFX_BACKGROUND _l2.. layers with per-char alignment string) and the ingame background variant (SKINGFX_BACKGROUND_INGAME alpha) are simplified to one crop-covered texture."
+    verification:
+      - { kind: code, ref: "MenuRoot.BuildBackground loads MenuSkin.Background; MenuSkin.Theme applied to whole tree", result: pass }
+    confidence: high
+    notes: "matrix.qc is a 28-line shift/scale helper for draw.qc — no independent behavior."
+
+  - id: menu-core.vm.menu_cmd
+    name: "menu_cmd command surface (directmenu/closemenu/nav verbs/sync/isdemo/dumptree)"
+    layer: [presentation]
+    base_refs:
+      - "menu/command/menu_cmd.qc:GameCommand (42)"
+      - "menu/mutators/events.qh:Menu_ConsoleCommand hook (via menu_cmd.qc:186)"
+      - "menu/mutators/events.qc"
+    port_refs:
+      - "game/menu/framework/MenuCommand.cs:Dispatch (112)"
+      - "game/menu/framework/MenuDialogRegistry.cs:Create"
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: na
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "directmenu with NO argument (list all openable items to console) and dumptree are not implemented; isdemo and update_conwidths_before_vid_restart are absent (no demo/vid-conwidth backend)."
+      - "directmenu with EXTRA args (readInputArgs buffer — how the server feeds Welcome HOSTNAME/WELCOME/CAMPAIGN text) is not implemented; the port's OpenDialog only takes the name."
+      - "directpanelhudmenu drops the QC 'HUD' name-prefix filter (routes the bare name)."
+      - "m_play_click_sound(MENU_SOUND_OPEN) on directmenu is absent (no menu sounds at all)."
+      - "The demo-mode guard (directmenu refused while isdemo() unless 'Welcome') is absent."
+    verification:
+      - { kind: code, ref: "MenuCommand.Dispatch handles menu_cmd/directmenu/closemenu/nexposee/servers/profile/settings/inputsettings/videosettings/skinselect/languageselect; Shell wires OpenDialog(+resumeOnClose)", result: pass }
+    confidence: high
+    notes: "The nav-verb → dialog-name remaps (skinselect→skinselector→Settings User tab) reproduce the QC destinations at behavior level. menu/mutators/events.qc (Menu_ConsoleCommand/ConfigureDialogs hooks) has no port counterpart — no menu-mutator system, cited here for coverage."
+
+  - id: menu-core.toolkit.item_widgets
+    name: "QC widget toolkit (menu/item/*) + animation framework (coverage: Godot Controls replace it)"
+    layer: [presentation]
+    base_refs:
+      - "menu/item.qc:Item base class"
+      - "menu/item/borderimage.qc"
+      - "menu/item/button.qc"
+      - "menu/item/checkbox.qc"
+      - "menu/item/container.qc"
+      - "menu/item/dialog.qc"
+      - "menu/item/image.qc"
+      - "menu/item/inputbox.qc"
+      - "menu/item/inputcontainer.qc"
+      - "menu/item/label.qc"
+      - "menu/item/listbox.qc"
+      - "menu/item/mixedslider.qc"
+      - "menu/item/modalcontroller.qc"
+      - "menu/item/nexposee.qc"
+      - "menu/item/radiobutton.qc"
+      - "menu/item/slider.qc"
+      - "menu/item/tab.qc"
+      - "menu/item/textslider.qc"
+      - "menu/anim/animation.qc"
+      - "menu/anim/animhost.qc"
+      - "menu/anim/easing.qc"
+      - "menu/anim/keyframe.qc"
+    port_refs:
+      - "game/menu/framework/CvarControls.cs (cvar-bound Button/CheckBox/Slider/TextSlider/RadioButton/InputBox)"
+      - "game/menu/framework/XonoticTabs.cs (tab.qc)"
+      - "game/menu/MenuRoot.cs (dialog.qc/modalcontroller.qc stack)"
+    constants: []
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The retained-mode QC widget classes (Item/Container/ListBox/Dialog/Nexposee/ModalController + the anim/ keyframe-easing framework) are replaced by Godot's Control toolkit; the port re-implements only their cvar-binding contract (loadCvars/saveCvars ↔ CvarControls two-way binding) and navigation semantics. Widget-internal fidelity is out of scope by design."
+    gaps: []
+    verification:
+      - { kind: code, ref: "CvarControls widgets subscribe to MenuState.Cvars.Changed and write-through with MarkArchived (live two-way binding)", result: pass }
+    confidence: high
+    notes: "menu/anim/* is used by nexposee open/close animation in Base; the port animates via MainMenu._Process lerp."
+
+  - id: menu-core.toolkit.xonotic_widgets
+    name: "Xonotic-skinned widget wrappers (menu/xonotic base widgets; coverage row)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/bigbutton.qc"
+      - "menu/xonotic/bigcommandbutton.qc"
+      - "menu/xonotic/button.qc"
+      - "menu/xonotic/checkbox.qc"
+      - "menu/xonotic/checkbox_slider_invalid.qc"
+      - "menu/xonotic/checkbox_string.qc"
+      - "menu/xonotic/commandbutton.qc"
+      - "menu/xonotic/dialog.qc"
+      - "menu/xonotic/image.qc"
+      - "menu/xonotic/inputbox.qc"
+      - "menu/xonotic/listbox.qc"
+      - "menu/xonotic/mixedslider.qc"
+      - "menu/xonotic/nexposee.qc"
+      - "menu/xonotic/radiobutton.qc"
+      - "menu/xonotic/rootdialog.qc"
+      - "menu/xonotic/scrollpanel.qc"
+      - "menu/xonotic/slider.qc"
+      - "menu/xonotic/slider_decibels.qc"
+      - "menu/xonotic/slider_picmip.qc"
+      - "menu/xonotic/slider_resolution.qc"
+      - "menu/xonotic/slider_sbfadetime.qc"
+      - "menu/xonotic/tab.qc"
+      - "menu/xonotic/tabcontroller.qc"
+      - "menu/xonotic/textbox.qc"
+      - "menu/xonotic/textlabel.qc"
+      - "menu/xonotic/textslider.qc"
+      - "menu/xonotic/datasource.qc"
+    port_refs:
+      - "game/menu/framework/CvarControls.cs"
+      - "game/menu/framework/MenuSkin.cs (skin themed styles)"
+      - "src/XonoticGodot.Common/Menu/DataSource.cs (datasource.qc)"
+    constants: []
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "These files skin/bind the generic item/* widgets (cvar hookup, skin constants, COMMANDBUTTON flags, special sliders like decibels/picmip/resolution). The port's CvarControls + MenuSkin theme carry the same responsibilities on Godot Controls. Special-slider VALUE DOMAINS (decibel formatting, resolution enumeration, picmip range) are audited where they surface — the settings dialogs (menu-dialogs unit)."
+    gaps: []
+    verification:
+      - { kind: code, ref: "DataSource.cs is a direct port of datasource.qc (per MenuDataSourceTests.cs)", result: pass }
+    confidence: medium
+    notes: "commandbutton.qc's COMMANDBUTTON_CLOSE/APPLY semantics are reproduced per-dialog (e.g. PauseMenu CloseAfter). checkbox_slider_invalid.qc is the 'grayed slider shows Custom' helper — no port equivalent, cosmetic."
+
+  - id: menu-core.nav.mainwindow_nexposee
+    name: "Main menu fan (nexposee): 6 dialogs, scale calc, pulled Credits/Quit, open/collapse animation"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/mainwindow.qc:MainWindow_configureMainWindow (84)"
+      - "menu/xonotic/mainwindow.qc:MainWindow_draw (59)"
+    port_refs:
+      - "game/menu/MainMenu.cs:BuildUi (62) + ComputeFanScale (189) + LayoutFrame (249)"
+    constants:
+      - { name: "dialog intendedWidth/rows", base: "SP 0.80/24, MP 0.96/24, Media 0.96/18, Settings 0.96/18, Credits 0.50/20, Quit 0.50/3", port: "same values (MainMenu.cs:68-73)", match: true }
+      - { name: "preview alpha", base: "SKINALPHAS_MAINMENU_z (0.85 luma)", port: "ClosedAlpha 0.85", match: true }
+      - { name: "pull", base: "Credits+Quit pulled to title-bar height", port: "Pull=true tiles, alignY=TitleHeight/ConHeight", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: unknown
+      presentation: partial
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "MainWindow_draw's first-draw auto-open of the ToS dialog (shouldShow: new ToS version) and the first-run dialog is not ported — see menu-core.nav.firstrun_tos."
+      - "Nexposee keyboard navigation (arrow keys walking the fan, per-dialog alpha animation states from item/nexposee.qc) simplified to click/Escape; DemoButton_Click easter egg ('Do not press this button again!') absent."
+    verification:
+      - { kind: code, ref: "MainMenu builds the 6 tiles with QC sizes; fan scale iterates s*=0.99 until non-overlap (Nexposee_calc analogue); AnyOverlap AABB test", result: pass }
+    confidence: high
+    notes: "The open/close animation speed (AnimSpeed 6/s lerp) approximates the QC nexposee animation; timing parity unmeasured."
+
+  - id: menu-core.nav.tab_containers
+    name: "Multiplayer + Settings tab-container dialogs (tab sets/order)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_multiplayer.qc:XonoticMultiplayerDialog_fill"
+      - "menu/xonotic/dialog_settings.qc:XonoticSettingsDialog_fill"
+    port_refs:
+      - "game/menu/MultiplayerScreen.cs:BuildUi (tabs Servers/Create/Profile)"
+      - "game/menu/dialogs/DialogSettings.cs (rows Video/Effects/Audio + Game/Input/User/Misc)"
+    constants:
+      - { name: "multiplayer tabs", base: "Servers, Create, Profile", port: "same order (MultiplayerScreen.cs:64-70)", match: true }
+      - { name: "settings tabs", base: "row1 Video/Effects/Audio, row2 Game/Input/User/Misc", port: "same two-row order (DialogSettings.cs:42-49)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "game/menu/SettingsScreen.cs is a DEAD legacy settings container (Video/Audio/Input/Player) explicitly marked 'do NOT revive' — harmless but confusing duplicate."
+    verification:
+      - { kind: code, ref: "MainMenu.cs:71 tiles DialogSettings; MenuDialogRegistry['settings']→DialogSettings + SelectTab deep-link (Shell.cs:195); MultiplayerScreen tabs live via nexposee Multiplayer tile", result: pass }
+    confidence: high
+    notes: "The tab CONTENTS (dialog_settings_*.qc / dialog_multiplayer_*.qc) belong to the menu-dialogs unit; this row owns only the two container dialogs, which the exclusion globs don't cover."
+
+  - id: menu-core.nav.gamemenu
+    name: "In-game escape menu (Game Menu dialog) + leave-match button"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_gamemenu.qc:XonoticGameMenuDialog_fill"
+      - "menu/xonotic/dialog_gamemenu.qc:XonoticGameMenuDialog_draw (campaign Join!→Restart level swap)"
+      - "menu/xonotic/leavematchbutton.qc:LEAVEMATCH_CMD + leaveMatchButton_getText"
+    port_refs:
+      - "game/menu/PauseMenu.cs:BuildUi (fill order) + LeaveMatchButton (141)"
+      - "game/Shell.cs:WireCommandHooks (SendGameCommand channel for join/spec/resetmatch)"
+    constants:
+      - { name: "LEAVEMATCH_CMD", base: "defer 0.4 disconnect; wait; g_campaign 0; menu_sync", port: "Disconnect hook + campaign cvar handling in Shell", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: partial
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Leave-match text variants (Stop demo / Leave campaign / Leave singleplayer / Leave multiplayer via isdemo/g_campaign/isServerSingleplayer) — port variant coverage not verified against all four states."
+      - "_menu_gamemenu_dialog_available registration cvar not exported (harmless unless server QC probes it)."
+    verification:
+      - { kind: code, ref: "PauseMenu fill order matches QC (Main menu/Servers/Profile/Settings/Input/Guide/Quick menu/Join!/Spectate/Leave/Quit); campaign Join!→Restart-level swap ported; commands reach the match via MenuCommand.SendGameCommand (Shell LocalRouteCommand)", result: pass }
+    confidence: high
+    notes: "QC indented buttons use directmenu (hide-menu-on-close) — reproduced via PushResumeOnClose. Quick menu routes the 'quickmenu' command; the QuickMenuPanel HUD backend exists (cl-hud.panel.quickmenu)."
+
+  - id: menu-core.nav.quit_dialog
+    name: "Quit confirmation dialog"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_quit.qc:XonoticQuitDialog_fill"
+    port_refs:
+      - "game/menu/QuitDialog.cs"
+      - "game/menu/framework/MenuCommand.cs:Dispatch (menu_showquitdialog → quitdialog)"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "QuitDialog Yes → MenuCommand.Quit (Shell GetTree().Quit()); No → Pop; reachable from nexposee tile + menu_showquitdialog", result: pass }
+    confidence: high
+    notes: "QC 'echo ]quit; quit' console echo omitted — cosmetic."
+
+  - id: menu-core.nav.welcome
+    name: "Server welcome/MOTD dialog (connect-time hostname + welcome text + Join/Spectate)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_welcome.qc:XonoticWelcomeDialog_readInputArgs (HOSTNAME/WELCOME/CAMPAIGN/RESET)"
+      - "menu/xonotic/dialog_welcome.qc:XonoticWelcomeDialog_draw (auto-close, old-server +show_info fallback)"
+    port_refs:
+      - "game/menu/dialogs/DialogWelcome.cs"
+    constants: []
+    status:
+      logic: stub
+      values: na
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Never shown on the live path: the server-side welcome push ('menu_cmd directmenu Welcome HOSTNAME ... WELCOME ...') has no port sender and MenuCommand drops directmenu args, so connecting to a server never pops the MOTD dialog. Only reachable via --menu-screen welcome (dev)."
+      - "Campaign level-brief variant (CAMPAIGN arg substituting _LEVEL_DESC with campaign_shortdesc/longdesc) missing; Enter/Space→Join default and click-outside-closes not ported."
+    verification:
+      - { kind: code, ref: "Shell.cs:184 is the only constructor call (dev screen switch); DialogWelcome body is a hardcoded placeholder", result: fail }
+    confidence: high
+    notes: "The port shows game state directly on join instead; Base's welcome flow is also what surfaces the campaign level briefing in-game (see sv-campaign.welcome.levelnum)."
+
+  - id: menu-core.nav.teamselect
+    name: "Team selection dialog (auto/red/blue/yellow/pink/spectate, availability bitmask)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_teamselect.qc:XonoticTeamSelectDialog_fill"
+      - "menu/xonotic/dialog_teamselect.qc:XonoticTeamSelectDialog_showNotify (_teams_available bits)"
+    port_refs:
+      - "game/menu/dialogs/DialogTeamSelect.cs"
+    constants:
+      - { name: "team button commands", base: "cmd selectteam <color>; cmd join (COMMANDBUTTON_CLOSE)", port: "same strings via Widgets.CommandButton", match: true }
+      - { name: "_teams_available bitmask", base: "1/2/4/8 = red/blue/yellow/pink", port: "same bits read", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No live opener: Base binds team_selection_show → menu_cmd directmenu TeamSelect and the server sets _teams_available on join; the port has neither (only --menu-screen teamselect), so players never see it — team joining happens through other UI/commands."
+    verification:
+      - { kind: code, ref: "grep team_selection_show over game/ → no hits outside the InfoMessages hint text; Shell.cs:181 dev-only constructor", result: fail }
+    confidence: high
+    notes: "The command strings themselves would work if opened during a match (SendGameCommand channel is wired)."
+
+  - id: menu-core.nav.firstrun_tos
+    name: "First-run welcome dialog + Terms-of-Service dialog (auto-shown on first launch)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_firstrun.qc"
+      - "menu/xonotic/dialog_termsofservice.qc"
+      - "menu/xonotic/mainwindow.qc:MainWindow_draw (firstDraw shouldShow gate)"
+    port_refs:
+      - "game/menu/dialogs/DialogFirstRun.cs"
+      - "game/menu/dialogs/DialogTermsOfService.cs"
+    constants: []
+    status:
+      logic: partial
+      values: unknown
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Neither dialog is auto-shown: Base's MainWindow first-draw check (ToS version from the update server via _Nex_ExtResponseSystem_NewToS; first-run when the name/language was never set) is not ported — both are reachable only via --menu-screen firstrun/tos."
+      - "ToS text loading (loadXonoticToS) depends on the update-response system, which is missing."
+    verification:
+      - { kind: code, ref: "MainMenu.BuildUi has no firstDraw ToS/firstrun branch; Shell.cs:182-183 dev-only constructors", result: fail }
+    confidence: high
+    notes: "First-run's name+language entry UI exists in the port dialog (Localization-driven language picker per Localization.cs:111)."
+
+  - id: menu-core.nav.uid2name
+    name: "uid2name stats-consent popup (allow nickname in player statistics?)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_uid2name.qc:XonoticUid2NameDialog_fill"
+    port_refs:
+      - "game/menu/dialogs/DialogUid2Name.cs"
+    constants:
+      - { name: "cl_allow_uid2name default", base: "-1 (= ask)", port: "written 1/0 by the dialog buttons", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Never triggered: in Base the client pops it when cl_allow_uid2name is -1 on a stats-enabled server ('menu_cmd directmenu Uid2Name' from CSQC); the port has no trigger (dev screen only), so the consent question is never asked — and Race record-name gating (GameWorld.cs:3184) then depends on a cvar users can only set via the Profile checkboxes."
+    verification:
+      - { kind: code, ref: "no non-dev constructor call for DialogUid2Name; the vyes/vno vote halves log inert in MenuCommand", result: fail }
+    confidence: high
+    notes: "The real effect (cl_allow_uid2name write) is implemented in the dialog."
+
+  - id: menu-core.browser.serverlist
+    name: "Server browser: refresh/LAN/master query, filters, sorting, favorites, join"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/serverlist.qc:XonoticServerList_refreshServerList (311)"
+      - "menu/xonotic/serverlist.qc:XonoticServerList_setSortOrder (701)"
+      - "menu/xonotic/serverlist.qc:toggleFavorite (218)"
+      - "menu/xonotic/serverlist.qc:ServerList_Connect_Click (766)"
+      - "menu/xonotic/serverlist.qc:XonoticServerList_keyDown (1120)"
+    port_refs:
+      - "game/menu/ServerBrowser.cs:Refresh/RefreshInternet/QueryLan/Connect/AddFavorite"
+      - "game/menu/MultiplayerScreen.cs:BuildServersTab/RenderServers/OnSortClicked"
+    constants:
+      - { name: "default sort", base: "PING ascending", port: "SortField.Ping +1", match: true }
+      - { name: "menu_slist_maxping gate", base: "only when >0 and !showLaggy", port: "fallback 300 when cvar <=0 (Base skips the mask instead)", match: false }
+      - { name: "default game port", base: "26000", port: "26000 (LanDiscoveryPort)", match: true }
+      - { name: "focusEnter auto-refresh throttle", base: "10 s", port: "one-shot refresh on first show only", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: partial
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No category system: SLIST_CATEGORIES (Favorites/Recommended/Normal/XPM/Instagib/Overkill/Defrag/Modified headings, CategoryForEntry qcstatus parsing, enoverride/dioverride) — the port's Categories checkbox is honest-labeled 'not supported yet'."
+      - "No recommended/promoted/banned server integration (needs the update-response system) and no menu_slist_modfilter / gametype-prefix ('ctf: text') filter syntax."
+      - "Favorites diverge: stored in port-private favorites.cfg keyed by normalized address; Base stores net_slist_favorites (cvar, saved config) preferring the 44-char crypto id fingerprint so a server keeps its star across IP changes."
+      - "Full/empty filter semantics differ: Base masks on SLIST_FIELD_FREESLOTS>=1 / NUMHUMANS>=1 in the host cache; the port approximates from players/maxplayers and always keeps favorites+LAN rows visible when 'Empty' is off."
+      - "Row presentation: no mod/pure icon, AES-level icon, stats icon, IPv4/IPv6 icon, no category-colored ping gradient from hud_panel_scoreboard_ping_* cvars (port uses fixed thresholds 70/140/200), no full/empty row alpha dimming."
+      - "Keyboard shortcuts absent: Enter=connect works, but Space/MOUSE2=server info popup and INS/MOUSE3=toggle favorite are not bound."
+    verification:
+      - { kind: code, ref: "Refresh(): favorites → LAN sweep → master getservers; sort-click flips order on same column (QC setSortOrder); double-click joins (ItemActivated→OnConnect); Bookmark toggles + persists", result: pass }
+      - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs (master protocol encode/parse)", result: pass }
+    confidence: high
+    notes: "The transport is a real reimplementation of the DP OOB protocol rather than the engine host-cache builtins — behavior-level equivalent. Server-info dialog itself (dialog_multiplayer_join_serverinfo.qc) belongs to menu-dialogs; the port DialogServerInfo is pushed from OnInfo here."
+
+  - id: menu-core.create.maplist
+    name: "Map list widget: gametype filtering, previews, g_maplist toggle, add/remove, load map"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/maplist.qc:XonoticMapList_refilter (178)"
+      - "menu/xonotic/maplist.qc:g_maplistCacheToggle (44)"
+      - "menu/xonotic/maplist.qc:MapList_LoadMap (274)"
+      - "menu/xonotic/maplist.qc:XonoticMapList_keyDown (310)"
+    port_refs:
+      - "game/menu/MapList.cs:Available"
+      - "game/menu/CreateGameScreen.cs:maplist half (364-540) + MapInfoCache (548)"
+    constants:
+      - { name: "preview fallback", base: "maps/<bsp> → levelshots/<bsp> → nopreview_map", port: "MenuSkin.Image('maps/..') → nopreview_map (no levelshots step)", match: false }
+      - { name: "menu_use_default_hostname", base: "1 → hostname \"<name>'s Xonotic Server\"", port: "not implemented", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: partial
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Gametype filter is .mapinfo-based but permissive: maps WITHOUT a .mapinfo are shown for every gametype (Base autogenerates mapinfo and filters strictly via MapInfo_FilterGametype + required/forbidden feature flags)."
+      - "Type-to-search (incremental name search with 0.5 s timeout), +/- include keys, Ctrl+F focus-filter, Ctrl+U clear are not ported; click-preview-to-toggle and double-click→map-info dialog are ported."
+      - "MapList_LoadMap's 'menu_loadmap_prepare' + default-hostname setup absent (the port's StartGame path configures the listen server directly)."
+    verification:
+      - { kind: code, ref: "CreateGameScreen: preview click toggles g_maplist (SetSelection writes cvar + MarkArchived); Add/Remove shown/all ported; start button → MatchConfig", result: pass }
+    confidence: high
+    notes: "g_maplist editing is live and cvar-faithful (space-separated bsp names). Map preview images load from the same maps/<bsp> art."
+
+  - id: menu-core.create.gametypelist
+    name: "Create-game gametype list + weapons-list/weapon-arena widgets"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/gametypelist.qc:XonoticGametypeList_loadCvars/saveCvars"
+      - "menu/xonotic/util.qc:GAMETYPES macro + GameType_GetID/GetCount (637-707)"
+      - "menu/xonotic/weaponslist.qc"
+      - "menu/xonotic/weaponarenacheckbox.qc"
+    port_refs:
+      - "game/menu/CreateGameScreen.cs (gametype list half)"
+      - "game/menu/framework/WeaponPriorityList.cs (weaponslist.qc)"
+      - "game/menu/dialogs/DialogMutators.cs (weapon-arena checkboxes)"
+    constants:
+      - { name: "menu gametype order", base: "dm tdm ctf ca ft mayhem tmayhem ka tka kh lms dom nb ons as surv (+hidden rr cts inv when menu_create_show_all)", port: "GameTypes registry order — not verified equal", match: false }
+    status:
+      logic: partial
+      values: unknown
+      timing: na
+      presentation: partial
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "menu_create_show_all (reveal hidden race/cts/invasion rows) and the teamplay/'free for all' right-column tag + gametype icons per row are not verified in the port list."
+      - "Gametype descriptions as tooltips (MapInfo_Type_Description via focusedItemChangeNotify) absent."
+    verification:
+      - { kind: code, ref: "CreateGameScreen builds a gametype selector wired to MatchConfig.Gametype; selection refilters the maplist (QC gameTypeChangeNotify analogue)", result: pass }
+    confidence: medium
+    notes: "The hosting Create dialog (dialog_multiplayer_create.qc) is the menu-dialogs unit's row; these are the supporting widgets it embeds. weaponslist.qc doubles as the weapon-priority editor in settings."
+
+  - id: menu-core.keys.keybinder
+    name: "Keybinder: bind catalog, key capture, clear, reset-all, conflict/limit handling"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/keybinder.qc:KeyBinds_BuildList (40)"
+      - "menu/xonotic/keybinder.qc:XonoticKeyBinder_keyGrabbed (316)"
+      - "menu/xonotic/keybinder.qc:KeyBinder_Bind_Clear (420)"
+      - "menu/xonotic/keybinder.qc:KeyBinder_Bind_Reset_All (444)"
+      - "menu/xonotic/keybinder.qc:replace_bind (202)"
+    port_refs:
+      - "game/menu/KeyBindings.cs:Actions/Encode/ToInputEvent"
+      - "game/menu/KeyCaptureButton.cs"
+      - "game/menu/dialogs/DialogSettingsInput.cs (binder list + Change/Clear/Reset all)"
+    constants:
+      - { name: "MAX_KEYS_PER_FUNCTION", base: "2 (3rd bind evicts all)", port: "single bind per action (capture replaces)", match: false }
+      - { name: "Reset all", base: "unbindall; exec binds-xonotic.cfg", port: "restores canonical cfg defaults directly", match: true }
+      - { name: "forbidden capture keys", base: "ESC cancels; CAPSLOCK/NUMLOCK re-arm", port: "ESC cancels; no CAPSLOCK/NUMLOCK special-case", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: partial
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Reduced catalog: 24 actions vs Base's full list — missing jetpack, weapon groups 1-9 with per-weapon tree rows + group-vs-individual overrider binds, radar maximize, 3rd-person toggle, spectate, chat history, vote yes/no, ready, server info, quit bind, team_auto/team-selection, drop key/flag, quick menu, sandbox/waypoint-editor dev binds, and the 32 user-defined binds (+userbind editor dialog)."
+      - "Only ONE key per action (Base shows/stores up to 2, evicting all on a 3rd); no overrider semantics (weapon group bind unsetting individual binds); no special read-only rows (Shift+Esc console, Tab+Esc scoreboard UI)."
+      - "Legacy-alias migration (replace_bind dropweapon→weapon_drop etc.) not ported."
+    verification:
+      - { kind: code, ref: "KeyCaptureButton capture flow writes through BindInput to the canonical BindTable (binds-xonotic.cfg-seeded); Reset all live", result: pass }
+      - { kind: test, ref: "tests/XonoticGodot.Tests/Input/BindsTests.cs", result: pass }
+    confidence: high
+    notes: "Capture-mode global guard (KeyCaptureButton.Capturing) prevents the F12 screenshot hotkey from eating a capture — a port-specific fix in the same spirit as QC's keyGrabber."
+
+  - id: menu-core.sp.campaign_screen
+    name: "Singleplayer/campaign screen: level list + unlock frontier, campaign cycler, instant action"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/campaign.qc:XonoticCampaignList_loadCvars (68)"
+      - "menu/xonotic/campaign.qc:XonoticCampaignList_drawListBoxItem (194)"
+      - "menu/xonotic/campaign.qc:XonoticCampaignList_campaignGo (96)"
+      - "menu/xonotic/dialog_singleplayer.qc:XonoticSingleplayerDialog_fill + InstantAction_LoadMap"
+    port_refs:
+      - "game/menu/SingleplayerScreen.cs:LoadCampaign/PopulateList/OnStartLevel/OnInstantAction"
+      - "game/menu/SingleplayerScreen.cs:CampaignRowButton (327)"
+    constants:
+      - { name: "revealed rows", base: "min(campaignIndex+2, entries) — done/current/one '???' peek", port: "same (PopulateList shown = frontier+2)", match: true }
+      - { name: "row alphas", base: "SELECTABLE 0.6 / CURRENT 1 / FUTURE 0.2, desc ×0.8", port: "same values", match: true }
+      - { name: "g_campaign_skill radios", base: "-2/0/2 Easy/Medium/Hard", port: "same", match: true }
+      - { name: "instant-action table", base: "30% dm 2-8, 25% ctf 4-12/2, 15% tdm 4-8/2, 10% ca, 10% ft, 5% kh 6, else lms/dom(2-8/2)/ons(6-16/2)/as(4-16/2); timelimit 10; bots=p-1", port: "same weights/ranges (OnInstantAction)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Campaign cycler: Base wraps around (mod(j+step, n)); the port clamps at the ends (Prev/Next disabled at first/last)."
+      - "Live re-sync while open (QC draw() reloads when g_campaign<id>_index or g_campaign_name changes under it — e.g. after finishing a level in-game) not implemented; the list rebuilds only on open/cycle."
+      - "Instant action singleplayer-server lockdown (makeServerSingleplayer settemp net_address 127.0.0.1) not ported."
+    verification:
+      - { kind: code, ref: "frontier clamp + locked-row Disabled reproduce setSelected clamp; OnStartLevel refuses >frontier; CampaignSetup analogue = MatchConfig{CampaignId,CampaignIndex} → sv-campaign path (verified end-to-end per campaign-flow-verified memory)", result: pass }
+    confidence: high
+    notes: "Campaign FILE parsing/win-lose/progress cvars are sv-campaign's rows (registry/sv-campaign.yaml) — this row is only the menu screen."
+
+  - id: menu-core.sp.winner_dialog
+    name: "Campaign Winner dialog (auto-popped when g_campaign<name>_won flips)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_singleplayer_winner.qc"
+      - "menu/xonotic/util.qc:preMenuDraw (573-594 campaign-won watch)"
+    port_refs:
+      - "game/menu/dialogs/DialogWinner.cs"
+    constants: []
+    status:
+      logic: stub
+      values: na
+      timing: na
+      presentation: partial
+      audio: missing
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "DialogWinner has NO caller: Base's preMenuDraw watches cvar('g_campaign<name>_won') flipping 0→1 and pops the winner banner (+ MENU_SOUND_WINNER); the port never opens it, so beating the campaign shows nothing."
+    verification:
+      - { kind: code, ref: "grep DialogWinner over game/ → only the class file (no constructor call anywhere)", result: fail }
+    confidence: high
+    notes: "The /gfx/winner banner loading is implemented inside the dead dialog."
+
+  - id: menu-core.media.demolist
+    name: "Demo browser (list/filter/play/timedemo + disconnect-confirm dialogs)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/demolist.qc:XonoticDemoList_getDemos"
+      - "menu/xonotic/demolist.qc:XonoticDemoList_startDemo/timeDemo"
+      - "menu/xonotic/dialog_media_demo.qc:XonoticDemoBrowserTab_fill"
+      - "menu/xonotic/dialog_media_demo_startconfirm.qc"
+      - "menu/xonotic/dialog_media_demo_timeconfirm.qc"
+    port_refs:
+      - "game/menu/dialogs/DialogMediaDemo.cs"
+    constants:
+      - { name: "cl_autodemo checkbox", base: "cl_autodemo", port: "same cvar, live", match: true }
+    status:
+      logic: stub
+      values: na
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No demos/*.dem enumeration (incl. 1-level subdir scan with colored '/' prefixes), no filter glob, no sort; the list renders empty with an honest note."
+      - "Play/Timedemo are inert (no playdemo/timedemo backend) and the two 'disconnect first?' confirm dialogs are not ported."
+    verification:
+      - { kind: code, ref: "DialogMediaDemo builds the faithful layout; buttons route bare playdemo/timedemo through MenuCommand (logged inert)", result: fail }
+    confidence: high
+    notes: "The active demo-cinematics track (branch claude/demo-cinematics, .xgd format) will supply the backend; the browser should then enumerate .xgd instead of .dem — flag as intended follow-up, not done."
+
+  - id: menu-core.media.screenshots
+    name: "Screenshot browser (list/filter) + viewer (zoom/slideshow)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/screenshotlist.qc:XonoticScreenshotList_getScreenshots"
+      - "menu/xonotic/screenshotimage.qc"
+      - "menu/xonotic/dialog_media_screenshot.qc"
+      - "menu/xonotic/dialog_media_screenshot_viewer.qc"
+    port_refs:
+      - "game/menu/dialogs/DialogMediaScreenshot.cs"
+      - "src/XonoticGodot.Common/Menu/DataSource.cs:ScreenshotSource"
+    constants:
+      - { name: "cl_autoscreenshot flag checkbox", base: "cl_autoscreenshot bit", port: "live", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The viewer pane is missing: no image preview, no zoom −/+/reset, no Previous/Next, no slideshow (screenshotimage.qc + viewer dialog) — the transport buttons render but are inert."
+    verification:
+      - { kind: code, ref: "ScreenshotSource enumerates screenshots/*.{jpg,tga,png} via VFS, strips/decolorizes/sorts (QC getScreenshots + buf_sort); filter live", result: pass }
+      - { kind: test, ref: "tests/XonoticGodot.Tests/MenuDataSourceTests.cs", result: pass }
+    confidence: high
+    notes: "Port screenshots are saved by ScreenshotService to the user dir; the browser scans the VFS — verify the two roots agree when the viewer lands."
+
+  - id: menu-core.media.musicplayer
+    name: "Music player (sound list, playlist cvar editing, menu-track set/reset, transport)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_media_musicplayer.qc:XonoticMusicPlayerTab_fill"
+      - "menu/xonotic/soundlist.qc"
+      - "menu/xonotic/playlist.qc"
+    port_refs:
+      - "game/menu/dialogs/DialogMediaMusicPlayer.cs"
+      - "src/XonoticGodot.Common/Menu/DataSource.cs:SoundSource/CvarStringSource"
+    constants:
+      - { name: "playlist cvar", base: "music_playlist_list0 (space-separated)", port: "same, re-tokenized per refresh", match: true }
+      - { name: "random order", base: "music_playlist_random0 checkbox", port: "same cvar bound", match: true }
+      - { name: "menu track", base: "menu_cdtrack set/reset-to-default", port: "same (Set/Reset buttons live)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Playback transport (Stop/Play/Pause/Prev/Next → engine cd/music commands) is inert — no music playback backend, so the playlist can be edited but never heard (and the changed menu_cdtrack is moot while menu music itself is unimplemented)."
+      - "Current/default track [C]/[D] row markers exist in the source backend; in-Base the playing track marker updates live from the engine — no equivalent."
+    verification:
+      - { kind: code, ref: "SoundSource enumerates sound/cdtracks/*.ogg via VFS; Add/Add-all/Remove/Remove-all edit music_playlist_list0 + MarkArchived", result: pass }
+    confidence: high
+    notes: "Faithful two-pane layout reproduced."
+
+  - id: menu-core.media.guide
+    name: "Guide tab (topics/entries/descriptions) + Media tab container"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_media.qc:XonoticMediaDialog_fill (tab order)"
+      - "menu/xonotic/dialog_media_guide.qc:XonoticGuideTab_fill"
+      - "menu/xonotic/guide/guide.qc"
+      - "menu/xonotic/guide/topics.qc"
+      - "menu/xonotic/guide/entries.qc"
+      - "menu/xonotic/guide/pages.qc"
+      - "menu/xonotic/guide/description.qc"
+    port_refs:
+      - "game/menu/dialogs/MediaScreen.cs (tab order Guide/Demos/Screenshots/Music Player)"
+      - "game/menu/dialogs/DialogMediaGuide.cs"
+    constants:
+      - { name: "topics", base: "Introduction..Mods (13 fixed topics)", port: "same 13, same order", match: true }
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Entry lists are only partially populated (weapons + mutators from the port registries); items/powerups/buffs/nades/monsters/vehicles/turrets/gametypes/mods entries and their describe() text pages are missing; the keyword filter is inert."
+    verification:
+      - { kind: code, ref: "MediaScreen tab order matches dialog_media.qc; Guide topics list complete", result: pass }
+    confidence: medium
+    notes: "Also reachable in-match via the pause menu's Guide button (directmenu guide → MenuDialogRegistry['guide'])."
+
+  - id: menu-core.misc.credits
+    name: "Credits roll (auto-scroll + names list)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/credits.qc:CREDITS macro + XonoticCreditsList_draw (700-716)"
+      - "menu/xonotic/dialog_credits.qc"
+    port_refs:
+      - "game/menu/CreditsScreen.cs"
+    constants:
+      - { name: "scroll rate", base: "1 item-height/s ((time - scrolling) * itemHeight)", port: "28 px/s fixed", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: partial
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Scroll speed is a fixed 28 px/s, not one row per second; QC key handling (any-key stops autoscroll, Enter/Esc closes) partially replaced by a pause/resume button."
+    verification:
+      - { kind: code, ref: "CreditsScreen credits array ported verbatim from the CREDITS macro (rev-matched names incl. bones_was_here/k9er/z411)", result: pass }
+    confidence: high
+    notes: "Reachable as the pulled nexposee Credits tile, like Base."
+
+  - id: menu-core.lists.language
+    name: "Language selection (languages.txt list, restart flow, in-match warning)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/languagelist.qc:XonoticLanguageList_getLanguages (169)"
+      - "menu/xonotic/languagelist.qc:XonoticLanguageList_setLanguage (205)"
+    port_refs:
+      - "game/menu/framework/Localization.cs:SetLanguage/LoadLanguages"
+      - "src/XonoticGodot.Common/Localization/LanguagesTxt.cs"
+      - "game/menu/dialogs/DialogSettingsUser.cs (language picker)"
+      - "game/menu/framework/MenuCommand.cs:prvm_language + menu_restart handlers"
+    constants:
+      - { name: "language cvar", base: "_menu_prvm_language → prvm_language + menu_restart", port: "prvm_language set + Localization.SetLanguage + menu_restart", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Translation-percentage column (alpha-dimmed <90%/<50% rows, ready-icon at 100%) and the native-name tooltip are not shown; the picker is a slider/list of names only."
+      - "In-match guard: Base blocks the live switch when connected and pops the languageWarning dialog ('will disconnect you'); DialogLanguageWarning.cs exists but has no caller (dead) — port likely switches live regardless."
+    verification:
+      - { kind: code, ref: "Set language issues prvm_language '$x'; menu_restart which MenuRoot.Restart honors (re-theme + re-translate); languages.txt parsed by LanguagesTxt.cs", result: pass }
+      - { kind: code, ref: "grep DialogLanguageWarning → no non-definition reference", result: fail }
+    confidence: high
+    notes: "First-run dialog shares the same data-driven picker."
+
+  - id: menu-core.lists.skins
+    name: "Menu-skin selection (skinlist) + HUD-skin list (hudskinlist)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/skinlist.qc:XonoticSkinList_getSkins/setSkin"
+      - "menu/xonotic/hudskinlist.qc"
+    port_refs:
+      - "game/menu/dialogs/DialogMediaSkinList.cs (embedded in DialogSettingsUser)"
+      - "game/menu/framework/MenuSkin.cs:Reload"
+    constants:
+      - { name: "skin scan", base: "gfx/menu/*/skinvalues.txt (title/author/skinpreview)", port: "same scan via VFS", match: true }
+      - { name: "apply", base: "menu_skin set + menu_restart + menu_cmd skinselect", port: "menu_skin + MenuRoot.Restart (reopens Settings User)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "hudskinlist.qc (the HUD-skin picker with its skinvalues scan + 'set HUD skin' apply, hosted by dialog_hudsetup_exit) has no port picker UI — hud_skin only changes via console (the cvar IS live: HudManager.ApplyHudSkin)."
+    verification:
+      - { kind: code, ref: "DialogMediaSkinList scans skinvalues.txt, binds menu_skin, Set-skin triggers MenuSkin.Reload via menu_restart", result: pass }
+    confidence: high
+    notes: "Default-skin '(Default)' title suffix behavior not checked — minor."
+
+  - id: menu-core.lists.stats
+    name: "Player statistics list (statslist) + server-info player list (playerlist)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/statslist.qc:XonoticStatsList_getStats"
+      - "menu/xonotic/playerlist.qc:XonoticPlayerList_setPlayerList"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "statslist.qc (the Profile tab's XonStat summary: joined/last-match/time-played/favorite map + per-gametype elo/rank/wins from the local PlayerStats_PlayerDetail db) is not ported — the Profile right pane shows an honest empty note. Depends on the playerstats-xonstat unit (deferred)."
+      - "playerlist.qc (score/ping/team-colored player rows inside the server-info dialog) is not ported; the port DialogServerInfo shows infostring fields only."
+    verification:
+      - { kind: code, ref: "DialogMultiplayerProfile.cs: stats pane is an explicit empty-note placeholder", result: fail }
+    confidence: high
+    notes: "Row kept here for widget-file coverage; the XonStat data pipeline itself is the playerstats-xonstat unit."
+
+  - id: menu-core.profile.player_setup_widgets
+    name: "Player-setup widgets: model selector, name charmap + color pickers, crosshair picker/preview"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/playermodel.qc:XonoticPlayerModelSelector_loadModels/go"
+      - "menu/xonotic/charmap.qc"
+      - "menu/xonotic/colorpicker.qc"
+      - "menu/xonotic/colorpicker_string.qc"
+      - "menu/xonotic/colorbutton.qc"
+      - "menu/xonotic/picker.qc"
+      - "menu/xonotic/crosshairpicker.qc"
+      - "menu/xonotic/crosshairpreview.qc"
+    port_refs:
+      - "game/menu/framework/PlayerModelSelector.cs"
+      - "game/menu/framework/CharmapPicker.cs"
+      - "game/menu/framework/HslColorPicker.cs"
+      - "game/menu/framework/CrosshairPicker.cs"
+      - "game/menu/framework/CrosshairPreview.cs"
+      - "game/menu/framework/PickerGrid.cs"
+      - "game/menu/dialogs/DialogMultiplayerProfile.cs (hosts model/name/color widgets)"
+    constants:
+      - { name: "model cvars", base: "_cl_playermodel/_cl_playerskin", port: "same", match: true }
+      - { name: "crosshair id base", base: "crosshair = 31 + cell (crosshairpicker_cellToCrosshair)", port: "MenuPickerMath (tested)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Model selector: Base reads models/player/*.txt metadata (get_model_parameters: title/skin/sex, hidden-model filter, sorted by title); the port's roster source + hidden filter not verified equal."
+      - "crosshair_dot overlay in the picker cells (drawn at crosshair_dot_size) not verified."
+    verification:
+      - { kind: test, ref: "tests/XonoticGodot.Tests/MenuPickerLogicTests.cs (cell↔crosshair/charmap math)", result: pass }
+      - { kind: code, ref: "DialogMultiplayerProfile hosts name preview + HSL picker + charmap typing into _cl_name box (QC layout)", result: pass }
+    confidence: medium
+    notes: "The hosting Profile dialog is dialog_multiplayer_profile.qc = menu-dialogs unit; these widget files are owned here. The crosshair picker is hosted by dialog_settings_game_crosshair (menu-dialogs)."
+
+  - id: menu-core.hudconfig.panel_dialogs
+    name: "HUD panel config dialogs (22 per-panel dialogs + hudsetup exit dialog)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_hudpanel_ammo.qc"
+      - "menu/xonotic/dialog_hudpanel_centerprint.qc"
+      - "menu/xonotic/dialog_hudpanel_chat.qc"
+      - "menu/xonotic/dialog_hudpanel_checkpoints.qc"
+      - "menu/xonotic/dialog_hudpanel_engineinfo.qc"
+      - "menu/xonotic/dialog_hudpanel_healtharmor.qc"
+      - "menu/xonotic/dialog_hudpanel_infomessages.qc"
+      - "menu/xonotic/dialog_hudpanel_itemstime.qc"
+      - "menu/xonotic/dialog_hudpanel_modicons.qc"
+      - "menu/xonotic/dialog_hudpanel_notification.qc"
+      - "menu/xonotic/dialog_hudpanel_physics.qc"
+      - "menu/xonotic/dialog_hudpanel_pickup.qc"
+      - "menu/xonotic/dialog_hudpanel_powerups.qc"
+      - "menu/xonotic/dialog_hudpanel_pressedkeys.qc"
+      - "menu/xonotic/dialog_hudpanel_quickmenu.qc"
+      - "menu/xonotic/dialog_hudpanel_racetimer.qc"
+      - "menu/xonotic/dialog_hudpanel_radar.qc"
+      - "menu/xonotic/dialog_hudpanel_score.qc"
+      - "menu/xonotic/dialog_hudpanel_strafehud.qc"
+      - "menu/xonotic/dialog_hudpanel_timer.qc"
+      - "menu/xonotic/dialog_hudpanel_vote.qc"
+      - "menu/xonotic/dialog_hudpanel_weapons.qc"
+      - "menu/xonotic/dialog_hudsetup_exit.qc"
+      - "menu/xonotic/util.qc:dialog_hudpanel_main_checkbox/main_settings (722-802)"
+    port_refs:
+      - "game/menu/dialogs/DialogHudPanels.cs (host list)"
+      - "game/menu/dialogs/DialogHudPanelAmmo.cs (+ 21 sibling DialogHudPanel*.cs)"
+      - "game/menu/dialogs/DialogHudSetupExit.cs"
+      - "game/menu/framework/HudPanelCommon.cs (shared bg/color/border/alpha/team/padding block)"
+    constants:
+      - { name: "shared settings block", base: "hud_panel_<p>_bg/_bg_color/_bg_border/_bg_alpha/_bg_color_team/_bg_padding + hide_ondeath", port: "same cvars via HudPanelCommon", match: true }
+    status:
+      logic: faithful
+      values: unknown
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Per-dialog option coverage (each panel's specific rows beyond the shared block) not exhaustively diffed — spot checks only; saved-HUD-skin .cfg export in the exit dialog has no file-scan backend (HudPanelCommon.cs:32 note)."
+      - "Base opens the per-panel dialog from the in-game HUD editor via directpanelhudmenu (right-centered beside the panel); the port opens them from the DialogHudPanels list — entry point differs, panel-adjacent placement absent."
+    verification:
+      - { kind: code, ref: "All 22 DialogHudPanel*.cs exist; DialogHudPanels reachable live via menu_showhudoptions verb; cvars drive HudManager live (cl-hud.panel.* rows verify effect)", result: pass }
+    confidence: medium
+    notes: "The in-game HUD-configure editor itself (drag/resize, hud_config.qc) is cl-hud.hudconfig's row — no duplication; these are the menu-side option dialogs."
+
+  - id: menu-core.tools.sandbox_monster_dialogs
+    name: "Sandbox tools + monster tools dev dialogs"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_sandboxtools.qc"
+      - "menu/xonotic/dialog_monstertools.qc"
+    port_refs:
+      - "game/menu/dialogs/DialogSandboxTools.cs"
+      - "game/menu/dialogs/DialogMonsterTools.cs"
+    constants: []
+    status:
+      logic: partial
+      values: unknown
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "SandboxTools is live (registered in MenuDialogRegistry under the QC name, opened by menu_showsandboxtools/F7 and routed to the g_sandbox server backend via the 'sandbox' alias expansion); DialogMonsterTools has NO opener (Base binds menu_showmonstertools via dialog name 'MonsterTools') — dead."
+    verification:
+      - { kind: code, ref: "MenuDialogRegistry['SandboxTools'] + MenuCommand 'sandbox' alias → SendGame('g_sandbox ...'); grep DialogMonsterTools → definition only", result: pass }
+    confidence: high
+    notes: "Sandbox object manipulation itself is mutator-sandbox's unit."
+
+  - id: menu-core.util.updatecheck
+    name: "Update notification + ext-response system (version banner, banned/promoted/recommended, hotfix pk3)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/util.qc:updateCheck (456)"
+      - "menu/xonotic/util.qc:UpdateNotification_URI_Get_Callback (316)"
+      - "menu/xonotic/util.qc:preMenuDraw (541-571 pulsing update banner)"
+    port_refs: []
+    constants:
+      - { name: "update URL", base: "https://update.xonotic.org/checkupdate.txt", port: "none", match: false }
+      - { name: "cl_startcount", base: "incremented each boot before the query", port: "not maintained", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Whole subsystem missing: version compare (vercmp vs g_xonoticversion) with the pulsing 'Update to X now!' banner, ToS-version push (_Nex_ExtResponseSystem_NewToS feeding the ToS dialog), banned-server masks + promoted/recommended feeds for the browser, and the hotfix-pk3 auto 'curl --pak' + exec flow."
+    verification:
+      - { kind: code, ref: "grep update.xonotic.org/checkupdate over game+src → no hits", result: fail }
+    confidence: high
+    notes: "Downstream consumers (serverlist categories, ToS auto-show) are blocked on this — see their rows."
+
+  - id: menu-core.util.helpers
+    name: "Menu helper framework: cvar save/load walk, setDependent visibility engine, sendCvars, gametype table"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/util.qc:saveAllCvars/loadAllCvars (49)"
+      - "menu/xonotic/util.qc:setDependent/_Check/_AND/_OR/Weird (127-255)"
+      - "menu/xonotic/util.qc:CheckSendCvars (825)"
+      - "menu/xonotic/util.qc:isServerSingleplayer/makeServerSingleplayer (804-814)"
+      - "menu/xonotic/util.qc:updateCompression (604)"
+      - "menu/xonotic/util.qc:GameType_GetID/GetCount/GetName/GetIcon (664-707)"
+    port_refs:
+      - "game/menu/framework/CvarControls.cs:Dependent.Bind (setDependent analogue)"
+      - "game/menu/framework/MenuState.cs (shared cvar store + SaveUserConfig)"
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Dependency engine covers the simple range case (Dependent.Bind min..max); the AND/OR 3-cvar combos, string-not-equal, function deps, and NOT variants are only partially represented per dialog."
+      - "sendCvars (menu widgets that push a changed cvar to the connected server via 'sendcvar X') not implemented; updateCompression/DDS logic is Godot-moot (intended); makeServerSingleplayer lockdown unported (see campaign row)."
+    verification:
+      - { kind: code, ref: "Dependent.Bind live in DialogSettingsAudio (menu_sounds focus dep) and others; MenuState.SaveUserConfig on panel collapse (MainMenu.CloseActivePanel)", result: pass }
+    confidence: medium
+    notes: "loadAllCvars/saveAllCvars per-widget walk replaced by event-driven two-way binding — equivalent effect."
+
+  - id: menu-core.misc.cvarlist
+    name: "Cvar list/editor (search, value edit, revert, description pane)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/cvarlist.qc:CvarList_Load (27)"
+      - "menu/xonotic/cvarlist.qc:CvarList_Value_Change (281)"
+      - "menu/xonotic/cvarlist.qc:CvarList_Revert_Click (299)"
+    port_refs:
+      - "game/menu/dialogs/DialogCvarList.cs"
+    constants: []
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No cvar descriptions (no description table in the port store) and no 'search descriptions too' effect (checkbox bound but inert); 'only modified' filter + the menu_forced_saved_cvars/menu_reverted_nonsaved_cvars save-flag bookkeeping (seta promotion of edited non-archived cvars) absent."
+    verification:
+      - { kind: code, ref: "DialogCvarList: live search over MenuState.Cvars.Names, value edit writes through, Reset-to-default reverts (CvarList_Revert_Click analogue)", result: pass }
+    confidence: high
+    notes: "Hosted in Base by dialog_settings_misc_cvars.qc (menu-dialogs unit); the list widget is owned here."

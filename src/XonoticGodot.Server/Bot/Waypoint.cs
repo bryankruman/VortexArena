@@ -504,6 +504,13 @@ public sealed class WaypointNetwork
     // Reusable scratch for the multi-seed gather (NearestSeeds) — same single-threaded-sim safety as _nearScratch.
     private readonly List<(Waypoint Wp, float Cost)> _seedScratch = new();
 
+    // Per-call "already attempted" mask for NearestSeeds, indexed by node list position. A node's tracewalk
+    // reachability from a FIXED pos does not change as the search radius grows, so one attempt per call is exact
+    // (not a heuristic cap). Without it, the rescan-per-growth loop re-TRACEWALKED every in-range node on every
+    // radius step — with nothing reachable that is nodes × steps walk-sims (99 nodes × 67 steps at the on-ground
+    // 50000 cap): the 50-350ms/frame bot.strategy melt behind the stormkeep "very slow with bots" report.
+    private bool[] _seedTried = Array.Empty<bool>();
+
     /// <summary>
     /// Multiple route entry waypoints (QC navigation_markroutes_nearestwaypoints, navigation.qc:1043-1101): instead
     /// of routing from the single <see cref="Nearest"/> node, Base seeds the Dijkstra flood with EVERY waypoint
@@ -529,23 +536,24 @@ public sealed class WaypointNetwork
         float inc = onGround ? 750f : 500f;
         float max = onGround ? 50000f : 1500f;
 
+        if (_seedTried.Length < _nodes.Count) _seedTried = new bool[_nodes.Count];
+        else Array.Clear(_seedTried, 0, _nodes.Count);
+
         for (float radius = inc; ; radius += inc)
         {
             float r2 = radius * radius;
             for (int i = 0; i < _nodes.Count; i++)
             {
+                // one attempt per node per call — covers BOTH the QC seed-set dedupe (a node taken at a tighter
+                // radius) AND the failed-tracewalk case the per-growth rescan would otherwise re-walk every step.
+                if (_seedTried[i])
+                    continue;
                 Waypoint wp = _nodes[i];
                 Vector3 cp = wp.ClosestPoint(pos);
                 float d2 = (cp - pos).LengthSquared();
                 if (d2 > r2)
                     continue;
-                // dedupe a node already taken at a tighter radius (QC re-scans from scratch each grow, but only
-                // adds a waypoint once via the wpcost seed-write; here an explicit check keeps the seed set unique).
-                bool seen = false;
-                for (int s = 0; s < seeds.Count; s++)
-                    if (ReferenceEquals(seeds[s].Wp, wp)) { seen = true; break; }
-                if (seen)
-                    continue;
+                _seedTried[i] = true;
                 bool reach = !canTrace || (walkFromWp
                     ? BotTracewalk.CanWalk(pos, cp, _playerMins, _playerMaxs, wp.IsBox ? (wp.AbsMax.Z - cp.Z) : 0f)
                     : BotTracewalk.CanWalk(cp, pos, _playerMins, _playerMaxs));

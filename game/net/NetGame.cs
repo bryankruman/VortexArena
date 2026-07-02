@@ -2925,9 +2925,28 @@ public sealed partial class NetGame : Node3D
             // snaps the view out of any server-side (multi-destination) teleport that set the host Player's flag.
             if (LocalServerPlayer is { FixAngle: true } fixSelf)
             {
-                _viewAngles.X = Mathf.Clamp(fixSelf.FixAngleAngles.X, -89f, 89f);
-                _viewAngles.Y = fixSelf.FixAngleAngles.Y;
-                _viewAngles.Z = 0f;
+                // Warpzone/teleporter crossings are usually snapped FIRST by the predictor
+                // (ConsumePredictedFixAngle) — the server's stamp for the SAME crossing lands here 1-3 frames
+                // later (its tick runs behind the replay). Re-applying it would throw away every mouse delta
+                // in between (a "view fights me" snap-back on each crossing), so recognise it — same facing,
+                // recent — and only clear the flag. Spawn snaps and unpredicted (multi-dest) teleports, which
+                // the predictor never saw, still apply. Base sidesteps this by NOT using fixangle for player
+                // warpzone crossings at all (server.qc:150-170 networks the transform; the client rotates its
+                // own view ONCE) — this is the listen-host equivalent of that single-apply.
+                NVec3 fa = fixSelf.FixAngleAngles;
+                float yawDiff = Mathf.Abs(Mathf.RadToDeg(Mathf.AngleDifference(
+                    Mathf.DegToRad(fa.Y), Mathf.DegToRad(_lastPredictedFixAngles.Y))));
+                bool predictedSame = Time.GetTicksMsec() * 0.001f - _lastPredictedFixTime < 1f
+                    && yawDiff < 2f
+                    && Mathf.Abs(Mathf.Clamp(fa.X, -89f, 89f) - _lastPredictedFixAngles.X) < 2f;
+                if (!predictedSame)
+                {
+                    _viewAngles.X = Mathf.Clamp(fa.X, -89f, 89f);
+                    _viewAngles.Y = fa.Y;
+                    _viewAngles.Z = 0f;
+                }
+                if (MenuState.Cvars.GetFloat("sv_warpzone_trace") != 0f)
+                    GD.Print($"[wzview] authoritative {(predictedSame ? "skip (predicted already applied)" : "snap")} -> {fa}");
                 fixSelf.FixAngle = false;
             }
 
@@ -5337,6 +5356,14 @@ public sealed partial class NetGame : Node3D
             _viewAngles = _carrier.FixAngleAngles;
             _viewAngles.X = Mathf.Clamp(_viewAngles.X, -89f, 89f);
             _carrier.FixAngle = false;
+            // Remember what the PREDICTED snap applied: the server's AUTHORITATIVE stamp for the SAME crossing
+            // arrives 1-3 frames later (its tick runs behind the replay), and re-applying it would discard every
+            // mouse delta in between — a visible "view fights me" snap-back on each crossing at low fps. The
+            // authoritative consume skips itself when it matches this (see the FixAngle block in _Process).
+            _lastPredictedFixAngles = _viewAngles;
+            _lastPredictedFixTime = Time.GetTicksMsec() * 0.001f;
+            if (MenuState.Cvars.GetFloat("sv_warpzone_trace") != 0f)
+                GD.Print($"[wzview] predicted snap -> {_viewAngles}");
             // Tell the view-model we teleported so its lean sway re-seeds to the destination facing instead of
             // snapping the gun across the screen (Base csqcmodel_teleported guard in viewmodel_animate). The
             // fixangle edge is exactly the predicted single-dest teleporter / warpzone view-snap.
@@ -5344,6 +5371,11 @@ public sealed partial class NetGame : Node3D
                 _viewModel.NotifyTeleported();
         }
     }
+
+    // The last PREDICTED fixangle apply (angles + wall-clock seconds), so the authoritative consume can
+    // recognise the same crossing's server stamp and skip the double-apply. -1 = none yet.
+    private NVec3 _lastPredictedFixAngles;
+    private float _lastPredictedFixTime = -1f;
 
     /// <summary>
     /// Per-render-frame local fire prediction + feedback, decoupled from the 1/72 s input cadence. With
