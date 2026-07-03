@@ -107,7 +107,7 @@ public class GametypeStatusTests
         red2.DeadState = DeadFlag.Dead; // CA alive test = !IS_DEAD
         var roster = new[] { red1, red2, blue1, blue2 };
 
-        ca.CheckRound(roster); // the per-frame recount (GameWorld.DriveGametypeFrame's CA branch)
+        ca.SetRoster(roster); ca.CheckWinner(); // the LIVE per-frame recount (round_handler canRoundEnd -> CheckWinner)
         Assert.Equal(1, ca.AliveCount(Teams.Red));
         Assert.Equal(2, ca.AliveCount(Teams.Blue));
         Assert.Equal(0, ca.AliveCount(Teams.Yellow)); // inactive team reads 0
@@ -138,7 +138,7 @@ public class GametypeStatusTests
         Assert.False(red2.IsDead);
         Assert.True(ft.IsEliminated(red2));
 
-        ft.CheckRound(roster);
+        ft.SetRoster(roster); ft.CheckWinner();
         Assert.Equal(1, ft.AliveCount(Teams.Red));
         Assert.Equal(1, ft.AliveCount(Teams.Blue));
 
@@ -310,14 +310,14 @@ public class GametypeStatusTests
         var roster = new[] { red1, blue1, blue2 };
         Func<Player, int> ids = Ids(roster);
 
-        ca.CheckRound(roster);
+        ca.SetRoster(roster); ca.CheckWinner();
         uint h1 = GametypeStatusBlock.Hash(CaptureBytes(ca, red1, roster, ids));
         uint h2 = GametypeStatusBlock.Hash(CaptureBytes(ca, red1, roster, ids));
         Assert.Equal(h1, h2);   // unchanged state → no resend
         Assert.NotEqual(0u, h1); // 0 is the "never sent" sentinel
 
         blue2.DeadState = DeadFlag.Dead;
-        ca.CheckRound(roster);
+        ca.SetRoster(roster); ca.CheckWinner();
         uint h3 = GametypeStatusBlock.Hash(CaptureBytes(ca, red1, roster, ids));
         Assert.NotEqual(h1, h3); // a kill changes the alive count + eliminated set → resend
 

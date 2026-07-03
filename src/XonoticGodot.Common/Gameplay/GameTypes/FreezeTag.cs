@@ -24,7 +24,7 @@ namespace XonoticGodot.Common.Gameplay;
 /// Faithfully ported (Godot-free essence):
 ///  - smallest-team assignment on join (<see cref="TeamBalance"/>);
 ///  - the freeze model: a fragged player becomes <see cref="FrozenState.Frozen"/> rather than respawning,
-///    and counts as not-alive for the round check (<see cref="CheckRound"/>);
+///    and counts as not-alive for the round check (<see cref="CheckWinner"/>);
 ///  - manual revive by a nearby teammate (<see cref="TryRevive"/>) clears the freeze;
 ///  - the freeze/revive SCORE matrix and round-limit win condition.
 ///
@@ -1048,54 +1048,6 @@ public sealed class FreezeTag : GameType
     }
 
     /// <summary>
-    /// QC freezetag_CheckWinner via Team_GetWinnerAliveTeam: a team is alive while it has a non-frozen,
-    /// non-dead player. If exactly one team is alive, it wins the round (ST_FT_ROUNDS +1) and a new round
-    /// is armed. Call each tick. Returns the winning team color code, or <see cref="Teams.None"/>.
-    /// </summary>
-    public int CheckRound(IReadOnlyList<Player> roster)
-    {
-        if (MatchEnded)
-            return Teams.None;
-
-        Round.AliveByTeam.Clear();
-        int totalPlayers = 0;
-        foreach (int team in Teams.Active(TeamCount))
-            Round.AliveByTeam[team] = 0;
-
-        for (int i = 0; i < roster.Count; i++)
-        {
-            Player p = roster[i];
-            int t = (int)p.Team;
-            if (t == Teams.None)
-                continue;
-            totalPlayers++;
-            if (!IsEliminated(p) && Round.AliveByTeam.ContainsKey(t))
-                Round.AliveByTeam[t] += 1;
-        }
-
-        if (totalPlayers == 0)
-            return Teams.None;
-
-        int aliveTeams = 0, winner = Teams.None;
-        foreach (var (team, alive) in Round.AliveByTeam)
-            if (alive > 0) { aliveTeams++; winner = team; }
-
-        if (aliveTeams > 1)
-            return Teams.None;
-
-        if (aliveTeams == 1)
-        {
-            Scoring.GameScores.AddToTeam(winner, Scoring.GameScores.TeamSlotSecondary, 1); // QC TeamScore_AddToTeam(winner, ST_FT_ROUNDS, +1)
-            Round.Number++;
-            UpdateLeaderAndCheckLimit();
-            return winner;
-        }
-
-        Round.Number++; // mutual elimination → tied round, no score
-        return Teams.None;
-    }
-
-    /// <summary>
     /// QC <c>freezetag_LastPlayerForTeam_Notify</c> (sv_freezetag.qc) via <c>freezetag_LastPlayerForTeam</c>: when a
     /// freeze/leave/spawn leaves exactly one still-living (unfrozen, undead) teammate, center-print
     /// "You are now alone!" (CENTER_ALONE) to that last survivor. Only fires while a round is started (not warmup).
@@ -1128,8 +1080,8 @@ public sealed class FreezeTag : GameType
     /// QC STAT(REDALIVE..PINKALIVE) source (<c>freezetag_count_alive_players</c>, sv_freezetag.qc:22-50):
     /// living (unfrozen, undead — QC <c>GetResource(RES_HEALTH) &gt;= 1 &amp;&amp; !STAT(FROZEN)</c>) players on
     /// <paramref name="teamCode"/> (a <see cref="Teams"/> color code) per the last recount. QC recounts on
-    /// freeze/revive/death/spawn EVENTS; the port's per-frame <see cref="CheckRound"/>
-    /// (GameWorld.DriveGametypeFrame) recomputes the same pure function of the Frozen/IsDead state —
+    /// freeze/revive/death/spawn EVENTS; the port's per-frame <see cref="CheckWinner"/>
+    /// (the round handler's per-tick CanRoundEnd) recomputes the same pure function of the Frozen/IsDead state —
     /// value-identical, so no second event-driven recount path is added. Inactive/unknown teams read 0.
     /// </summary>
     public int AliveCount(int teamCode) => Round.AliveByTeam.TryGetValue(teamCode, out int n) ? n : 0;

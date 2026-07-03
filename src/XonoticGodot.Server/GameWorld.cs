@@ -3551,8 +3551,8 @@ public sealed class GameWorld
             case Mayhem m: m.RecomputeLeader(Clients.Players); break;   // FFA: leader + point/lead limit
             case TeamMayhem tm: tm.UpdateLeaderAndCheckLimit(); break;  // team: ST_SCORE leader + limit
             case Tdm tdm: tdm.UpdateLeaderAndCheckLimit(); break;
-            // CA: the round is now resolved on the LIVE round handler path (OnEndFrame → Rounds.Think → CA.CheckWinner),
-            // so DON'T also call CheckRound here (that would double-award the round). The roster is fed via _roundPrep.
+            // CA: the round is resolved on the LIVE round handler path (OnEndFrame → Rounds.Think → CA.CheckWinner),
+            // so we DON'T recompute the win here (a second win-check would double-award). Roster fed via _roundPrep.
             case ClanArena: break;
             case Ctf ctf: ctf.Tick(Clients.Players); ctf.UpdateLeaderAndCheckLimit(); ctf.UpdateCaptureShields(Clients.Players); break;
             case Domination dom: dom.Tick(); break;                     // tick variant scores; round variant no-ops here
@@ -3564,8 +3564,8 @@ public sealed class GameWorld
             case FreezeTag ft:
                 // QC PlayerPreThink revive loop: feed the live roster, then accumulate/decay revive progress and
                 // auto-thaw frozen players each frame (without this the thaw ring never fills + nobody is revived).
-                // The round itself is now resolved on the LIVE round handler path (OnEndFrame → Rounds.Think →
-                // FT.CheckWinner), so DON'T also call CheckRound here (that would double-award the round).
+                // The round itself is resolved on the LIVE round handler path (OnEndFrame → Rounds.Think →
+                // FT.CheckWinner), so we DON'T recompute the win here (a second win-check would double-award).
                 ft.SetRoster(Clients.Players);
                 ft.ReviveTick(Simulation.FrameTime);
                 break;

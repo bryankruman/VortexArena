@@ -385,7 +385,7 @@ public sealed class ClanArena : GameType
 
         // No per-kill scoring in CA: round wins are the only score that affects the limit (GiveFragsForKill → 0).
         // Damage-to-score accrual happens continuously in the damage pipeline (see AddDamageScore), not here.
-        // The victim is already marked dead by the damage system; CheckWinner / CheckRound resolves the round.
+        // The victim is already marked dead by the damage system; CheckWinner resolves the round.
         return false;
     }
 
@@ -806,68 +806,15 @@ public sealed class ClanArena : GameType
         return string.IsNullOrEmpty(s) ? fallback : s;
     }
 
-    /// <summary>
-    /// Count living players per team over the current roster (QC CA_count_alive_players), then resolve the
-    /// round: if exactly one team has any living player, that team wins the round (QC CA_CheckWinner →
-    /// Team_GetWinnerAliveTeam → TeamScore_AddToTeam ST_CA_ROUNDS +1) and a new round is armed. Call each
-    /// tick. Returns the winning team color code if a round just resolved, else <see cref="Teams.None"/>.
-    /// </summary>
-    public int CheckRound(IReadOnlyList<Player> roster)
-    {
-        if (MatchEnded)
-            return Teams.None;
-
-        Round.AliveByTeam.Clear();
-        int totalPlayers = 0;
-        foreach (int team in Teams.Active(TeamCount))
-            Round.AliveByTeam[team] = 0;
-
-        for (int i = 0; i < roster.Count; i++)
-        {
-            Player p = roster[i];
-            int t = (int)p.Team;
-            if (t == Teams.None)
-                continue;
-            totalPlayers++;
-            if (!p.IsDead && Round.AliveByTeam.ContainsKey(t))
-                Round.AliveByTeam[t] += 1;
-        }
-
-        // Need at least two players present for a round to be live (QC: total_players == 0 → no round yet).
-        if (totalPlayers == 0)
-            return Teams.None;
-
-        int aliveTeams = 0, winner = Teams.None;
-        foreach (var (team, alive) in Round.AliveByTeam)
-            if (alive > 0) { aliveTeams++; winner = team; }
-
-        // Round is still in progress while 2+ teams have survivors.
-        if (aliveTeams > 1)
-            return Teams.None;
-
-        // Exactly one (or zero) team has survivors → round over. One survivor team scores a round.
-        if (aliveTeams == 1)
-        {
-            Scoring.GameScores.AddToTeam(winner, Scoring.GameScores.TeamSlotSecondary, 1); // QC TeamScore_AddToTeam(winner, ST_CA_ROUNDS, +1)
-            Round.Number++;
-            UpdateLeaderAndCheckLimit();
-            return winner;
-        }
-
-        // Zero alive (mutual elimination / draw) — start a fresh round, no score (QC ROUND_TIED/OVER).
-        Round.Number++;
-        return Teams.None;
-    }
-
     public int GetTeamRounds(int team) => Scoring.GameScores.TeamScore(team, Scoring.GameScores.TeamSlotSecondary);
 
     /// <summary>
     /// QC STAT(REDALIVE..PINKALIVE) source (<c>CA_count_alive_players</c>, sv_clanarena.qc:17-43): living
     /// players on <paramref name="teamCode"/> (a <see cref="Teams"/> color code) per the last recount.
-    /// <see cref="CheckTeams"/>/<see cref="CheckWinner"/>/<see cref="CheckRound"/> all refresh
-    /// <see cref="RoundState.AliveByTeam"/>, and the live path (GameWorld.DriveGametypeFrame → CheckRound)
-    /// runs per frame — matching QC's per-frame recount (CA_CheckWinner is the round_handler canRoundEnd
-    /// callback, polled every server frame while a round is live). Inactive/unknown teams read 0.
+    /// <see cref="CheckTeams"/> and <see cref="CheckWinner"/> both refresh
+    /// <see cref="RoundState.AliveByTeam"/>, and the live path (CheckWinner — the round_handler canRoundEnd
+    /// callback, polled every server frame while a round is live) recounts per frame, matching QC's
+    /// per-frame recount. Inactive/unknown teams read 0.
     /// </summary>
     public int AliveCount(int teamCode) => Round.AliveByTeam.TryGetValue(teamCode, out int n) ? n : 0;
 
