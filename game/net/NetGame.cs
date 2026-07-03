@@ -2944,11 +2944,13 @@ public sealed partial class NetGame : Node3D
                 // warpzone crossings at all (server.qc:150-170 networks the transform; the client rotates its
                 // own view ONCE) — this is the listen-host equivalent of that single-apply.
                 NVec3 fa = fixSelf.FixAngleAngles;
-                float yawDiff = Mathf.Abs(Mathf.RadToDeg(Mathf.AngleDifference(
-                    Mathf.DegToRad(fa.Y), Mathf.DegToRad(_lastPredictedFixAngles.Y))));
-                bool predictedSame = Time.GetTicksMsec() * 0.001f - _lastPredictedFixTime < 1f
-                    && yawDiff < 2f
-                    && Mathf.Abs(Mathf.Clamp(fa.X, -89f, 89f) - _lastPredictedFixAngles.X) < 2f;
+                // The predicted layer OWNS warpzone view rotation (the zero-latency relative apply above); the
+                // authoritative stamp is a pure FALLBACK for crossings the predictor missed. During rapid seam
+                // ping-pong the server's stamp for crossing N lands AFTER the predictor already applied crossing
+                // N+1 — a value comparison then mistakes the stale stamp for a correction and yanks the view 90°
+                // (observed live). So: skip whenever ANY predicted apply happened within the window, regardless
+                // of value. Spawn/unpredicted-teleport snaps (no recent predicted apply) still land.
+                bool predictedSame = Time.GetTicksMsec() * 0.001f - _lastPredictedFixTime < 0.5f;
                 if (!predictedSame)
                 {
                     _viewAngles.X = Mathf.Clamp(fa.X, -89f, 89f);

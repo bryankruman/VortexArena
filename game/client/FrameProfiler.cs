@@ -78,7 +78,10 @@ public partial class FrameProfiler : CanvasLayer
           "stream.build", "particles.cpu", "music", "weather", "decals.splat", "vehicle.vis", "damagetext",
           // (perf-investigation 2026-06-14) the previously-unscoped client _Process nodes that leaked into
           // proc:other on big/populated maps — now attributed so the residual is provably Godot-internal.
-          "cev.process", "world.pvscull", "emitters", "clientmisc", "hud.trueaim" };
+          "cev.process", "world.pvscull", "emitters", "clientmisc", "hud.trueaim",
+          // (P4 2026-07-03) the warpzone portal pass — the _Process side of the per-portal SubViewport drive
+          // (the actual exit-view render lands in rcpu/gpu, but the gate/frustum/resize work is process CPU).
+          "portal.render" };
 
     /// <summary>
     /// Open a named timing scope: <c>using (FrameProfiler.Scope("name")) { ... }</c> (or as a one-statement
@@ -122,6 +125,11 @@ public partial class FrameProfiler : CanvasLayer
         //   Draw    = a precompile MISS at draw time — should be ~0 with the ubershader system (nonzero ⇒ upstream bug).
         //   Mesh / Specialization = load-time / async (benign). Canvas = 2D first-draw.
         public long PipeSurface, PipeDraw, PipeMesh, PipeSpec, PipeCanvas;
+        // (P2 2026-07-03) Filled at FINALIZE time, one collector pass after the scopes: the iteration's
+        // post-process gap (deferred+present, measured by the fence) and the Prof.FrameSeq whose watchdog
+        // window (fence→fence) covers this iteration.
+        public double LateMs;
+        public long WdSeq;
         public readonly List<ScopeRow> Scopes = new(32);
         public readonly List<string> Events = new(2);
 
@@ -164,13 +172,42 @@ public partial class FrameProfiler : CanvasLayer
     private int _runCount;
     private double _runMinMs, _runMaxMs, _runStartS, _runLastS, _runLastInterimS;
     private string _runReason = "";
+    private bool _runRecovery;
 
     private long _sessionHitchCount;
+    // (P8) The class arrays count PRIMARIES only; recovery tails (a VSYNC/PRESENT hitch within 1 s of a primary
+    // = the present queue draining that primary's backlog, hitch-resolution-2026-06-14 §1) are counted apart so
+    // the census reads "N primaries" instead of drowning in the tail (102 of 179 in the 2026-07-02 session).
     private readonly int[] _windowHitchByClass = new int[8];
     private readonly int[] _sessionHitchByClass = new int[8];
+    private int _windowRecovery, _sessionRecovery;
+    private double _lastPrimaryHitchAtS = -1000.0;
+
+    // (P11) Scope-coverage debt: hitches attributed to unnamed code — each one is an "add a Prof scope" TODO,
+    // surfaced in the session summary so the debt is visible instead of re-discovered every hunt.
+    private int _covProcOther, _covUnscoped;
 
     private string _lastHitchSummary = "";
     private double _lastHitchAtS = -1000.0;
+
+    // (P7) Opt-in on-screen hitch flash (cl_frameprofiler_alert): a short loud marker when a hitch fires, so a
+    // felt stutter is nameable without watching the console.
+    private double _alertUntilS = -1.0;
+    private string _alertText = "";
+
+    // (P5) DEBUG-build watermark: debug frame times/censuses are NOT release-representative (a debug session on
+    // 2026-07-02 showed 255 ms iqm.anims and 433 MB single-frame allocs that release builds don't have).
+    private bool _debugBuild;
+    private string _buildTag = "";
+
+    // ---- (P2 2026-07-03) one-frame-delayed record pipeline -----------------------------------------------------
+    // Godot's `delta` measures the PREVIOUS main-loop iteration, while the scopes drained by this collector
+    // describe THIS frame's process phase. A record is therefore held PENDING for one collector pass and
+    // finalized when its wall time (the next delta) + its draw-side counters arrive — so hitch classification
+    // sees internally-consistent evidence. Before this, an isolated CPU spike always classified as EXTERNAL one
+    // frame late with quiet evidence and a stale watchdog suffix (verified: session-20260702-225602.csv rows
+    // t=61.096 [scopes ng.process=119.43, ms=6.94] / t=61.105 [ms=119.72, proc=5.24 → "EXTERNAL"]).
+    private FrameRecord? _pending;
 
     // ---- session summary (12) --------------------------------------------------------------------------------
     private readonly FrameHistogram _sessionHist = new();
@@ -234,6 +271,8 @@ public partial class FrameProfiler : CanvasLayer
                      $"refresh={DisplayServer.ScreenGetRefreshRate():0}Hz " +
                      $"cpu={OS.GetProcessorCount()}c gpu={RenderingServer.GetVideoAdapterName()}";
         _envBanner = env;
+        _debugBuild = csharpConfig == "Debug" || OS.IsDebugBuild();
+        _buildTag = _debugBuild ? " | DEBUG-BUILD" : "";
         Log.Info($"[frameprofiler] {env}");
         Log.Info($"[frameprofiler] {ColumnsLegend}");   // (8) one-time legend
     }
@@ -243,7 +282,8 @@ public partial class FrameProfiler : CanvasLayer
     /// <summary>(8) The column legend — printed once at boot and written into the log header.</summary>
     private const string ColumnsLegend =
         "columns: proc=all _Process CPU | rcpu=render-thread submit | gpu=main viewport GPU | " +
-        "rest=present/vsync/stall (ms-proc-rcpu) | alloc=managed garbage/frame | pipe=shader-pipeline compiles";
+        "rest=present/vsync/stall (ms-proc-rcpu) | late=deferred+present gap | alloc=managed garbage/frame | " +
+        "pipe=shader-pipeline compiles";
 
     public override void _Input(InputEvent @event)
     {
