@@ -1,9 +1,10 @@
 # Performance — everything left on the table (2026-07-03)
 
 Compiled after the 2026-07-03 debug-smoothness sessions (bot-strategy fixes, JIT-optimized Debug,
-texture pooling — see `planning/perf-diagnosis-improvements-2026-07-02.md` status header and the
-`debug-smoothness-2026-07-03` memory). Current clean state on stormkeep debug, 6 bots:
-**avg 130 fps, p50 6.9 ms, 1%-low 73, 69 hitches/86 s, gen2 ×7** (was 110/6.9/19/415/34 same morning).
+texture pooling — see `planning/perf-report-2026-07-03.md` for the full day's report and the
+`debug-smoothness-2026-07-03` memory). Current clean state on stormkeep debug, 6 bots, after rounds 4-5:
+**p50 6.9 ms, 1%-low up to 90, gen2 ×7, total alloc ~1.0 GB** (was 110 fps avg / 1%-low 19 / gen2 34 /
+3.1 GB the same morning).
 
 Ranked by recommended order. Effort: S ≤ half day · M ≈ a day · L = multi-day. Facts verified against
 this branch on 2026-07-03 (e.g. `EntityNode._Process` still per-node here; `MovementParameters` unmemoized).
@@ -22,8 +23,13 @@ this branch on 2026-07-03 (e.g. `EntityNode._Process` still per-node here; `Move
 3. **Re-export the release build + regenerate `tools/perf-baselines/`.** The dist exe predates ALL of
    this week's fixes (its census even shows the old EXTERNAL misattribution), so the checked-in baseline
    undersells the game and release playtests test stale code. Effort: S (export + one perf-run).
-4. **Let the two queued background tasks land:** casing_shell.mdl format fix (running) and the IQM
-   parse-side pooling chip (kills the last ~250 MB join-window alloc storm + its gen2). Effort: already queued.
+4. ~~**Let the two queued background tasks land**~~ — **DONE same day (rounds 4-5, in d7db8c9):** the IQM
+   parse-side pooling chip landed (pooled model-file reads 22.8→2.15 MB/roster, flattened blend arrays,
+   per-model anim scratch — parse 5× faster) AND the follow-up decode-pool fix (RgbaDecodeBuffer → shared
+   rent/return pool; BackgroundAssetStreamer → bounded 4-thread lane replacing Task.Run — the `[ThreadStatic]`
+   pools had been multiplying across ~12+ pool threads). Join storms 210/201 MB → ≤48 MB; total alloc
+   → ~1.0-1.1 GB; 1%-low 90 on the clean run. NEW residual chip: the deterministic ~230 MB MAIN-THREAD
+   load-screen roster-warm frame (`PrecacheCombatSoundsAndModelsAsync`, NetGame.cs ~2201) — it pins 0.1%-low.
 
 ## B. Named, data-backed next fixes (this week's profiles point straight at them)
 
