@@ -385,11 +385,17 @@ public partial class PortalRenderer : Node3D
             // entry — the facing gate guarantees that); offset = the window center's lateral offset from the
             // camera axis in camera-local X/Y (camera X == OutRight, Y == OutUp, world units carry 1:1).
             NVec3 pPos = p.Transform.TransformOrigin(camPosQ);
-            // Perpendicular distance from the (behind-plane) eye to the exit plane. Floored so the mid-crossing
-            // frame (eye ON the plane) keeps a sane cone; WarpzoneFixView owns the screen once the eye crosses.
+            // Perpendicular distance from the (behind-plane) eye to the exit plane. In the last couple of units
+            // before the crossing the frustum's shear (lateral offset ÷ near) explodes and Godot's light culler
+            // rejects the camera ("prepare_camera: Condition !res" spam, lights fall back unculled) — freeze the
+            // viewport instead: the 1-2 frame-old image fills the screen at that range, and WarpzoneFixView owns
+            // the view the moment the eye crosses.
             float planeDist = NVec3.Dot(p.ExitCenterQ - pPos, p.OutFwdQ);
-            if (planeDist < 1f)
-                planeDist = 1f;
+            if (planeDist < 2f)
+            {
+                p.Viewport.RenderTargetUpdateMode = SubViewport.UpdateMode.Disabled;
+                continue;
+            }
             var offset = new Vector2(
                 NVec3.Dot(p.ExitCenterQ - pPos, p.OutRightQ),
                 NVec3.Dot(p.ExitCenterQ - pPos, p.OutUpQ));
