@@ -125,8 +125,33 @@ public partial class PortalRenderer : Node3D
             p.Viewport.GetTexture().GetImage().SavePng($"{dir}/portal{idx}.png");
             if (idx == 0 && GetViewport() is { } mv)
                 mv.GetTexture().GetImage().SavePng($"{dir}/main.png");
+            long objs = RenderingServer.ViewportGetRenderInfo(p.Viewport.GetViewportRid(),
+                RenderingServer.ViewportRenderInfoType.Visible, RenderingServer.ViewportRenderInfo.ObjectsInFrame);
+            long mainObjs = GetViewport() is { } mv2 ? RenderingServer.ViewportGetRenderInfo(mv2.GetViewportRid(),
+                RenderingServer.ViewportRenderInfoType.Visible, RenderingServer.ViewportRenderInfo.ObjectsInFrame) : -1;
             GD.Print($"[portal] dump portal{idx}: camG={p.Cam.GlobalPosition} near={p.Cam.Near:F2} "
-                + $"size={p.Viewport.Size} halfR={p.HalfR:F0} halfU={p.HalfU:F0} exitC={p.ExitCenterQ}");
+                + $"size={p.Viewport.Size} halfR={p.HalfR:F0} halfU={p.HalfU:F0} exitC={p.ExitCenterQ} "
+                + $"objs={objs} mainObjs={mainObjs}");
+
+            // Entity probe: every MeshInstance3D under the "Render" node (ClientWorld — all runtime entities)
+            // within 400qu of this portal's exit center — visibility flags + whether the portal camera's
+            // frustum SHOULD contain it. Identifies why entities don't show through portals.
+            if (GetParent() is Node ng && ng.GetNodeOrNull("Render") is Node3D render)
+            {
+                Vector3 exitG = Coords.ToGodot(p.ExitCenterQ);
+                var st = new Stack<Node>();
+                st.Push(render);
+                while (st.Count > 0)
+                {
+                    Node n = st.Pop();
+                    foreach (Node ch in n.GetChildren()) st.Push(ch);
+                    if (n is not MeshInstance3D mi || !GodotObject.IsInstanceValid(mi)) continue;
+                    if (mi.GlobalPosition.DistanceTo(exitG) > 400f) continue;
+                    Vector3 local = p.Cam.GlobalBasis.Inverse() * (mi.GlobalPosition - p.Cam.GlobalPosition);
+                    GD.Print($"[portal-ent] '{mi.GetPath()}' vis={mi.IsVisibleInTree()} layers={mi.Layers:X} "
+                        + $"pos={mi.GlobalPosition} camLocal={local} near={p.Cam.Near:F1}");
+                }
+            }
         }
         catch (System.Exception e)
         {
@@ -134,14 +159,14 @@ public partial class PortalRenderer : Node3D
         }
     }
 
-    /// <summary>The portal-window shader: unshaded, two-sided, samples the exit image by the fragment's
-    /// IN-PLANE position on the window rectangle (the frustum's near rect IS the exit window, so the texture
-    /// maps 1:1 — no screen-UV coupling). The horizontal axis mirrors through the seam (the warp maps
-    /// inRight → −outRight), folded into the U formula. <c>source_color</c> IS required: the SubViewport's
-    /// render target stores tonemapped, sRGB-ENCODED data — the hint's sRGB→linear decode plus the main
-    /// viewport's re-encode is the identity round trip. Sampling raw double-encodes and washes the exit view
-    /// out too bright (user-verified both ways; the earlier "too dark" that prompted removing the hint was
-    /// actually the opaque blueedge rim covering the window).</summary>
+    /// <summary>The portal-window shader: unshaded, two-sided, PROJECTIVE sampling. The exit camera is a plain
+    /// PERSPECTIVE camera looking along the exit normal (Godot's FRUSTUM projection wrongly culls small-AABB
+    /// instances — items/players never rendered — and its light culler rejects sheared matrices outright), so
+    /// the window is an off-center subrect of the image: each fragment maps its in-plane window position through
+    /// the exit camera's projection. The horizontal axis mirrors through the seam (inRight → −outRight), folded
+    /// into the x formula. <c>source_color</c> IS required: the SubViewport target stores tonemapped
+    /// sRGB-ENCODED data — decode + the main viewport's re-encode is the identity round trip (sampling raw
+    /// double-encodes and washes the view out too bright; user-verified both ways).</summary>
     private const string PortalShader =
         "shader_type spatial;\n" +
         "render_mode unshaded, cull_disabled, depth_draw_opaque;\n" +
@@ -149,7 +174,9 @@ public partial class PortalRenderer : Node3D
         "uniform vec3 wz_center;\n" +   // entry window center (Godot world)
         "uniform vec3 wz_right;\n" +    // entry plane right (unit, Godot world)
         "uniform vec3 wz_up;\n" +       // entry plane up (unit, Godot world)
-        "uniform vec2 wz_half;\n" +     // window half extents (right, up)
+        "uniform vec2 wz_off;\n" +      // exit-cam lateral offset of the window center (right, up)
+        "uniform float wz_dist;\n" +    // exit-cam perpendicular distance to the exit plane
+        "uniform vec2 wz_tan;\n" +      // tan(halfFovX), tan(halfFovY) of the exit camera
         "uniform float wz_uvtest = 0.0;\n" +   // debug: paint the computed UV as color (red=u, green=v)
         "varying vec3 wpos;\n" +
         "void vertex() { wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz; }\n" +
@@ -157,7 +184,8 @@ public partial class PortalRenderer : Node3D
         "    vec3 d = wpos - wz_center;\n" +
         "    float a = dot(d, wz_right);\n" +
         "    float b = dot(d, wz_up);\n" +
-        "    vec2 uv = vec2(0.5 - a / (2.0 * wz_half.x), 0.5 - b / (2.0 * wz_half.y));\n" +
+        "    vec2 ndc = vec2(wz_off.x - a, wz_off.y + b) / (wz_dist * wz_tan);\n" +
+        "    vec2 uv = vec2(0.5 + 0.5 * ndc.x, 0.5 - 0.5 * ndc.y);\n" +
         "    if (wz_uvtest > 1.5) { ALBEDO = vec3(1.0, 0.0, 1.0); }\n" +           // 2 = solid magenta (which-quad probe)
         "    else if (wz_uvtest > 0.5) { ALBEDO = vec3(uv, 0.0); } else {\n" +      // 1 = paint UVs
         "    ALBEDO = texture(portal_tex, uv).rgb; }\n" +
@@ -328,6 +356,12 @@ public partial class PortalRenderer : Node3D
 
     public override void _Process(double delta)
     {
+        // (P4 2026-07-03) Named profiler scope: the _Process side of the portal drive (gates, frustum math,
+        // adaptive resize). The exit-view renders themselves land in rcpu/gpu — a hitch here with rcpu/gpu
+        // spiking while portals are on screen still points at this pass. Registered in
+        // FrameProfiler.TopLevelNodeScopes so it leaves proc:other.
+        using var _ = FrameProfiler.Scope("portal.render");
+
         // Rebuilt every frame: only portals that actually render this frame contribute a PVS-union viewpoint.
         ActiveExitViewsQuake.Clear();
         if (_portals.Count == 0 || _mainCamera is null)
@@ -349,13 +383,19 @@ public partial class PortalRenderer : Node3D
         bool force = Api.Services is not null && Api.Cvars.GetFloat("wz_portal_force") != 0f;
         bool dump = trace && Api.Services is not null && Api.Cvars.GetFloat("wz_portal_dump") != 0f;
 
-        // wz_portal_lookat 1 (debug): park the MAIN camera head-on in front of the FIRST portal's window every
+        // wz_portal_lookat N (debug): park the MAIN camera head-on in front of the Nth portal's window every
         // frame (after NetGame posed it), so scripted dump runs capture the on-quad result deterministically.
-        if (_portals.Count > 0 && Api.Services is not null && Api.Cvars.GetFloat("wz_portal_lookat") != 0f)
+        // N >= 11: park INSIDE portal (N-10)'s EXIT room on the same sightline the portal camera uses — the
+        // apples-to-apples entity-visibility comparison (main.png direct vs portalN.png through the seam).
+        float lookat = Api.Services is not null ? Api.Cvars.GetFloat("wz_portal_lookat") : 0f;
+        if (_portals.Count > 0 && lookat != 0f)
         {
-            Portal t0 = _portals[0];
-            NVec3 eye = t0.InOriginQ + t0.InForwardQ * 90f + new NVec3(0f, 0f, 8f);
-            NVec3 fwd = -t0.InForwardQ;
+            bool exitSide = lookat >= 11f;
+            Portal t0 = _portals[Mathf.Clamp((int)lookat - (exitSide ? 11 : 1), 0, _portals.Count - 1)];
+            NVec3 eye = exitSide
+                ? t0.ExitCenterQ + t0.OutFwdQ * 4f
+                : t0.InOriginQ + t0.InForwardQ * 90f + new NVec3(0f, 0f, 8f);
+            NVec3 fwd = exitSide ? t0.OutFwdQ : -t0.InForwardQ;
             NVec3 up = new(0f, 0f, 1f);
             NVec3 right = NVec3.Normalize(NVec3.Cross(fwd, up));
             main.GlobalBasis = new Basis(Coords.ToGodot(right), Coords.ToGodot(up), -Coords.ToGodot(fwd));
@@ -415,10 +455,22 @@ public partial class PortalRenderer : Node3D
                 NVec3.Dot(p.ExitCenterQ - pPos, p.OutRightQ),
                 NVec3.Dot(p.ExitCenterQ - pPos, p.OutUpQ));
 
-            // ADAPTIVE RESOLUTION: render the exit view at (roughly) the window's projected on-screen pixel
-            // height — sharp when the player is close, cheap when it is far. planeDist doubles as the viewer's
-            // distance to the ENTRY window (rotations preserve it). Quantized to 128px buckets with a cooldown so
-            // the render target isn't reallocated every frame, scaled by cl_portal_resolution (default 1).
+            // PERSPECTIVE exit camera sized to cover the window's cone from the warped eye. Because the camera
+            // looks ALONG the exit normal, the plane-coincident wall face (the warpzone surface is painted on a
+            // SOLID wall) is exactly perpendicular to the view axis — near = planeDist + 0.5 clips it perfectly,
+            // the same oblique-equivalent clip the frustum mode had, without FRUSTUM projection's broken
+            // small-instance culling (items/players never rendered; the light culler rejected sheared matrices
+            // with "prepare_camera" spam).
+            float tanY = (Mathf.Abs(offset.Y) + p.HalfU) * 1.04f / planeDist;
+            float tanX = (Mathf.Abs(offset.X) + p.HalfR) * 1.04f / planeDist;
+            // Clamp the half-angles (grazing views otherwise explode toward 180°); the window stays covered
+            // because the facing/shear guard already freezes the viewport in the final approach.
+            tanY = Mathf.Min(tanY, 10f);
+            tanX = Mathf.Min(tanX, 10f);
+
+            // ADAPTIVE RESOLUTION: height ≈ the window's projected on-screen pixel size (sharp close, cheap
+            // far), width from the exit camera's aspect (tanX/tanY — the image must cover the horizontal cone).
+            // Quantized with a cooldown so the render target isn't reallocated every frame.
             if (GetViewport() is { } mvp)
             {
                 float screenH = mvp.GetVisibleRect().Size.Y;
@@ -426,26 +478,26 @@ public partial class PortalRenderer : Node3D
                     / (2f * Mathf.Tan(Mathf.DegToRad(main.Fov) * 0.5f));
                 float resScale = PortalResolutionScale();
                 int bucket = Mathf.Clamp(Mathf.CeilToInt(projPx * resScale / 128f), 1, 8) * 128;
+                int wantW = Mathf.Clamp(Mathf.RoundToInt(bucket * tanX / tanY), 8, 2048);
                 float nowR = Time.GetTicksMsec() * 0.001f;
-                if (bucket != p.Viewport.Size.Y && nowR >= p.NextResizeOk)
+                if ((bucket != p.Viewport.Size.Y || Mathf.Abs(wantW - p.Viewport.Size.X) > 96) && nowR >= p.NextResizeOk)
                 {
                     p.NextResizeOk = nowR + 0.3f;
-                    p.Viewport.Size = new Vector2I(
-                        Mathf.Clamp(Mathf.RoundToInt(bucket * p.HalfR / p.HalfU), 8, 2048), bucket);
+                    p.Viewport.Size = new Vector2I(wantW, bucket);
                 }
             }
 
-            // The frustum's ray cone is defined by the WINDOW rectangle at planeDist. The actual clip plane sits
-            // a hair PAST the exit plane (the warpzone surface is painted on a SOLID wall — a world face is
-            // COINCIDENT with the plane, and near == planeDist z-fights it into garbage/black; verified live).
-            // Everything on the cone scales linearly with distance, so the near rect is the window scaled by
-            // near/planeDist — same projection, clip 0.5qu into the room.
-            float nearClip = planeDist + 0.5f;
-            float s = nearClip / planeDist;
-
             p.Cam.GlobalBasis = p.ExitBasisG;
             p.Cam.GlobalPosition = Coords.ToGodot(pPos);
-            p.Cam.SetFrustum(p.HalfU * 2f * s, offset * s, nearClip, main.Far);
+            // KeepAspect=Height (default): the horizontal fov follows the viewport aspect, which the resize
+            // above pins to tanX/tanY — so the rendered cone matches the shader's wz_tan mapping.
+            p.Cam.SetPerspective(Mathf.RadToDeg(2f * Mathf.Atan(tanY)), planeDist + 0.5f, main.Far);
+
+            // Feed the projective mapping (see PortalShader): the window subrect of the exit image.
+            float aspectNow = p.Viewport.Size.Y > 0 ? (float)p.Viewport.Size.X / p.Viewport.Size.Y : 1f;
+            p.Material.SetShaderParameter("wz_off", offset);
+            p.Material.SetShaderParameter("wz_dist", planeDist);
+            p.Material.SetShaderParameter("wz_tan", new Vector2(tanY * aspectNow, tanY));
         }
     }
 

@@ -1,5 +1,21 @@
 # Performance-Diagnosis Capability Audit — 2026-07-02
 
+> **Implementation status (2026-07-03): DONE — P1–P9 + P11 landed; P10 (timedemo) stays blocked on the
+> `claude/demo-cinematics` merge.** Highlights: the EXTERNAL misattribution turned out to be a ONE-FRAME
+> PAIRING SKEW — Godot's `delta` measures the *previous* main-loop iteration, while the collector's scope
+> drain describes the current one, so an isolated CPU spike always reported one frame late with quiet
+> evidence (and the old `proc>ms` clamp erased the real number; the watchdog histogram was additionally
+> read stale). Fixed by finalizing each FrameRecord one collector pass later (`FrameProfiler._pending`),
+> retiring per-seq watchdog histograms, adding a watchdog veto on the EXTERNAL verdict, a `(post-process)`
+> phase marker + a measured `late` column. **Validated live: the same debug bot-match scenario went from
+> 46 EXTERNAL / 14 CPU-LOGIC (misdirected) to 2 EXTERNAL / 81 CPU-LOGIC (named), and the census now reads
+> "131 primaries + 86 recovery tails".** New tools: `tools/perf-report.py` (un-skews old CSVs, diff,
+> json baselines), `tools/perf-run.ps1|.sh`, `tools/perf-smoke.ps1`, budget assertions in
+> `ServerTickPerfBench` (XG_PERF_ASSERT=0 opt-out), `tools/perf-baselines/` (provisional catharsis
+> baseline from the STALE pre-fix export — regenerate after the next windows-client export). Docs:
+> **PERF-DEBUGGING.md** playbook + README/TROUBLESHOOTING/RUNNING cross-links + a minimal CLAUDE.md.
+> All 2916 tests green.
+
 **Question:** hitching keeps recurring; how do we make diagnosing and resolving perf issues as fast as possible?
 **Method:** three parallel code/doc sweeps (instrumentation internals, docs + offline tooling, in-game surface +
 repro/benchmark), grounded against the live evidence in `~/XonData/logs/session-20260702-*.{log,csv}` and the

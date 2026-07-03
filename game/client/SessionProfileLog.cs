@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -24,15 +25,16 @@ public readonly struct FrameSample
     public readonly long PipeCompiles, PipeUber;
     public readonly string? Top1;       // dominant scope name (interned literal ⇒ no alloc to reference)
     public readonly double Top1Ms;
+    public readonly double LateMs;      // the iteration's deferred+present gap (P2; see Prof.LastLateMs)
 
     public FrameSample(long frame, double timeS, double ms, double procMs, double rcpuMs, double gpuMs,
         double physMs, double restMs, long allocBytes, int g0, int g1, int g2, double gcPauseMs,
-        double drawCalls, long pipeCompiles, long pipeUber, string? top1, double top1Ms)
+        double drawCalls, long pipeCompiles, long pipeUber, string? top1, double top1Ms, double lateMs)
     {
         Frame = frame; TimeS = timeS; Ms = ms; ProcMs = procMs; RcpuMs = rcpuMs; GpuMs = gpuMs;
         PhysMs = physMs; RestMs = restMs; AllocBytes = allocBytes; G0 = g0; G1 = g1; G2 = g2;
         GcPauseMs = gcPauseMs; DrawCalls = drawCalls; PipeCompiles = pipeCompiles; PipeUber = pipeUber;
-        Top1 = top1; Top1Ms = top1Ms;
+        Top1 = top1; Top1Ms = top1Ms; LateMs = lateMs;
     }
 }
 
@@ -105,7 +107,7 @@ public sealed class SessionProfileLog
         _log.WriteLine($"# columns key: t=SECONDS = session seconds; the HH:MM:SS stamp is wall-clock.");
         _log.WriteLine();
         _csv.WriteLine("frame,time_s,ms,proc_ms,rcpu_ms,gpu_ms,phys_ms,rest_ms,alloc_kb,gc0,gc1,gc2," +
-                       "gc_pause_ms,draw_calls,pipe_compiles,pipe_uber,top1,top1_ms");
+                       "gc_pause_ms,draw_calls,pipe_compiles,pipe_uber,top1,top1_ms,late_ms");
 
         _stopping = false;
         _thread = new Thread(WriterLoop)
@@ -161,12 +163,49 @@ public sealed class SessionProfileLog
 
     private void WriterLoop()
     {
+        PruneOldSessions();   // on the writer thread — retention never touches the game thread
         while (!_stopping)
         {
             _signal.WaitOne(FlushIntervalMs);
             DrainOnce();
             try { _log?.Flush(); _csv?.Flush(); } catch { /* keep draining; a transient flush error shouldn't kill the thread */ }
         }
+    }
+
+    /// <summary>(P11) Retention: keep the newest <see cref="KeepSessions"/> session pairs and delete the rest —
+    /// the folder had accumulated 258 files / ~90 MB in 18 days with nothing pruning it. The stamp-named files
+    /// sort chronologically by name; the pair being written right now is the newest, so it always survives.
+    /// Best-effort (a locked/undeletable file is skipped silently).</summary>
+    private const int KeepSessions = 50;
+    private void PruneOldSessions()
+    {
+        try
+        {
+            string? dir = Path.GetDirectoryName(_logPath);
+            if (string.IsNullOrEmpty(dir))
+                return;
+            var stems = new SortedSet<string>(StringComparer.Ordinal);
+            foreach (string f in Directory.EnumerateFiles(dir, "session-*.*"))
+            {
+                string ext = Path.GetExtension(f);
+                if (ext is ".log" or ".csv")
+                    stems.Add(Path.GetFileNameWithoutExtension(f));
+            }
+            if (stems.Count <= KeepSessions)
+                return;
+            int toDelete = stems.Count - KeepSessions, deleted = 0;
+            foreach (string stem in stems)   // ascending = oldest first
+            {
+                if (deleted >= toDelete)
+                    break;
+                try { File.Delete(Path.Combine(dir, stem + ".log")); } catch { /* best-effort */ }
+                try { File.Delete(Path.Combine(dir, stem + ".csv")); } catch { /* best-effort */ }
+                deleted++;
+            }
+            if (deleted > 0)
+                WriteTextLine(new TextLine(0.0, $"[frameprofiler] pruned {deleted} old session log pair(s) (keeping newest {KeepSessions})"));
+        }
+        catch { /* retention is a nicety — never let it break recording */ }
     }
 
     private void DrainOnce()
@@ -214,7 +253,8 @@ public sealed class SessionProfileLog
           .Append(s.DrawCalls.ToString("0", ci)).Append(',')
           .Append(s.PipeCompiles).Append(',').Append(s.PipeUber).Append(',')
           .Append(Csv(s.Top1)).Append(',')
-          .Append(s.Top1Ms.ToString("0.00", ci));
+          .Append(s.Top1Ms.ToString("0.00", ci)).Append(',')
+          .Append(s.LateMs.ToString("0.00", ci));
         _csv.WriteLine(sb.ToString());
     }
 

@@ -188,9 +188,13 @@ public static class ClientSettings
         // read these (absent → 0 would silently disable both).
         c.Register("cl_spawn_point_particles", "1", save);
         c.Register("cl_spawn_event_particles", "1", save);
+        // Base xonotic-client.cfg:77: the idle glow is culled beyond this range (0 = no distance cull).
+        // MUST be registered: SpawnPointParticles reads it live, and an absent cvar reads 0 = "no cull",
+        // which would render the glow at EVERY spawn point map-wide (the Base default culls at 1200qu).
+        c.Register("cl_spawn_point_dist_max", "1200", save);
         // Console/diagnostics verbosity (DP CF_CLIENT, NOT archived — a debug toggle shouldn't persist).
         c.Register("developer", "0");
-        // Net input→movement pipeline diagnostic (dormant; NOT archived — a debug toggle shouldn't persist). `set
+        // Net input→movement pipeline diagnostic (default-off; NOT archived — a debug toggle shouldn't persist). `set
         // net_input_trace 1` logs the [nettrace] line every ~0.25s: client push/send → server recv/enq/batch → ENet
         // throttle/loss/rtt → predicted-vs-authoritative origin → reconcile error. The end-to-end view for diagnosing
         // movement/networking issues (it found the ENet packet-throttle spawn-stutter). See NET-DEBUGGING.md.

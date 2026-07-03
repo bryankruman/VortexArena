@@ -1071,7 +1071,12 @@ public partial class ClientWorld : Node3D
         // the camera position, so off-screen / distant REMOTE models can skip the interop bone push. Coords is
         // 1:1 (no meter scale) so Godot-space distance == Quake-unit distance; cl_pose_cull_distance is squared
         // once here. ListenerPos() never returns null (it falls back to _lastListener), so distSq is NRE-safe.
-        bool poseCull = CvarF("cl_pose_cull", 0f) != 0f;
+        // The pose-cull's on-screen test (VisibleOnScreenNotifier3D) only reflects the MAIN camera — a player
+        // visible ONLY through a warpzone portal would keep an unpushed (rest/degenerate-AABB) skeleton and
+        // never render in the portal view. While any portal is actively rendering, pose everyone (portals are
+        // occasional; the cost reverts to the pre-cull baseline only while one is on screen).
+        bool poseCull = CvarF("cl_pose_cull", 0f) != 0f
+            && XonoticGodot.Game.Client.PortalRenderer.ActiveExitViewsQuake.Count == 0;
         float cullDist = CvarF("cl_pose_cull_distance", 1500f);
         float cullDistSq = poseCull ? cullDist * cullDist : 0f;
         int localId = AppearanceProvider?.Invoke()?.LocalNetId ?? -1;

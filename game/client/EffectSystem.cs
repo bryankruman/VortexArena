@@ -454,7 +454,7 @@ public partial class EffectSystem : Node3D
     /// <paramref name="color"/> tints the particles (QC eent_net_color override).
     /// Returns the created node (already added to the tree), or null if the name is empty/Null.
     /// </summary>
-    public Node3D? Spawn(string effectName, NVec3 origin, NVec3 velocity = default, int count = 1, Color? color = null)
+    public Node3D? Spawn(string effectName, NVec3 origin, NVec3 velocity = default, float count = 1f, Color? color = null)
     {
         if (string.IsNullOrEmpty(effectName))
             return null;
@@ -1171,7 +1171,7 @@ public partial class EffectSystem : Node3D
     /// effect, or the trail END point for a trail effect (then the segment is origin..velocity).
     /// </summary>
     private Node3D? BuildFromInfo(IReadOnlyList<EffectInfoEmitter> blocks, NVec3 origin, NVec3 velocity,
-        int count, Color? colorOverride, bool isTrail, bool attach = true)
+        float count, Color? colorOverride, bool isTrail, bool attach = true)
     {
         var parent = new Node3D { Name = "fx_info", Position = Coords.ToGodot(origin) };
         bool any = false;
@@ -1343,7 +1343,7 @@ public partial class EffectSystem : Node3D
 
     /// <summary>Build one GPU-particle emitter from a single parsed emitter block (the per-block spawn loop).</summary>
     private GpuParticles3D? BuildInfoBurst(EffectInfoEmitter info, NVec3 originMin, NVec3 originMax,
-        NVec3 emitVel, float traillen, int requestedCount, Color? colorOverride, bool isTrail,
+        NVec3 emitVel, float traillen, float requestedCount, Color? colorOverride, bool isTrail,
         NVec3 fwd, NVec3 right, NVec3 up)
     {
         // DP cl_particles.c:1710-1721: cnt = countabsolute + (pcount*countmultiplier)*quality, plus the

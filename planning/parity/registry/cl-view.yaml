@@ -768,10 +768,10 @@ features:
       - "game/client/SpawnPointParticles.cs:65, 90 (reads cl_spawn_point_particles + cl_spawn_point_dist_max live)"
       - "game/client/ClientWorld.cs:451-452 (SpawnPointParticles node added — live)"
       - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:849-861 (team-colored SPAWN burst + SND SPAWN on CH_TRIGGER, gated on g_spawn_alloweffects)"
-      - "game/menu/framework/ClientSettings.cs:189-190 (registers cl_spawn_point_particles 1 / cl_spawn_event_particles 1)"
+      - "game/menu/framework/ClientSettings.cs:189-194 (registers cl_spawn_point_particles 1 / cl_spawn_event_particles 1 / cl_spawn_point_dist_max 1200)"
     constants:
       - { name: "cl_spawn_point_particles", base: "1 (xonotic-client.cfg:76; effects-low/med presets set 0)", port: "1 (registered; read live)", match: true }
-      - { name: "cl_spawn_point_dist_max", base: "1200 (cull glow beyond 1200qu; 0 = no cull)", port: "UNREGISTERED -> GetFloat reads 0 -> no distance cull", match: false }
+      - { name: "cl_spawn_point_dist_max", base: "1200 (cull glow beyond 1200qu; 0 = no cull)", port: "1200 (registered 2026-07-03; read live, 0 = no cull)", match: true }
       - { name: "cl_spawn_event_particles", base: "1", port: "1 (registered, but NO reader — burst always renders)", match: true }
       - { name: "cl_spawn_event_sound", base: "1 (true, spawnpoints.qh:4)", port: "none (sound gated server-side only)", match: false }
       - { name: "g_spawn_alloweffects", base: "3 (particles|sound)", port: "3 (CvarOr fallback, SpawnSystem:860)", match: true }
@@ -785,12 +785,11 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "cl_spawn_point_dist_max is never registered: an unset cvar reads 0 = no distance cull, so the spawn-point glow renders at ANY distance (Base default culls beyond 1200qu) — the code's own comment assumes GetFloat-0 means 'draw everything', which silently drops the Base default."
       - "cl_spawn_event_particles is registered (default 1, matching) but has no reader — the spawn flash renders regardless, so turning it off does nothing (knob dead; default-equivalent)."
       - "cl_spawn_event_sound has no port counterpart — the spawn sound is gated only by the server's g_spawn_alloweffects bit1 (SpawnSystem models the client cvar as always-on); a client cannot locally mute spawn sounds."
-      - "Spawn-point glow pulses on a 0.2s accumulator instead of Base's per-frame frametime-scaled boxparticles (documented approximation in the file header)."
+      - "Spawn-point glow pulses on a 0.2s accumulator instead of Base's per-frame frametime-scaled boxparticles (documented approximation in the file header; since 2026-07-03 each pulse passes count = PulseInterval so the average per-point rate matches Base's frametime scaling — count 1 was a 5x overspawn)."
     verification:
-      - { kind: code, ref: "SpawnPointParticles._Process: cl_spawn_point_particles gate (65), distMax read (90, no Register anywhere per grep); SpawnSystem:849-861 burst+sound live on the server spawn path; team coloring matches Team_ColorRGB / entcs color split", result: pass }
+      - { kind: code, ref: "SpawnPointParticles._Process: cl_spawn_point_particles gate (65), distMax read live (registered 1200 in ClientSettings, fixed 2026-07-03 — was unregistered -> 0 -> no cull); SpawnSystem:849-861 burst+sound live on the server spawn path; team coloring matches Team_ColorRGB / entcs color split", result: pass }
     confidence: high
     notes: "Both halves are live: the idle spawn-point glow (Spawn_Draw port, team-colored, added by ClientWorld) and the spawn flash + sound (modeled SERVER-side in SpawnSystem instead of the ENT_CLIENT_SPAWNEVENT client entity — the client-side cvar gating collapses, which is what kills the two client toggles). spawnpoints.qc:82-92 local spawn actions (spawn-zoom seed, unpress-zoom) are owned by cl-view.zoom.spawn_zoom / cl-view.zoom.unpress_defaults; the cl_autodemo_delete branch (75-79) belongs to the demo-cinematics track. added 2026-07-02 (coverage fold)"
 

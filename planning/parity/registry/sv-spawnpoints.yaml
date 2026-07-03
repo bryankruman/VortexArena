@@ -341,7 +341,7 @@ features:
       - "game/client/SpawnPointParticles.cs"
     constants:
       - { name: "cl_spawn_point_particles", base: "1 (on)", port: "read (gated)", match: true }
-      - { name: "cl_spawn_point_dist_max", base: "1200 (0 => no cull)", port: "reads cl_spawn_point_dist_max (0 => no cull)", match: true }
+      - { name: "cl_spawn_point_dist_max", base: "1200 (0 => no cull)", port: "1200 (registered in ClientSettings 2026-07-03, read live; 0 => no cull). Was UNREGISTERED -> read 0 -> no cull", match: true }
       - { name: "EFFECT", base: "EFFECT_SPAWNPOINT (spawn_point_neutral)", port: "SPAWNPOINT", match: true }
       - { name: "team color table", base: "Team_ColorRGB switches on NUM_TEAM (CSQC 4/13/12/9)", port: "TeamColorRgb switches on Teams.Red/Blue/Yellow/Pink = 4/13/12/9 (matches Ctf.TeamRadarColor)", match: true }
     status:
@@ -352,7 +352,7 @@ features:
       audio: na
       liveness: live
     intended_divergence: true
-    divergence_rationale: "Upstream emits per render-frame via boxparticles in Spawn_Draw; the port uses a 0.2s pulse timer through the EffectSystem accumulator (same per-point average rate). The distance cull reads cl_spawn_point_dist_max (DrawDistance is only a fallback if the cvar is unreadable). The discovery is via the entity table (FindByClass) rather than per-spawnpoint ENT_CLIENT networking (static edicts) — both are the deliberate static-spawnpoint divergences."
+    divergence_rationale: "Upstream emits per render-frame via boxparticles with pcount = bound(0, frametime, 0.1); the port uses a 0.2s pulse timer passing count = PulseInterval through the EffectSystem accumulator (same per-point average rate — 37.5 count => ~37.5 particles/sec; fixed 2026-07-03, count 1 per pulse was 5x). The distance cull reads cl_spawn_point_dist_max (registered 1200; DrawDistance is a dead legacy fallback). The discovery is via the entity table (FindByClass) rather than per-spawnpoint ENT_CLIENT networking (static edicts) — both are the deliberate static-spawnpoint divergences."
     gaps: []
     verification:
       - { kind: code, ref: "SpawnPointParticles.cs TeamColorRgb switches on Teams.Red(4)/Blue(13)/Yellow(12)/Pink(9) with RGB matching Ctf.TeamRadarColor exactly; points list carries (Origin,Team)", result: pass }

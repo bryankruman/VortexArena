@@ -23,12 +23,15 @@ namespace XonoticGodot.Game.Client;
 /// </summary>
 public sealed partial class SpawnPointParticles : Node3D
 {
-    /// <summary>Seconds between emission pulses per point (upstream emits per-frame with frametime-scaled
-    /// counts; a 0.2s pulse at count 1 through the accumulator reads the same).</summary>
+    /// <summary>Seconds between emission pulses per point. Upstream emits per draw frame with pcount =
+    /// bound(0, frametime, 0.1); each pulse passes the covered interval as the count so the average rate
+    /// matches (spawn_point_* count 37.5 → ~37.5 particles/sec/point, NOT 37.5 per pulse — passing count 1
+    /// here was a 5× overspawn).</summary>
     [Export] public float PulseInterval { get; set; } = 0.2f;
 
-    /// <summary>Fallback draw-cull range (qu) when <c>cl_spawn_point_dist_max</c> can't be read. Upstream's
-    /// cull distance is the <c>cl_spawn_point_dist_max</c> cvar (0 ⇒ no distance cull).</summary>
+    /// <summary>Unused legacy fallback (kept for scene compatibility). The live cull range is the
+    /// <c>cl_spawn_point_dist_max</c> cvar, registered in ClientSettings with the Base default 1200
+    /// (0 ⇒ no distance cull).</summary>
     [Export] public float DrawDistance { get; set; } = 2000f;
 
     /// <summary>The effect player (EffectSystem) — wired by ClientWorld.</summary>
@@ -84,9 +87,9 @@ public sealed partial class SpawnPointParticles : Node3D
         _pulseTimer = PulseInterval;
 
         // Draw-distance cull range = cl_spawn_point_dist_max (upstream Spawn_Draw); 0 disables the distance
-        // cull entirely (Base only computes vdist when the cvar is non-zero). Fall back to DrawDistance only
-        // if the cvar is somehow unreadable (returns <0 never; GetFloat yields 0 for an unset cvar → no cull,
-        // matching upstream's "0 ⇒ draw everything").
+        // cull entirely (Base only computes vdist when the cvar is non-zero). Registered in ClientSettings
+        // with the Base default 1200 (xonotic-client.cfg:77) — registration matters: an UNSET cvar reads 0,
+        // which silently meant "no cull" and rendered the glow at every spawn point map-wide.
         float distMax = XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat("cl_spawn_point_dist_max");
         bool cull = distMax > 0f;
 
@@ -110,7 +113,9 @@ public sealed partial class SpawnPointParticles : Node3D
             }
             // Per-team tint (Team_ColorRGB(team-1)); neutral spots read white.
             // Slight lift so the glow sits above the floor (upstream uses the spawnpoint bbox).
-            Effects.Spawn("SPAWNPOINT", origin + new NVec3(0f, 0f, 8f), color: TeamColorRgb(team));
+            // count = the interval this pulse covers — upstream passes bound(0, frametime, 0.1) per frame,
+            // so one 0.2s pulse carries 0.2 worth of count (37.5 count → 7.5 particles/pulse = 37.5/sec).
+            Effects.Spawn("SPAWNPOINT", origin + new NVec3(0f, 0f, 8f), count: PulseInterval, color: TeamColorRgb(team));
         }
     }
 }

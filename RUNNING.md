@@ -2,6 +2,8 @@
 
 Operational reference for building, running, and smoke-testing the port. A scratchpad for tricks — **add to the
 "Tricks & techniques" section as we learn more** (visual tests, profiling, dedicated server, etc.).
+Performance capture + hitch diagnosis has its own playbook: **[PERF-DEBUGGING.md](PERF-DEBUGGING.md)**
+(`tools/perf-run.ps1` → `tools/perf-report.py`).
 
 ---
 

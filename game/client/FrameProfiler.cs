@@ -311,20 +311,26 @@ public partial class FrameProfiler : CanvasLayer
         if (mode < 1)
         {
             if (_view.Visible) _view.Visible = false;
+            _pending = null;   // a mid-session re-enable restarts the delayed-record pipeline cleanly
             return;   // fully idle when off (besides the cheap cvar reads above)
         }
 
-        // GC deltas across exactly one frame.
+        // GC deltas across exactly one collector-to-collector window: the previous iteration's post-process tail
+        // + THIS iteration's physics + process phase. Process-phase-dominant, so they charge to the PENDING
+        // record below; a present-tail gen2 is additionally considered by Classify via the fresh _dGc2.
         int g0 = GC.CollectionCount(0), g1 = GC.CollectionCount(1), g2 = GC.CollectionCount(2);
         long alloc = GC.GetTotalAllocatedBytes(false);
         _dGc0 = g0 - _lastGc0; _dGc1 = g1 - _lastGc1; _dGc2 = g2 - _lastGc2;
         _dAllocBytes = alloc - _lastAllocBytes;
         _lastGc0 = g0; _lastGc1 = g1; _lastGc2 = g2; _lastAllocBytes = alloc;
+        double pauseTotal = GC.GetTotalPauseDuration().TotalMilliseconds;
+        double dGcPauseMs = Math.Max(0.0, pauseTotal - _lastGcPauseMs);
+        _lastGcPauseMs = pauseTotal;
 
-        // Drain this frame's scopes + markers + the hierarchy (self-time + parents) for display + attribution.
-        Prof.SnapshotAndReset(_lastScopes, _lastCounters, _allocScratch, _lastSelf, _lastParent, _lastCalls, _lastMax);
+        // Wall time of the PREVIOUS main-loop iteration — Godot's `delta` spans the previous two frame starts,
+        // so it belongs to the record drained LAST pass (the P2 pairing; see the _pending field doc).
+        double ms = delta * 1000.0;
 
-        _procMs = Prof.FrameProcessMs();
         _physMs = Performance.GetMonitor(Performance.Monitor.TimePhysicsProcess) * 1000.0;
         if (!_measureArmed && GetViewport() is { } vp)
         {
@@ -338,8 +344,95 @@ public partial class FrameProfiler : CanvasLayer
             _renderGpuMs = RenderingServer.ViewportGetMeasuredRenderTimeGpu(_viewportRid);
         }
 
-        double ms = delta * 1000.0;
-        if (_procMs > ms) _procMs = ms;
+        // The five pipeline-compile counters, read now = compiles during the PREVIOUS iteration's draw — they
+        // belong to the record being finalized, like the measured render times above. (engine-perf 2026-06-15:
+        // Surface + Draw are the synchronous render-thread stalls; Mesh + Specialization are load/async.)
+        long cCanvas  = (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsCanvas);
+        long cMesh    = (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsMesh);
+        long cSurface = (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsSurface);
+        long cDraw    = (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsDraw);
+        long cSpec    = (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsSpecialization);
+        long dCanvas  = Math.Max(0, cCanvas  - _lastPipeCanvas);
+        long dMesh    = Math.Max(0, cMesh    - _lastPipeMesh);
+        long dSurface = Math.Max(0, cSurface - _lastPipeSurface);
+        long dDraw    = Math.Max(0, cDraw    - _lastPipeDraw);
+        long dSpec    = Math.Max(0, cSpec    - _lastPipeSpec);
+        _lastPipeCanvas = cCanvas; _lastPipeMesh = cMesh; _lastPipeSurface = cSurface; _lastPipeDraw = cDraw; _lastPipeSpec = cSpec;
+        _lastPipeTotal = cCanvas + cMesh + cSurface + cDraw + cSpec; _lastPipeUber = cSurface + cDraw;
+        double drawCalls = Performance.GetMonitor(Performance.Monitor.RenderTotalDrawCallsInFrame);
+
+        // ---- FINALIZE the previous iteration's record (P2) ----------------------------------------------------
+        // Its scopes/proc were stashed last pass; its wall time (this `delta`) and draw-side counters arrive
+        // now. _lastScopes/_lastParent/_lastCounters still hold THAT frame's drain here — hitch forensics read
+        // them before this frame's drain overwrites them below.
+        if (_pending is { } fin)
+        {
+            fin.Ms = ms;
+            fin.RcpuMs = _renderCpuMs; fin.GpuMs = _renderGpuMs;
+            fin.DrawCalls = drawCalls;
+            fin.PipeCanvas = dCanvas; fin.PipeMesh = dMesh; fin.PipeSurface = dSurface; fin.PipeDraw = dDraw; fin.PipeSpec = dSpec;
+            fin.PipeCompiles = dCanvas + dMesh + dSurface + dDraw + dSpec;
+            fin.PipeCompilesUber = dSurface + dDraw;   // the synchronous stalls (kept name for the CSV slot)
+            fin.LateMs = Prof.LastLateMs;              // that iteration's deferred+present gap (stamped at this fence)
+
+            _ring[_ringHead] = ms;
+            FrameRecord recycled = _records[_ringHead] ?? new FrameRecord();
+            _records[_ringHead] = fin;
+            _pending = recycled;
+            _ringHead = (_ringHead + 1) % RingSize;
+            if (_ringCount < RingSize) _ringCount++;
+            ComputeStats();
+
+            // Session accumulators (12).
+            _sessionHist.Add(ms);
+            _windowHist.Add(ms);
+            _sessionAllocTotal += fin.AllocBytes;
+            if (fin.AllocBytes > _peakAllocFrame) { _peakAllocFrame = fin.AllocBytes; _peakAllocAtS = SessionSeconds; }
+            _forensicClock += ms;
+            _snapshotClock += ms;
+
+            // (engine-perf 2026-06-16) Under RenderDoc only: self-trigger a capture of the next frame whenever a
+            // SYNCHRONOUS SURFACE pipeline-compile fires, so the stochastic stall is captured deterministically.
+            // Gate on SessionSeconds > 28 so the budget targets the MID-MATCH residual (the felt join/combat
+            // SURFACE compiles), not the expected load-time ones hidden by the loading screen.
+            const double RdocCaptureAfterSeconds = 28.0;
+            if (fin.PipeSurface > 0 && _rdocCapturesLeft > 0 && SessionSeconds > RdocCaptureAfterSeconds && RenderDocCapture.Available)
+            {
+                RenderDocCapture.TriggerCapture();
+                _rdocCapturesLeft--;
+                Prof.Event($"rdoc: capture queued on SURFACE compile (surface+{fin.PipeSurface}, {_rdocCapturesLeft} left)");
+            }
+
+            // Per-frame CSV row — the finalized, internally-consistent record (writer thread formats it).
+            if (_sessionLog.Active)
+            {
+                string? topName = null; double topMs = 0.0;
+                foreach (ScopeRow row in fin.Scopes)
+                    if (row.Ms > topMs) { topMs = row.Ms; topName = row.Name; }
+                double restCsv = Math.Max(0.0, ms - fin.ProcMs - fin.RcpuMs);
+                _sessionLog.WriteFrame(new FrameSample(
+                    (long)fin.FrameId, SessionSeconds, ms, fin.ProcMs, fin.RcpuMs, fin.GpuMs, fin.PhysMs, restCsv,
+                    fin.AllocBytes, fin.G0, fin.G1, fin.G2, fin.GcPauseMs, fin.DrawCalls, fin.PipeCompiles,
+                    fin.PipeCompilesUber, topName, topMs, fin.LateMs));
+            }
+
+            // ---- hitch detection + classification + collapse (on the coherent record) ------------------------
+            if (_ringCount > 30)
+            {
+                double floor = HitchFloorMs();
+                if (ms > floor && ms > _median * HitchFactor)
+                    OnHitch(ms, Math.Max(0.0, ms - fin.ProcMs - fin.RcpuMs), fin);
+            }
+            MaybeFlushRun();
+        }
+
+        // ---- start THIS iteration's pending record: drain the scopes its process phase produced ----------------
+        Prof.SnapshotAndReset(_lastScopes, _lastCounters, _allocScratch, _lastSelf, _lastParent, _lastCalls, _lastMax);
+
+        // The true process span of THIS iteration (fence → here). NOT clamped against `ms` — that is the
+        // PREVIOUS iteration's time, and the old clamp destroyed exactly the evidence an isolated CPU spike
+        // leaves (a 119 ms process phase was clamped to the prior frame's 6.94 in the 2026-07-02 session).
+        _procMs = Prof.FrameProcessMs();
 
         // proc:other = the per-frame _Process span not attributed to a named WHOLE-NODE scope.
         double accounted = 0.0;
@@ -352,54 +445,15 @@ public partial class FrameProfiler : CanvasLayer
         if (_watchdog is { } wd)
             wd.SampleThresholdMs = Math.Max(6.0, HitchFloorMs() * 0.6);
 
-        _ring[_ringHead] = ms;
-
-        // ---- forensic record for THIS frame ------------------------------------------------------------------
-        FrameRecord rec = _records[_ringHead] ??= new FrameRecord();
+        FrameRecord rec = _pending ??= new FrameRecord();
         rec.Reset(_frameId++);
-        rec.Ms = ms; rec.ProcMs = _procMs; rec.RcpuMs = _renderCpuMs; rec.GpuMs = _renderGpuMs; rec.PhysMs = _physMs;
+        rec.ProcMs = _procMs; rec.PhysMs = _physMs;
+        rec.WdSeq = Prof.FrameSeq;   // the watchdog window (this fence → the next) covering this iteration
         rec.AllocBytes = _dAllocBytes;
         rec.G0 = _dGc0; rec.G1 = _dGc1; rec.G2 = _dGc2;
+        rec.GcPauseMs = dGcPauseMs;
 
-        double pauseTotal = GC.GetTotalPauseDuration().TotalMilliseconds;
-        rec.GcPauseMs = Math.Max(0.0, pauseTotal - _lastGcPauseMs);
-        _lastGcPauseMs = pauseTotal;
-
-        rec.DrawCalls = Performance.GetMonitor(Performance.Monitor.RenderTotalDrawCallsInFrame);
-        // (engine-perf 2026-06-15) Track the five pipeline-compile counters SEPARATELY — the old code summed
-        // Canvas+Mesh+Surface into one opaque "uber" bucket, hiding which class actually stalled. Surface + Draw
-        // are the synchronous render-thread stalls (the hitch culprits); Mesh + Specialization are load/async.
-        long cCanvas  = (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsCanvas);
-        long cMesh    = (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsMesh);
-        long cSurface = (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsSurface);
-        long cDraw    = (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsDraw);
-        long cSpec    = (long)RenderingServer.GetRenderingInfo(RenderingServer.RenderingInfo.PipelineCompilationsSpecialization);
-        rec.PipeCanvas  = Math.Max(0, cCanvas  - _lastPipeCanvas);
-        rec.PipeMesh    = Math.Max(0, cMesh    - _lastPipeMesh);
-        rec.PipeSurface = Math.Max(0, cSurface - _lastPipeSurface);
-        rec.PipeDraw    = Math.Max(0, cDraw    - _lastPipeDraw);
-        rec.PipeSpec    = Math.Max(0, cSpec    - _lastPipeSpec);
-        rec.PipeCompiles = rec.PipeCanvas + rec.PipeMesh + rec.PipeSurface + rec.PipeDraw + rec.PipeSpec;
-        rec.PipeCompilesUber = rec.PipeSurface + rec.PipeDraw;   // the synchronous stalls (kept name for the CSV slot)
-        _lastPipeCanvas = cCanvas; _lastPipeMesh = cMesh; _lastPipeSurface = cSurface; _lastPipeDraw = cDraw; _lastPipeSpec = cSpec;
-        _lastPipeTotal = cCanvas + cMesh + cSurface + cDraw + cSpec; _lastPipeUber = cSurface + cDraw;
-
-        // (engine-perf 2026-06-16) Under RenderDoc only: self-trigger a capture of the next frame whenever a
-        // SYNCHRONOUS SURFACE pipeline-compile fires, so the stochastic stall is captured deterministically (the
-        // residual material/mesh is drawn again next frame with the now-warm pipeline → inspectable offline).
-        // Gate on SessionSeconds > 28 so the budget targets the MID-MATCH residual (the felt join/combat
-        // SURFACE compiles), not the expected load-time ones (the warm pass + first scene draw) hidden by the
-        // loading screen.
-        const double RdocCaptureAfterSeconds = 28.0;
-        if (rec.PipeSurface > 0 && _rdocCapturesLeft > 0 && SessionSeconds > RdocCaptureAfterSeconds && RenderDocCapture.Available)
-        {
-            RenderDocCapture.TriggerCapture();
-            _rdocCapturesLeft--;
-            Prof.Event($"rdoc: capture queued on SURFACE compile (surface+{rec.PipeSurface}, {_rdocCapturesLeft} left)");
-        }
-
-        // Scope table (inclusive + self + alloc per scope) + the one-shot events; track the dominant scope.
-        string? topName = null; double topMs = 0.0;
+        // Scope table (inclusive + self + alloc per scope) + the one-shot events.
         foreach (KeyValuePair<string, double> kv in _lastScopes)
         {
             _allocScratch.TryGetValue(kv.Key, out double bytes);
@@ -413,50 +467,19 @@ public partial class FrameProfiler : CanvasLayer
             // (perf-investigation) sum into the snapshot window for the steady-state top-scope dump.
             _windowScopeMs.TryGetValue(kv.Key, out double ws);
             _windowScopeMs[kv.Key] = ws + kv.Value;
-            if (kv.Value > topMs) { topMs = kv.Value; topName = kv.Key; }
         }
         _eventScratch.Clear();
         Prof.DrainEvents(_eventScratch);
         for (int i = 0; i < _eventScratch.Count; i++)
             rec.Events.Add(_eventScratch[i]);
 
-        _ringHead = (_ringHead + 1) % RingSize;
-        if (_ringCount < RingSize) _ringCount++;
-        ComputeStats();
-
-        // Rolling alloc rate (10) over the ring window + heap size.
-        double restMs = Math.Max(0.0, ms - _procMs - _renderCpuMs);
+        // Rolling alloc rate (10) heap size (the rate itself is ring-derived in ComputeStats).
         _heapBytes = GC.GetTotalMemory(false);
-
-        // Session accumulators (12).
-        _sessionHist.Add(ms);
-        _windowHist.Add(ms);
-        _sessionAllocTotal += _dAllocBytes;
-        if (_dAllocBytes > _peakAllocFrame) { _peakAllocFrame = _dAllocBytes; _peakAllocAtS = SessionSeconds; }
-
-        _forensicClock += ms;
-
-        // Per-frame CSV row (writer thread formats it; main thread just enqueues a struct).
-        if (_sessionLog.Active)
-            _sessionLog.WriteFrame(new FrameSample(
-                (long)rec.FrameId, SessionSeconds, ms, _procMs, _renderCpuMs, _renderGpuMs, _physMs, restMs,
-                _dAllocBytes, _dGc0, _dGc1, _dGc2, rec.GcPauseMs, rec.DrawCalls, rec.PipeCompiles,
-                rec.PipeCompilesUber, topName, topMs));
-
-        // ---- hitch detection + classification + collapse -----------------------------------------------------
-        if (_ringCount > 30)
-        {
-            double floor = HitchFloorMs();
-            if (ms > floor && ms > _median * HitchFactor)
-                OnHitch(ms, restMs, rec);
-        }
-        MaybeFlushRun();
 
         if (ConsumeDumpRequest())
             DumpRingCsv();
 
         // (11) periodic steady-state snapshot.
-        _snapshotClock += ms;
         if (_snapshotClock >= SnapshotIntervalMs)
         {
             EmitSnapshot();
@@ -469,6 +492,8 @@ public partial class FrameProfiler : CanvasLayer
         _view.CustomMinimumSize = new Vector2(GraphWidth, _expanded ? GraphHeight + 70f + ExpandedExtraHeight : GraphHeight + 70f);
         _view.Size = _view.CustomMinimumSize;
         _view.QueueRedraw();
+
+        Prof.MarkCollectorEnd();   // open the post-process window: the fence measures it, the watchdog labels it
     }
 
     private void ComputeStats()
@@ -497,20 +522,42 @@ public partial class FrameProfiler : CanvasLayer
     private void OnHitch(double ms, double restMs, FrameRecord rec)
     {
         _sessionHitchCount++;
-        (HitchClass cls, string reason) = Classify(ms, restMs, rec);
-        _windowHitchByClass[(int)cls]++;
-        _sessionHitchByClass[(int)cls]++;
+        (string? wdPhase, int wdSamples, int wdTotal, bool wdFresh) = WatchdogCompleted(rec);
+        (HitchClass cls, string reason) = Classify(ms, restMs, rec, wdPhase, wdSamples, wdTotal, wdFresh);
         double nowS = SessionSeconds;
+
+        // (P8) A VSYNC/PRESENT hitch within a second of a primary is the present queue draining that primary's
+        // backlog, not an independent stutter — tag + count it as a recovery TAIL so the census stays readable.
+        bool recovery = cls == HitchClass.VsyncPresent && nowS - _lastPrimaryHitchAtS <= 1.0;
+        if (recovery)
+        {
+            _windowRecovery++; _sessionRecovery++;
+        }
+        else
+        {
+            _lastPrimaryHitchAtS = nowS;
+            _windowHitchByClass[(int)cls]++;
+            _sessionHitchByClass[(int)cls]++;
+        }
+
+        // (P11) Scope-coverage debt: a hitch attributed to unnamed code = an "add a Prof scope here" TODO.
+        if (cls == HitchClass.CpuLogic && reason.StartsWith("proc:other", StringComparison.Ordinal)) _covProcOther++;
+        if (wdFresh && wdPhase == "(unscoped)" && wdSamples * 2 >= wdTotal && wdTotal >= 4) _covUnscoped++;
 
         // Worst-frame hall of shame (12).
         ConsiderWorst(ms, cls, rec);
 
-        // (3) pin the latest hitch for the overlay.
+        // (3) pin the latest hitch for the overlay (+ the opt-in P7 alert flash).
         _lastHitchSummary = $"{ms:0.0}ms {ClassTag(cls)} ({reason})";
         _lastHitchAtS = nowS;
+        if (ms >= HitchFloorMs() * 2.0 && AlertEnabled())
+        {
+            _alertUntilS = nowS + 1.5;
+            _alertText = $"{ms:0.0}ms {ClassTag(cls)}";
+        }
 
-        // (6) collapse: extend a run of the same class seen within the last second instead of re-logging.
-        if (_runCount > 0 && _runClass == cls && nowS - _runLastS < 1.0)
+        // (6) collapse: extend a run of the same class+kind seen within the last second instead of re-logging.
+        if (_runCount > 0 && _runClass == cls && _runRecovery == recovery && nowS - _runLastS < 1.0)
         {
             _runCount++;
             _runMinMs = Math.Min(_runMinMs, ms);
@@ -521,35 +568,51 @@ public partial class FrameProfiler : CanvasLayer
 
         // New run: flush the previous one, then log THIS hitch in full.
         FlushRun();
-        _runClass = cls; _runCount = 1; _runMinMs = _runMaxMs = ms;
+        _runClass = cls; _runRecovery = recovery; _runCount = 1; _runMinMs = _runMaxMs = ms;
         _runStartS = _runLastS = _runLastInterimS = nowS; _runReason = reason;
-        LogHitchFull(ms, restMs, rec, cls, reason);
+        LogHitchFull(ms, restMs, rec, cls, reason, recovery, wdPhase, wdSamples, wdTotal, wdFresh);
     }
 
-    /// <summary>(5) Decide what dominated the frame. Priority order: the unambiguous one-shot causes (a pipeline
-    /// compile, a gen-2 / long GC pause) first, then a dominating asset build, then the proportional split
-    /// (CPU / GPU / present) and finally the rest-dominated external-stall heuristic.</summary>
-    private (HitchClass, string) Classify(double ms, double restMs, FrameRecord rec)
+    /// <summary>(5) Decide what dominated the frame — reading ONLY the finalized record (its ms, scopes, proc and
+    /// draw counters all describe the SAME iteration since P2) plus the watchdog's completed histogram for that
+    /// iteration. Priority order: the unambiguous one-shot causes (a pipeline compile, a gen-2 / long GC pause)
+    /// first, then a dominating asset build, then the proportional split (CPU / GPU / present) and finally the
+    /// rest-dominated external-stall heuristic — which the watchdog can VETO: a sample majority in a NAMED scope
+    /// means main-thread game code ran during the iteration's late (deferred/post-process) phase, where neither
+    /// ProcMs nor any process scope can see it.</summary>
+    private (HitchClass, string) Classify(double ms, double restMs, FrameRecord rec,
+        string? wdPhase, int wdSamples, int wdTotal, bool wdFresh)
     {
         if (rec.PipeCompiles > 0)
             return (HitchClass.PipelineCompile,
                 $"{rec.PipeCompiles} pipeline compile(s) — SYNC[surface+{rec.PipeSurface} draw+{rec.PipeDraw}] " +
                 $"async[mesh+{rec.PipeMesh} spec+{rec.PipeSpec}] canvas+{rec.PipeCanvas}");
 
-        if (rec.G2 > 0 || rec.GcPauseMs >= Math.Max(2.0, 0.3 * ms))
+        // A gen2 in the iteration's PRESENT tail lands in the deltas read one collector pass later — the fresh
+        // _dGc2 covers exactly that window, so consider it when the frame is rest-dominated (P2).
+        if (rec.G2 > 0 || rec.GcPauseMs >= Math.Max(2.0, 0.3 * ms) || (_dGc2 > 0 && restMs >= 0.5 * ms))
+        {
+            string tail = rec.G2 == 0 && _dGc2 > 0 ? " (gen2 in the present tail)" : "";
             return (HitchClass.GcPause,
-                $"GC g0+{rec.G0} g1+{rec.G1} g2+{rec.G2}, pause {rec.GcPauseMs:0.0}ms, {Bytes(rec.AllocBytes)} allocated");
+                $"GC g0+{rec.G0} g1+{rec.G1} g2+{rec.G2}, pause {rec.GcPauseMs:0.0}ms, {Bytes(rec.AllocBytes)} allocated{tail}{TopAllocSuffix(rec)}");
+        }
 
-        string dom = DominantScope(out double domMs);
+        string dom = DominantScope(rec, out double domMs);
         bool assetDom = dom.StartsWith("stream.", StringComparison.Ordinal) || dom.StartsWith("iqm.", StringComparison.Ordinal);
         if (assetDom && domMs >= 0.4 * ms)
             return (HitchClass.AssetBuild, $"{dom} {domMs:0.0}ms (asset build/upload)");
 
         // External: rest-dominated, game-side quiet (the §12.6c compositor/driver/OS class).
-        bool external = ms >= 25.0 && restMs >= ms * 0.7 && _procMs <= ms * 0.3
-                        && rec.PipeCompiles == 0 && rec.G2 == 0 && _renderGpuMs <= ms * 0.3;
+        bool external = ms >= 25.0 && restMs >= ms * 0.7 && rec.ProcMs <= ms * 0.3
+                        && rec.PipeCompiles == 0 && rec.G2 == 0 && rec.GpuMs <= ms * 0.3;
         if (external)
         {
+            // (P2) Watchdog veto: the numbers say rest-dominated, but the sampler caught the main thread in a
+            // NAMED scope for most of the window ⇒ game code ran in the late phase (a deferred call / work after
+            // the collector) that ProcMs structurally cannot see. Attribute it — don't blame the OS.
+            if (wdFresh && wdPhase is { Length: > 0 } wp && wp[0] != '(' && wdTotal >= 4 && wdSamples * 2 >= wdTotal)
+                return (HitchClass.CpuLogic, $"{wp} ≈{wdSamples}ms late-phase (watchdog {wdSamples}/{wdTotal})");
+
             // (hitch-fix) GcPauseMs is a once-per-frame GC.GetTotalPauseDuration delta, so an all-thread gen2
             // freeze that STARTED in frame N-1 lands its tail on frame N with G2==0 there — which used to fall
             // through to EXTERNAL and blame the OS for what is really our GC (the catharsis 139ms "EXTERNAL" worst
@@ -557,29 +620,47 @@ public partial class FrameProfiler : CanvasLayer
             // attribute this rest-dominated tail to GC, not the compositor.
             if (RecentGcEvent(out double recentPauseMs))
                 return (HitchClass.GcPause, $"gen2/GC-pause tail (prior frame paused {recentPauseMs:0.0}ms; this frame rest-dominated)");
-            return (HitchClass.External, "rest-dominated, game-side quiet — OS/compositor/driver");
+            return (HitchClass.External,
+                $"rest-dominated (late {rec.LateMs:0.0}ms), game-side quiet — OS/compositor/driver");
         }
 
-        if (_procMs >= 0.55 * ms)
+        if (rec.ProcMs >= 0.55 * ms)
             return (HitchClass.CpuLogic, $"{dom} {domMs:0.0}ms{Anomaly(dom, domMs)}");
 
-        if (_renderGpuMs >= 0.45 * ms)
-            return (HitchClass.GpuBound, $"gpu {_renderGpuMs:0.0}ms, {rec.DrawCalls:0} draws");
+        if (rec.GpuMs >= 0.45 * ms)
+            return (HitchClass.GpuBound, $"gpu {rec.GpuMs:0.0}ms, {rec.DrawCalls:0} draws");
 
         if (restMs >= 0.55 * ms)
-            return (HitchClass.VsyncPresent, $"present/vsync-bound (rest {restMs:0.0}ms, gpu {_renderGpuMs:0.0}ms)");
+            return (HitchClass.VsyncPresent, $"present/vsync-bound (rest {restMs:0.0}ms, gpu {rec.GpuMs:0.0}ms)");
 
         return (HitchClass.Unknown, $"mixed — {dom} {domMs:0.0}ms");
     }
 
-    private void LogHitchFull(double ms, double restMs, FrameRecord rec, HitchClass cls, string reason)
+    /// <summary>(P11) Name the ALLOCATOR on a GC hitch, not just the pause: the scope with the biggest per-scope
+    /// allocation this frame, when it is a meaningful share (≥1 MB and ≥25% of the frame's total).</summary>
+    private static string TopAllocSuffix(FrameRecord rec)
+    {
+        string? name = null; double best = 0.0;
+        foreach (ScopeRow row in rec.Scopes)
+            if (row.Bytes > best) { best = row.Bytes; name = row.Name; }
+        if (name is null || best < 1024.0 * 1024.0 || best < 0.25 * rec.AllocBytes)
+            return "";
+        return $", top alloc {name} {Bytes(best)}";
+    }
+
+    private void LogHitchFull(double ms, double restMs, FrameRecord rec, HitchClass cls, string reason,
+        bool recovery, string? wdPhase, int wdSamples, int wdTotal, bool wdFresh)
     {
         int dropped = FramesDropped(ms);
         string drop = dropped > 0 ? $" ({dropped} dropped @{Hz():0}Hz)" : "";
-        string wd = WatchdogSuffix();
+        // Only a FRESH histogram (sampled during this record's own fence→fence window) is shown — a stale one
+        // (from whichever frame last went over budget) was the pre-P2 misdirection.
+        string wd = wdFresh && wdPhase is not null && wdTotal >= 3
+            ? $" | watchdog: {wdSamples}/{wdTotal} samples in '{wdPhase}'" : "";
         string marks = Markers();
-        Emit($"[hitch {ClassTag(cls)}] {ms:0.0}ms{drop} (med {_median:0.0}, ×{ms / Math.Max(0.1, _median):0.0}) — {reason} | " +
-             $"proc {_procMs:0.0} rcpu {_renderCpuMs:0.0} gpu {_renderGpuMs:0.0} rest {restMs:0.0} | alloc {Bytes(rec.AllocBytes)}{marks}{wd}",
+        string late = rec.LateMs >= 1.0 ? $" late {rec.LateMs:0.0}" : "";
+        Emit($"[hitch {Tag(cls, recovery)}] {ms:0.0}ms{drop} (med {_median:0.0}, ×{ms / Math.Max(0.1, _median):0.0}) — {reason} | " +
+             $"proc {rec.ProcMs:0.0} rcpu {rec.RcpuMs:0.0} gpu {rec.GpuMs:0.0} rest {restMs:0.0}{late} | alloc {Bytes(rec.AllocBytes)}{marks}{wd}{_buildTag}",
              toConsole: true);
 
         // Multi-line forensic block (rate-limited so a hitch storm logs one block, not a wall).
@@ -595,7 +676,7 @@ public partial class FrameProfiler : CanvasLayer
         if (_runCount >= 2)
         {
             double span = Math.Max(0.0, _runLastS - _runStartS);
-            Emit($"[hitch {ClassTag(_runClass)} ×{_runCount}] {_runMinMs:0.0}–{_runMaxMs:0.0}ms over {span:0.0}s " +
+            Emit($"[hitch {Tag(_runClass, _runRecovery)} ×{_runCount}] {_runMinMs:0.0}–{_runMaxMs:0.0}ms over {span:0.0}s " +
                  $"(med {_median:0.0}) — {_runReason}", toConsole: true);
         }
         _runCount = 0;
@@ -617,7 +698,7 @@ public partial class FrameProfiler : CanvasLayer
         {
             _runLastInterimS = nowS;
             double span = Math.Max(0.0, nowS - _runStartS);
-            Emit($"[hitch {ClassTag(_runClass)} ×{_runCount}…] ongoing {_runMinMs:0.0}–{_runMaxMs:0.0}ms over {span:0.0}s " +
+            Emit($"[hitch {Tag(_runClass, _runRecovery)} ×{_runCount}…] ongoing {_runMinMs:0.0}–{_runMaxMs:0.0}ms over {span:0.0}s " +
                  $"— {_runReason}", toConsole: true);
         }
     }
@@ -626,7 +707,7 @@ public partial class FrameProfiler : CanvasLayer
     {
         if (_worst.Count >= 10 && ms <= _worst[^1].Ms)
             return;
-        string scope = DominantScope(out _);
+        string scope = DominantScope(rec, out _);
         _worst.Add((ms, cls, scope, SessionSeconds));
         _worst.Sort(static (a, b) => b.Ms.CompareTo(a.Ms));
         if (_worst.Count > 10)
@@ -686,6 +767,8 @@ public partial class FrameProfiler : CanvasLayer
         if (_windowHist.Count == 0)
             return;
         string hitches = HitchBreakdown(_windowHitchByClass);
+        if (_windowRecovery > 0)
+            hitches += $" (+{_windowRecovery} recovery)";
         // (perf-investigation) scene-graph complexity — the suspected driver of the Godot-internal proc:other
         // floor on entity-heavy maps. nodes = total scene-tree nodes; robj = objects drawn this frame.
         double nodeCount = Performance.GetMonitor(Performance.Monitor.ObjectNodeCount);
@@ -721,6 +804,7 @@ public partial class FrameProfiler : CanvasLayer
         _windowHist.Reset();
         _windowScopeMs.Clear();
         Array.Clear(_windowHitchByClass);
+        _windowRecovery = 0;
     }
 
     // ---- session summary (12) ---------------------------------------------------------------------------------
@@ -737,7 +821,10 @@ public partial class FrameProfiler : CanvasLayer
         Emit($"=== frame profiler session summary ({dur:0}s, {_sessionHist.Count} frames) ===", toConsole: true);
         Emit($"  fps: avg {avgFps:0.0}  1%low {(low1 > 0 ? 1000.0 / low1 : 0):0}  0.1%low {(low01 > 0 ? 1000.0 / low01 : 0):0}" +
              $"  (median {_sessionHist.Percentile(0.5):0.0}ms, worst {_sessionHist.Max:0.0}ms)", toConsole: true);
-        Emit($"  hitches: {_sessionHitchCount} total — {HitchBreakdown(_sessionHitchByClass)}", toConsole: true);
+        int primaries = 0;
+        for (int i = 0; i < _sessionHitchByClass.Length; i++) primaries += _sessionHitchByClass[i];
+        string tails = _sessionRecovery > 0 ? $"; +{_sessionRecovery} VSYNC/PRESENT recovery tails" : "";
+        Emit($"  hitches: {_sessionHitchCount} total — {primaries} primaries: {HitchBreakdown(_sessionHitchByClass)}{tails}", toConsole: true);
         for (int i = 0; i < _worst.Count && i < 5; i++)
         {
             var w = _worst[i];
@@ -747,6 +834,15 @@ public partial class FrameProfiler : CanvasLayer
              $"g2+{GC.CollectionCount(2) - _initGc2}, total pause {GC.GetTotalPauseDuration().TotalMilliseconds - _initGcPauseMs:0}ms", toConsole: true);
         Emit($"  alloc: {Bytes(_sessionAllocTotal)} total, {_allocRateMbPerSec:0}MB/s recent, " +
              $"peak {Bytes(_peakAllocFrame)} in one frame @ t={_peakAllocAtS:0.0}s, heap {Bytes(_heapBytes)}", toConsole: true);
+        // (P11) Scope-coverage debt: where the profiler could NOT name the code — each count is a place to add a
+        // Prof scope so the next hunt starts attributed instead of at "(unscoped)".
+        if (_covProcOther + _covUnscoped > 0)
+            Emit($"  scope coverage debt: proc:other dominated {_covProcOther} hitch(es), watchdog '(unscoped)' won " +
+                 $"{_covUnscoped} — add Prof scopes there", toConsole: true);
+        // (P5) A debug census must never be mistaken for the shipped game's behaviour.
+        if (_debugBuild)
+            Emit("  note: DEBUG build — frame times and the hitch census are NOT release-representative " +
+                 "(run the release export via tools/perf-run.ps1 for real numbers)", toConsole: true);
         if (_sessionLog.DroppedFrames > 0)
             Emit($"  note: {_sessionLog.DroppedFrames} CSV rows dropped under disk backpressure (log lines unaffected)", toConsole: true);
     }
@@ -932,7 +1028,7 @@ public partial class FrameProfiler : CanvasLayer
             Log.Info($"[frameprofiler] ring dump FAILED (couldn't open {ringPath})");
             return;
         }
-        f.StoreLine("frame,ms,proc_ms,rcpu_ms,gpu_ms,phys_ms,rest_ms,alloc_kb,gc0,gc1,gc2,gc_pause_ms," +
+        f.StoreLine("frame,ms,proc_ms,rcpu_ms,gpu_ms,phys_ms,rest_ms,late_ms,alloc_kb,gc0,gc1,gc2,gc_pause_ms," +
                     "draw_calls,pipe_compiles,pipe_sync,top1,top1_ms,top2,top2_ms,top3,top3_ms,events");
         for (int back = _ringCount; back >= 1; back--)
         {
@@ -944,7 +1040,7 @@ public partial class FrameProfiler : CanvasLayer
             string t3 = r.Scopes.Count > 2 ? $"{Csv(r.Scopes[2].Name)},{r.Scopes[2].Ms:0.00}" : ",";
             double rest = Math.Max(0.0, r.Ms - r.ProcMs - r.RcpuMs);
             f.StoreLine($"{r.FrameId},{r.Ms:0.00},{r.ProcMs:0.00},{r.RcpuMs:0.00},{r.GpuMs:0.00},{r.PhysMs:0.00}," +
-                        $"{rest:0.00},{r.AllocBytes / 1024},{r.G0},{r.G1},{r.G2},{r.GcPauseMs:0.00}," +
+                        $"{rest:0.00},{r.LateMs:0.00},{r.AllocBytes / 1024},{r.G0},{r.G1},{r.G2},{r.GcPauseMs:0.00}," +
                         $"{r.DrawCalls:0},{r.PipeCompiles},{r.PipeCompilesUber},{t1},{t2},{t3}," +
                         Csv(string.Join("; ", r.Events)));
         }
@@ -969,11 +1065,13 @@ public partial class FrameProfiler : CanvasLayer
 
     // ---- small helpers ----------------------------------------------------------------------------------------
 
-    private string DominantScope(out double ms)
+    /// <summary>The record's biggest inclusive scope — the FINALIZED record's own drain, not whatever the live
+    /// dictionaries currently hold (they may already describe the next frame).</summary>
+    private static string DominantScope(FrameRecord rec, out double ms)
     {
         string best = "?"; double bestMs = 0.0;
-        foreach (KeyValuePair<string, double> kv in _lastScopes)
-            if (kv.Value > bestMs) { bestMs = kv.Value; best = kv.Key; }
+        foreach (ScopeRow row in rec.Scopes)
+            if (row.Ms > bestMs) { bestMs = row.Ms; best = row.Name; }
         ms = bestMs;
         return best;
     }
@@ -1002,12 +1100,16 @@ public partial class FrameProfiler : CanvasLayer
         return sb.ToString();
     }
 
-    private string WatchdogSuffix()
+    /// <summary>The completed watchdog histogram for the record's OWN window (its fence→fence covers exactly the
+    /// iteration the finalized record describes). Fresh=false ⇒ the sampler never fired during that window (the
+    /// frame stayed under budget) or only older data exists — callers show nothing rather than a stale,
+    /// misleading suffix (the pre-P2 bug: quiet frames reported whichever frame last went over budget).</summary>
+    private (string? Phase, int Samples, int Total, bool Fresh) WatchdogCompleted(FrameRecord rec)
     {
-        if (_watchdog is not { } wd) return "";
-        wd.SnapshotCurrent(out string? phase, out int samples, out int total);
-        if (total < 3 || phase is null) return "";
-        return $" | watchdog: {samples}/{total} samples in '{phase}'";
+        if (_watchdog is not { } wd)
+            return (null, 0, 0, false);
+        wd.SnapshotCompleted(rec.WdSeq, out string? phase, out int samples, out int total, out bool fresh);
+        return (phase, samples, total, fresh);
     }
 
     private static string ClassTag(HitchClass c) => c switch
@@ -1021,6 +1123,10 @@ public partial class FrameProfiler : CanvasLayer
         HitchClass.External => "EXTERNAL",
         _ => "MIXED",
     };
+
+    /// <summary>(P8) The log-line tag: the class, plus a "·recovery" marker on a VSYNC/PRESENT tail that is just
+    /// the present queue draining a primary hitch's backlog.</summary>
+    private static string Tag(HitchClass c, bool recovery) => recovery ? ClassTag(c) + "·recovery" : ClassTag(c);
 
     private string HitchBreakdown(int[] byClass)
     {
@@ -1136,6 +1242,12 @@ public partial class FrameProfiler : CanvasLayer
                 HorizontalAlignment.Left, -1f, 12, pipeCol);
         }
 
+        // (P7) Opt-in hitch alert flash (cl_frameprofiler_alert): a short, loud marker over the graph so a felt
+        // stutter is immediately nameable without watching the console.
+        if (SessionSeconds < _alertUntilS)
+            c.DrawString(font, new Vector2(2f, 12f), $"HITCH {_alertText}", HorizontalAlignment.Left, -1f, 14,
+                new Color(1f, 0.25f, 0.2f));
+
         // (3) Pinned last-hitch line (dim) — only meaningful for a while after a hitch.
         if (_lastHitchSummary.Length > 0)
         {
@@ -1198,6 +1310,9 @@ public partial class FrameProfiler : CanvasLayer
         cvars.Register("cl_frameprofiler", "0", CvarFlags.Save);
         cvars.Register("cl_frameprofiler_hitchms", "12", CvarFlags.Save);
         cvars.Register("cl_frameprofiler_watchdog", "1", CvarFlags.Save);
+        // (P7) Opt-in on-screen flash when a ≥2×floor hitch fires (class + ms at the graph) — for feel-testing
+        // sessions where the console isn't being watched.
+        cvars.Register("cl_frameprofiler_alert", "0", CvarFlags.Save);
         // Transient trigger (NOT archived): `set cl_frameprofiler_dump 1` writes the forensic ring CSV + re-arms.
         cvars.Register("cl_frameprofiler_dump", "0");
     }
@@ -1220,6 +1335,12 @@ public partial class FrameProfiler : CanvasLayer
     {
         CvarService? cv = ClientCvars();
         return cv is null || cv.GetFloat("cl_frameprofiler_watchdog") != 0f;
+    }
+
+    private static bool AlertEnabled()
+    {
+        CvarService? cv = ClientCvars();
+        return cv is not null && cv.GetFloat("cl_frameprofiler_alert") != 0f;
     }
 
     private static double HitchFloorMs()
@@ -1318,9 +1439,10 @@ internal sealed class PhaseWatchdog
     private volatile bool _stop;
 
     private readonly object _gate = new();
-    private readonly Dictionary<string, int> _hist = new();
-    private long _curSeq = -1;
-    private int _curTotal;
+    private Dictionary<string, int> _hist = new();       // the in-progress frame (seq == _curSeq)
+    private Dictionary<string, int> _histDone = new();   // the last frame that produced samples (retired)
+    private long _curSeq = -1, _doneSeq = -1;
+    private int _curTotal, _doneTotal;
 
     public PhaseWatchdog()
     {
@@ -1350,7 +1472,17 @@ internal sealed class PhaseWatchdog
                 string phase = Prof.MainPhase ?? "(unscoped)";
                 lock (_gate)
                 {
-                    if (seq != _curSeq) { _hist.Clear(); _curSeq = seq; _curTotal = 0; }
+                    if (seq != _curSeq)
+                    {
+                        // (P2) The previous frame's histogram is COMPLETE — retire it for the collector, which
+                        // reads it when it finalizes that frame's record one fence later. (Discarding it here was
+                        // the pre-P2 stale-suffix bug: a quiet frame's hitch line showed whichever frame's
+                        // histogram happened to still be lying around.)
+                        (_histDone, _hist) = (_hist, _histDone);
+                        _doneSeq = _curSeq; _doneTotal = _curTotal;
+                        _hist.Clear();
+                        _curSeq = seq; _curTotal = 0;
+                    }
                     _hist.TryGetValue(phase, out int v); _hist[phase] = v + 1;
                     _curTotal++;
                 }
@@ -1359,14 +1491,22 @@ internal sealed class PhaseWatchdog
         }
     }
 
-    /// <summary>The dominant sampled phase for the in-progress frame + how many of how many samples it won.
-    /// Called by the collector (which runs last in the frame, after the long part has elapsed).</summary>
-    public void SnapshotCurrent(out string? phase, out int samples, out int total)
+    /// <summary>The dominant sampled phase of the frame with sequence <paramref name="seq"/>, if the sampler
+    /// fired during that frame's fence→fence window. The collector asks when FINALIZING that frame's record (one
+    /// fence later), so the wanted histogram is either still "in progress" (nothing has sampled the next frame
+    /// yet) or the freshly retired one. Anything else ⇒ that frame never went over budget: fresh=false, and the
+    /// caller shows nothing instead of stale, misleading data.</summary>
+    public void SnapshotCompleted(long seq, out string? phase, out int samples, out int total, out bool fresh)
     {
         lock (_gate)
         {
-            phase = null; samples = 0; total = _curTotal;
-            foreach (KeyValuePair<string, int> kv in _hist)
+            Dictionary<string, int> src;
+            if (_curSeq == seq) { src = _hist; total = _curTotal; }
+            else if (_doneSeq == seq) { src = _histDone; total = _doneTotal; }
+            else { phase = null; samples = 0; total = 0; fresh = false; return; }
+
+            phase = null; samples = 0; fresh = true;
+            foreach (KeyValuePair<string, int> kv in src)
                 if (kv.Value > samples) { samples = kv.Value; phase = kv.Key; }
         }
     }
