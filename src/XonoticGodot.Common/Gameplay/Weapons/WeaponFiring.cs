@@ -331,9 +331,6 @@ public static class WeaponFiring
                 // carry the aim direction + the remaining segment end into the frame the trace ended in.
                 dir = QMath.Normalize(wzr.Transform.TransformDirection(dir));
                 end = wzr.Transform.TransformPoint(end);
-                if (Api.Services is not null && Api.Cvars.GetFloat("sv_warpzone_trace") != 0f)
-                    System.Console.WriteLine(
-                        $"[wzshot] bullet crossed={wzr.ZonesCrossed} hit='{hit?.ClassName ?? "-"}' end={cur}");
             }
 
             // [W1-weaponfire-fx] open-air tracer trail (QC fireBullet_trace_callback): sweep the trail from the

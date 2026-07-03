@@ -196,6 +196,9 @@ public partial class NadeOrbRenderer : Node3D
         if (_orbs.Count == 0)
             return;
 
+        // House rule: a new per-frame node ships with a Prof scope registered in FrameProfiler.TopLevelNodeScopes
+        // (else its time leaks into proc:other). Placed after the empty early-out so it costs nothing when idle.
+        using var _prof = FrameProfiler.Scope("nadeorbs");
         float now = Now();
 
         // Iterate over a snapshot since a removal could mutate the dictionary mid-loop.

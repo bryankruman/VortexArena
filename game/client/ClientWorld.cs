@@ -1366,7 +1366,6 @@ public partial class ClientWorld : Node3D
             if (IsItemEntity(e))
             {
                 float distAlpha = ItemDistanceAlpha(e, viewOrigin); // QC lines 144-158 base alpha
-                string cn = e.ClassName.ToLowerInvariant();
                 if (e.ItemExpiringFx)
                 {
                     DriveItemDespawnFx(e, node, st, distAlpha);
@@ -1377,7 +1376,7 @@ public partial class ClientWorld : Node3D
                     DriveItemGhostFx(node, st, distAlpha);
                     st.ItemFaded = true;
                 }
-                else if (cn.StartsWith("weapon_", System.StringComparison.Ordinal)
+                else if (e.ClassName.StartsWith("weapon_", System.StringComparison.OrdinalIgnoreCase)
                          && (e.Effects & CsqcModelEffectFlags.EF_STARDUST) != 0)
                 {
                     // QC ItemDraw weapon-stay branch (client/items/items.qc): a still-pickable g_weapon_stay
@@ -1738,22 +1737,34 @@ public partial class ClientWorld : Node3D
 
     private static bool IsProjectile(Entity e)
     {
-        string cn = e.ClassName.ToLowerInvariant();
+        // Compare classname/model case-insensitively WITHOUT allocating a lowercased+concatenated scratch string
+        // every frame — this runs per-entity per-frame in the CSQC render pass.
+        string cn = e.ClassName;
         // A pickup (item/weapon/ammo box, or dropped-loot "item") is NEVER a projectile — even though its MODEL
         // name carries a weapon stem (a_rockets.md3, g_crylink.md3, g_rl.md3, …) that the substring test below
         // would otherwise match, routing the pickup to the ProjectileRenderer instead of showing its model. The
         // server's NetEntityKind already separated them; this keeps the client render routing consistent.
-        if (cn == "item" || cn.StartsWith("item_") || cn.StartsWith("weapon_") || cn.StartsWith("ammo_"))
+        if (cn.Equals("item", System.StringComparison.OrdinalIgnoreCase)
+            || cn.StartsWith("item_", System.StringComparison.OrdinalIgnoreCase)
+            || cn.StartsWith("weapon_", System.StringComparison.OrdinalIgnoreCase)
+            || cn.StartsWith("ammo_", System.StringComparison.OrdinalIgnoreCase))
             return false;
-        string s = cn + " " + e.Model.ToLowerInvariant();
         // QC projectiles share these classname/model stems (the server also sends a projectile's classname+netname
-        // as its "model" so the catalog can type it); movetype FLY/TOSS/BOUNCE w/ owner is the deeper server test.
-        if (s.Contains("projectile") || s.Contains("rocket") || s.Contains("grenade") || s.Contains("nade")
-            || s.Contains("plasma") || s.Contains("electro") || s.Contains("crylink")
-            || s.Contains("hagar") || s.Contains("seeker") || s.Contains("fireball") || s.Contains("blaster")
-            || s.Contains("spike") || s.Contains("mine") || s.Contains("hook") || s.Contains("mortar")
-            || s.Contains("devastator") || s.Contains("arc") || s.Contains("porto") || s.Contains("vaporizer"))
-            return true;
+        // as its "model" so the catalog can type it). The old code concatenated classname+" "+model and substring-
+        // tested; a per-field scan is equivalent (the space separator never let a stem match across the seam) and
+        // allocation-free. (movetype FLY/TOSS/BOUNCE w/ owner is the deeper server test.)
+        return HasProjectileStem(cn) || HasProjectileStem(e.Model);
+    }
+
+    private static readonly string[] ProjectileStems =
+        { "projectile", "rocket", "grenade", "nade", "plasma", "electro", "crylink", "hagar", "seeker", "fireball",
+          "blaster", "spike", "mine", "hook", "mortar", "devastator", "arc", "porto", "vaporizer" };
+
+    private static bool HasProjectileStem(string s)
+    {
+        foreach (string stem in ProjectileStems)
+            if (s.Contains(stem, System.StringComparison.OrdinalIgnoreCase))
+                return true;
         return false;
     }
 

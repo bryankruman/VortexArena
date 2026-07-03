@@ -81,7 +81,10 @@ public partial class FrameProfiler : CanvasLayer
           "cev.process", "world.pvscull", "emitters", "clientmisc", "hud.trueaim",
           // (P4 2026-07-03) the warpzone portal pass — the _Process side of the per-portal SubViewport drive
           // (the actual exit-view render lands in rcpu/gpu, but the gate/frustum/resize work is process CPU).
-          "portal.render" };
+          "portal.render",
+          // (M2/M3) the newer client render nodes: nade-orb followers + dynamic-light spawns — scoped so their
+          // per-frame CPU is attributed instead of leaking into proc:other.
+          "nadeorbs", "dynlights" };
 
     /// <summary>
     /// Open a named timing scope: <c>using (FrameProfiler.Scope("name")) { ... }</c> (or as a one-statement

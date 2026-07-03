@@ -47,6 +47,13 @@ public partial class PortalRenderer : Node3D
 {
     private const int MaxPortals = 6; // cap the per-frame extra scene renders
 
+    // Cached shader-param names — hoisted out of the per-frame portal drive so the implicit string→StringName
+    // conversion (godot#105750, analyzer XG0002) doesn't allocate a StringName every frame per portal.
+    private static readonly StringName ParamPortalTex = "portal_tex";
+    private static readonly StringName ParamWzOff = "wz_off";
+    private static readonly StringName ParamWzDist = "wz_dist";
+    private static readonly StringName ParamWzTan = "wz_tan";
+
     /// <summary>Render layer 20 — portal window quads live here (in ADDITION to layer 1) so portal cameras can
     /// exclude them (no portal-in-portal feedback). The pocket DECOR nodes join the same layer. The main
     /// camera's default cull mask includes layer 20, so everything stays visible to the player.</summary>
@@ -490,7 +497,7 @@ public partial class PortalRenderer : Node3D
                     p.Viewport.Size = new Vector2I(bucket, bucket);
                     // Re-bind the render-target texture after the reallocation so the material never samples
                     // a stale RID.
-                    p.Material.SetShaderParameter("portal_tex", p.Viewport.GetTexture());
+                    p.Material.SetShaderParameter(ParamPortalTex, p.Viewport.GetTexture());
                 }
             }
 
@@ -500,9 +507,9 @@ public partial class PortalRenderer : Node3D
             p.Cam.SetPerspective(Mathf.RadToDeg(2f * Mathf.Atan(tan)), planeDist + 0.5f, main.Far);
 
             // Feed the projective mapping (see PortalShader): the window subrect of the exit image.
-            p.Material.SetShaderParameter("wz_off", offset);
-            p.Material.SetShaderParameter("wz_dist", planeDist);
-            p.Material.SetShaderParameter("wz_tan", new Vector2(tan, tan));
+            p.Material.SetShaderParameter(ParamWzOff, offset);
+            p.Material.SetShaderParameter(ParamWzDist, planeDist);
+            p.Material.SetShaderParameter(ParamWzTan, new Vector2(tan, tan));
         }
     }
 
