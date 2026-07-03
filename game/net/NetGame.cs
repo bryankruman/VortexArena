@@ -2944,13 +2944,14 @@ public sealed partial class NetGame : Node3D
                 // warpzone crossings at all (server.qc:150-170 networks the transform; the client rotates its
                 // own view ONCE) — this is the listen-host equivalent of that single-apply.
                 NVec3 fa = fixSelf.FixAngleAngles;
-                // The predicted layer OWNS warpzone view rotation (the zero-latency relative apply above); the
-                // authoritative stamp is a pure FALLBACK for crossings the predictor missed. During rapid seam
-                // ping-pong the server's stamp for crossing N lands AFTER the predictor already applied crossing
-                // N+1 — a value comparison then mistakes the stale stamp for a correction and yanks the view 90°
-                // (observed live). So: skip whenever ANY predicted apply happened within the window, regardless
-                // of value. Spawn/unpredicted-teleport snaps (no recent predicted apply) still land.
-                bool predictedSame = Time.GetTicksMsec() * 0.001f - _lastPredictedFixTime < 0.5f;
+                // The AUTHORITATIVE stamp drives warpzone view snaps (the predicted apply is disabled on the
+                // listen host — see the wz_predict_apply block above). Skip only when a predicted path (the
+                // teleporter snap) already applied this same facing recently — the round-3 known-good rule.
+                float yawDiff = Mathf.Abs(Mathf.RadToDeg(Mathf.AngleDifference(
+                    Mathf.DegToRad(fa.Y), Mathf.DegToRad(_lastPredictedFixAngles.Y))));
+                bool predictedSame = Time.GetTicksMsec() * 0.001f - _lastPredictedFixTime < 1f
+                    && yawDiff < 2f
+                    && Mathf.Abs(Mathf.Clamp(fa.X, -89f, 89f) - _lastPredictedFixAngles.X) < 2f;
                 if (!predictedSame)
                 {
                     _viewAngles.X = Mathf.Clamp(fa.X, -89f, 89f);
@@ -5372,11 +5373,16 @@ public sealed partial class NetGame : Node3D
         // apply the view rotation IMMEDIATELY and RELATIVELY — `view = T(view)`, Base's
         // `setproperty(VF_CL_VIEWANGLES, WarpZone_TransformVAngles(this, getpropertyvec(VF_CL_VIEWANGLES)))`
         // (lib/warpzone/client.qc:141) — and rotate the pending input ring (DP CL_RotateMoves, builtin #638)
-        // so post-warp reconcile replays use post-warp view angles. Waiting for the server's authoritative
-        // stamp instead left 1-3 render frames of pre-warp facing at the exit (the felt "camera jump" + a
-        // flash of the exit wall); the relative apply has zero latency, and the rotated ring kills the
-        // spurious partner re-crossings that made an immediate ABSOLUTE stamp unsafe before.
+        // so post-warp reconcile replays use post-warp view angles.
+        //
+        // DISABLED BY DEFAULT (wz_predict_apply 0): on the LISTEN HOST this proved counterproductive — the
+        // server's sim runs a tick behind the predictor, so the crossing tick's input reaches it carrying the
+        // ALREADY-ROTATED view (session-11 trace: every server crossing's entry angles == the post-apply view),
+        // double-rotating the server state and fighting the reconcile — worse than the 1-2 frame authoritative
+        // latency it was meant to hide. The infrastructure stays for the REMOTE-client path (where Base's
+        // CL_RotateMoves actually lives) behind the cvar for future work.
         if (_carrier is not null
+            && MenuState.Cvars.GetFloat("wz_predict_apply") != 0f
             && XonoticGodot.Engine.Simulation.TriggerTouch.LastPredictedWarpSeq > _consumedWarpSeq)
         {
             _consumedWarpSeq = XonoticGodot.Engine.Simulation.TriggerTouch.LastPredictedWarpSeq;
