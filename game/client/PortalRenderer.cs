@@ -87,11 +87,15 @@ public partial class PortalRenderer : Node3D
 
     /// <summary>The shared portal-window shader: unshaded, two-sided, samples the SubViewport at the fragment's
     /// MAIN-viewport screen UV so the surface shows exactly the slice of the exit view that lines up with where
-    /// the surface sits on screen (the standard planar-portal trick).</summary>
+    /// the surface sits on screen (the standard planar-portal trick). NO <c>source_color</c> hint: a 3D
+    /// SubViewport's texture holds LINEAR data (the sRGB encode happens only at the final screen blit), and the
+    /// hint would sRGB→linear decode it a SECOND time — darkening the whole exit view by ~gamma 2.2 (the
+    /// "portal renders but is super dark" report). Raw linear sample → ALBEDO (linear) → the main viewport
+    /// tonemaps once, exactly like the directly-rendered view.</summary>
     private const string PortalShader =
         "shader_type spatial;\n" +
         "render_mode unshaded, cull_disabled, depth_draw_opaque;\n" +
-        "uniform sampler2D portal_tex : source_color, filter_linear;\n" +
+        "uniform sampler2D portal_tex : filter_linear;\n" +
         "void fragment() {\n" +
         "    ALBEDO = texture(portal_tex, SCREEN_UV).rgb;\n" +
         "}\n";
