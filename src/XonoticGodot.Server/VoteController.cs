@@ -665,7 +665,11 @@ public sealed class VoteController
                 // QC: GetIndexedEntity + VerifyClientEntity, then pass the verbatim command through (vote.qc:796).
                 Player? victim = FindPlayer?.Invoke(ctx.Arg(startpos + 1));
                 if (victim is null) { parseError = $"vcall: no player matching \"{ctx.Arg(startpos + 1)}\"."; return 0; }
-                parsedCommand = command;
+                // Base has per-team server verbs (movetored/blue/…); the port consolidated them into a single
+                // `moveplayer <player> <dest>` command, so translate the voted verb's team suffix into it. Use the
+                // #index player form (not the name) so a NetName containing spaces can't re-tokenize on execution.
+                // Without this the passed vote ran a non-existent `movetored` command and silently did nothing.
+                parsedCommand = $"moveplayer #{victim.Index} {first["moveto".Length..]}";
                 parsedDisplay = $"^1{first} #{victim.Index} ^7{victim.NetName}";
                 return 1;
             }

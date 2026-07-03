@@ -97,6 +97,12 @@ public interface ICvarService
     string GetString(string name);
     void Set(string name, string value);
     void Register(string name, string defaultValue, CvarFlags flags = CvarFlags.None);
+
+    /// <summary>Whether this cvar exists (is registered) in the store — the QC engine's command-vs-cvar dispatch
+    /// check, used by the console/rcon cvar-set fallback so a whitelisted cvar-style vote (e.g. <c>fraglimit</c>)
+    /// actually applies. The live <see cref="CvarService"/> overrides this with a real registry-membership test;
+    /// this default (a non-empty effective value) suffices for the lightweight in-memory stores used by tests.</summary>
+    bool Has(string name) => !string.IsNullOrEmpty(GetString(name));
 }
 
 // Mirrors QuakeC's CH_* constants (common/sounds/sound.qh) + Darkplaces' channel model (sound.h): a NEGATIVE

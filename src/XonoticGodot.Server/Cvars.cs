@@ -628,6 +628,10 @@ public static class Cvars
     /// <summary>QC <c>autocvar_NAME</c> as a string ("" if unset). Equivalent to <c>cvar_string(name)</c>.</summary>
     public static string String(string name) => Api.Services is not null ? Api.Cvars.GetString(name) : "";
 
+    /// <summary>Does this cvar exist in the live table? (QC the engine's command-vs-cvar dispatch check —
+    /// used by the console/rcon cvar-set fallback so a whitelisted cvar-style vote actually applies).</summary>
+    public static bool Has(string name) => Api.Services is not null && Api.Cvars.Has(name);
+
     /// <summary>QC <c>cvar(name) != 0</c> — the common bool-cvar idiom.</summary>
     public static bool Bool(string name) => Float(name) != 0f;
 

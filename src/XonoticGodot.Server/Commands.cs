@@ -662,6 +662,19 @@ public sealed class Commands
             try { cmd.Handler(ctx); }
             catch (Exception ex) { ctx.Print($"command '{argv[0]}' failed: {ex.Message}"); }
         }
+        else if (isServerConsole && Cvars.Has(argv[0]))
+        {
+            // QC/DarkPlaces Cmd_ExecuteString fallthrough: a token that is not a registered command but names a
+            // cvar reads it (no value given) or sets it (value given). Restricted to the trusted console / rcon /
+            // vote-execution path (isServerConsole) — a remote client naming a cvar was already rejected above as
+            // a non-client-callable verb, so this can't become an arbitrary client cvar-set. This is what makes
+            // cvar-style votes actually apply: `fraglimit`/`timelimit` (and admin-added cvar votes) are in the
+            // default sv_vote_commands whitelist, and a passed vote runs through here as `<cvar> <value>`.
+            if (ctx.ArgCount >= 2)
+                Cvars.Set(argv[0], ctx.ArgTail(1));
+            else
+                ctx.Print($"\"{argv[0]}\" is \"{Cvars.String(argv[0])}\"");
+        }
         else
         {
             ctx.Print($"Unknown command \"{argv[0]}\"");
@@ -1462,7 +1475,7 @@ public sealed class Commands
     private bool CmdMovePlayer(CommandContext ctx)
     {
         if (ctx.ArgCount < 3) { ctx.Print("usage: moveplayer <player> <red|blue|yellow|pink|auto|spec>"); return true; }
-        Player? target = FindPlayerByName(ctx.Arg(1));
+        Player? target = FindPlayerByNameOrId(ctx.Arg(1)); // accept "#<index>" (the moveto* vote form) as well as a name
         if (target is null) { ctx.Print($"no player matching \"{ctx.Arg(1)}\""); return true; }
         string dest = ctx.Arg(2).ToLowerInvariant();
         if (dest is "spec" or "spectator" or "spectate")
