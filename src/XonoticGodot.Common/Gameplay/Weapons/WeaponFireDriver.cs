@@ -64,9 +64,10 @@ public static class WeaponFireDriver
         // the offhand-weapon think runs this tick — the grapple hook, the offhand blaster, and the nade
         // prime/throw all read Entity.OffhandFirePressed from their PlayerPreThink hook (the headless analogue of
         // the engine offhand_think dispatch). QC gates the key on `!actor.vehicle` and weaponUseForbidden; the
-        // seated case is already excluded by the caller (WeaponThink returns while p.Vehicle != null), and the
-        // forbidden gate below zeroes it alongside the fire buttons.
-        player.OffhandFirePressed = input?.ButtonHook ?? false;
+        // forbidden gate below zeroes it alongside the fire buttons. The caller (WeaponThink) already returns while
+        // seated, but honor the `!actor.vehicle` gate explicitly here too so this PostThink write can never leave a
+        // stale un-gated press for a future seated consumer (matching the authoritative publish in OnClientMove).
+        player.OffhandFirePressed = player.Vehicle is null && (input?.ButtonHook ?? false);
 
         // QC W_WeaponFrame: weaponUseForbidden(actor) zeroes the fire buttons (round active-but-not-started OR
         // the ForbidWeaponUse mutator hook) but still allows weapon switching. The round_handler / Forbid

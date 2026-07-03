@@ -17,6 +17,12 @@ namespace XonoticGodot.Common.Gameplay;
 /// NOTE: handlers return <c>bool</c>. For "forbid"/"return-true" QC hooks (ForbidThrowCurrentWeapon,
 /// PlayerRegen, PlayerJump...) a <c>true</c> return models QC's <c>return true</c> (the hook bus ORs
 /// returns together, mirroring CALLHOOK's "any handler returned true" semantics).
+///
+/// NOTE (dispatch/liveness): a chain is LIVE only when a matching <c>Fire*</c> wrapper is invoked on a
+/// production path. Some chains are declared here for QC-parity completeness AHEAD of the subsystem that will
+/// drive them (e.g. several turret / vehicle / monster events whose server or client-render side is not fully
+/// ported yet), so a mutator subscribing to one of those is inert until that subsystem's <c>Fire*</c> site
+/// lands. Before relying on a chain, grep for its <c>Fire*</c> — no <c>Fire*</c> caller ⇒ not yet dispatched.
 /// </summary>
 public static class MutatorHooks
 {

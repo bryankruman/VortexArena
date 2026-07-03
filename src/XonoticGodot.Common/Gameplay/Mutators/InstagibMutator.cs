@@ -446,6 +446,11 @@ public sealed class InstagibMutator : MutatorBase
             || (item.Pickup is not null && item.Pickup.NetName == "extralife"))
             OnExtraLifeTouch(toucher);
 
+        // Deliberately CONTINUE (false), NOT OnExtraLifeTouch's "granted" bool: this port's ItemTouch hook is
+        // BINARY — ItemPickupRules.FireItemTouch treats true as MUT_ITEMTOUCH_RETURN, which ABORTS the pickup and
+        // leaves the item in the world. ExtraLife has no normal give path (ItemId=None), so the base pickup is what
+        // REMOVES the item; returning true here would strand it → repeatable ExtraLife (infinite lives). Base's
+        // MUT_ITEMTOUCH_PICKUP "consumed-and-removed" distinction has no equivalent in the binary port hook yet.
         return false;
     }
 
