@@ -2847,6 +2847,11 @@ public sealed class GameWorld
         // Clear CA's join-refused hook so a gametype switch away from CA doesn't leave mid-round join
         // notifications firing for the new mode (mirrors the GametypeJoinGate/GametypeOnJoin clears below).
         Clients.GametypeOnJoinRefused = null;
+        // Drop any prior gametype's live round handler (QC: a fresh gametype activation starts with no round_handler
+        // — only a round-based mode's EnableRounds below re-creates it). Without this, switching from a round mode to
+        // a self-managed one (Invasion/KeyHunt/Assault/LMS) on the same world (a campaign level change) would leave
+        // the stale handler ticking (spurious ResetMap / fire-gate), since the round block only guards `Rounds != null`.
+        Rounds = null;
         // Clear the round-grace weapon-fire block (QC round_handler_IsActive => round_handler != NULL): only a
         // round-based gametype's EnableRounds re-installs it, so a non-round mode never forbids fire.
         WeaponFireDriver.RoundFireForbidden = null;
@@ -2978,7 +2983,10 @@ public sealed class GameWorld
                 kh.Activate();
                 kh.SetRoster(Clients.Players);               // KH spawns keys onto roster members at round start
                 Scores.TeamScoreSource = kh.GetTeamScore;
-                EnableRounds();                              // KH is round-based
+                // KH self-manages its rounds via its own kh_controller phase machine (WaitingForPlayers → Countdown
+                // → InProgress, driven by kh.Tick), NOT a generic round handler. Do NOT call EnableRounds(): the
+                // generic DefaultCanRoundStart/End (≥2 players / ≤1 team-alive) don't match KH (continuous respawns,
+                // key-based scoring), and the generic OnRoundReset/fire-gate would fight KH's own phase machine.
                 break;
             case FreezeTag ft:
                 ft.Activate();
@@ -3009,7 +3017,22 @@ public sealed class GameWorld
                 break;
             case Onslaught ons:
                 ons.Activate();
-                EnableRounds();                              // Onslaught rounds end on generator destruction
+                // Onslaught owns a Common round handler (ons.Handler) with the REAL generator-destruction end
+                // predicate (+ the 5→7 end-delay bump). Drive the LIVE server handler off those real predicates
+                // instead of the generic DefaultCanRoundEnd (≤1 team-alive) — which spuriously reset the map on any
+                // transient team-wipe — and mirror the live timing back into ons.Handler (what IsInOvertime reads),
+                // exactly like Survival. ons.Tick no longer ticks ons.Handler, so CheckWinner/BankRoundWin (the
+                // CanRoundEnd side effects) run once per frame off the single live handler.
+                {
+                    RoundHandler onsRounds = EnableRounds(
+                        ons.CanRoundStartLive,
+                        ons.CanRoundEndLive,
+                        onRoundStart: null,
+                        endDelay: 5f,
+                        countdown: Cvars.FloatOr("g_onslaught_warmup", 5f),
+                        roundTimeLimit: Cvars.FloatOr("g_onslaught_round_timelimit", 500f));
+                    _roundSync = () => MirrorRoundTiming(onsRounds, ons.Handler);
+                }
                 break;
             case TeamKeepaway tka:
                 tka.Activate();
@@ -3159,7 +3182,12 @@ public sealed class GameWorld
                 break;
             case Invasion inv:
                 inv.Activate();
-                EnableRounds();
+                // Invasion (co-op, FFA) self-drives its OWN round handler (inv.Handler, ticked by inv.Tick) off the
+                // real Invasion_CheckPlayers/CheckWinner/RoundStart predicates — waves advance by clearing monsters,
+                // deliberately WITHOUT a map reset. Do NOT call EnableRounds(): the generic handler's
+                // DefaultCanRoundStart needs ≥2 players (so a solo co-op round never started → weapon fire stayed
+                // blocked the whole match), DefaultCanRoundEnd is degenerate for FFA (Teams.Active(0) is empty → true
+                // every frame), and its OnRoundReset would wrongly reset the map on every wave.
                 // QC sv_invasion.qc Send_Notification(NOTIF_ALL, ...): the gametype decides WHAT to send
                 // (round over / round winner / supermonster arrival); the host wires those to the live
                 // broadcast NotificationSystem (the MSG_CENTER/MSG_INFO routing). Without this the decisions

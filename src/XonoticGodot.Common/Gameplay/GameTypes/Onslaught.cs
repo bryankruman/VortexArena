@@ -222,14 +222,18 @@ public sealed class Onslaught : GameType
     }
 
     /// <summary>
-    /// Advance the Onslaught round handler one frame (QC round_handler_Think) AND drive the overtime
-    /// generator-decay (QC the stalemate branch of Onslaught_CheckWinner): once the timelimit / round end-time
-    /// elapses, every generator self-damages each second (scaled by the enemy-linked control-point count) until
-    /// one falls. Call each tick.
+    /// Drive the overtime generator-decay (QC the stalemate branch of Onslaught_CheckWinner): once the timelimit /
+    /// round end-time elapses, every generator self-damages each second (scaled by the enemy-linked control-point
+    /// count) until one falls. Call each tick.
     /// </summary>
+    /// <remarks>
+    /// The round handler itself (<see cref="Handler"/>) is NOT ticked here: the host drives the LIVE server round
+    /// handler off <see cref="CanRoundStartLive"/>/<see cref="CanRoundEndLive"/> (GameWorld.EnableRounds) and mirrors
+    /// its timing back into <see cref="Handler"/> each frame, so <see cref="Handler"/> is a passive mirror (matching
+    /// Survival). Ticking it here too would double-invoke <see cref="CanRoundEndOns"/> → CheckWinner/BankRoundWin.
+    /// </remarks>
     public void Tick()
     {
-        Handler?.Tick();
         DriveOvertime();
     }
 
