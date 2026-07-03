@@ -12,20 +12,19 @@ namespace XonoticGodot.Game.Client;
 /// (Base renders <c>dpcamera</c> surfaces with a <c>setcamera_transform</c> callback + a true oblique clip at
 /// the exit plane; Godot has neither, so we use a <see cref="SubViewport"/> per portal window).
 ///
-/// <para><b>Technique: the window-anchored off-axis frustum</b> (the classic planar-portal/mirror method —
-/// strictly better here than the screen-UV "warped clone" this replaced). Per frame, the portal camera is
-/// positioned at the WARP-TRANSFORMED main-camera eye (correct parallax), but its ORIENTATION is fixed
-/// perpendicular to the exit plane, and <see cref="Camera3D.SetFrustum"/> pins the frustum's near rectangle to
-/// be EXACTLY the exit window:</para>
+/// <para><b>Technique: window-anchored PERSPECTIVE camera + projective UV sampling.</b> Per frame the portal
+/// camera sits at the WARP-TRANSFORMED main-camera eye (correct parallax) with its orientation FIXED along the
+/// exit plane's normal, and a symmetric perspective cone sized to cover the window:</para>
 /// <list type="bullet">
-///   <item>the near plane lies ON the portal plane → a true oblique-equivalent clip: nothing behind or beside
-///   the exit plane (wall pockets, the map exterior, other rooms) can pollute the view at ANY angle/distance —
-///   the failure of the previous screen-UV approach, whose warped camera drifted outside the map shell and
-///   whose perpendicular near plane provably could not exclude the pocket at grazing angles;</item>
-///   <item>the rendered image maps 1:1 onto the window rectangle, so the quad samples it by its own in-plane
-///   position (no screen-UV alignment/aspect coupling with the main viewport at all);</item>
-///   <item>the frustum tightly bounds the through-window volume — the SubViewport renders only what can
-///   actually be seen through the portal (cheaper than a full warped view).</item>
+///   <item>because the view axis IS the plane normal, <c>near = planeDist + 0.5</c> clips the plane-coincident
+///   wall face (warpzone surfaces are painted on solid walls) and everything nearer — the oblique-equivalent
+///   clip, without <c>Camera3D.SetFrustum</c>: Godot's FRUSTUM projection never rendered small-AABB instances
+///   (items/players) here and its light culler rejected the matrices outright ("prepare_camera" spam);</item>
+///   <item>the window is an off-center subrect of the image — the quad maps each fragment's in-plane position
+///   through the exit projection (<c>wz_off/wz_dist/wz_tan</c> uniforms), no screen-UV coupling at all;</item>
+///   <item>the render target stays SQUARE and only re-sizes on the (rare) adaptive-resolution bucket change:
+///   frequent SubViewport resizes while its texture is bound in a live material corrupt the renderer
+///   ("uninitialized RID" storm → BLIT_PASS segfault, observed live).</item>
 /// </list>
 ///
 /// <para>Windows come from <see cref="MapLoader.BuildPortalSurfaces"/> (only true <c>dpcamera</c> shaders; the
@@ -258,7 +257,9 @@ public partial class PortalRenderer : Node3D
 
             // Render-target size: fixed height, width from the WINDOW's aspect (the frustum near rect is the
             // window, so the image aspect must match the window, not the screen).
-            var size = new Vector2I(Mathf.Clamp(Mathf.RoundToInt(384f * halfR / halfU), 8, 2048), 384);
+            // SQUARE render target (the perspective exit camera uses a symmetric cone; a square target never
+            // needs aspect-driven resizes — see the per-frame block for why resizes must stay rare).
+            var size = new Vector2I(384, 384);
 
             var vp = new SubViewport
             {
@@ -461,16 +462,20 @@ public partial class PortalRenderer : Node3D
             // the same oblique-equivalent clip the frustum mode had, without FRUSTUM projection's broken
             // small-instance culling (items/players never rendered; the light culler rejected sheared matrices
             // with "prepare_camera" spam).
-            float tanY = (Mathf.Abs(offset.Y) + p.HalfU) * 1.04f / planeDist;
-            float tanX = (Mathf.Abs(offset.X) + p.HalfR) * 1.04f / planeDist;
-            // Clamp the half-angles (grazing views otherwise explode toward 180°); the window stays covered
+            // SYMMETRIC square cone that covers the window in BOTH axes: tan = the larger requirement. The
+            // render target stays SQUARE so the per-frame aspect changes never resize it — repeatedly resizing
+            // a SubViewport whose texture is bound in a live material corrupts the renderer ("uninitialized
+            // RID" storm → BLIT_PASS segfault, observed live). Slight over-render on the narrow axis is the
+            // price of a stable target.
+            float tan = Mathf.Max(
+                (Mathf.Abs(offset.Y) + p.HalfU) * 1.04f / planeDist,
+                (Mathf.Abs(offset.X) + p.HalfR) * 1.04f / planeDist);
+            // Clamp the half-angle (grazing views otherwise explode toward 180°); the window stays covered
             // because the facing/shear guard already freezes the viewport in the final approach.
-            tanY = Mathf.Min(tanY, 10f);
-            tanX = Mathf.Min(tanX, 10f);
+            tan = Mathf.Min(tan, 10f);
 
-            // ADAPTIVE RESOLUTION: height ≈ the window's projected on-screen pixel size (sharp close, cheap
-            // far), width from the exit camera's aspect (tanX/tanY — the image must cover the horizontal cone).
-            // Quantized with a cooldown so the render target isn't reallocated every frame.
+            // ADAPTIVE RESOLUTION: ≈ the window's projected on-screen pixel size (sharp close, cheap far),
+            // quantized to 128px buckets with a cooldown — resizes are RARE (bucket changes only).
             if (GetViewport() is { } mvp)
             {
                 float screenH = mvp.GetVisibleRect().Size.Y;
@@ -478,26 +483,26 @@ public partial class PortalRenderer : Node3D
                     / (2f * Mathf.Tan(Mathf.DegToRad(main.Fov) * 0.5f));
                 float resScale = PortalResolutionScale();
                 int bucket = Mathf.Clamp(Mathf.CeilToInt(projPx * resScale / 128f), 1, 8) * 128;
-                int wantW = Mathf.Clamp(Mathf.RoundToInt(bucket * tanX / tanY), 8, 2048);
                 float nowR = Time.GetTicksMsec() * 0.001f;
-                if ((bucket != p.Viewport.Size.Y || Mathf.Abs(wantW - p.Viewport.Size.X) > 96) && nowR >= p.NextResizeOk)
+                if (bucket != p.Viewport.Size.Y && nowR >= p.NextResizeOk)
                 {
                     p.NextResizeOk = nowR + 0.3f;
-                    p.Viewport.Size = new Vector2I(wantW, bucket);
+                    p.Viewport.Size = new Vector2I(bucket, bucket);
+                    // Re-bind the render-target texture after the reallocation so the material never samples
+                    // a stale RID.
+                    p.Material.SetShaderParameter("portal_tex", p.Viewport.GetTexture());
                 }
             }
 
             p.Cam.GlobalBasis = p.ExitBasisG;
             p.Cam.GlobalPosition = Coords.ToGodot(pPos);
-            // KeepAspect=Height (default): the horizontal fov follows the viewport aspect, which the resize
-            // above pins to tanX/tanY — so the rendered cone matches the shader's wz_tan mapping.
-            p.Cam.SetPerspective(Mathf.RadToDeg(2f * Mathf.Atan(tanY)), planeDist + 0.5f, main.Far);
+            // Square viewport → aspect 1 → the horizontal fov equals the vertical (KeepAspect irrelevant).
+            p.Cam.SetPerspective(Mathf.RadToDeg(2f * Mathf.Atan(tan)), planeDist + 0.5f, main.Far);
 
             // Feed the projective mapping (see PortalShader): the window subrect of the exit image.
-            float aspectNow = p.Viewport.Size.Y > 0 ? (float)p.Viewport.Size.X / p.Viewport.Size.Y : 1f;
             p.Material.SetShaderParameter("wz_off", offset);
             p.Material.SetShaderParameter("wz_dist", planeDist);
-            p.Material.SetShaderParameter("wz_tan", new Vector2(tanY * aspectNow, tanY));
+            p.Material.SetShaderParameter("wz_tan", new Vector2(tan, tan));
         }
     }
 
