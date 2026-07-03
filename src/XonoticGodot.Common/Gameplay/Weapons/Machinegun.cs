@@ -396,7 +396,7 @@ public sealed class Machinegun : Weapon
         WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.CurrentMaxShotDistance, damage,
             RegistryId, spread, Cvars.SolidPenetration, force: force, tracerEffect: "BULLET", deathTag: deathTag);
         Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.CurrentMaxShotDistance;
-        TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
+        TraceResult impTr = WeaponFiring.HitscanImpactTrace(actor, shot.Origin, impEnd).Trace; // [T45] warpzone-aware: impact FX land on the far side of a portal
         // QC: w_backoff * 1000 = the impact surface normal (trace_plane_normal), falling back to -force_dir when
         // no surface was hit. impTr.PlaneNormal IS that surface normal — far more faithful than -shot.Dir for
         // angled hits (the impact sprays off the wall, not straight back at the shooter).

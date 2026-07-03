@@ -274,4 +274,41 @@ public class WarpzoneTraceTests
             public void SetAttachment(Entity e, Entity parent, string tagName) { }
         }
     }
+
+    // ---- real data: a shot THROUGH stormkeep's actual warpzone (the live "attacks don't work" report) --------
+
+    [Fact]
+    public void Stormkeep_HitscanTrace_CrossesTheRealWarpzone()
+    {
+        const string dataDir = @"C:\Users\Bryan\Projects\Xonotic\XonoticGodot\assets\data";
+        if (!System.IO.Directory.Exists(dataDir)) return;
+        using var vfs = new XonoticGodot.Formats.Vfs.VirtualFileSystem();
+        if (!vfs.MountGameDir(dataDir)) return;
+        string? path = System.Linq.Enumerable.FirstOrDefault(
+            vfs.Find("maps/", "bsp"), p => p.Contains("stormkeep"));
+        if (path is null) return;   // map not in this checkout — skip
+
+        XonoticGodot.Formats.Bsp.BspData bsp = XonoticGodot.Formats.Bsp.BspReader.Read(vfs.ReadBytes(path));
+        var trace = new XonoticGodot.Engine.Collision.TraceService(
+            XonoticGodot.Engine.Collision.BspCollisionBuilder.Build(bsp).World);
+
+        // The REAL zone pair (BSP ground truth, entities *5/*6): A's window plane at (1216,208,32) facing +Y
+        // (the room north of it), B's at (-592,224,80) facing -X (the room west of it). POJO zones (no trigger
+        // edict, Api.Services null) use the plane-slab bounds — the same 128x128 window either way.
+        var mgr = new WarpzoneManager();
+        mgr.Spawn(new Vector3(1216, 208, 32), new Vector3(0, 90, 0), "wzA", "wzB",
+            new Vector3(-64, -64, -64), new Vector3(64, 64, 64));
+        mgr.Spawn(new Vector3(-592, 224, 80), new Vector3(0, 180, 0), "wzB", "wzA",
+            new Vector3(-64, -64, -64), new Vector3(64, 64, 64));
+        mgr.Link();
+
+        // A shot fired from the room straight into A's window must CROSS the zone and continue in B's frame —
+        // the live report was hitscan stopping at the window like a wall.
+        WarpzoneTraceResult r = WarpzoneTrace.TraceWarpzone(trace, mgr,
+            new Vector3(1216, 400, 32), Vector3.Zero, Vector3.Zero, new Vector3(1216, -400, 32),
+            MoveFilter.Normal, null);
+
+        Assert.True(r.ZonesCrossed >= 1, $"the shot must cross the zone (crossed={r.ZonesCrossed}, end={r.Trace.EndPos})");
+        Assert.True(r.Trace.EndPos.X < -580f, $"the shot must continue on B's side, ended at {r.Trace.EndPos}");
+    }
 }

@@ -228,7 +228,9 @@ public sealed class Vaporizer : Weapon
         // impact effect/sound, and the Rocket-Minsta sky/noimpact explosion gate (QC trace_endpos / trace_
         // dphitq3surfaceflags after FireRailgunBullet). FireRailgunBullet pierces players, so a fresh world
         // trace gives the wall endpoint the beam actually stopped at.
-        TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, end, MoveFilter.WorldOnly, actor);
+        // [T45] warpzone-aware: the beam splits at a portal and the impact FX land on the far side.
+        WarpzoneTraceResult impW = WeaponFiring.HitscanImpactTrace(actor, shot.Origin, end);
+        TraceResult impTr = impW.Trace;
         Vector3 endpos = impTr.EndPos;
 
         // QC vaporizer.qc:156-157: the cylindric rail beam (gauntletbeam on a hit, lgbeam otherwise) + muzzle
@@ -245,7 +247,16 @@ public sealed class Vaporizer : Weapon
         Vector3 beamRgb = beamTeamColor ? Teams.ColorRgb((int)actor.Team) : Color;
         beamRgb *= 1f + (Api.Services is null ? 0.7f : Api.Cvars.GetFloat("cl_vaporizerbeam_colorboost")); // colorboost 0.7
         var beam = Effects.ByName(hit is not null ? "VAPORIZER_BEAM_HIT" : "VAPORIZER_BEAM");
-        EffectEmitter.Emit(beam, shot.Origin, endpos, 0, beamRgb, beamRgb, except: null);
+        if (impW.ZonesCrossed > 0)
+        {
+            // Two beam segments through the portal (Base WarpZone_TrailParticles semantics).
+            EffectEmitter.Emit(beam, shot.Origin, impW.FirstCrossPoint, 0, beamRgb, beamRgb, except: null);
+            EffectEmitter.Emit(beam, impW.FirstExitPoint, endpos, 0, beamRgb, beamRgb, except: null);
+        }
+        else
+        {
+            EffectEmitter.Emit(beam, shot.Origin, endpos, 0, beamRgb, beamRgb, except: null);
+        }
         EffectEmitter.Emit("VORTEX_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
 
         // QC vaporizer.qc:407-413 wr_impacteffect: EFFECT_VORTEX_IMPACT + SND_VAPORIZER_IMPACT (neximpact) at

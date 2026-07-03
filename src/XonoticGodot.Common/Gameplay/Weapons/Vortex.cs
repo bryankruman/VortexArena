@@ -368,8 +368,20 @@ public sealed class Vortex : Weapon
         // W_DecreaseAmmo(thiswep, actor, WEP_CVAR_BOTH(ammo)) — clip/resource via the shared helper.
         DecreaseAmmo(actor, slot, isSecondary ? Cvars.SecondaryAmmo : Cvars.Ammo);
 
-        TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, end, MoveFilter.WorldOnly, actor);
-        EmitBeam(actor, shot.Origin, impTr.EndPos, charge);
+        // [T45] Warpzone-aware impact/beam (Base WarpZone_TrailParticles): the beam draws THROUGH a portal as
+        // two segments and the impact burst/sound land on the FAR side — a plain trace made the rail visibly
+        // "hit the window" while the damage crossed.
+        WarpzoneTraceResult impW = WeaponFiring.HitscanImpactTrace(actor, shot.Origin, end);
+        TraceResult impTr = impW.Trace;
+        if (impW.ZonesCrossed > 0)
+        {
+            EmitBeam(actor, shot.Origin, impW.FirstCrossPoint, charge);      // muzzle → the portal window
+            EmitBeam(actor, impW.FirstExitPoint, impTr.EndPos, charge);      // exit window → the far impact
+        }
+        else
+        {
+            EmitBeam(actor, shot.Origin, impTr.EndPos, charge);
+        }
         WeaponSplash.ImpactSoundAt(impTr.EndPos, "weapons/neximpact.wav"); // QC SND_VORTEX_IMPACT (wr_impacteffect)
         // QC vortex wr_impacteffect: boxparticles(EFFECT_VORTEX_IMPACT, .., '0 0 0', '0 0 0', 1, ..) — the impact
         // burst carries NO inherited velocity (its own velocityjitter/sizeincrease do the work).

@@ -102,11 +102,20 @@ public readonly struct WarpzoneTraceResult
     /// <summary>How many portals the trace crossed (0 for a plain trace; capped at the 16-zone guard).</summary>
     public readonly int ZonesCrossed;
 
-    public WarpzoneTraceResult(TraceResult trace, WarpzoneTransformChain transform, int zonesCrossed)
+    /// <summary>The FIRST crossing's entry point (in the trace's START frame) and exit point (in the frame past
+    /// that first portal) — valid when <see cref="ZonesCrossed"/> &gt; 0. Lets a caller draw a beam/tracer as
+    /// two correct segments (near side up to the portal, far side from the exit) instead of one wrong straight
+    /// line whose ends live in different frames.</summary>
+    public readonly Vector3 FirstCrossPoint, FirstExitPoint;
+
+    public WarpzoneTraceResult(TraceResult trace, WarpzoneTransformChain transform, int zonesCrossed,
+        Vector3 firstCrossPoint = default, Vector3 firstExitPoint = default)
     {
         Trace = trace;
         Transform = transform;
         ZonesCrossed = zonesCrossed;
+        FirstCrossPoint = firstCrossPoint;
+        FirstExitPoint = firstExitPoint;
     }
 }
 
@@ -183,6 +192,7 @@ public static class WarpzoneTrace
         Vector3 segEnd = end;
         Warpzone? lastZone = null;
         int crossed = 0;
+        Vector3 firstCross = default, firstExit = default;
 
         // QC's `i = 16` loop: each iteration sweeps one segment; on a portal crossing it warps and re-sweeps.
         TraceResult tr = trace.Trace(segStart, mins, maxs, segEnd, filter, ignore);
@@ -204,6 +214,11 @@ public static class WarpzoneTrace
             lastZone = wz;
 
             Vector3 exitPoint = wz.Transform.TransformOrigin(crossPoint);
+            if (crossed == 1)
+            {
+                firstCross = crossPoint;   // start-frame entry point (for two-segment beam/tracer draws)
+                firstExit = exitPoint;
+            }
             segEnd = wz.Transform.TransformOrigin(segEnd);
             // Nudge just past the exit plane so the next sweep doesn't immediately re-detect the same crossing
             // (QC steps back a bit with a 32qu trace; the port nudges along the post-warp direction).
@@ -213,7 +228,7 @@ public static class WarpzoneTrace
             tr = trace.Trace(segStart, mins, maxs, segEnd, filter, ignore);
         }
 
-        return new WarpzoneTraceResult(tr, chain, crossed);
+        return new WarpzoneTraceResult(tr, chain, crossed, firstCross, firstExit);
     }
 
     /// <summary>

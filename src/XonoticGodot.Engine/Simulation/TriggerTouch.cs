@@ -202,6 +202,20 @@ public static class TriggerTouch
     /// </summary>
     public static int PredictedWarpBudget = int.MaxValue;
 
+    /// <summary>The input-command sequence currently being stepped by the prediction (set per tick by
+    /// EntityMovementStep from <c>cmd.Seq</c>). Keys the one-shot warp pulse below: a reconcile REPLAY of the
+    /// same crossing re-records the same seq, so the host's consume (<c>&gt;</c> compare) fires exactly once
+    /// per real crossing.</summary>
+    public static uint PredictionSeq;
+
+    /// <summary>One-shot pulse of the newest PREDICTED warpzone crossing: the command seq it happened on and
+    /// the zone's transform. The host consumes it (NetGame) to apply the VIEW rotation immediately —
+    /// <c>view = T(view)</c>, Base's <c>setproperty(VF_CL_VIEWANGLES, WarpZone_TransformVAngles(...))</c> —
+    /// and to rotate the pending input ring (DP <c>CL_RotateMoves</c>), which keeps post-warp replays
+    /// consistent and kills the spurious partner re-crossings at the root.</summary>
+    public static uint LastPredictedWarpSeq;
+    public static XonoticGodot.Common.Gameplay.WarpzoneTransform LastPredictedWarpTransform;
+
     public static void PredictWarpzonesAmbient(Entity mover)
     {
         if (Api.Services is null || mover.IsFreed)
@@ -263,6 +277,13 @@ public static class TriggerTouch
             // reads as a "dip/step" at every crossing. LastTeleportTime is the same bookkeeping the authoritative
             // teleport stamps (QC .lastteleporttime); the host's smoothing consumes it one-shot.
             mover.LastTeleportTime = XonoticGodot.Common.Gameplay.MapMover.Now();
+            // The seq-keyed WARP PULSE (see the field docs): the host applies the view rotation + rotates the
+            // pending input ring exactly once per real crossing (replays re-record the same seq — no re-fire).
+            if (PredictionSeq > LastPredictedWarpSeq)
+            {
+                LastPredictedWarpSeq = PredictionSeq;
+                LastPredictedWarpTransform = t;
+            }
             PredictedWarpBudget--; // consume this frame's predicted crossing (see the field doc)
             return; // one warp per tick — the mover has moved off this (fixed) overlap box
         }

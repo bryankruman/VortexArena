@@ -118,7 +118,7 @@ public sealed class OkShotgun : Weapon
             // QC wr_impacteffect (okshotgun.qc:103-113): EFFECT_SHOTGUN_IMPACT puff + the 5%/0.25s-throttled
             // SND_RIC_RANDOM ricochet (the seam owns the throttle so a 10-pellet blast yields at most one ric).
             Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.CurrentMaxShotDistance;
-            TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
+            TraceResult impTr = WeaponFiring.HitscanImpactTrace(actor, shot.Origin, impEnd).Trace; // [T45] warpzone-aware: impact FX land on the far side of a portal
             Vector3 backoff = impTr.PlaneNormal.LengthSquared() > 1e-6f ? impTr.PlaneNormal : -shot.Dir;
             // QC wr_impacteffect guards the ricochet with !w_issilent — suppress the puff+ric on a sky/miss hit,
             // matching the okmachinegun/okhmg impact path.

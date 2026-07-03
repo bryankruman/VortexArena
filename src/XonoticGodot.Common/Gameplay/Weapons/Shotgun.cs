@@ -237,7 +237,7 @@ public sealed class Shotgun : Weapon
             WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.CurrentMaxShotDistance, Primary.Damage,
                 deathType, Primary.Spread, Primary.SolidPenetration, force: Primary.Force);
             Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.CurrentMaxShotDistance;
-            TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
+            TraceResult impTr = WeaponFiring.HitscanImpactTrace(actor, shot.Origin, impEnd).Trace; // [T45] warpzone-aware: impact FX land on the far side of a portal
             // w_backoff = the impact surface normal (trace_plane_normal), -force_dir fallback when no hit.
             Vector3 backoff = impTr.PlaneNormal.LengthSquared() > 1e-6f ? impTr.PlaneNormal : -shot.Dir;
             // QC wr_impacteffect (CSQC shotgun.qc:400-410): EFFECT_SHOTGUN_IMPACT at w_org + w_backoff*2 plus

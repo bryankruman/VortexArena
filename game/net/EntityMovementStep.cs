@@ -45,6 +45,10 @@ public sealed class EntityMovementStep : IMovementStep
         // local player crosses a teleporter — which is when NetGame snaps the view (one-shot, replay-safe).
         _carrier.FixAngle = false;
 
+        // Key the predictors' one-shot pulses by this command's sequence (see TriggerTouch.PredictionSeq): a
+        // reconcile REPLAY re-runs the same seq, so a seq-keyed pulse fires exactly once per real crossing.
+        XonoticGodot.Engine.Simulation.TriggerTouch.PredictionSeq = cmd.Seq;
+
         // build the per-tick movement input from the command (the same conversion the server applies).
         InputButtons b = cmd.TypedButtons;
         // The InputCommand carries the wish-move normalized to ±1 (see NetGame.SampleInput); the move code must

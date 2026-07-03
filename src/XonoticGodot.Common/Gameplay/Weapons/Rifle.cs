@@ -339,7 +339,7 @@ public sealed class Rifle : Weapon
                 bal.Damage, deathType, bal.Spread, bal.SolidPenetration, force: bal.Force,
                 headshotMultiplier: bal.HeadshotMultiplier, tracerEffect: tracerEffect, deathTag: deathTag);
             Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.CurrentMaxShotDistance;
-            TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
+            TraceResult impTr = WeaponFiring.HitscanImpactTrace(actor, shot.Origin, impEnd).Trace; // [T45] warpzone-aware: impact FX land on the far side of a portal
             // w_backoff = the impact surface normal (trace_plane_normal), -force_dir fallback when no hit.
             Vector3 backoff = impTr.PlaneNormal.LengthSquared() > 1e-6f ? impTr.PlaneNormal : -shot.Dir;
             // wr_impacteffect (rifle.qc:213-218): EFFECT_RIFLE_IMPACT puff + a random ricochet ping (CH_SHOTS).

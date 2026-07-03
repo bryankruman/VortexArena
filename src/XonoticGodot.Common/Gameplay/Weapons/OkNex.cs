@@ -202,7 +202,9 @@ public sealed class OkNex : Weapon
         // flash (EFFECT_VORTEX_MUZZLEFLASH) + the beam-impact puff (wr_impacteffect EFFECT_VORTEX_IMPACT) and the
         // SND_OK_NEX_IMPACT (neximpact) ping at the surface the beam hit.
         Vector3 beamEnd = shot.Origin + shot.Dir * WeaponFiring.CurrentMaxShotDistance;
-        TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, beamEnd, MoveFilter.WorldOnly, actor);
+        // [T45] warpzone-aware: the beam splits at a portal and the impact FX land on the far side.
+        WarpzoneTraceResult impW = WeaponFiring.HitscanImpactTrace(actor, shot.Origin, beamEnd);
+        TraceResult impTr = impW.Trace;
         bool silent = (impTr.DpHitQ3SurfaceFlags & WeaponFiring.Q3SurfaceFlagSky) != 0 || impTr.Fraction >= 1f;
         if (!silent)
         {
@@ -218,7 +220,16 @@ public sealed class OkNex : Weapon
         // subsystem, oknex.charge); the un-charged beam keeps its native nex_beam colour, matching the Vortex's
         // default-path emit.
         bool oldBeam = Api.Services is not null && Api.Cvars.GetFloat("cl_particles_oldvortexbeam") != 0f;
-        EffectEmitter.Emit(oldBeam ? "VORTEX_BEAM_OLD" : "VORTEX_BEAM", shot.Origin, impTr.EndPos, 0);
+        string okBeam = oldBeam ? "VORTEX_BEAM_OLD" : "VORTEX_BEAM";
+        if (impW.ZonesCrossed > 0)
+        {
+            EffectEmitter.Emit(okBeam, shot.Origin, impW.FirstCrossPoint, 0);   // muzzle -> the portal window
+            EffectEmitter.Emit(okBeam, impW.FirstExitPoint, impTr.EndPos, 0);   // exit window -> the far impact
+        }
+        else
+        {
+            EffectEmitter.Emit(okBeam, shot.Origin, impTr.EndPos, 0);
+        }
 
         // W_DecreaseAmmo(thiswep, actor, ammo) — clip-aware (WEP_FLAG_RELOADABLE): drains the magazine so the
         // wr_think forced-reload branch (clip_load < ammo) engages. oknex.qc:108 (ammo) + :157-162 (reload).

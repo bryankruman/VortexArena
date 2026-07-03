@@ -1192,6 +1192,11 @@ public sealed partial class NetGame : Node3D
         e.Mins = HullMins;
         e.Maxs = HullMaxs;
         e.ViewOfs = new NVec3(0f, 0f, EyeHeight);
+        // Fresh carrier = fresh input-sequence space (seqs restart per connection): reset the seq-keyed
+        // predicted-warp pulse or a stale high seq from the previous match would gate it shut forever.
+        XonoticGodot.Engine.Simulation.TriggerTouch.PredictionSeq = 0;
+        XonoticGodot.Engine.Simulation.TriggerTouch.LastPredictedWarpSeq = 0;
+        _consumedWarpSeq = 0;
         return e;
         }
         finally
@@ -5361,6 +5366,34 @@ public sealed partial class NetGame : Node3D
     /// </summary>
     private void ConsumePredictedFixAngle()
     {
+        // PREDICTED WARPZONE CROSSING (the seq-keyed one-shot pulse — see TriggerTouch.LastPredictedWarpSeq):
+        // apply the view rotation IMMEDIATELY and RELATIVELY — `view = T(view)`, Base's
+        // `setproperty(VF_CL_VIEWANGLES, WarpZone_TransformVAngles(this, getpropertyvec(VF_CL_VIEWANGLES)))`
+        // (lib/warpzone/client.qc:141) — and rotate the pending input ring (DP CL_RotateMoves, builtin #638)
+        // so post-warp reconcile replays use post-warp view angles. Waiting for the server's authoritative
+        // stamp instead left 1-3 render frames of pre-warp facing at the exit (the felt "camera jump" + a
+        // flash of the exit wall); the relative apply has zero latency, and the rotated ring kills the
+        // spurious partner re-crossings that made an immediate ABSOLUTE stamp unsafe before.
+        if (_carrier is not null
+            && XonoticGodot.Engine.Simulation.TriggerTouch.LastPredictedWarpSeq > _consumedWarpSeq)
+        {
+            _consumedWarpSeq = XonoticGodot.Engine.Simulation.TriggerTouch.LastPredictedWarpSeq;
+            Common.Gameplay.WarpzoneTransform wt = XonoticGodot.Engine.Simulation.TriggerTouch.LastPredictedWarpTransform;
+            _viewAngles = wt.TransformAngles(_viewAngles);
+            _viewAngles.X = Mathf.Clamp(_viewAngles.X, -89f, 89f);
+            _client.RotatePendingMoves(a => wt.TransformAngles(a));
+            float nowW = Time.GetTicksMsec() * 0.001f;
+            // Arm the same guards the (now mostly redundant) fixangle paths use: the server's authoritative
+            // stamp for this crossing recognises the applied facing and skips; late replay echoes discard.
+            _lastPredictedFixAngles = _viewAngles;
+            _lastPredictedFixTime = nowW;
+            _lastFixApplyTime = nowW;
+            if (MenuState.Cvars.GetFloat("sv_warpzone_trace") != 0f)
+                GD.Print($"[wzview] predicted warp apply -> {_viewAngles} (ring rotated)");
+            if (_viewModel is not null && GodotObject.IsInstanceValid(_viewModel))
+                _viewModel.NotifyTeleported();
+        }
+
         if (_carrier is not null && _carrier.FixAngle)
         {
             float now = Time.GetTicksMsec() * 0.001f;
@@ -5410,6 +5443,9 @@ public sealed partial class NetGame : Node3D
     // One-shot consumption cursor for the carrier's LastTeleportTime pulse (the predicted-warpzone teleport
     // signal the view smoothing snaps on — see the faithfulSmoothing block).
     private float _lastSmoothedTeleportTime = -1f;
+
+    // One-shot consumption cursor for the predicted-warp view pulse (TriggerTouch.LastPredictedWarpSeq).
+    private uint _consumedWarpSeq;
 
     /// <summary>
     /// Per-render-frame local fire prediction + feedback, decoupled from the 1/72 s input cadence. With

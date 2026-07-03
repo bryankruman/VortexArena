@@ -208,6 +208,13 @@ public sealed class ClientNet : IDisposable
     /// gate the airborne snap on vertical speed and scale the catch-up so a fast climb doesn't yank the camera.
     /// Cheap (a few field writes); call once per render frame so live cvar edits take effect immediately.
     /// </summary>
+    /// <summary>DP <c>CL_RotateMoves</c> (builtin #638): rotate the view angles of every UNACKED pending input
+    /// command by a warpzone crossing's transform, so post-warp reconcile replays use post-warp view angles
+    /// (see <see cref="PredictionBuffer.RotatePendingViewAngles"/>). Called by the host the frame the predicted
+    /// crossing happens, together with the client-side view rotation.</summary>
+    public void RotatePendingMoves(System.Func<System.Numerics.Vector3, System.Numerics.Vector3> rotate)
+        => _inputBuffer.RotatePendingViewAngles(rotate);
+
     public void ConfigureStairSmoothing(float smoothSpeed, float stepHeight, float snapSpeed, float catchupTime)
     {
         if (smoothSpeed <= 0f)

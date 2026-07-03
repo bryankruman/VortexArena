@@ -331,13 +331,30 @@ public static class WeaponFiring
                 // carry the aim direction + the remaining segment end into the frame the trace ended in.
                 dir = QMath.Normalize(wzr.Transform.TransformDirection(dir));
                 end = wzr.Transform.TransformPoint(end);
+                if (Api.Services is not null && Api.Cvars.GetFloat("sv_warpzone_trace") != 0f)
+                    System.Console.WriteLine(
+                        $"[wzshot] bullet crossed={wzr.ZonesCrossed} hit='{hit?.ClassName ?? "-"}' end={cur}");
             }
 
             // [W1-weaponfire-fx] open-air tracer trail (QC fireBullet_trace_callback): sweep the trail from the
             // segment start to the impact, but only when the segment is long enough (>16u) so a point-blank shot
-            // doesn't draw a degenerate zero-length tracer.
-            if (tracer is not null && (cur - segStart).Length() > 16f)
-                EffectEmitter.EmitTrail(tracer, segStart, cur);
+            // doesn't draw a degenerate zero-length tracer. A portal crossing draws TWO correct segments — the
+            // near side up to the portal, the far side from its exit (QC's per-sub-trace callback does the same
+            // naturally) — instead of one line whose endpoints live in different frames.
+            if (tracer is not null)
+            {
+                if (wzr.ZonesCrossed > 0)
+                {
+                    if ((wzr.FirstCrossPoint - segStart).Length() > 16f)
+                        EffectEmitter.EmitTrail(tracer, segStart, wzr.FirstCrossPoint);
+                    if ((cur - wzr.FirstExitPoint).Length() > 16f)
+                        EffectEmitter.EmitTrail(tracer, wzr.FirstExitPoint, cur);
+                }
+                else if ((cur - segStart).Length() > 16f)
+                {
+                    EffectEmitter.EmitTrail(tracer, segStart, cur);
+                }
+            }
 
             if (tr.Fraction >= 1f) break;                          // hit nothing -> done
             if ((tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagSky) != 0) break; // sky stops the bullet
@@ -590,6 +607,18 @@ public static class WeaponFiring
         /// <summary>QC casingtype 1 — the larger shotgun shell.</summary>
         Shell = 1,
     }
+
+    /// <summary>
+    /// [T45] Warpzone-aware WORLD-impact resolve for hitscan VISUALS: Base draws rail beams/tracers THROUGH
+    /// zones (WarpZone_TrailParticles) and its impact effects land on the far side, because the wr_impacteffect
+    /// endpoint comes from the warpzone-following trace. Every hitscan weapon's impact/beam previously used a
+    /// PLAIN world trace here, so shooting into a portal visibly "hit the window" (beam stopped + impact burst
+    /// + ricochet ON the glass) even while the damage crossed — the "attacks don't work through the warpzone"
+    /// report. Impact FX/sound belong at <c>result.Trace.EndPos</c>; a beam draws start→<c>FirstCrossPoint</c>
+    /// then <c>FirstExitPoint</c>→EndPos when <c>ZonesCrossed &gt; 0</c> (one straight segment otherwise).
+    /// </summary>
+    public static WarpzoneTraceResult HitscanImpactTrace(Entity? actor, Vector3 start, Vector3 end)
+        => Api.Trace.TraceLineWarpzone(start, end, MoveFilter.WorldOnly, actor);
 
     /// <summary>
     /// Shared bullet-impact FX + ricochet audio (W1-weaponfire-fx) — the C# successor to each bullet weapon's
