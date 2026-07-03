@@ -99,6 +99,10 @@ public sealed class ServerNet : IDisposable
     // and "relevant again" into a spawn against THIS client's baseline, exactly like DP's per-client entity frame.
     private readonly Dictionary<int, (NVec3 Min, NVec3 Max)> _entityBounds = new();
     private readonly Dictionary<int, NetEntityState> _relevantScratch = new();
+
+    // Per-recipient viewpoint clusters for the PVS entity cull: the viewer's own cluster plus the exit cluster
+    // of every linked warpzone whose window the viewer can see (see RelevantEntitiesFor's warpzone union).
+    private readonly List<int> _viewClustersScratch = new();
     // Memoized "<classname> <netname>" catalog keys for model-less projectiles so BuildEntitySet doesn't
     // allocate a fresh interpolated string per projectile per tick-frame (3.2-4). Keyed by (classname, netname)
     // — both stable per projectile — so the set of distinct entries is tiny (one per projectile type).
@@ -2415,6 +2419,30 @@ public sealed class ServerNet : IDisposable
                 havePvsCull = false; // eye in solid / outside the tree → conservatively send all (no PVS cull)
         }
 
+        // [warpzone] Cluster UNION through visible portals: if the recipient can see a linked warpzone's window,
+        // everything at its EXIT is on-screen through the portal — Base networks csqc items with NO PVS gate
+        // (ItemSend) and DP's culling never blocks the warpzone view, so a per-client PVS cull that ignores
+        // portals makes far-side items/players/projectiles VANISH from the through-portal view (the live
+        // "can't see items through the warpzone" report). Zone windows are static; two FindLeaf calls per
+        // linked zone per recipient per snapshot are negligible.
+        _viewClustersScratch.Clear();
+        if (havePvsCull)
+        {
+            _viewClustersScratch.Add(viewerCluster);
+            IReadOnlyList<XonoticGodot.Common.Gameplay.Warpzone> zones = _world.Warpzones.Zones;
+            for (int zi = 0; zi < zones.Count; zi++)
+            {
+                XonoticGodot.Common.Gameplay.Warpzone wz = zones[zi];
+                if (!wz.Linked) continue;
+                NVec3 inP = wz.Transform.InOrigin + wz.Transform.InForward * 8f;
+                int inC = pvs!.LeafCluster(pvs.FindLeaf(inP));
+                if (inC < 0 || !pvs.ClustersVisible(viewerCluster, inC)) continue;
+                NVec3 outP = wz.Transform.OutOrigin + wz.Transform.OutForward * 8f;
+                int outC = pvs.LeafCluster(pvs.FindLeaf(outP));
+                if (outC >= 0 && !_viewClustersScratch.Contains(outC)) _viewClustersScratch.Add(outC);
+            }
+        }
+
         // Privacy still applies even with PVS culling off, so if neither now narrows the set, take the fast path.
         if (!havePvsCull && !applyPrivacy)
             return _entityScratch;
@@ -2427,11 +2455,17 @@ public sealed class ServerNet : IDisposable
             bool isOwn = kv.Key == ownNetId;
 
             // PVS cull: never cull the recipient's own entity (EncodeSnapshot excludes it anyway); keep anything
-            // whose bounds touch a cluster the recipient can see.
+            // whose bounds touch a cluster the recipient can see — DIRECTLY or THROUGH a visible portal (the
+            // warpzone cluster union above).
             if (havePvsCull && !isOwn
-                && _entityBounds.TryGetValue(kv.Key, out (NVec3 Min, NVec3 Max) b)
-                && !pvs!.BoxAnyClusterVisibleFrom(viewerCluster, b.Min, b.Max))
-                continue; // out of PVS → drop (delta turns it into a removal)
+                && _entityBounds.TryGetValue(kv.Key, out (NVec3 Min, NVec3 Max) b))
+            {
+                bool anyVisible = false;
+                for (int vc = 0; vc < _viewClustersScratch.Count && !anyVisible; vc++)
+                    anyVisible = pvs!.BoxAnyClusterVisibleFrom(_viewClustersScratch[vc], b.Min, b.Max);
+                if (!anyVisible)
+                    continue; // out of PVS (incl. through portals) → drop (delta turns it into a removal)
+            }
 
             NetEntityState state = kv.Value;
 
