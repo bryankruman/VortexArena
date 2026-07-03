@@ -103,6 +103,14 @@ public sealed class BuffsMutator : MutatorBase
         MutatorHooks.PlayerUseKey.Add(_onUseKey);
         MutatorHooks.FilterItem.Add(_onFilterItem);
 
+        // Wire the buff-specific removal cleanup onto the buff status-effect defs so it runs on EVERY removal path
+        // — timed expiry (StatusEffects.Tick → Remove(Timeout)) and death (RemoveAll), not just the explicit
+        // buff_RemoveAll (pickup/drop) path. Without this the ammo buff's IT_UNLIMITED_AMMO bit and the flight
+        // buff's gravity (a crouch-toggled Gravity = -1, which has no spawn-time reset) leaked past the buff's
+        // lifetime (parity: each buff's m_remove side effect). Cleared in Unhook.
+        if (StatusEffectsCatalog.ByName("buff_ammo") is { } ammoDef) ammoDef.OnRemove = OnBuffAmmoRemove;
+        if (StatusEffectsCatalog.ByName("buff_flight") is { } flightDef) flightDef.OnRemove = OnBuffFlightRemove;
+
         if (Api.Services is not null)
         {
             R(ref _resistanceBlock, "g_buffs_resistance_blockpercent");
@@ -156,6 +164,10 @@ public sealed class BuffsMutator : MutatorBase
         if (_onForbidThrow is not null) MutatorHooks.ForbidThrowCurrentWeapon.Remove(_onForbidThrow);
         if (_onUseKey is not null) MutatorHooks.PlayerUseKey.Remove(_onUseKey);
         if (_onFilterItem is not null) MutatorHooks.FilterItem.Remove(_onFilterItem);
+        // Detach the buff-removal cleanup (mirrors the Hook wiring) so a deactivated Buffs mutator doesn't leave a
+        // handler bound on the shared status-effect defs.
+        if (StatusEffectsCatalog.ByName("buff_ammo") is { } ammoDef && ammoDef.OnRemove == OnBuffAmmoRemove) ammoDef.OnRemove = null;
+        if (StatusEffectsCatalog.ByName("buff_flight") is { } flightDef && flightDef.OnRemove == OnBuffFlightRemove) flightDef.OnRemove = null;
     }
 
     private static void R(ref float field, string cvar)
@@ -652,35 +664,41 @@ public sealed class BuffsMutator : MutatorBase
         StatusEffectsCatalog.Apply(actor, buff, duration);
     }
 
-    // void buff_RemoveAll(actor) — strip every buff and run the per-buff cleanup, then set the pickup delay.
+    // void buff_RemoveAll(actor) — strip every buff, then set the pickup delay. The per-buff m_remove side effects
+    // (ammo bit / clip loads, flight gravity) now live in each buff def's OnRemove (wired in Hook), so they run on
+    // EVERY removal path via StatusEffectsCatalog.Remove — here, on timed expiry, and on death — not just here.
     private void RemoveAllBuffs(Entity actor)
     {
         foreach (var d in StatusEffectsCatalog.All)
         {
             if (!d.IsBuff || !StatusEffectsCatalog.Has(actor, d)) continue;
-            string n = ShortName(d);
-
-            if (n == "ammo")
-            {
-                actor.Items = BitSet(actor.Items, ItUnlimitedAmmo, actor.BuffAmmoPrevInfItems);
-                RestoreAmmoClips(actor); // QC AmmoBuff.m_remove: put back the pre-buff clip loads
-            }
-            if (n == "flight")
-            {
-                // QC FlightBuff.m_remove: if the player is still standing in a gravity zone, restore THAT zone's
-                // gravity (trigger_gravity_check.enemy.gravity); otherwise restore the saved pre-buff gravity.
-                actor.Gravity = actor.GravityCheck?.Enemy is { } zone
-                    ? zone.Gravity
-                    : actor.BuffFlightOldGravity;
-                actor.BuffFlightOldGravity = 0f;
-            }
-
-            StatusEffectsCatalog.Remove(actor, d);
+            StatusEffectsCatalog.Remove(actor, d);   // fires OnBuffAmmoRemove / OnBuffFlightRemove
         }
-        actor.BuffAmmoPrevInfItems = false;
         actor.Effects &= ~EffectFlags.NoShadow;
         if (Api.Services is not null)
             actor.BuffShield = Api.Clock.Time + MathF.Max(0f, _pickupDelay);
+    }
+
+    // QC AmmoBuff.m_remove: restore the pre-buff unlimited-ammo bit + the saved clip loads. Wired onto the
+    // buff_ammo def so it runs on ANY removal (timed expiry / death / explicit strip); without it the
+    // IT_UNLIMITED_AMMO bit leaked for the rest of the player's life (bounded only by the next respawn's item wipe).
+    private static void OnBuffAmmoRemove(Entity actor, ActiveStatusEffect _, StatusEffectRemoval __)
+    {
+        actor.Items = BitSet(actor.Items, ItUnlimitedAmmo, actor.BuffAmmoPrevInfItems);
+        RestoreAmmoClips(actor);
+        actor.BuffAmmoPrevInfItems = false;
+    }
+
+    // QC FlightBuff.m_remove: if the player is still standing in a gravity zone, restore THAT zone's gravity
+    // (trigger_gravity_check.enemy.gravity); otherwise restore the saved pre-buff gravity. Wired onto the
+    // buff_flight def so it runs on timed expiry / death too — without it a crouch-toggled Gravity = -1 persisted
+    // across the respawn (there is no spawn-time gravity reset), leaving the player floating upward.
+    private static void OnBuffFlightRemove(Entity actor, ActiveStatusEffect _, StatusEffectRemoval __)
+    {
+        actor.Gravity = actor.GravityCheck?.Enemy is { } zone
+            ? zone.Gravity
+            : actor.BuffFlightOldGravity;
+        actor.BuffFlightOldGravity = 0f;
     }
 
     private static StatusEffectDef? HeldBuff(Entity actor)
