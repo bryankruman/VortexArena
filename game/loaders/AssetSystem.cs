@@ -534,6 +534,18 @@ public sealed class AssetSystem
     /// </summary>
     private static void EnsureMipmaps(string vpath, Image image)
     {
+        // A decode that failed under memory pressure (Godot's alloc_static returning null on a full disk / OOM)
+        // can hand back a non-null Image whose pixel buffer never allocated; Godot's NATIVE GenerateMipmaps then
+        // dereferences that empty buffer and hard-SIGSEGVs the whole process (observed: a 100%-full disk → pagefile
+        // exhaustion → alloc_static null → segfault here). Skip an empty image — this also covers a truncated /
+        // corrupt asset that decoded to nothing. NOTE: this cannot save an OOM that fails INSIDE GenerateMipmaps'
+        // own mip-chain allocation; a native segfault is uncatchable from managed code — freeing memory/disk is the
+        // only remedy for that.
+        if (image.IsEmpty())
+        {
+            GD.PrintErr($"[AssetSystem] '{vpath}': image has no pixel data (decode likely failed — low memory/disk?); skipping mipmaps.");
+            return;
+        }
         if (image.HasMipmaps() || image.IsCompressed())
             return;
         int slash = vpath.LastIndexOf('/');
