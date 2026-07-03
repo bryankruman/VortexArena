@@ -2847,13 +2847,10 @@ public sealed class GameWorld
         // Clear CA's join-refused hook so a gametype switch away from CA doesn't leave mid-round join
         // notifications firing for the new mode (mirrors the GametypeJoinGate/GametypeOnJoin clears below).
         Clients.GametypeOnJoinRefused = null;
-        // Drop any prior gametype's live round handler (QC: a fresh gametype activation starts with no round_handler
-        // — only a round-based mode's EnableRounds below re-creates it). Without this, switching from a round mode to
-        // a self-managed one (Invasion/KeyHunt/Assault/LMS) on the same world (a campaign level change) would leave
-        // the stale handler ticking (spurious ResetMap / fire-gate), since the round block only guards `Rounds != null`.
-        Rounds = null;
         // Clear the round-grace weapon-fire block (QC round_handler_IsActive => round_handler != NULL): only a
-        // round-based gametype's EnableRounds re-installs it, so a non-round mode never forbids fire.
+        // round-based gametype's EnableRounds re-installs it, so a non-round mode never forbids fire. (This is a
+        // PROCESS-WIDE static, so it leaks across the fresh GameWorld each match/level boots — unlike the instance
+        // `Rounds` handler, which is already null on a fresh world and so needs no reset here.)
         WeaponFireDriver.RoundFireForbidden = null;
         // Clear the dom-roundbased movement-freeze block (QC player_blocked): only the Domination roundbased arm
         // below re-installs it; all other modes leave it null so players are never movement-frozen.
