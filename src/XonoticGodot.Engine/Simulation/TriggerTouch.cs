@@ -257,6 +257,12 @@ public static class TriggerTouch
             // traced crossing and lands within 1-3 render frames — Base's model too: the server drives the view
             // change and the client never independently invents one (server.qc:150-170). Teleporters, whose
             // destination is static and un-replayable-into, keep their predicted snap (PredictTeleportsAmbient).
+            //
+            // The TELEPORT PULSE stays, though: the view smoothing (stair/eye-height glide) must SNAP across the
+            // seam, not smooth it — the paired windows sit at different heights, and gliding the Z difference
+            // reads as a "dip/step" at every crossing. LastTeleportTime is the same bookkeeping the authoritative
+            // teleport stamps (QC .lastteleporttime); the host's smoothing consumes it one-shot.
+            mover.LastTeleportTime = XonoticGodot.Common.Gameplay.MapMover.Now();
             PredictedWarpBudget--; // consume this frame's predicted crossing (see the field doc)
             return; // one warp per tick — the mover has moved off this (fixed) overlap box
         }

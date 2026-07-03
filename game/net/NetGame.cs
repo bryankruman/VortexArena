@@ -5407,6 +5407,10 @@ public sealed partial class NetGame : Node3D
     // The last APPLIED fixangle of either kind (wall-clock seconds) — the replay-echo discard window's anchor.
     private float _lastFixApplyTime = -1f;
 
+    // One-shot consumption cursor for the carrier's LastTeleportTime pulse (the predicted-warpzone teleport
+    // signal the view smoothing snaps on — see the faithfulSmoothing block).
+    private float _lastSmoothedTeleportTime = -1f;
+
     /// <summary>
     /// Per-render-frame local fire prediction + feedback, decoupled from the 1/72 s input cadence. With
     /// cl_predictfire (default on) a client-side REFIRE CLOCK fires the view-model muzzle flash + a local fire
@@ -5791,9 +5795,18 @@ public sealed partial class NetGame : Node3D
             _faithfulSmoothing.SmoothViewHeight = CvarOr(cv, "cl_smoothviewheight", 0.05f);
             _faithfulSmoothing.StepHeight = CvarOr(cv, "sv_stepheight", 31f);
             bool onground = _carrier?.OnGround ?? true;
-            // A teleport this tick (carrier .fixangle, set by the predicted teleport pass) snaps the glide instead
-            // of smoothing the cross-map jump — QC csqcmodel_teleped does the same.
+            // A teleport this tick snaps the glide instead of smoothing the cross-map jump — QC csqcmodel_teleported
+            // does the same. Two signals: the carrier .fixangle (predicted trigger_teleport pass) and the
+            // LastTeleportTime pulse (the predicted WARPZONE crossing, which deliberately does not stamp fixangle
+            // — see PredictWarpzonesAmbient; without this pulse the stair smoother glides the height difference
+            // between the paired windows and every crossing reads as a dip/step).
             bool teleported = _carrier?.FixAngle ?? false;
+            if (_carrier is not null && _carrier.LastTeleportTime != _lastSmoothedTeleportTime)
+            {
+                _lastSmoothedTeleportTime = _carrier.LastTeleportTime;
+                if (_carrier.LastTeleportTime > 0f)
+                    teleported = true;
+            }
             XonoticGodot.Net.FaithfulViewSmoothing.Result r =
                 _faithfulSmoothing.Apply(predicted.Z, dt, onground, eyeOfsZ, teleported);
             predicted.Z = r.StairZ;

@@ -76,6 +76,7 @@ public partial class PortalRenderer : Node3D
         public float HalfR, HalfU;            // window half-extents along OutRight/OutUp (world units)
         public NVec3 ExitViewQuake;           // exit window center +8qu out — the PVS-union viewpoint
         public Basis ExitBasisG;              // precomputed Godot camera basis (fixed per portal)
+        public float NextResizeOk;            // adaptive-resolution hysteresis clock (wall seconds)
     }
 
     private readonly List<Portal> _portals = new();
@@ -136,13 +137,15 @@ public partial class PortalRenderer : Node3D
     /// <summary>The portal-window shader: unshaded, two-sided, samples the exit image by the fragment's
     /// IN-PLANE position on the window rectangle (the frustum's near rect IS the exit window, so the texture
     /// maps 1:1 — no screen-UV coupling). The horizontal axis mirrors through the seam (the warp maps
-    /// inRight → −outRight), folded into the U formula. NO <c>source_color</c> hint: a 3D SubViewport's texture
-    /// holds LINEAR data (sRGB encode happens only at the final screen blit); the hint would decode a second
-    /// time and darken everything by ~gamma 2.2.</summary>
+    /// inRight → −outRight), folded into the U formula. <c>source_color</c> IS required: the SubViewport's
+    /// render target stores tonemapped, sRGB-ENCODED data — the hint's sRGB→linear decode plus the main
+    /// viewport's re-encode is the identity round trip. Sampling raw double-encodes and washes the exit view
+    /// out too bright (user-verified both ways; the earlier "too dark" that prompted removing the hint was
+    /// actually the opaque blueedge rim covering the window).</summary>
     private const string PortalShader =
         "shader_type spatial;\n" +
         "render_mode unshaded, cull_disabled, depth_draw_opaque;\n" +
-        "uniform sampler2D portal_tex : filter_linear;\n" +
+        "uniform sampler2D portal_tex : source_color, filter_linear;\n" +
         "uniform vec3 wz_center;\n" +   // entry window center (Godot world)
         "uniform vec3 wz_right;\n" +    // entry plane right (unit, Godot world)
         "uniform vec3 wz_up;\n" +       // entry plane up (unit, Godot world)
@@ -304,6 +307,18 @@ public partial class PortalRenderer : Node3D
         return string.IsNullOrWhiteSpace(s) || Api.Cvars.GetFloat("cl_portal_render") != 0f;
     }
 
+    /// <summary><c>cl_portal_resolution</c> — scale on the adaptive portal render resolution (default/unset 1.0;
+    /// 0.5 = half detail for weak GPUs, 2 = supersample). Clamped to a sane range.</summary>
+    private static float PortalResolutionScale()
+    {
+        if (Api.Services is null)
+            return 1f;
+        string s = Api.Cvars.GetString("cl_portal_resolution");
+        if (string.IsNullOrWhiteSpace(s))
+            return 1f;
+        return Mathf.Clamp(Api.Cvars.GetFloat("cl_portal_resolution"), 0.25f, 2f);
+    }
+
     public override void _ExitTree()
     {
         // Drop the published exit viewpoints with the renderer (a stale entry would feed the NEXT map's PVS
@@ -399,6 +414,26 @@ public partial class PortalRenderer : Node3D
             var offset = new Vector2(
                 NVec3.Dot(p.ExitCenterQ - pPos, p.OutRightQ),
                 NVec3.Dot(p.ExitCenterQ - pPos, p.OutUpQ));
+
+            // ADAPTIVE RESOLUTION: render the exit view at (roughly) the window's projected on-screen pixel
+            // height — sharp when the player is close, cheap when it is far. planeDist doubles as the viewer's
+            // distance to the ENTRY window (rotations preserve it). Quantized to 128px buckets with a cooldown so
+            // the render target isn't reallocated every frame, scaled by cl_portal_resolution (default 1).
+            if (GetViewport() is { } mvp)
+            {
+                float screenH = mvp.GetVisibleRect().Size.Y;
+                float projPx = screenH * (2f * p.HalfU / planeDist)
+                    / (2f * Mathf.Tan(Mathf.DegToRad(main.Fov) * 0.5f));
+                float resScale = PortalResolutionScale();
+                int bucket = Mathf.Clamp(Mathf.CeilToInt(projPx * resScale / 128f), 1, 8) * 128;
+                float nowR = Time.GetTicksMsec() * 0.001f;
+                if (bucket != p.Viewport.Size.Y && nowR >= p.NextResizeOk)
+                {
+                    p.NextResizeOk = nowR + 0.3f;
+                    p.Viewport.Size = new Vector2I(
+                        Mathf.Clamp(Mathf.RoundToInt(bucket * p.HalfR / p.HalfU), 8, 2048), bucket);
+                }
+            }
 
             // The frustum's ray cone is defined by the WINDOW rectangle at planeDist. The actual clip plane sits
             // a hair PAST the exit plane (the warpzone surface is painted on a SOLID wall — a world face is
