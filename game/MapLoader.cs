@@ -462,7 +462,21 @@ public static class MapLoader
             // Decor keeps its authored (potentially lightmapped) look; the window gets the placeholder that the
             // PortalRenderer material override replaces.
             PackSurface(mesh, sb, lightmapped: decor && acc.Lm >= 0, withTangents: false, withColor: false);
-            mesh.SurfaceSetMaterial(0, ResolveSurfaceMaterial(bsp, assets, new SurfaceKey(tex, acc.Lm), mapName, deluxe));
+            Material decorMat = ResolveSurfaceMaterial(bsp, assets, new SurfaceKey(tex, acc.Lm), mapName, deluxe);
+            // The blueedge/rededge RIM is an ADDITIVE glow decal (Q3 `blendfunc GL_SRC_ALPHA GL_ONE`) sitting a
+            // hair IN FRONT of the window plane, spanning the whole window. When its blend is lost it compiles
+            // to an OPAQUE StandardMaterial3D — a solid near-black quad that covers the portal entirely (THE
+            // original "portal shows black" — it predates the portal renderer). Re-impose the authored additive
+            // blend on the standard-material fallback path.
+            if (decor && decorMat is StandardMaterial3D std
+                && (bsp.Textures[tex].ShaderName ?? "").Replace('\\', '/').ToLowerInvariant().Contains("edge"))
+            {
+                std.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+                std.BlendMode = BaseMaterial3D.BlendModeEnum.Add;
+                std.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
+                std.CullMode = BaseMaterial3D.CullModeEnum.Disabled;
+            }
+            mesh.SurfaceSetMaterial(0, decorMat);
 
             NVec3 planeN = acc.NSum.LengthSquared() > 1e-9f ? NVec3.Normalize(acc.NSum) : new NVec3(0f, 0f, 1f);
             NVec3 planeO = acc.OSum / MathF.Max(1, acc.N);

@@ -29,6 +29,11 @@ public readonly struct WarpzoneTransform
     public Vector3 OutOrigin => _outOrigin;
     public Vector3 InForward => _inFwd;
     public Vector3 OutForward => _outFwd;
+    /// <summary>The plane in-plane bases (right/up), for anchoring a window-aligned portal frustum + its quad UVs.</summary>
+    public Vector3 InRight => _inRight;
+    public Vector3 InUp => _inUp;
+    public Vector3 OutRight => _outRight;
+    public Vector3 OutUp => _outUp;
 
     /// <summary>
     /// QC <c>WarpZone_SetUp(e, my_org, my_ang, other_org, other_ang)</c>: build the transform from the IN plane

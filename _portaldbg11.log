@@ -1,0 +1,383 @@
+Godot Engine v4.6.3.stable.mono.official.7d41c59c4 - https://godotengine.org
+Vulkan 1.4.341 - Forward+ - Using Device #0: NVIDIA - NVIDIA GeForce RTX 3080
+
+[lb]frameprofiler] env: managed-debugger=False godot-context=debug csharp=Debug vsync=Enabled maxfps=0 refresh=60Hz cpu=24c gpu=NVIDIA GeForce RTX 3080[0m
+[lb]frameprofiler] columns: proc=all _Process CPU | rcpu=render-thread submit | gpu=main viewport GPU | rest=present/vsync/stall (ms-proc-rcpu) | alloc=managed garbage/frame | pipe=shader-pipeline compiles[0m
+=== XonoticGodot boot ===[0m
+Weapons:   27[0m
+Items:     21[0m
+Mutators:  46[0m
+GameTypes: 20[0m
+[lb]MenuState] config: 6462 cvars from 25 cfg files (374 aliases, 0 missing).[0m
+[lb]shell] --cvar sv_warpzone_trace = "1"[0m
+[lb]shell] --cvar wz_portal_force = "1"[0m
+[lb]shell] --cvar wz_portal_dump = "1"[0m
+[lb]shell] --cvar wz_portal_uvtest = "1"[0m
+[lb]video] vid_vsync 2 → requested Mailbox, actual Mailbox[0m
+[lb]video] cl_maxfps 256 -> Engine.MaxFps 144 (refresh 60Hz)[0m
+[lb]video] process priority AboveNormal (sys_priority_boost 1)[0m
+[MenuCommand] 'playerstats_update' has no client backend yet (inert).
+[lb]Shell] hosting listen server: gametype=dm map=stormkeep bots=0 skill=0 timelimit=0 fraglimit=0[0m
+[AssetSystem] loaded 2439 shaders from 185 scripts.
+[NetTransport.Server] listening on UDP 26000 (max 16).
+[ServerNet] LAN discovery: answering getinfo on UDP 26001 (game port 26000).
+[NetTransport.Client] connecting to 127.0.0.1:26000 …
+[EffectSystem] effectinfo: 301 effects, particlefont atlas: loaded, style overlay: 0 effects
+[Particles] backend=original (cl_particles_modern=0)
+[AssetLoader] model 'models/items/buff.md3' read failed: Asset not found in any mount: "models/items/buff.md3".
+[AssetLoader] 'models/casing_shell.mdl' is not a known model (magic "IDPO?").
+[MapLoader] occluder: 90016 verts / 107956 tris (r_occlusion_cull A/B)
+[MapLoader] 'stormkeep' materials: lightmapped=34 vertexLit=3 plain=8 glow=4 normalMapped=34 (deluxe=True, internalPages=0, atlas=1p, cellSize=131072, cells=8, surfaces=188)
+[MapLoader] 'stormkeep' portal surfaces: 2 (from 2 faces), pocket decor: 5 (from 5 faces)
+[DecalSplats] geometry: 106027 render triangles, 502 grid cells
+[Skybox] loaded 'env/extragalactic/asteroids'.
+[PortalRenderer] 2 live portal(s)
+[portal] 'Portal_0' facing=False onScreen=False -> RENDER near=0.05 size=(384, 384) camQ=<0, -0, 0> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(0, 0, 0) near=0.05 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=False -> RENDER near=0.05 size=(384, 384) camQ=<0, -0, 0> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(0, 0, 0) near=0.05 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+ERROR: Condition "!res" is true. Returning: false
+   at: prepare_camera (servers/rendering/rendering_light_culler.cpp:544)
+[NetGame] map music: 'cdtracks/track005' (from mapinfo/worldspawn)
+ERROR: Condition "!res" is true. Returning: false
+   at: prepare_camera (servers/rendering/rendering_light_culler.cpp:544)
+[portal] 'Portal_0' facing=False onScreen=False -> RENDER near=1.50 size=(384, 384) camQ=<0, -0, 0> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-800.00006, 48, -1440) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=False -> RENDER near=1.50 size=(384, 384) camQ=<0, -0, 0> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1440, -48, -800) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+ERROR: Condition "!res" is true. Returning: false
+   at: prepare_camera (servers/rendering/rendering_light_culler.cpp:544)
+[portal] 'Portal_0' facing=False onScreen=False -> RENDER near=1.50 size=(384, 384) camQ=<0, -0, 0> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-800.00006, 48, -1440) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=False -> RENDER near=1.50 size=(384, 384) camQ=<0, -0, 0> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1440, -48, -800) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+ERROR: Condition "!res" is true. Returning: false
+   at: prepare_camera (servers/rendering/rendering_light_culler.cpp:544)
+[portal] 'Portal_0' facing=False onScreen=False -> RENDER near=1.50 size=(384, 384) camQ=<0, -0, 0> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-800.00006, 48, -1440) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=False -> RENDER near=1.50 size=(384, 384) camQ=<0, -0, 0> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1440, -48, -800) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+ERROR: Condition "!res" is true. Returning: false
+   at: prepare_camera (servers/rendering/rendering_light_culler.cpp:544)
+ERROR: Condition "!res" is true. Returning: false
+   at: prepare_camera (servers/rendering/rendering_light_culler.cpp:544)
+ERROR: Condition "!res" is true. Returning: false
+   at: prepare_camera (servers/rendering/rendering_light_culler.cpp:544)
+[portal] 'Portal_0' facing=False onScreen=False -> RENDER near=1.50 size=(384, 384) camQ=<0, -0, 0> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-800.00006, 48, -1440) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=False -> RENDER near=1.50 size=(384, 384) camQ=<0, -0, 0> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1440, -48, -800) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+ERROR: Condition "!res" is true. Returning: false
+   at: prepare_camera (servers/rendering/rendering_light_culler.cpp:544)
+[NetGame] precached 24 weapon models, skipped 0 (lazy), 24 muzzle tags.
+ERROR: Condition "!res" is true. Returning: false
+   at: prepare_camera (servers/rendering/rendering_light_culler.cpp:544)
+ERROR: Condition "!res" is true. Returning: false
+   at: prepare_camera (servers/rendering/rendering_light_culler.cpp:544)
+ERROR: Condition "!res" is true. Returning: false
+   at: prepare_camera (servers/rendering/rendering_light_culler.cpp:544)
+[portal] 'Portal_0' facing=False onScreen=False -> RENDER near=1.50 size=(384, 384) camQ=<0, -0, 0> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-800.00006, 48, -1440) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=False -> RENDER near=1.50 size=(384, 384) camQ=<0, -0, 0> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1440, -48, -800) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+ERROR: Condition "!res" is true. Returning: false
+   at: prepare_camera (servers/rendering/rendering_light_culler.cpp:544)
+[portal] 'Portal_0' facing=False onScreen=False -> RENDER near=1.50 size=(384, 384) camQ=<0, -0, 0> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-800.00006, 48, -1440) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=False -> RENDER near=1.50 size=(384, 384) camQ=<0, -0, 0> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1440, -48, -800) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+ERROR: Condition "!res" is true. Returning: false
+   at: prepare_camera (servers/rendering/rendering_light_culler.cpp:544)
+ERROR: Condition "!res" is true. Returning: false
+   at: prepare_camera (servers/rendering/rendering_light_culler.cpp:544)
+[portal] 'Portal_0' facing=False onScreen=False -> RENDER near=1.50 size=(384, 384) camQ=<0, -0, 0> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-800.00006, 48, -1440) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=False -> RENDER near=1.50 size=(384, 384) camQ=<0, -0, 0> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1440, -48, -800) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+ERROR: Condition "!res" is true. Returning: false
+   at: prepare_camera (servers/rendering/rendering_light_culler.cpp:544)
+ERROR: Condition "!res" is true. Returning: false
+   at: prepare_camera (servers/rendering/rendering_light_culler.cpp:544)
+ERROR: Condition "!res" is true. Returning: false
+   at: prepare_camera (servers/rendering/rendering_light_culler.cpp:544)
+[portal] 'Portal_0' facing=False onScreen=False -> RENDER near=1.50 size=(384, 384) camQ=<0, -0, 0> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-800.00006, 48, -1440) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=False -> RENDER near=1.50 size=(384, 384) camQ=<0, -0, 0> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1440, -48, -800) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+ERROR: Condition "!res" is true. Returning: false
+   at: prepare_camera (servers/rendering/rendering_light_culler.cpp:544)
+ERROR: Condition "!res" is true. Returning: false
+   at: prepare_camera (servers/rendering/rendering_light_culler.cpp:544)
+[portal] 'Portal_0' facing=False onScreen=False -> RENDER near=1.50 size=(384, 384) camQ=<0, -0, 0> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-800.00006, 48, -1440) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=False -> RENDER near=1.50 size=(384, 384) camQ=<0, -0, 0> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1440, -48, -800) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+ERROR: Condition "!res" is true. Returning: false
+   at: prepare_camera (servers/rendering/rendering_light_culler.cpp:544)
+ERROR: Condition "!res" is true. Returning: false
+   at: prepare_camera (servers/rendering/rendering_light_culler.cpp:544)
+[NetGame] precached 36 combat sounds, 10 player models (rendered for pipeline warm).
+[NetGame] listen server on 127.0.0.1:26000 (map 'stormkeep', dm, 0 bots) — self-connecting.
+[ServerNet] peer 1811619008 connected (awaiting handshake).
+[ServerNet] peer 1811619008 accepted as 'player' (netId 1811619008, id 8c388be5).
+[ClientNet] handshake accepted by 'Xonotic  Server': netId 1, tickrate 72 Hz.
+[NetGame] handshake accepted by 'Xonotic  Server': netId 1.
+[portal] 'Portal_0' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<0, -0, 34.9375> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-800.00006, 82.94135, -1440) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=False -> RENDER near=1.50 size=(384, 384) camQ=<0, -0, 34.9375> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1440, -13.058647, -800) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[wzview] authoritative snap -> <0, 135, 0>
+[lb]hitch PIPELINE-COMPILE] 50.2ms (2 dropped @60Hz) (med 6.9, ×7.2) — 2 pipeline compile(s) — SYNC[lb]surface+0 draw+0] async[lb]mesh+0 spec+2] canvas+0 | proc 7.2 rcpu 0.5 gpu 0.4 rest 42.5 | alloc 836KB | ticks 3, remote.ents 21[0m
+[lb]hitch]   gpu: draws 411, pipeline compiles +2 — SYNC[lb]surface+0 draw+0] async[lb]mesh+0 spec+2] canvas+0, vram 3212MB[0m
+[lb]hitch]   events: [lb]-1f] net: PREDICTION DESYNC 1067qu (predicted vs acked-replay origin)[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 22.1ms (med 6.9, ×3.2) — present/vsync-bound (rest 17.9ms, gpu 0.3ms) | proc 3.6 rcpu 0.6 gpu 0.3 rest 17.9 | alloc 206KB | ticks 2, remote.ents 21 | watchdog: 10/10 samples in '(unscoped)'[0m
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.96875, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]hitch VSYNC/PRESENT ×2] 16.7–22.1ms over 0.0s (med 6.9) — present/vsync-bound (rest 17.9ms, gpu 0.3ms)[0m
+[lb]hitch EXTERNAL] 133.7ms (7 dropped @60Hz) (med 6.9, ×19.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 2.2 rcpu 0.4 gpu 0.4 rest 131.0 | alloc 40KB | ticks 3, remote.ents 21 | watchdog: 271/271 samples in '(unscoped)'[0m
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.96875, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]frameprofile] scene: nodes 2852 objs-drawn 1792 draws 445 vram 3217MB[0m
+[lb]frameprofile] census: Label 876  HBoxContainer 218  Control 157  Dependent 113  Button 110  CvarCheckBox 104  VBoxContainer 78  HSlider 62  CvarSlider 58  MarginContainer 52[0m
+[lb]frameprofile] 241 frames: p50 6.9 p95 134.1 p99 147.9 p99.9 149.9ms (max 150.0) | 2 EXTERNAL, 1 PIPELINE-COMPILE, 2 VSYNC/PRESENT | alloc 385MB/s heap 213.3MB | proc 3.6 gpu 0.7[0m
+[lb]frameprofile] ms/frame: iqm.mesh 32.4  iqm.materials 31.9  iqm.anims 5.8  proc:other 5.5  cev.process 1.4  ng.process 1.3  server.tick 0.7  net.send 0.3  net.poll 0.1  cw.process 0.1[0m
+[lb]hitch EXTERNAL ×2] 133.7–144.4ms over 1.0s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 16.8ms (med 6.9, ×2.4) — present/vsync-bound (rest 14.5ms, gpu 1.4ms) | proc 1.8 rcpu 0.5 gpu 1.4 rest 14.5 | alloc 152KB | ticks 3, remote.ents 21 | watchdog: 6/6 samples in '(unscoped)'[0m
+[lb]hitch]   gpu: draws 445, pipeline compiles +0, vram 3217MB[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 144.4[0m
+[lb]bots] waypoints for 'stormkeep': nodes=99 (file=loaded, cache=yes)[0m
+[lb]hitch CPU-LOGIC] 126.4ms (7 dropped @60Hz) (med 6.9, ×18.2) — ng.process 93.0ms (typ 10.7ms, 9× over) | proc 104.8 rcpu 0.5 gpu 0.8 rest 21.2 | alloc 264KB | ticks 3, remote.ents 22 | watchdog: 25/60 samples in 'bot.path'[0m
+[lb]hitch PIPELINE-COMPILE] 129.3ms (7 dropped @60Hz) (med 6.9, ×18.6) — 1 pipeline compile(s) — SYNC[lb]surface+1 draw+0] async[lb]mesh+0 spec+0] canvas+0 | proc 20.3 rcpu 0.4 gpu 0.8 rest 108.6 | alloc 6.6MB | ticks 3, remote.ents 22 | watchdog: 3/11 samples in 'bot.strategy'[0m
+[lb]hitch GC-PAUSE] 45.4ms (2 dropped @60Hz) (med 6.9, ×6.5) — GC g0+1 g1+1 g2+1, pause 0.0ms, 151.5MB allocated | proc 3.3 rcpu 0.5 gpu 0.8 rest 41.5 | alloc 151.5MB | ticks 3, remote.ents 22 | watchdog: 12/22 samples in '(unscoped)'[0m
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.96875, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]hitch EXTERNAL] 139.8ms (7 dropped @60Hz) (med 6.9, ×20.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 9.0 rcpu 1.2 gpu 1.3 rest 129.6 | alloc 63KB | ticks 3, remote.ents 22[0m
+[lb]hitch]   gpu: draws 449, pipeline compiles +0, vram 3207MB[0m
+[lb]hitch]   events: [lb]-6f] stream: player model models/player/ignismasked.iqm tex textures/ignisheadfb_reflect built (0.0ms); [lb]-1f] stream: player model models/player/ignismasked.iqm tex textures/ignisheadfb_glow built (0.0ms); [lb]-1f] stream: player model models/player/ignismasked.iqm tex textures/ignisheadfb_shirt built (0.0ms); stream: player model models/player/ignismasked.iqm tex textures/ignisfullbright built (0.0ms); stream: player model models/player/ignismasked.iqm tex textures/ignisfullbright_norm built (0.0ms); stream: player model models/player/ignismasked.iqm tex textures/ignisfullbright_gloss built (0.0ms); stream: player model models/player/ignismasked.iqm tex textures/ignisfullbright_glow built (0.0ms); stream: player model models/player/ignismasked.iqm tex textures/ignisfullbright_reflect built (0.0ms); stream: player model models/player/ignismasked.iqm tex textures/ignisfullbright_shirt built (0.0ms); stream: player model models/player/ignismasked.iqm tex textures/ignisheadfb built (0.0ms); stream: player model models/player/ignismasked.iqm tex textures/ignisheadfb_norm built (0.0ms); stream: player model models/player/ignismasked.iqm tex textures/ignisheadfb_gloss built (5.8ms)[0m
+[lb]hitch]   prev: 6.3 6.7 5.6 5.2 5.6 6.0 6.3 9.1[0m
+[lb]hitch VSYNC/PRESENT] 19.1ms (med 6.9, ×2.8) — present/vsync-bound (rest 12.0ms, gpu 1.8ms) | proc 6.7 rcpu 0.5 gpu 1.8 rest 12.0 | alloc 198KB | ticks 3, remote.ents 22[0m
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.96875, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]hitch VSYNC/PRESENT ×3] 14.2–19.1ms over 0.0s (med 6.9) — present/vsync-bound (rest 12.0ms, gpu 1.8ms)[0m
+[lb]hitch EXTERNAL] 148.9ms (8 dropped @60Hz) (med 6.9, ×21.4) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.5 rcpu 0.5 gpu 1.0 rest 144.9 | alloc 48KB | ticks 3, remote.ents 22 | watchdog: 275/275 samples in '(unscoped)'[0m
+[lb]hitch]   gpu: draws 453, pipeline compiles +0, vram 3207MB[0m
+[lb]hitch]   prev: 7.1 7.1 7.1 7.1 7.1 7.1 7.1 7.1[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 12.2ms, gpu 1.6ms) | proc 3.9 rcpu 0.5 gpu 1.6 rest 12.2 | alloc 175KB | ticks 3, remote.ents 22 | watchdog: 3/3 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 66.0ms (3 dropped @60Hz) (med 6.9, ×9.5) — rest-dominated, game-side quiet — OS/compositor/driver | proc 4.2 rcpu 0.4 gpu 1.1 rest 61.4 | alloc 56KB | ticks 3, remote.ents 22 | watchdog: 23/39 samples in 'bot.path'[0m
+[lb]hitch EXTERNAL ×2] 44.1–66.0ms over 0.2s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 15.5ms (med 6.9, ×2.2) — present/vsync-bound (rest 12.0ms, gpu 3.1ms) | proc 3.1 rcpu 0.5 gpu 3.1 rest 12.0 | alloc 40KB | ticks 1, remote.ents 22[0m
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.96875, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]hitch EXTERNAL] 132.2ms (7 dropped @60Hz) (med 6.9, ×19.0) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.8 rcpu 0.4 gpu 2.0 rest 128.0 | alloc 40KB | ticks 3, remote.ents 22 | watchdog: 269/269 samples in '(unscoped)'[0m
+[lb]hitch]   gpu: draws 454, pipeline compiles +0, vram 3207MB[0m
+[lb]hitch]   prev: 6.7 6.7 6.7 6.7 6.7 6.7 6.7 6.7[0m
+[lb]hitch CPU-LOGIC] 14.6ms (med 6.9, ×2.1) — ng.process 87.6ms (typ 6.0ms, 14× over) | proc 14.6 rcpu 0.5 gpu 1.0 rest 0.0 | alloc 40KB | ticks 1, remote.ents 22 | watchdog: 35/52 samples in 'bot.path'[0m
+[lb]hitch EXTERNAL] 83.3ms (4 dropped @60Hz) (med 6.9, ×12.0) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.7 rcpu 0.4 gpu 0.6 rest 79.2 | alloc 56KB | ticks 3, remote.ents 22 | watchdog: 35/55 samples in 'bot.path'[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.2ms, gpu 0.6ms) | proc 3.0 rcpu 0.4 gpu 0.6 rest 13.2 | alloc 48KB | ticks 3, remote.ents 22[0m
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.96875, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]hitch EXTERNAL] 128.7ms (7 dropped @60Hz) (med 6.9, ×18.5) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.7 rcpu 0.5 gpu 0.6 rest 124.5 | alloc 48KB | ticks 3, remote.ents 22 | watchdog: 276/276 samples in '(unscoped)'[0m
+[lb]hitch]   gpu: draws 454, pipeline compiles +0, vram 3207MB[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 15.2ms (med 6.9, ×2.2) — present/vsync-bound (rest 11.5ms, gpu 0.6ms) | proc 3.3 rcpu 0.5 gpu 0.6 rest 11.5 | alloc 48KB | ticks 3, remote.ents 22[0m
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.96875, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]hitch EXTERNAL] 128.8ms (7 dropped @60Hz) (med 6.9, ×18.5) — rest-dominated, game-side quiet — OS/compositor/driver | proc 5.3 rcpu 0.4 gpu 2.0 rest 123.0 | alloc 96KB | ticks 3, remote.ents 22 | watchdog: 281/281 samples in '(unscoped)'[0m
+[lb]hitch]   gpu: draws 454, pipeline compiles +0, vram 3207MB[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 19.4ms (med 6.9, ×2.8) — present/vsync-bound (rest 16.4ms, gpu 0.6ms) | proc 2.5 rcpu 0.5 gpu 0.6 rest 16.4 | alloc 40KB | ticks 1, remote.ents 22 | watchdog: 11/15 samples in 'bot.strategy'[0m
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.96875, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]hitch EXTERNAL] 147.7ms (8 dropped @60Hz) (med 6.9, ×21.3) — rest-dominated, game-side quiet — OS/compositor/driver | proc 8.1 rcpu 0.5 gpu 0.6 rest 139.1 | alloc 48KB | ticks 3, remote.ents 22[0m
+[lb]hitch]   gpu: draws 454, pipeline compiles +0, vram 3207MB[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.0ms, gpu 0.6ms) | proc 3.2 rcpu 0.5 gpu 0.6 rest 13.0 | alloc 160KB | ticks 3, remote.ents 22 | watchdog: 3/5 samples in '(unscoped)'[0m
+[wz] cross client=True 'player' o <1230.1547, 206.15332, -7.968749>-><-593.8467, 209.84534, 40.03125> v <-217.70808, -316.20148, 0>-><-316.2015, 217.70807, 0> a <1.1264542, 215.12778, 0>-><1.1264648, 125.12778, 0> | in o=<1216, 208, 32> f=<-4.371139E-08, 1, 0> | out o=<-592, 224, 80> f=<-1, -8.742278E-08, 0>
+[lb]hitch GC-PAUSE] 22.0ms (med 6.9, ×3.2) — GC g0+1 g1+0 g2+0, pause 8.3ms, 134.8MB allocated | proc 8.5 rcpu 0.5 gpu 0.7 rest 13.1 | alloc 134.8MB | ticks 2, remote.ents 21[0m
+[lb]hitch MIXED] 17.0ms (med 6.9, ×2.4) — mixed — proc:other 3.0ms | proc 6.6 rcpu 1.4 gpu 1.2 rest 8.9 | alloc 44.3MB | ticks 1, remote.ents 21[0m
+[lb]hitch VSYNC/PRESENT] 16.2ms (med 6.9, ×2.3) — present/vsync-bound (rest 9.8ms, gpu 0.7ms) | proc 5.5 rcpu 0.8 gpu 0.7 rest 9.8 | alloc 70.0MB | ticks 1, remote.ents 21 | watchdog: 7/7 samples in '(unscoped)'[0m
+[lb]hitch]   gpu: draws 445, pipeline compiles +0, vram 3207MB[0m
+[lb]hitch]   events: [lb]-3f] anim cache HIT models/player/umbra.iqm; [lb]-3f] anim cache HIT models/player/nyx.iqm; [lb]-3f] anim cache HIT models/player/pyria.iqm; [lb]-3f] anim cache HIT models/player/seraphina.iqm; [lb]-3f] stream: idle-warm models/player/nyx.iqm (parse) built (0.3ms); [lb]-3f] stream: idle-warm models/player/pyria.iqm (parse) built (0.0ms); [lb]-3f] stream: idle-warm models/player/seraphina.iqm (parse) built (0.0ms); [lb]-3f] stream: idle-warm models/player/umbra.iqm (parse) built (0.0ms); [lb]-2f] stream: idle-warm models/player/nyx.iqm tex textures/shadowheadfb_pants built (0.0ms); [lb]-2f] stream: idle-warm models/player/nyx.iqm tex textures/nyxfullbright_pants built (0.0ms); [lb]-2f] stream: idle-warm models/player/pyria.iqm tex textures/pyriahair built (0.0ms); [lb]-2f] stream: idle-warm models/player/pyria.iqm tex textures/pyriahair_norm built (0.0ms); [lb]-2f] stream: idle-warm models/player/pyria.iqm tex textures/pyriahair_gloss built (0.0ms); [lb]-2f] stream: idle-warm models/player/pyria.iqm tex textures/pyriahair_glow built (0.0ms); [lb]-2f] stream: idle-warm models/player/pyria.iqm tex textures/pyriahair_reflect built (0.0ms); [lb]-2f] stream: idle-warm models/player/pyria.iqm tex textures/pyriahair_shirt built (0.0ms); [lb]-2f] stream: idle-warm models/player/pyria.iqm tex textures/pyriahair_pants built (0.0ms); [lb]-2f] stream: idle-warm models/player/pyria.iqm tex textures/pyriafullbright_pants built (0.0ms); [lb]-1f] stream: idle-warm models/player/nyx.iqm tex textures/shadowheadfb_glow built (0.0ms); [lb]-1f] stream: idle-warm models/player/nyx.iqm tex textures/shadowheadfb_reflect built (0.0ms); [lb]-1f] stream: idle-warm models/player/seraphina.iqm tex textures/seraphina_shirt built (0.0ms); [lb]-1f] stream: idle-warm models/player/seraphina.iqm tex textures/seraphina_pants built (0.0ms); [lb]-1f] stream: idle-warm models/player/seraphina.iqm tex textures/ignisfullbright built (0.0ms); [lb]-1f] stream: idle-warm models/player/seraphina.iqm tex textures/ignisfullbright_norm built (0.0ms); [lb]-1f] stream: idle-warm models/player/seraphina.iqm tex textures/ignisfullbright_gloss built (0.0ms); [lb]-1f] stream: idle-warm models/player/seraphina.iqm tex textures/ignisfullbright_glow built (0.0ms); [lb]-1f] stream: idle-warm models/player/seraphina.iqm tex textures/ignisfullbright_reflect built (0.0ms); [lb]-1f] stream: idle-warm models/player/seraphina.iqm tex textures/ignisfullbright_shirt built (0.0ms); [lb]-1f] stream: idle-warm models/player/seraphina.iqm tex textures/ignisfullbright_pants built (0.0ms); stream: idle-warm models/player/nyx.iqm tex textures/shadowheadfb built (0.0ms); stream: idle-warm models/player/nyx.iqm tex textures/shadowheadfb_norm built (0.0ms); stream: idle-warm models/player/nyx.iqm tex textures/shadowheadfb_gloss built (0.0ms); stream: idle-warm models/player/nyx.iqm tex textures/shadowheadfb_shirt built (0.0ms); stream: idle-warm models/player/pyria.iqm tex textures/pyriafullbright_reflect built (0.0ms); stream: idle-warm models/player/seraphina.iqm tex textures/seraphina_reflect built (0.0ms); stream: idle-warm models/player/umbra.iqm tex textures/umbrafullbright_pants built (0.0ms)[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 22.0 17.0[0m
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.96875, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]hitch VSYNC/PRESENT ×3] 13.5–16.2ms over 0.0s (med 6.9) — present/vsync-bound (rest 9.8ms, gpu 0.7ms)[0m
+[lb]hitch ASSET-BUILD] 13.9ms (med 6.9, ×2.0) — iqm.anims 250.5ms (asset build/upload) | proc 13.9 rcpu 0.8 gpu 0.7 rest 0.0 | alloc 1.3MB | ticks 1, remote.ents 21 | watchdog: 300/300 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 136.1ms (7 dropped @60Hz) (med 6.9, ×19.6) — rest-dominated, game-side quiet — OS/compositor/driver | proc 15.5 rcpu 0.7 gpu 1.2 rest 119.9 | alloc 30.0MB | ticks 3, remote.ents 21 | watchdog: 4/6 samples in 'stream.build'[0m
+[lb]hitch MIXED] 33.3ms (1 dropped @60Hz) (med 6.9, ×4.8) — mixed — ng.process 10.4ms | proc 15.7 rcpu 0.5 gpu 2.0 rest 17.2 | alloc 368KB | ticks 3, remote.ents 21 | watchdog: 2/6 samples in 'bot.strategy'[0m
+[lb]hitch MIXED ×3] 16.7–33.3ms over 0.0s (med 6.9) — mixed — ng.process 10.4ms[0m
+[lb]hitch CPU-LOGIC] 16.7ms (med 6.9, ×2.4) — stream.build 4.2ms | proc 9.8 rcpu 0.6 gpu 2.1 rest 6.3 | alloc 919KB | ticks 3, remote.ents 21 | watchdog: 3/3 samples in '(unscoped)'[0m
+[lb]hitch ASSET-BUILD] 16.7ms (med 6.9, ×2.4) — stream.build 9.0ms (asset build/upload) | proc 14.7 rcpu 1.0 gpu 2.0 rest 0.9 | alloc 517KB | ticks 2, remote.ents 21 | watchdog: 4/6 samples in 'iqm.materials'[0m
+[lb]hitch CPU-LOGIC] 17.3ms (med 6.9, ×2.5) — stream.build 5.8ms | proc 9.9 rcpu 0.5 gpu 2.3 rest 6.9 | alloc 617KB | ticks 1, remote.ents 21[0m
+[lb]frameprofile] scene: nodes 2881 objs-drawn 1878 draws 463 vram 3260MB[0m
+[lb]frameprofile] census: Label 876  HBoxContainer 218  Control 157  Dependent 113  Button 110  CvarCheckBox 104  VBoxContainer 78  HSlider 62  CvarSlider 58  MarginContainer 52[0m
+[lb]frameprofile] 507 frames: p50 6.9 p95 16.6 p99 128.9 p99.9 147.6ms (max 148.9) | 10 EXTERNAL, 2 ASSET-BUILD, 1 PIPELINE-COMPILE, 2 GC-PAUSE, 13 VSYNC/PRESENT, 4 CPU-LOGIC, 4 MIXED | alloc 176MB/s heap 785.1MB | proc 9.9 gpu 2.3[0m
+[lb]frameprofile] ms/frame: ng.process 2.1  server.tick 1.7  sim.move 1.3  move.in 1.0  bot.think 1.0  bot.strategy 0.9  proc:other 0.7  iqm.anims 0.5  bot.path 0.3  cw.process 0.3[0m
+[lb]hitch MIXED] 19.0ms (med 6.9, ×2.7) — mixed — stream.build 5.8ms | proc 9.6 rcpu 0.5 gpu 2.7 rest 8.9 | alloc 995KB | ticks 1, remote.ents 21[0m
+[lb]hitch CPU-LOGIC] 16.7ms (med 6.9, ×2.4) — stream.build 5.7ms | proc 10.7 rcpu 0.4 gpu 2.9 rest 5.6 | alloc 2.1MB | ticks 1, remote.ents 21 | watchdog: 2/3 samples in '(unscoped)'[0m
+[lb]hitch MIXED] 16.7ms (med 6.9, ×2.4) — mixed — stream.build 4.3ms | proc 9.0 rcpu 0.5 gpu 2.5 rest 7.2 | alloc 2.1MB | ticks 2, remote.ents 21[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 11.9ms, gpu 2.1ms) | proc 4.2 rcpu 0.6 gpu 2.1 rest 11.9 | alloc 1.2MB | ticks 1, remote.ents 21 | watchdog: 4/4 samples in '(unscoped)'[0m
+[IdleWarmer] asset warm queue drained — full asset set is hot.
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.96875, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]hitch EXTERNAL] 150.0ms (8 dropped @60Hz) (med 6.9, ×21.6) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.0 rcpu 0.5 gpu 0.6 rest 146.5 | alloc 40KB | ticks 3, remote.ents 21 | watchdog: 292/292 samples in '(unscoped)'[0m
+[lb]hitch]   gpu: draws 445, pipeline compiles +0, vram 3323MB[0m
+[lb]hitch]   prev: 6.7 6.7 6.7 6.7 6.7 6.7 6.7 6.7[0m
+[lb]hitch VSYNC/PRESENT] 20.5ms (med 6.9, ×3.0) — present/vsync-bound (rest 17.5ms, gpu 0.6ms) | proc 2.6 rcpu 0.5 gpu 0.6 rest 17.5 | alloc 4KB | ticks 3, remote.ents 21 | watchdog: 4/4 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT ×3] 12.8–20.5ms over 0.1s (med 6.9) — present/vsync-bound (rest 17.5ms, gpu 0.6ms)[0m
+[lb]hitch EXTERNAL] 25.9ms (1 dropped @60Hz) (med 6.9, ×3.7) — rest-dominated, game-side quiet — OS/compositor/driver | proc 2.1 rcpu 0.4 gpu 0.6 rest 23.4 | alloc 40KB | ticks 2, remote.ents 21 | watchdog: 8/15 samples in 'bot.path'[0m
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.96875, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.96875, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]hitch EXTERNAL ×2] 25.9–128.3ms over 0.6s (med 6.9) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch EXTERNAL] 146.8ms (8 dropped @60Hz) (med 6.9, ×21.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 13.2 rcpu 0.5 gpu 0.6 rest 133.1 | alloc 64KB | ticks 3, remote.ents 21 | watchdog: 3/5 samples in 'bot.strategy'[0m
+[lb]hitch]   gpu: draws 456, pipeline compiles +0, vram 3321MB[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch EXTERNAL ×2] 33.3–146.8ms over 0.0s (med 6.8) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 14.2ms (med 6.8, ×2.1) — present/vsync-bound (rest 10.7ms, gpu 0.6ms) | proc 3.1 rcpu 0.5 gpu 0.6 rest 10.7 | alloc 40KB | ticks 3, remote.ents 21 | watchdog: 3/6 samples in '(unscoped)'[0m
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.96875, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]hitch EXTERNAL] 133.3ms (7 dropped @60Hz) (med 6.9, ×19.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.2 rcpu 0.4 gpu 0.6 rest 129.7 | alloc 40KB | ticks 3, remote.ents 21 | watchdog: 472/472 samples in '(unscoped)'[0m
+[lb]hitch]   gpu: draws 460, pipeline compiles +0, vram 3321MB[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch CPU-LOGIC] 31.4ms (1 dropped @60Hz) (med 6.9, ×4.5) — ng.process 42.7ms (typ 5.4ms, 8× over) | proc 31.4 rcpu 0.4 gpu 2.0 rest 0.0 | alloc 40KB | ticks 2, remote.ents 21 | watchdog: 15/27 samples in 'bot.path'[0m
+[lb]hitch EXTERNAL] 50.3ms (2 dropped @60Hz) (med 6.9, ×7.2) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.3 rcpu 0.5 gpu 2.1 rest 46.4 | alloc 56KB | ticks 3, remote.ents 21 | watchdog: 15/30 samples in 'bot.path'[0m
+[lb]hitch VSYNC/PRESENT] 22.4ms (med 6.9, ×3.2) — present/vsync-bound (rest 18.5ms, gpu 2.1ms) | proc 3.1 rcpu 0.8 gpu 2.1 rest 18.5 | alloc 48KB | ticks 2, remote.ents 21[0m
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.96875, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]hitch VSYNC/PRESENT ×3] 16.7–22.4ms over 0.0s (med 6.9) — present/vsync-bound (rest 18.5ms, gpu 2.1ms)[0m
+[lb]hitch EXTERNAL] 125.6ms (7 dropped @60Hz) (med 6.9, ×18.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.8 rcpu 0.7 gpu 2.1 rest 121.1 | alloc 48KB | ticks 3, remote.ents 21 | watchdog: 504/504 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.0ms, gpu 2.4ms) | proc 3.2 rcpu 0.5 gpu 2.4 rest 13.0 | alloc 56KB | ticks 3, remote.ents 21[0m
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.96875, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]hitch VSYNC/PRESENT ×2] 13.4–16.7ms over 0.0s (med 6.9) — present/vsync-bound (rest 13.0ms, gpu 2.4ms)[0m
+[lb]hitch EXTERNAL] 123.7ms (6 dropped @60Hz) (med 6.9, ×17.8) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.6 rcpu 0.5 gpu 2.1 rest 119.7 | alloc 48KB | ticks 3, remote.ents 21 | watchdog: 486/486 samples in '(unscoped)'[0m
+[lb]hitch]   gpu: draws 460, pipeline compiles +0, vram 3321MB[0m
+[lb]hitch]   prev: 6.3 6.3 6.3 6.3 6.3 6.3 6.3 6.7[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 12.8ms, gpu 2.3ms) | proc 3.4 rcpu 0.5 gpu 2.3 rest 12.8 | alloc 153KB | ticks 3, remote.ents 21[0m
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.031246> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.031246> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.968754, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]hitch VSYNC/PRESENT ×2] 13.4–16.7ms over 0.0s (med 6.7) — present/vsync-bound (rest 12.8ms, gpu 2.3ms)[0m
+[lb]hitch EXTERNAL] 120.0ms (6 dropped @60Hz) (med 6.7, ×18.0) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.9 rcpu 0.4 gpu 0.5 rest 115.7 | alloc 48KB | ticks 3, remote.ents 21 | watchdog: 475/475 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.7, ×2.5) — present/vsync-bound (rest 13.0ms, gpu 0.5ms) | proc 3.2 rcpu 0.5 gpu 0.5 rest 13.0 | alloc 64KB | ticks 3, remote.ents 21[0m
+[lb]hitch EXTERNAL] 78.8ms (4 dropped @60Hz) (med 6.7, ×11.7) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.0 rcpu 0.4 gpu 0.5 rest 75.4 | alloc 48KB | ticks 3, remote.ents 21 | watchdog: 24/52 samples in 'bot.strategy'[0m
+[lb]hitch]   gpu: draws 463, pipeline compiles +0, vram 3321MB[0m
+[lb]hitch]   prev: 5.4 6.3 6.3 6.7 6.7 6.7 6.3 6.3[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.7, ×2.5) — present/vsync-bound (rest 11.6ms, gpu 0.5ms) | proc 4.6 rcpu 0.5 gpu 0.5 rest 11.6 | alloc 145KB | ticks 3, remote.ents 21[0m
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.96875, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]hitch EXTERNAL] 125.1ms (7 dropped @60Hz) (med 6.8, ×18.4) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.3 rcpu 0.4 gpu 0.5 rest 121.3 | alloc 48KB | ticks 3, remote.ents 21 | watchdog: 489/498 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.8, ×2.5) — present/vsync-bound (rest 13.1ms, gpu 2.3ms) | proc 3.1 rcpu 0.5 gpu 2.3 rest 13.1 | alloc 48KB | ticks 3, remote.ents 21[0m
+[lb]hitch VSYNC/PRESENT ×2] 12.8–16.7ms over 0.0s (med 6.7) — present/vsync-bound (rest 13.1ms, gpu 2.3ms)[0m
+[lb]hitch EXTERNAL] 34.0ms (1 dropped @60Hz) (med 6.7, ×5.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 2.7 rcpu 0.4 gpu 2.2 rest 30.9 | alloc 40KB | ticks 2, remote.ents 21 | watchdog: 13/16 samples in 'bot.strategy'[0m
+[lb]hitch VSYNC/PRESENT] 13.5ms (med 6.7, ×2.0) — present/vsync-bound (rest 10.9ms, gpu 2.1ms) | proc 2.1 rcpu 0.5 gpu 2.1 rest 10.9 | alloc 64KB | ticks 1, remote.ents 21[0m
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.96875, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]hitch CPU-LOGIC] 14.4ms (med 6.7, ×2.2) — proc:other 12.9ms (typ 1.1ms, 11× over) | proc 14.4 rcpu 0.5 gpu 1.9 rest 0.0 | alloc 48KB | ticks 1, remote.ents 21 | watchdog: 337/337 samples in '(unscoped)'[0m
+[lb]hitch EXTERNAL] 134.0ms (7 dropped @60Hz) (med 6.7, ×20.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.2 rcpu 0.5 gpu 2.0 rest 130.3 | alloc 48KB | ticks 3, remote.ents 21 | watchdog: 340/340 samples in '(unscoped)'[0m
+[lb]hitch]   gpu: draws 463, pipeline compiles +0, vram 3321MB[0m
+[lb]hitch]   prev: 6.9 8.6 6.7 6.7 6.7 34.0 13.5 14.4[0m
+[lb]hitch VSYNC/PRESENT] 15.9ms (med 6.7, ×2.4) — present/vsync-bound (rest 10.7ms, gpu 2.0ms) | proc 4.7 rcpu 0.5 gpu 2.0 rest 10.7 | alloc 57KB | ticks 3, remote.ents 21 | watchdog: 3/7 samples in 'sim.integrate'[0m
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.96875, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]hitch VSYNC/PRESENT ×2] 13.2–15.9ms over 0.0s (med 6.7) — present/vsync-bound (rest 10.7ms, gpu 2.0ms)[0m
+[lb]hitch EXTERNAL] 143.0ms (8 dropped @60Hz) (med 6.7, ×21.4) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.4 rcpu 0.5 gpu 0.5 rest 139.1 | alloc 48KB | ticks 3, remote.ents 21 | watchdog: 325/325 samples in '(unscoped)'[0m
+[lb]hitch]   gpu: draws 463, pipeline compiles +0, vram 3321MB[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]frameprofile] scene: nodes 2868 objs-drawn 1909 draws 463 vram 3321MB[0m
+[lb]frameprofile] census: Label 876  HBoxContainer 218  Control 157  Dependent 113  Button 110  CvarCheckBox 104  VBoxContainer 78  HSlider 62  CvarSlider 58  MarginContainer 52[0m
+[lb]frameprofile] 505 frames: p50 6.6 p95 16.6 p99 125.6 p99.9 146.9ms (max 150.0) | 15 EXTERNAL, 19 VSYNC/PRESENT, 3 CPU-LOGIC, 2 MIXED | alloc 4MB/s heap 821.1MB | proc 3.4 gpu 0.5[0m
+[lb]frameprofile] ms/frame: ng.process 1.8  server.tick 1.4  sim.move 0.9  proc:other 0.8  move.in 0.7  bot.think 0.7  bot.strategy 0.6  net.send 0.2  move.pm 0.2  bot.path 0.2[0m
+[lb]hitch VSYNC/PRESENT] 13.8ms (med 6.7, ×2.1) — present/vsync-bound (rest 10.2ms, gpu 0.5ms) | proc 3.1 rcpu 0.5 gpu 0.5 rest 10.2 | alloc 225KB | ticks 3, remote.ents 21 | watchdog: 5/5 samples in '(unscoped)'[0m
+[lb]hitch VSYNC/PRESENT ×2] 12.5–13.8ms over 0.0s (med 6.7) — present/vsync-bound (rest 10.2ms, gpu 0.5ms)[0m
+[lb]hitch EXTERNAL] 68.7ms (3 dropped @60Hz) (med 6.7, ×10.3) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.4 rcpu 0.4 gpu 0.5 rest 64.9 | alloc 48KB | ticks 3, remote.ents 21 | watchdog: 33/39 samples in 'bot.strategy'[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.7, ×2.5) — present/vsync-bound (rest 12.0ms, gpu 0.5ms) | proc 4.2 rcpu 0.5 gpu 0.5 rest 12.0 | alloc 72KB | ticks 3, remote.ents 21[0m
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.031246> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.031246> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.96875, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]hitch EXTERNAL] 138.8ms (7 dropped @60Hz) (med 6.7, ×20.8) — rest-dominated, game-side quiet — OS/compositor/driver | proc 4.4 rcpu 0.5 gpu 0.5 rest 133.9 | alloc 48KB | ticks 3, remote.ents 21 | watchdog: 289/289 samples in '(unscoped)'[0m
+[lb]hitch]   gpu: draws 464, pipeline compiles +0, vram 3322MB[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 68.7 16.7 5.3 4.0[0m
+[lb]hitch CPU-LOGIC] 18.6ms (med 6.7, ×2.8) — ng.process 23.2ms (typ 4.6ms, 5× over) | proc 18.6 rcpu 0.5 gpu 0.5 rest 0.0 | alloc 148KB | ticks 3, remote.ents 21 | watchdog: 10/13 samples in 'bot.strategy'[0m
+[lb]hitch VSYNC/PRESENT] 20.0ms (med 6.7, ×3.0) — present/vsync-bound (rest 15.9ms, gpu 0.5ms) | proc 3.6 rcpu 0.5 gpu 0.5 rest 15.9 | alloc 48KB | ticks 3, remote.ents 21 | watchdog: 10/15 samples in 'bot.strategy'[0m
+[lb]hitch VSYNC/PRESENT ×2] 13.3–20.0ms over 0.0s (med 6.7) — present/vsync-bound (rest 15.9ms, gpu 0.5ms)[0m
+[lb]hitch EXTERNAL] 42.9ms (2 dropped @60Hz) (med 6.7, ×6.4) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.4 rcpu 0.5 gpu 0.6 rest 39.1 | alloc 40KB | ticks 3, remote.ents 21 | watchdog: 12/23 samples in 'bot.strategy'[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.7, ×2.5) — present/vsync-bound (rest 13.0ms, gpu 0.6ms) | proc 3.2 rcpu 0.4 gpu 0.6 rest 13.0 | alloc 72KB | ticks 1, remote.ents 21[0m
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.96875, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]hitch VSYNC/PRESENT ×2] 12.5–16.7ms over 0.0s (med 6.7) — present/vsync-bound (rest 13.0ms, gpu 0.6ms)[0m
+[lb]hitch EXTERNAL] 134.0ms (7 dropped @60Hz) (med 6.7, ×20.1) — rest-dominated, game-side quiet — OS/compositor/driver | proc 16.4 rcpu 0.5 gpu 0.6 rest 117.1 | alloc 56KB | ticks 3, remote.ents 21 | watchdog: 2/7 samples in 'bot.strategy'[0m
+[lb]hitch]   gpu: draws 464, pipeline compiles +0, vram 3322MB[0m
+[lb]hitch]   prev: 6.3 6.7 6.7 6.7 6.3 6.3 6.3 6.3[0m
+[lb]hitch EXTERNAL ×2] 33.3–134.0ms over 0.0s (med 6.7) — rest-dominated, game-side quiet — OS/compositor/driver[0m
+[lb]hitch VSYNC/PRESENT] 17.9ms (med 6.7, ×2.7) — present/vsync-bound (rest 14.8ms, gpu 0.6ms) | proc 2.7 rcpu 0.4 gpu 0.6 rest 14.8 | alloc 112KB | ticks 1, remote.ents 21 | watchdog: 4/8 samples in '(unscoped)'[0m
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.03125> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.96875, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]hitch EXTERNAL] 135.1ms (7 dropped @60Hz) (med 6.9, ×19.5) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.9 rcpu 0.4 gpu 0.6 rest 130.7 | alloc 48KB | ticks 3, remote.ents 21 | watchdog: 264/264 samples in '(unscoped)'[0m
+[lb]hitch]   gpu: draws 466, pipeline compiles +0, vram 3322MB[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 13.7ms (med 6.9, ×2.0) — present/vsync-bound (rest 9.7ms, gpu 0.6ms) | proc 3.5 rcpu 0.5 gpu 0.6 rest 9.7 | alloc 40KB | ticks 3, remote.ents 21 | watchdog: 3/3 samples in '(unscoped)'[0m
+[portal] 'Portal_0' facing=True onScreen=False -> RENDER near=32.50 size=(384, 384) camQ=<1040, 240, 27.031246> inO=<1216, 208, 32> inF=<-4.371139E-08, 1, 0>
+[portal] dump portal0: camG=(-560, 75.03125, -400) near=32.50 size=(384, 384) halfR=64 halfU=64 exitC=<-592, 224, 80>
+[portal] 'Portal_1' facing=False onScreen=True -> RENDER near=1.50 size=(384, 384) camQ=<1040, 240, 27.031246> inO=<-592, 224, 80> inF=<-1, -8.742278E-08, 0>
+[portal] dump portal1: camG=(1200.0001, -20.968754, -1840) near=1.50 size=(384, 384) halfR=64 halfU=64 exitC=<1216, 208, 32>
+[lb]hitch VSYNC/PRESENT ×2] 13.7–14.3ms over 0.4s (med 6.9) — present/vsync-bound (rest 9.7ms, gpu 0.6ms)[0m
+[lb]hitch EXTERNAL] 141.7ms (7 dropped @60Hz) (med 6.9, ×20.4) — rest-dominated, game-side quiet — OS/compositor/driver | proc 3.2 rcpu 0.4 gpu 0.6 rest 138.0 | alloc 48KB | ticks 3, remote.ents 21 | watchdog: 272/272 samples in '(unscoped)'[0m
+[lb]hitch]   gpu: draws 472, pipeline compiles +0, vram 3322MB[0m
+[lb]hitch]   prev: 6.9 6.9 6.9 6.9 6.9 6.9 6.9 6.9[0m
+[lb]hitch VSYNC/PRESENT] 16.7ms (med 6.9, ×2.4) — present/vsync-bound (rest 13.4ms, gpu 0.6ms) | proc 2.8 rcpu 0.5 gpu 0.6 rest 13.4 | alloc 180KB | ticks 3, remote.ents 21[0m
+=== frame profiler session summary (44s, 1575 frames) ===[0m
+  fps: avg 87.5  1%low 7  0.1%low 7  (median 6.9ms, worst 150.0ms)[0m
+  hitches: 99 total — 34 EXTERNAL, 2 ASSET-BUILD, 2 PIPELINE-COMPILE, 2 GC-PAUSE, 45 VSYNC/PRESENT, 8 CPU-LOGIC, 6 MIXED[0m
+    worst[lb]1]: 150.0ms EXTERNAL (ng.process) @ t=31.1s[0m
+    worst[lb]2]: 148.9ms EXTERNAL (ng.process) @ t=25.1s[0m
+    worst[lb]3]: 147.7ms EXTERNAL (ng.process) @ t=29.1s[0m
+    worst[lb]4]: 146.8ms EXTERNAL (ng.process) @ t=33.1s[0m
+    worst[lb]5]: 144.4ms EXTERNAL (ng.process) @ t=23.0s[0m
+  gc: g0+84 g1+59 g2+34, total pause 250ms[0m
+  alloc: 2.7GB total, 5MB/s recent, peak 434.0MB in one frame @ t=5.5s, heap 826.2MB[0m
