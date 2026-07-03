@@ -4085,8 +4085,62 @@ public sealed partial class NetGame : Node3D
         if (_fullHud is null)
             return;
         XonoticGodot.Game.Hud.MapVotePanel mv = _fullHud.MapVote;
+        // Normalize the ballot source so the SAME render runs for a listen host and a remote client. Listen host:
+        // the in-process MapVoting. Remote client (no server world): the networked ballot decoded by
+        // ClientNet.HandleMapVote — without this a --connect client saw no ballot at all (the panel was fed only
+        // from _serverWorld.MapVote, which is null remotely).
         MapVoting? vote = _serverWorld?.MapVote;
-        bool showing = vote is not null && (vote.Running || (vote.Finished && !string.IsNullOrEmpty(vote.WinningMap)));
+        NetMapVote? net = vote is null ? _client?.MapVote : null;
+
+        var cands = new System.Collections.Generic.List<MvCand>();
+        bool showing, isGametypeVote, detail, abstainPresent;
+        float timeout;
+        int ownVote, winnerSlot;                    // winnerSlot: 1-based winning cell (abstain-stripped), 0 = none
+
+        if (vote is not null)
+        {
+            showing = vote.Running || (vote.Finished && !string.IsNullOrEmpty(vote.WinningMap));
+            isGametypeVote = vote.IsGametypeVote;
+            detail = Cvars.Bool("sv_vote_gametype_detail");
+            timeout = vote.Timeout;
+            abstainPresent = false;
+            foreach (MapVoteCandidate c in vote.Candidates)
+            {
+                if (c.IsAbstain) abstainPresent = true;
+                cands.Add(new MvCand(c.MapName, c.IsAbstain, c.Votes, c.Available, c.Suggester));
+            }
+            int own = vote.SelectionOf(LocalServerPlayer);
+            ownVote = (own >= 0 && own < vote.Candidates.Count && !vote.Candidates[own].IsAbstain) ? own : -1;
+            winnerSlot = 0;
+            if (vote.Finished && !string.IsNullOrEmpty(vote.WinningMap))
+            {
+                int slot = 0;
+                foreach (MapVoteCandidate c in vote.Candidates)
+                {
+                    if (c.IsAbstain) continue;
+                    slot++;
+                    if (string.Equals(c.MapName, vote.WinningMap, System.StringComparison.OrdinalIgnoreCase)) { winnerSlot = slot; break; }
+                }
+            }
+        }
+        else if (net is not null)
+        {
+            showing = net.Showing;
+            isGametypeVote = net.IsGametypeVote;
+            detail = net.Detail;
+            timeout = net.Remaining;
+            abstainPresent = net.AbstainPresent;
+            foreach (NetMapVote.Cand c in net.Candidates)
+                cands.Add(new MvCand(c.MapName, false, c.Votes, c.Available, c.Suggester));
+            ownVote = net.Own;                       // already an abstain-stripped cell index (-1 = none/abstain)
+            winnerSlot = net.Finished ? net.Winner1Based : 0;
+        }
+        else
+        {
+            if (mv.Visible) { mv.Visible = false; mv.Active = false; }
+            return;
+        }
+
         if (!showing)
         {
             if (mv.Visible) { mv.Visible = false; mv.Active = false; }
@@ -4095,18 +4149,15 @@ public sealed partial class NetGame : Node3D
 
         // (Re)build the candidate list only when the ballot identity changes (count / first map / running flag),
         // then update the live counts in place each frame so SetVote's per-cell fade state isn't reset every frame.
-        var cands = vote!.Candidates;
-        bool isGametypeVote = vote.IsGametypeVote;
-        string sig = $"{cands.Count}|{(cands.Count > 0 ? cands[0].MapName : "")}|{vote.Timeout:0.0}|{isGametypeVote}";
+        string sig = $"{cands.Count}|{(cands.Count > 0 ? cands[0].MapName : "")}|{timeout:0.0}|{isGametypeVote}";
         if (sig != _mapVoteSig)
         {
             _mapVoteSig = sig;
             var list = new System.Collections.Generic.List<XonoticGodot.Game.Hud.MapVotePanel.Candidate>(cands.Count);
-            int abstainIdx = -1;
             for (int i = 0; i < cands.Count; i++)
             {
-                MapVoteCandidate c = cands[i];
-                if (c.IsAbstain) { abstainIdx = i; continue; } // abstain is rendered as its own row, not a cell
+                MvCand c = cands[i];
+                if (c.IsAbstain) continue; // abstain is rendered as its own row, not a cell
                 string pic;
                 if (isGametypeVote)
                     // QC GameTypeVote_DrawGameTypeItem: the icon is gfx/menu/<menu_skin>/gametype_<name>. There is
@@ -4155,10 +4206,10 @@ public sealed partial class NetGame : Node3D
                 list.Add(new XonoticGodot.Game.Hud.MapVotePanel.Candidate(
                     c.MapName, c.Votes, pic, data, desc, c.Available, c.Suggester));
             }
-            mv.SetVote(list, vote.Timeout, gametypeVote: isGametypeVote, abstain: abstainIdx >= 0);
-            // QC sv_vote_gametype_detail: honour the gametype-vote detail flag.
+            mv.SetVote(list, timeout, gametypeVote: isGametypeVote, abstain: abstainPresent);
+            // QC sv_vote_gametype_detail: honour the gametype-vote detail flag (from the wire on a remote client).
             if (isGametypeVote)
-                mv.Detail = Cvars.Bool("sv_vote_gametype_detail");
+                mv.Detail = detail;
         }
 
         // Live counts + availability each frame (QC MapVote_UpdateVotes), excluding the abstain slot.
@@ -4166,7 +4217,7 @@ public sealed partial class NetGame : Node3D
         // _top2Time reduce-fade clock is stamped when an option first becomes unavailable (QC mv_top2_alpha).
         var avail = new System.Collections.Generic.List<bool>(cands.Count);
         var counts = new System.Collections.Generic.List<int>(cands.Count);
-        foreach (MapVoteCandidate c in cands)
+        foreach (MvCand c in cands)
         {
             if (!c.IsAbstain)
             {
@@ -4177,28 +4228,19 @@ public sealed partial class NetGame : Node3D
         mv.SetAvailability(avail); // stamps _top2Time on first reduce (before SetVotes overwrites availability)
         mv.SetVotes(counts);
 
-        // The local player's own vote (QC mv_ownvote). Abstain is appended LAST on the server ballot, so the
-        // non-abstain candidate indices line up 1:1 with the panel's (abstain-stripped) cell list. An abstain /
-        // no-vote reads as -1 (no cell highlighted).
-        int own = vote.SelectionOf(LocalServerPlayer);
-        mv.OwnVote = (own >= 0 && own < cands.Count && !cands[own].IsAbstain) ? own : -1;
-
-        if (vote.Finished && !string.IsNullOrEmpty(vote.WinningMap))
-        {
-            int win = 0;
-            int slot = 0;
-            foreach (MapVoteCandidate c in cands)
-            {
-                if (c.IsAbstain) continue;
-                slot++;
-                if (string.Equals(c.MapName, vote.WinningMap, System.StringComparison.OrdinalIgnoreCase)) { win = slot; break; }
-            }
-            if (mv.Winner != win) mv.SetWinner(win);
-        }
+        // The local player's own vote (QC mv_ownvote) + the decided winner slot — both normalized above from the
+        // listen host's MapVoting or the networked ballot (abstain-stripped cell indices, so they line up 1:1 with
+        // the panel cells; -1 / 0 = none).
+        mv.OwnVote = ownVote;
+        if (winnerSlot > 0 && mv.Winner != winnerSlot) mv.SetWinner(winnerSlot);
 
         mv.Active = true;
         if (!mv.Visible) mv.Visible = true;
     }
+    /// <summary>A normalized map/gametype-vote ballot cell — the shared shape the map-vote panel renders, built
+    /// from either the listen host's <see cref="MapVoteCandidate"/> or a remote client's <see cref="NetMapVote.Cand"/>.
+    /// Member names match <see cref="MapVoteCandidate"/> so the render body reads identically for both sources.</summary>
+    private readonly record struct MvCand(string MapName, bool IsAbstain, int Votes, bool Available, string Suggester);
     private string _mapVoteSig = "";
     private double _voteHideAt = -1.0;
 

@@ -563,6 +563,7 @@ public sealed class ClientNet : IDisposable
             case NetControl.ItemsTime: HandleItemsTime(ref r); break;
             case NetControl.RadarLinks: HandleRadarLinks(ref r); break;
             case NetControl.ClientInit: HandleClientInit(ref r); break;
+            case NetControl.MapVote: HandleMapVote(ref r); break;
             default: break;
         }
     }
@@ -703,6 +704,62 @@ public sealed class ClientNet : IDisposable
         ServerFog = fog ?? "";
         NexballMeterPeriod = nexballMeter;
         HasClientInit = true;
+    }
+
+    // ---- end-of-match map / gametype vote ballot (S2C NetControl.MapVote) ----
+
+    /// <summary>The networked map/gametype-vote ballot for this client (QC the ReadMapVote net feed), or null when
+    /// no ballot is live. The client-side stand-in for the listen host's in-process <c>MapVoting</c>: on a pure
+    /// remote (--connect) client there is no server world, so NetGame.UpdateMapVotePanel renders the ballot from
+    /// this instead. Replaced wholesale each <see cref="NetControl.MapVote"/> message.</summary>
+    public NetMapVote? MapVote { get; private set; }
+
+    /// <summary>
+    /// Decode the end-of-match map/gametype-vote ballot (S2C <see cref="NetControl.MapVote"/>). Field order mirrors
+    /// the server writer (ServerNet map-vote send) exactly. Populates <see cref="MapVote"/>. Each control message is
+    /// its own datagram, so a short/bad read just drops this ballot (no stream desync).
+    /// </summary>
+    private void HandleMapVote(ref BitReader r)
+    {
+        bool showing = r.ReadBool();
+        bool finished = r.ReadBool();
+        bool isGametypeVote = r.ReadBool();
+        bool detail = r.ReadBool();
+        float remaining = r.ReadFloat();
+        int winner1Based = r.ReadShort();
+        int own = r.ReadShort();
+        bool abstain = r.ReadBool();
+        int n = r.ReadByte();
+        var cands = new List<NetMapVote.Cand>(n);
+        for (int i = 0; i < n; i++)
+        {
+            string mapName = r.ReadString();
+            int votes = r.ReadShort();
+            bool available = r.ReadBool();
+            string suggester = r.ReadString();
+            cands.Add(new NetMapVote.Cand
+            {
+                MapName = mapName ?? "",
+                Votes = votes,
+                Available = available,
+                Suggester = suggester ?? "",
+            });
+        }
+        if (r.BadRead)
+            return;
+        var ballot = new NetMapVote
+        {
+            Showing = showing,
+            Finished = finished,
+            IsGametypeVote = isGametypeVote,
+            Detail = detail,
+            Remaining = remaining,
+            Winner1Based = winner1Based,
+            Own = own,
+            AbstainPresent = abstain,
+        };
+        ballot.Candidates.AddRange(cands);
+        MapVote = ballot;
     }
 
     // ---- waypoint sprites (S2C NetControl.Waypoints; QC the networked ENT_CLIENT_WAYPOINT entities) ----
@@ -1466,5 +1523,42 @@ public sealed class ClientNet : IDisposable
         // later session (or a local GameDemo) must not predict with a stale preset.
         MovementParameters.PredictionOverride = null;
         _transport.Dispose();
+    }
+}
+
+/// <summary>
+/// The end-of-match map/gametype-vote ballot as decoded on a remote client (<see cref="ClientNet.HandleMapVote"/>)
+/// — the client-side stand-in for the listen host's in-process <c>MapVoting</c>. NetGame.UpdateMapVotePanel renders
+/// the vote panel from this when there is no server world (a pure --connect client). All indices are the same
+/// abstain-stripped cell indices the server computed, so the panel highlights line up 1:1 with the candidate cells.
+/// </summary>
+public sealed class NetMapVote
+{
+    /// <summary>Whether the ballot should be shown (QC the server's showing gate: vote running, or finished with a winner).</summary>
+    public bool Showing;
+    /// <summary>The vote has ended (a winner is latched).</summary>
+    public bool Finished;
+    /// <summary>This is a gametype vote (cells are gametypes, not maps) rather than a map vote.</summary>
+    public bool IsGametypeVote;
+    /// <summary>QC mv_detail (sv_vote_gametype_detail): show the extended per-gametype description panel.</summary>
+    public bool Detail;
+    /// <summary>QC mv_abstain: the appended "Don't care" abstain slot is present on the ballot.</summary>
+    public bool AbstainPresent;
+    /// <summary>Seconds remaining on the vote countdown (the panel's timeout clock).</summary>
+    public float Remaining;
+    /// <summary>1-based winning cell (abstain-stripped), 0 = none decided yet.</summary>
+    public int Winner1Based;
+    /// <summary>This client's own vote as an abstain-stripped cell index, or -1 for none / abstain.</summary>
+    public int Own;
+    /// <summary>The ballot cells (abstain excluded — see <see cref="AbstainPresent"/>).</summary>
+    public readonly List<Cand> Candidates = new();
+
+    /// <summary>One ballot cell as it rides the wire.</summary>
+    public struct Cand
+    {
+        public string MapName;
+        public int Votes;
+        public bool Available;
+        public string Suggester;
     }
 }
