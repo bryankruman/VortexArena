@@ -53,6 +53,17 @@ public abstract partial class Weapon : IRegistered
     public int SpawnFlags;
 
     /// <summary>
+    /// Whether this weapon exists in the MENU program's weapon registry. Base compiles menu/client/server QC
+    /// separately, and the menu program never registers WEP_NEXBALL (the Nexball BallStealer) — so Base's
+    /// weapons-priority list can neither show nor append it, which is why no real config.cfg ever grows a
+    /// "ballstealer" token even though the weapon lacks WEP_FLAG_SPECIALATTACK. This single-registry port
+    /// models that per-program registry difference with a flag, consulted only by <see cref="WeaponOrder"/>'s
+    /// menu-view fix-ups (<c>menuRegistryView</c>); server-side fix-ups see every weapon, exactly like Base's
+    /// server program. True for every normal weapon.
+    /// </summary>
+    public bool MenuRegistered = true;
+
+    /// <summary>
     /// QC <c>ammo_type</c> (the weapon's <c>.m_ammo</c> ATTRIB, RES_*): the resource this weapon consumes, or
     /// <see cref="ResourceType.None"/> for ammo-less weapons (Blaster/Porto/Tuba/Fireball). Concrete weapons
     /// set it in their constructor. Lifted onto the base (was a shadowing per-subclass field) so the central

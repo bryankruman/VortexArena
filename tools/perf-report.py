@@ -270,6 +270,8 @@ def fmt_report(d: dict) -> str:
         for s in d["alloc_storms"][:5]:
             out.append(f"  t={s['t']:.1f}s  {s['mb']:.0f}MB  top1={s['top1']}" + ("  [gen2]" if s["gc2"] else ""))
     if d["frames"]:
+        out.append(f"draws p50: {d['draws_p50']:.0f}  (portal-facing spawns roughly double this — see the A/B note "
+                   "in PERF-DEBUGGING.md)")
         gc = d["gc"]
         out.append(f"gc: g0+{gc['gc0']} g1+{gc['gc1']} g2+{gc['gc2']}, pause {d['gc_pause_ms']:.0f}ms"
                    f" | alloc {d['alloc_total_mb']:.0f}MB total")
@@ -300,6 +302,15 @@ def fmt_diff(a: dict, b: dict) -> str:
         good = (delta <= 0) == (better == "lower")
         mark = "ok " if good else "!! "
         out.append(f"  {mark}{label:<22} {fmt.format(av):>9} vs {fmt.format(bv):>9}  ({sign}{fmt.format(delta)})")
+
+    # Render-load sanity gate: the idle A/B camera sits at a RANDOM spawn, and a portal-facing spawn re-renders
+    # the scene into the portal viewport (~2x draws, +1ms+ p50 on a debug build) — two runs with grossly
+    # different draw counts are not comparing the same workload (found 2026-07-03: a "regression" that was
+    # really the spawn lottery). Pin with -Cvar "cl_portal_render 0" or "wz_portal_lookat 1".
+    da, db = a.get("draws_p50", 0), b.get("draws_p50", 0)
+    if da > 0 and db > 0 and (da > db * 1.3 or db > da * 1.3):
+        out.append(f"  !! RENDER LOADS DIFFER (draws p50 {da:.0f} vs {db:.0f}) — likely a portal-facing spawn; "
+                   "frame-time rows below are NOT comparable")
 
     row("avg fps", a.get("avg_fps", 0), b.get("avg_fps", 0), better="higher")
     row("p50 ms", a.get("p50_ms", 0), b.get("p50_ms", 0))

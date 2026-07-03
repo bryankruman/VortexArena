@@ -112,8 +112,9 @@ public sealed partial class ShellCasings : Node3D
     /// (engine-perf 2026-06-16) Build one hidden instance per casing variant for the offscreen GPU pipeline warm
     /// pass (<see cref="GpuWarmPass"/>). Casings render via the entity feed and are otherwise un-warmed, so the
     /// FIRST weapon shot first-instances their (mesh,material) pipeline mid-match — a synchronous SURFACE compile.
-    /// Uses the SAME <see cref="BuildMesh"/> factory a live <see cref="Spawn"/> uses (real IQM brass when
-    /// <see cref="ModelLoader"/> resolves it, the generated cylinder fallback otherwise). The returned nodes are
+    /// Uses the SAME <see cref="BuildMesh"/> factory a live <see cref="Spawn"/> uses (the real models when
+    /// <see cref="ModelLoader"/> resolves them — IQM bullet brass, MDL shotgun shell — else the generated
+    /// cylinder fallback). The returned nodes are
     /// unparented — the warm pass parents, renders, and frees them.
     /// </summary>
     public List<Node3D> BuildWarmupInstances()
@@ -129,8 +130,9 @@ public sealed partial class ShellCasings : Node3D
 
     private Node3D BuildMesh(CasingKind kind)
     {
-        // Prefer the real casing model. The shotgun shell is a Quake1 .mdl (not handled by the IQM/DPM/MD3
-        // loader) so it falls through to the generated mesh; the bullet casing is an IQM and loads cleanly.
+        // Prefer the real casing model. The shotgun shell is a Quake1 .mdl and the bullet casing an IQM; both
+        // load through the host loader now (MdlReader added 2026-07). The generated cylinder stays as the
+        // fallback if the loader is unwired or the model can't be parsed.
         string vpath = kind == CasingKind.Shell ? "models/casing_shell.mdl" : "models/casing_bronze.iqm";
         if (ModelLoader is not null)
         {

@@ -217,7 +217,8 @@ public sealed class BotNavigation
     /// start is used only as a fallback when no seed is reachable. Defaults to true so non-brain callers (tests)
     /// keep compiling.
     /// </summary>
-    public void SetGoal(Vector3 origin, Vector3 goalPos, WaypointNetwork? net, Entity? goalEntity = null, bool onGround = true)
+    public void SetGoal(Vector3 origin, Vector3 goalPos, WaypointNetwork? net, Entity? goalEntity = null, bool onGround = true,
+        IReadOnlyList<(Waypoint Wp, float Cost)>? seeds = null)
     {
         ClearRoute();
         GoalEntity = goalEntity;
@@ -234,7 +235,9 @@ public sealed class BotNavigation
 
         // QC navigation_findnearestwaypoint(ent, walkfromwp): the goal node is reached by walking FROM the
         // waypoint TO the goal (walkfromwp = false) — see routetogoal, which seeds the goal's with !walkfromwp.
-        var goalWp = net.Nearest(goalPos, walkFromWp: false);
+        // An ENTITY goal rides the QC .nearestwaypoint cache (perf/parity 2026-07-03: QC routetogoal reads the
+        // cache here too — a static item binds once per match instead of re-tracewalking every route build).
+        var goalWp = goalEntity is not null ? net.NearestForGoal(goalEntity, goalPos) : net.Nearest(goalPos, walkFromWp: false);
         if (goalWp is null)
             return;
 
@@ -244,7 +247,9 @@ public sealed class BotNavigation
         // entry point rather than forcing the single geometrically-nearest one (the nearest is sometimes behind a
         // wall / on the wrong side of a ledge, so a slightly-farther seed can open the cheaper overall route).
         // Fall back to the single-nearest start node when no seed is reachable (e.g. no collision world in tests).
-        var seeds = net.NearestSeeds(origin, onGround, walkFromWp: true);
+        // The caller may hand in the seed set its rating flood already computed from the same origin (perf
+        // 2026-07-03) — the tracewalk-heavy search then runs ONCE per strategy pass instead of twice.
+        seeds ??= net.NearestSeeds(origin, onGround, walkFromWp: true);
         List<Waypoint>? path = seeds.Count > 0 ? net.FindPath(seeds, goalWp) : null;
         if (path is null || path.Count == 0)
         {

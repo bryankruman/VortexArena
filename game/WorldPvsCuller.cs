@@ -34,9 +34,9 @@ public sealed partial class WorldPvsCuller : Node
 
     public override void _Ready()
     {
-        // Escape hatch for A/B + safety (archived like the other r_* engine cvars).
-        XonoticGodot.Game.Menu.MenuState.Cvars.Register("r_pvs_cull", "1",
-            XonoticGodot.Common.Services.CvarFlags.Save);
+        // Escape hatch for A/B + safety. Deliberately NOT archived (no CvarFlags.Save): a `set r_pvs_cull 0`
+        // debug pin must not silently persist into the player's config.cfg.
+        XonoticGodot.Game.Menu.MenuState.Cvars.Register("r_pvs_cull", "1");
     }
 
     public override void _Process(double delta)

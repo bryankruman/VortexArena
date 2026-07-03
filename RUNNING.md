@@ -90,7 +90,9 @@ A healthy boot prints `[MapLoader] '<map>' surfaces: …`, `[bots] waypoints for
 bot fill kicks in at sim time 2.5 s), and `handshake accepted`. For scripted/CI runs add
 `--quit-after-seconds <s>` so the host exits on its own — Windows `timeout` does NOT kill the Godot child,
 and an orphaned host keeps UDP 26000 bound (the next run then fails with "Couldn't create an ENet host";
-clean up strays with `powershell "Get-Process Godot* | Stop-Process -Force"`).
+clean up strays with `powershell "Get-Process Godot* | Stop-Process -Force"`). A `--quit-after-seconds`
+(or explicit `--no-save-config`) run also **never writes `~/XonData/config.cfg`** — DP's `-benchmark`
+rule — so scripted runs and their `--cvar`/`--bots` pins can't pollute the player's saved settings.
 
 For a packaged install, `tools/run-dedicated.sh` (shipped beside the exported `linux-dedicated`
 binary by `tools/package.sh`) `cd`s to its own directory first, matching upstream's
@@ -217,7 +219,10 @@ ToS/welcome/team-select, tools, confirms). Architecture:
   match (so a setting changed in the menu is live in-game and persists). Apply/restart buttons route through
   `MenuCommand`.
 - **Dialogs** live in `game/menu/dialogs/` (one C# file per QC `dialog_*.qc`); `DialogSettingsAudio.cs` is the
-  reference pattern. Settings persist to `~/XonData/config.cfg` on Back/Apply.
+  reference pattern. Settings persist to `~/XonData/config.cfg` on Back/Apply — but only cvars the shipped cfg
+  tree declares `seta` (or DP-archived engine cvars / explicit user `seta`s), and only when moved off the
+  shipped default (the DP `Cvar_WriteVariables` rule; see CVARS.md "Persistence"). Automation runs
+  (`--quit-after-seconds` / `--no-save-config`) skip the save entirely.
 - **User data dir.** All writable per-user data — `config.cfg` (cvars + keybinds), `settings.cfg`,
   `favorites.cfg`, the `sdfcache/`, and the profiler dumps — lives under **`~/XonData/`** (resolved by
   `game/UserPaths.cs`, the writable-side counterpart to `DataPaths`), *not* Godot's hidden `user://` dir. Set

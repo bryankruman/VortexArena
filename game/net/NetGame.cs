@@ -68,7 +68,7 @@ public sealed partial class NetGame : Node3D
     private string _map = "";
     private string _gametype = "dm";
     private int _botCount;
-    private int _botSkill = 5;
+    private int _botSkill = -1;                 // -1 = unspecified: never write the `skill` cvar (MatchConfig.BotSkill)
     private string _campaignName = "";          // non-empty → host this listen server as a campaign level
     private int _campaignIndex;
     private string _serverName = "XonoticGodot Listen Server";
@@ -371,7 +371,7 @@ public sealed partial class NetGame : Node3D
     /// bots), then self-connect a local client to it. The shared <paramref name="vfs"/>/<paramref name="cvars"/>
     /// drive both the server's config + the client's rendering; pass null for a bare CLI host on a test floor.
     /// </summary>
-    public void ConfigureListenServer(string map, string gametype = "dm", int botCount = 0, int botSkill = 5,
+    public void ConfigureListenServer(string map, string gametype = "dm", int botCount = 0, int botSkill = -1,
         int port = DefaultPort, string playerName = "player", string serverName = "XonoticGodot Listen Server",
         VirtualFileSystem? vfs = null, XonoticGodot.Engine.Simulation.CvarService? cvars = null,
         string campaignName = "", int campaignIndex = 0)
@@ -503,8 +503,9 @@ public sealed partial class NetGame : Node3D
 
         LoadingScreen?.BeginStage("Connecting…", 0.90f, 0.5f);
 
-        // FPS mouse-look: capture the cursor (the Shell releases/recaptures it around the in-game menu).
-        Input.MouseMode = Input.MouseModeEnum.Captured;
+        // FPS mouse-look: want the cursor captured (MouseCapture only grabs while the window is focused; the
+        // Shell releases/recaptures it around the in-game menu).
+        MouseCapture.SetWantCapture(true);
 
         GD.Print(_isListenServer
             ? $"[NetGame] listen server on 127.0.0.1:{_port} (map '{_map}', {_gametype}, {_botCount} bots) — self-connecting."
@@ -713,8 +714,13 @@ public sealed partial class NetGame : Node3D
         {
             _serverWorld.Services.Cvars.Set("bot_number",
                 _botCount.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            _serverWorld.Services.Cvars.Set("skill",
-                _botSkill.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            // Seed `skill` only when the caller actually chose one (menu slider / campaign level). A bare CLI
+            // `--host --bots N` leaves it -1 = unspecified — writing the old implicit default here silently
+            // stomped the user's/stock skill (a perf run left every bot at skill 0). Both cvars are plain-`set`
+            // in Base (never archived), so these writes affect the live match only, never config.cfg.
+            if (_botSkill >= 0)
+                _serverWorld.Services.Cvars.Set("skill",
+                    _botSkill.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         // any bot leaving (fixcount trim / removebots / intermission teardown) must clear ServerNet's
         // per-player id/antilag maps, exactly like the old explicit remove handler did.
@@ -3287,7 +3293,7 @@ public sealed partial class NetGame : Node3D
             if (ui != _minigameUiOwnedCursor)
             {
                 _minigameUiOwnedCursor = ui;
-                Input.MouseMode = ui ? Input.MouseModeEnum.Visible : Input.MouseModeEnum.Captured;
+                MouseCapture.SetWantCapture(!ui);
             }
         }
 
@@ -5621,11 +5627,13 @@ public sealed partial class NetGame : Node3D
             };
         }
 
-        // Re-capture on click if the user released the mouse (e.g. after alt-tab); never while the tree is
-        // paused (the in-game menu), the console is open, or the minigame menu is up — those own the cursor.
+        // Re-capture on click if the cursor came free (e.g. after alt-tab); never while the tree is paused (the
+        // in-game menu), the console is open, or the minigame menu is up — those own the cursor. Focus handling
+        // (MouseCapture) normally recaptures on alt-tab back on its own; this is the same-frame fallback for a
+        // click that lands before the focus-in edge, and it still can't grab an unfocused window.
         if (!GetTree().Paused && !ConsoleState.IsOpen && !UiOwnsCursor
             && Input.MouseMode != Input.MouseModeEnum.Captured && Input.IsMouseButtonPressed(MouseButton.Left))
-            Input.MouseMode = Input.MouseModeEnum.Captured;
+            MouseCapture.SetWantCapture(true);
 
         // Gameplay input is inert while the in-game menu is up (paused), the console is open, OR a cursor-owning
         // HUD UI (minigame menu/board or the quick-chat menu) is open. On the edge into inactive, drop all held

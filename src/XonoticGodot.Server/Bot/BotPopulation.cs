@@ -47,6 +47,8 @@ public sealed class BotPopulation
 
     private float _nextThink;            // QC botframe_nextthink (fixcount backoff on spawn failure)
     private bool _waypointsLoaded;       // QC botframe_spawnedwaypoints (load-once latch)
+    private int _itemPrewarmCursor;      // (perf) staggered item→waypoint cache prewarm — see block (g2)
+    private bool _itemPrewarmDone = true;
     private float _lastSkillCvar = float.NaN; // QC the `skill` global resync (bot.qc:725-736)
     private int _tokenIndex;             // QC bot_strategytoken (index into _brains)
     private bool _tokenTaken = true;     // QC bot_strategytoken_taken (true → rotate next frame)
@@ -179,6 +181,37 @@ public sealed class BotPopulation
             Network = _world.LoadWaypointNetwork();
             foreach (BotBrain b in _brains)
                 b.Network = Network;
+            _itemPrewarmCursor = 0;          // arm the staggered item→waypoint prewarm below
+            _itemPrewarmDone = Network is null;
+        }
+
+        // (g2) (perf 2026-07-03) Staggered item→waypoint prewarm: the FIRST strategy pass per bot used to pay
+        // the whole QC .nearestwaypoint cache fill in one tick (~every rateable item × a tracewalk-verified
+        // Nearest each — the 80-115ms join-window CPU-LOGIC hitches on a debug build, stormkeep census). Bind a
+        // few items per frame here instead — the SAME cache with the SAME position-derived values
+        // (WaypointNetwork.NearestForGoal), just filled off the strategy hot path. Static items bind once per
+        // match; the cursor walks the entity list once per graph load.
+        if (Network is { } net && !_itemPrewarmDone)
+        {
+            var all = Common.Services.Api.Entities.All;
+            if (all is null)
+                _itemPrewarmDone = true;
+            else
+            {
+                const int PerFrame = 3;   // ~1-3 tracewalks each — a sub-millisecond-scale slice per tick
+                int bound = 0;
+                while (_itemPrewarmCursor < all.Count && bound < PerFrame)
+                {
+                    Entity e = all[_itemPrewarmCursor++];
+                    if (e is { IsFreed: false } && (e.Flags & EntFlags.Item) != 0)
+                    {
+                        net.NearestForGoal(e, e.Origin);
+                        bound++;
+                    }
+                }
+                if (_itemPrewarmCursor >= all.Count)
+                    _itemPrewarmDone = true;
+            }
         }
 
         // (h) strategy token rotation (bot.qc:786-813): when the token was consumed, pass it to the next bot

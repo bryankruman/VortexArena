@@ -535,6 +535,14 @@ public sealed class WaypointNetwork
         // QC navigation_markroutes_nearestwaypoints radius growth (navigation.qc:1054-1058).
         float inc = onGround ? 750f : 500f;
         float max = onGround ? 50000f : 1500f;
+        // (perf 2026-07-03) Clamp the TRACED ring growth: a seed candidate N units out costs an N-long walk-sim
+        // (a trace every ~32qu — a 5000qu attempt is 150+ traces, several ms EACH on a debug build; QC pays the
+        // same walks at native-C trace speed). A far seed's entry cost is so high the flood almost never picks
+        // it anyway; past the clamp the caller's fallbacks take over (ComputeRouteCosts → budgeted Nearest →
+        // nearest-by-distance), the same degradation QC accepts when nothing is reachable. Test/graphless runs
+        // (no collision world) keep the full QC growth.
+        if (canTrace)
+            max = MathF.Min(max, 2250f);
 
         if (_seedTried.Length < _nodes.Count) _seedTried = new bool[_nodes.Count];
         else Array.Clear(_seedTried, 0, _nodes.Count);
@@ -542,29 +550,48 @@ public sealed class WaypointNetwork
         // Tracewalk BUDGET per call: each attempt is a full walk-sim (a trace every ~32qu, potentially hundreds
         // over a long approach), so even one-attempt-per-node explodes when NOTHING near the bot is reachable
         // (a bot on a ledge/void edge burns the whole node list ≈ 100ms+ — the residual bot.strategy hitch
-        // spikes). The ring growth already orders attempts roughly near-first; after the budget the caller's
-        // straight-line fallback takes over — the same degradation QC accepts for an unreachable spot.
-        const int MaxWalkAttempts = 24;
+        // spikes). After the budget the caller's straight-line fallback takes over — the same degradation QC
+        // accepts for an unreachable spot. (12 = perf 2026-07-03, halved from 24: with nearest-first ordering
+        // the successful case hits in the first few walks; the budget only burns fully in the nothing-reachable
+        // case, where it pays pure waste.)
+        const int MaxWalkAttempts = 12;
+        // Reachable-seed CAP (perf 2026-07-03; a bounded deviation from QC's take-everything-in-the-final-ring):
+        // the multi-seed A* only needs a handful of entry candidates — every seed is pre-charged with its
+        // bot→seed entry cost, so a farther seed almost never beats a nearer one. In a waypoint-dense area the
+        // final ring holds 10-20 nodes and QC semantics tracewalked EVERY one (the dominant share of the ~100ms
+        // strategy-pass hitches on a debug build); walking nearest-first and stopping at the cap keeps the seed
+        // set = the K nearest reachable — deterministic and position-derived, so behavior stays stable.
+        const int MaxSeeds = 8;
         int attempts = 0;
 
         for (float radius = inc; ; radius += inc)
         {
             float r2 = radius * radius;
+            // Gather this ring's untried candidates, NEAREST-FIRST — so the walk budget is spent on the likely
+            // entries and the early-out cap collects the nearest reachable seeds (the node-list-order scan this
+            // replaces walked candidates in arbitrary order).
+            var cand = _seedCand;
+            cand.Clear();
             for (int i = 0; i < _nodes.Count; i++)
             {
                 // one attempt per node per call — covers BOTH the QC seed-set dedupe (a node taken at a tighter
                 // radius) AND the failed-tracewalk case the per-growth rescan would otherwise re-walk every step.
                 if (_seedTried[i])
                     continue;
+                float d2 = (_nodes[i].ClosestPoint(pos) - pos).LengthSquared();
+                if (d2 <= r2)
+                    cand.Add((d2, i));
+            }
+            cand.Sort(_byD2Idx);
+            for (int c = 0; c < cand.Count; c++)
+            {
+                int i = cand[c].Idx;
                 Waypoint wp = _nodes[i];
-                Vector3 cp = wp.ClosestPoint(pos);
-                float d2 = (cp - pos).LengthSquared();
-                if (d2 > r2)
-                    continue;
-                if (canTrace && attempts >= MaxWalkAttempts)
-                    return seeds;   // budget exhausted — return whatever is reachable so far (often empty)
+                if (canTrace && (attempts >= MaxWalkAttempts || seeds.Count >= MaxSeeds))
+                    return seeds;   // budget/cap hit — return the nearest reachable found so far (often empty)
                 _seedTried[i] = true;
                 attempts++;
+                Vector3 cp = wp.ClosestPoint(pos);
                 bool reach = !canTrace || (walkFromWp
                     ? BotTracewalk.CanWalk(pos, cp, _playerMins, _playerMaxs, wp.IsBox ? (wp.AbsMax.Z - cp.Z) : 0f)
                     : BotTracewalk.CanWalk(cp, pos, _playerMins, _playerMaxs));
@@ -576,6 +603,11 @@ public sealed class WaypointNetwork
         }
         return seeds;
     }
+
+    // Ring-candidate scratch for NearestSeeds' nearest-first ordering (same single-threaded-sim safety as the
+    // other scratches; index into _nodes so the tried-mask stays index-addressed).
+    private readonly List<(float D2, int Idx)> _seedCand = new();
+    private static readonly Comparison<(float D2, int Idx)> _byD2Idx = static (a, b) => a.D2.CompareTo(b.D2);
 
     // Reusable scratch for Nearest's candidate sort — avoids a per-call allocation. The sim drives bots
     // sequentially on one thread, so a shared buffer on the shared network is safe (Nearest isn't re-entrant).
@@ -636,7 +668,14 @@ public sealed class WaypointNetwork
         // Nearest-first: the first node we can actually walk to is the nearest reachable one. Direction follows
         // Base's walkfromwp: true → bot walks pos→waypoint (start node); false → player walks waypoint→pos
         // (goal node, the route arrives at the goal FROM the waypoint).
-        for (int i = 0; i < cand.Count; i++)
+        // Tracewalk BUDGET (perf 2026-07-03): each attempt is a full walk-sim, and an adversarial position (a
+        // MID-AIR player being goal-rated, a ledge/void spot) fails candidate after candidate — unbudgeted, this
+        // walked the whole in-range list (the dominant share of the ~100ms `bot.rate` hitches on a debug build:
+        // every enemy-player rating re-binds through here each strategy pass). The common case succeeds on the
+        // first walk; after the budget we degrade to nearest-by-distance — the same fallback as the
+        // nothing-reachable case below, which QC also accepts.
+        const int MaxNearestWalks = 8;
+        for (int i = 0; i < cand.Count && i < MaxNearestWalks; i++)
         {
             Waypoint wp = cand[i].Wp;
             Vector3 cp = wp.ClosestPoint(pos);
@@ -820,11 +859,16 @@ public sealed class WaypointNetwork
     /// heap (sim drives bots sequentially, so the shared scratch is safe). Marks the cache invalid (so callers
     /// fall back to straight-line) when <paramref name="from"/> has no nearby waypoint.
     /// </summary>
-    public void ComputeRouteCosts(Vector3 from, bool onGround = true)
+    /// <returns>The entry-seed set the flood was seeded from (perf 2026-07-03): the SAME set
+    /// <see cref="BotNavigation.SetGoal"/> needs for its multi-seed A* moments later in the strategy pass —
+    /// returning it lets the brain reuse it instead of re-running the tracewalk-heavy <see cref="NearestSeeds"/>
+    /// from the identical origin (the seed search is the dominant cost of a strategy pass on a debug build).
+    /// Aliases a shared scratch: copy it before the next NearestSeeds/ComputeRouteCosts call.</returns>
+    public IReadOnlyList<(Waypoint Wp, float Cost)> ComputeRouteCosts(Vector3 from, bool onGround = true)
     {
         _routeCostValid = false;
         int n = _nodes.Count;
-        if (n == 0) return;
+        if (n == 0) return Array.Empty<(Waypoint, float)>();
         if (_routeCost.Length < n) _routeCost = new float[n];
         if (_closed.Length < n)
         {
@@ -839,7 +883,7 @@ public sealed class WaypointNetwork
         if (seeds.Count == 0)
         {
             Waypoint? src = Nearest(from, walkFromWp: true);
-            if (src is null || src.Index < 0) return;
+            if (src is null || src.Index < 0) return Array.Empty<(Waypoint, float)>();
             seeds = new[] { (src, (src.ClosestPoint(from) - from).Length() / MaxSpeed) };
         }
 
@@ -882,6 +926,7 @@ public sealed class WaypointNetwork
             }
         }
         _routeCostValid = true;
+        return seeds;
     }
 
     /// <summary>
@@ -898,6 +943,17 @@ public sealed class WaypointNetwork
         float c = _routeCost[gw.Index];
         if (float.IsPositiveInfinity(c)) return float.PositiveInfinity;
         return c + (gw.ClosestPoint(goal) - goal).Length() / MaxSpeed;
+    }
+
+    /// <summary>Route cost straight to a graph NODE (perf 2026-07-03): the goal already IS a waypoint, so read
+    /// its own flood slot — the generic overloads would round-trip through a tracewalk-verified
+    /// <see cref="Nearest"/> to rediscover the node they were handed (the roam-waypoint rating did exactly that
+    /// for every shell candidate — a large share of an idle bot's rating pass on a debug build).</summary>
+    public float RouteCostToWaypoint(Waypoint wp)
+    {
+        if (!_routeCostValid || wp.Index < 0 || wp.Index >= _routeCost.Length)
+            return float.PositiveInfinity;
+        return _routeCost[wp.Index];
     }
 
     /// <summary>Entity-goal overload of <see cref="RouteCostTo(Vector3)"/> using the QC nearest-waypoint CACHE —
@@ -919,8 +975,11 @@ public sealed class WaypointNetwork
     // timeout, exactly the QC split.
     private readonly Dictionary<Entity, (Waypoint? Wp, float Until)> _goalWpCache = new();
 
-    /// <summary>The goal entity's nearest (walk-reachable) waypoint, via the QC nearest-waypoint cache.</summary>
-    private Waypoint? NearestForGoal(Entity target, Vector3 pos)
+    /// <summary>The goal entity's nearest (walk-reachable) waypoint, via the QC nearest-waypoint cache. Public
+    /// (perf/parity 2026-07-03) so <see cref="BotNavigation.SetGoal"/>'s goal-side lookup rides the same cache —
+    /// QC navigation_routetogoal reads .nearestwaypoint there too; the port was re-running the tracewalk-heavy
+    /// <see cref="Nearest"/> per route build.</summary>
+    public Waypoint? NearestForGoal(Entity target, Vector3 pos)
     {
         float now = XonoticGodot.Common.Gameplay.MapMover.Now();
         if (_goalWpCache.TryGetValue(target, out (Waypoint? Wp, float Until) c))

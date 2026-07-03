@@ -65,19 +65,21 @@ public sealed class IqmData
     public Vector4[]? Tangents { get; init; }
 
     /// <summary>
-    /// Per-vertex skinning bone indices (IQM_BLENDINDEXES, ubyte4) into <see cref="Joints"/>. Each entry is
-    /// the 4 influencing bone indices for that vertex. <c>null</c> if the model is unskinned (no bones /
-    /// no animation). Length = <see cref="VertexCount"/>.
+    /// Per-vertex skinning bone indices (IQM_BLENDINDEXES, ubyte4) into <see cref="Joints"/>, FLAT: vertex
+    /// <c>v</c>'s 4 influencing bone indices are <c>[v*4 .. v*4+3]</c>. <c>null</c> if the model is unskinned
+    /// (no bones / no animation). Length = <see cref="VertexCount"/> * 4. (Flat rather than jagged — one
+    /// <c>byte[4]</c> object per vertex was tens of thousands of tiny GC objects per player model, a
+    /// measurable slice of the bot-join allocation storm.)
     /// </summary>
-    public byte[][]? BlendIndexes { get; init; }
+    public byte[]? BlendIndexes { get; init; }
 
     /// <summary>
-    /// Per-vertex skinning weights matching <see cref="BlendIndexes"/> (IQM_BLENDWEIGHTS). Each entry is the
-    /// 4 weights, normalized 0..255 (a vertex's weights sum to ~255). <c>null</c> if unskinned.
-    /// Length = <see cref="VertexCount"/>. (IQM also permits float4 weights; if the file used that format it
-    /// is converted to the 0..255 byte scale here so consumers have one representation.)
+    /// Per-vertex skinning weights matching <see cref="BlendIndexes"/> (IQM_BLENDWEIGHTS), same FLAT
+    /// <c>v*4</c> layout. Weights are normalized 0..255 (a vertex's 4 weights sum to ~255). <c>null</c> if
+    /// unskinned. Length = <see cref="VertexCount"/> * 4. (IQM also permits float4 weights; if the file used
+    /// that format it is converted to the 0..255 byte scale here so consumers have one representation.)
     /// </summary>
-    public byte[][]? BlendWeights { get; init; }
+    public byte[]? BlendWeights { get; init; }
 
     /// <summary>Per-vertex vertex colors (IQM_COLOR) as RGBA 0..1, or <c>null</c> if absent. Both the
     /// float4 and ubyte4 on-disk formats are decoded to this normalized form.</summary>

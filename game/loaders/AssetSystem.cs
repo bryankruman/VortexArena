@@ -509,6 +509,10 @@ public sealed class AssetSystem
     {
         if (string.IsNullOrEmpty(baseNameNoExt) || baseNameNoExt[0] == '$')
             return;
+        // (perf 2026-07-03) Named scope: the worker-side read+decode was the biggest UNATTRIBUTED allocator in
+        // the profiler (a 190 MB join-window frame carried no top-alloc scope) — per-thread Prof accumulators
+        // make worker scopes cheap, and the alloc column now names this path in hitch trees.
+        using var _ = XonoticGodot.Common.Diagnostics.Prof.Sample("stream.predecode");
         string? vpath = _vfs.ResolveImage(baseNameNoExt);   // ConcurrentDictionary-cached (thread-safe)
         if (vpath is null || _predecodedImages.ContainsKey(vpath))
             return;
@@ -622,8 +626,33 @@ public sealed class AssetSystem
         }
     }
 
+    // (perf 2026-07-03) Grow-only per-thread FILE buffer for the tga/dds read path: `_vfs.ReadBytes`'s fresh
+    // `new byte[]` per texture (4-16 MB for an uncompressed TGA / mip-chained DDS, ~11 textures per player
+    // model) was the dominant LOH churn behind the 130-430 MB single-frame allocation storms → gen2
+    // collections at load/join. One retained buffer per decoding thread (streamer workers + main), bounded by
+    // the largest texture file. PNG/JPG keep the exact-array path (Godot's LoadXxxFromBuffer marshals the
+    // WHOLE array, and those files are small/rare in Xonotic data).
+    [ThreadStatic] private static byte[]? _fileScratch;
+
     private Image? LoadImageFromVpath(string vpath)
     {
+        string ext = AssetPaths.GetExtension(vpath);
+        if (ext is "tga" or "dds")
+        {
+            int length;
+            try
+            {
+                length = _vfs.ReadBytesInto(vpath, ref _fileScratch);
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr($"[AssetSystem] read failed for texture '{vpath}': {ex.Message}");
+                return null;
+            }
+            byte[] buf = _fileScratch!;
+            return ext == "tga" ? DecodeTga(buf, length, vpath) : DecodeDds(buf, length, vpath);
+        }
+
         byte[] bytes;
         try
         {
@@ -635,27 +664,27 @@ public sealed class AssetSystem
             return null;
         }
 
-        string ext = AssetPaths.GetExtension(vpath);
         return ext switch
         {
-            "tga" => DecodeTga(bytes, vpath),
             "png" => LoadViaGodot(bytes, isPng: true, vpath),
             "jpg" or "jpeg" => LoadViaGodot(bytes, isPng: false, vpath),
-            "dds" => DecodeDds(bytes, vpath),
             _ => DecodeUnknown(bytes, vpath), // pcx/wal/etc.: unsupported
         };
     }
 
-    private static Image? DecodeTga(byte[] bytes, string vpath)
+    private static Image? DecodeTga(byte[] bytes, int length, string vpath)
     {
         // Primary: our own decoder (handles the full Xonotic TGA spread, RLE included).
-        Image? img = TgaDecoder.Decode(bytes);
+        Image? img = TgaDecoder.Decode(bytes, length);
         if (img != null)
             return img;
 
-        // Fallback: let Godot try, in case of an exotic header our decoder rejected.
+        // Fallback: let Godot try, in case of an exotic header our decoder rejected. Godot's buffer loader
+        // marshals the whole array, so the (rare) fallback needs an exact-length copy of the pooled buffer.
+        var exact = new byte[length];
+        Array.Copy(bytes, exact, length);
         var godot = new Image();
-        if (godot.LoadTgaFromBuffer(bytes) == Error.Ok)
+        if (godot.LoadTgaFromBuffer(exact) == Error.Ok)
             return godot;
 
         GD.PrintErr($"[AssetSystem] failed to decode TGA '{vpath}'.");
@@ -672,12 +701,12 @@ public sealed class AssetSystem
         return null;
     }
 
-    private static Image? DecodeDds(byte[] bytes, string vpath)
+    private static Image? DecodeDds(byte[] bytes, int length, string vpath)
     {
         // Xonotic ships GPU-precompressed S3TC textures under a parallel dds/ tree; for some maps (e.g.
-        // stormkeep) the .dds is the only variant present. Decoded to RGBA8 by our own DdsDecoder, since
-        // Godot's scripting API has no DDS-from-buffer loader.
-        Image? img = DdsDecoder.Decode(bytes);
+        // stormkeep) the .dds is the only variant present. Full-chain DXT1/3/5 files PASS THROUGH compressed
+        // (no CPU decode, mips kept, S3TC on the GPU — see DdsDecoder); the rest decode to RGBA8 as before.
+        Image? img = DdsDecoder.Decode(bytes, length);
         if (img != null)
             return img;
         GD.PrintErr($"[AssetSystem] failed to decode DDS '{vpath}'.");

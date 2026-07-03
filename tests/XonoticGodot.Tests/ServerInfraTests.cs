@@ -172,6 +172,51 @@ public class ServerInfraTests
             new HashSet<string>(cvars.ArchivedNamesToPersist, System.StringComparer.Ordinal));
     }
 
+    [Fact]
+    public void ConfigLoad_SetaVsSet_DecidesTheArchiveBit_LikeDpCfgProvenance()
+    {
+        // DP: `seta` in the shipped cfg tree sets CVAR_SAVE on the cvar (Cvar_SetA_f → Cvar_Get flags|=);
+        // plain `set` does not — the TREE, not the C# registration tables, is the authority on what may
+        // persist to config.cfg. MenuState.Boot wires ConfigLoader's archive hook to MarkArchived so that
+        // provenance survives the port.
+        var cvars = new CvarService();
+        const string cfg = "seta crosshair_enabled 1\nset sv_spectate 1\n";
+        XonoticGodot.Common.Config.ConfigLoader.Load(cvars, p => p == "boot.cfg" ? cfg : null,
+            name => cvars.MarkArchived(name), "boot.cfg");
+        cvars.LockDefaults();
+
+        Assert.True(cvars.IsArchived("crosshair_enabled"));   // seta → archiveable
+        Assert.False(cvars.IsArchived("sv_spectate"));        // plain set → never archived (Base parity)
+
+        // Change BOTH off their locked defaults: only the seta-declared one is eligible for config.cfg.
+        cvars.Set("crosshair_enabled", "0");
+        cvars.Set("sv_spectate", "0");
+        var persist = new HashSet<string>(cvars.ArchivedNamesToPersist, System.StringComparer.Ordinal);
+        Assert.Contains("crosshair_enabled", persist);
+        Assert.DoesNotContain("sv_spectate", persist);
+    }
+
+    [Fact]
+    public void ServerDefaults_OpsCvars_AreNotArchived_MatchingBasePlainSet()
+    {
+        // Base declares these with plain `set` (xonotic-server.cfg:14/102/124/194/233) or registers them
+        // C-side without CVAR_SAVE (`skill` — a bare `skill 8` line over DP sv_main.c's flags-0 cvar), so
+        // none may persist to config.cfg. They used to carry CvarFlags.Save here — which is how every
+        // --host/--bots/perf run's writes leaked into the user's real config as fake preferences
+        // (bot_number 6 / skill 0 / sv_spectate 0 / g_maplist_mostrecent stormkeep / …).
+        foreach (string name in new[]
+                 { "bot_number", "bot_join_empty", "skill", "minplayers", "sv_spectate", "g_maplist_mostrecent" })
+        {
+            CvarDef def = System.Array.Find(Cvars.Defaults, d => d.Name == name);
+            Assert.Equal(name, def.Name); // present in the defaults table at all
+            Assert.Equal(CvarFlags.None, def.Flags & CvarFlags.Save);
+        }
+
+        // Positive control: g_maplist IS `seta` in Base (xonotic-common.cfg:95) and stays archived.
+        CvarDef maplist = System.Array.Find(Cvars.Defaults, d => d.Name == "g_maplist");
+        Assert.NotEqual(CvarFlags.None, maplist.Flags & CvarFlags.Save);
+    }
+
     // =========================================================================================== bans
 
     [Fact]

@@ -85,6 +85,11 @@ a hitch must also exceed 1.8× the rolling median), `cl_frameprofiler_watchdog` 
 - **Release build, engaged `cl_maxfps`, same map + bot count**, compare 1%-low and the *primaries*
   census, not raw totals. Uncapped fps = pathological present pacing; VSYNC counts are machine-load
   sensitive (interleave A/B runs when they matter).
+- **Two A/B confounds found the hard way (2026-07-03):** (a) a parallel `dotnet build`/agent session
+  contaminates a capture — check `Get-Process dotnet` is idle first; (b) the idle capture camera sits at a
+  RANDOM spawn, and a warpzone-portal-facing spawn re-renders the scene into the portal viewport (~2× draws,
+  +1ms+ p50 on debug) — the report's `draws p50` line + the diff's render-load gate flag it; pin the variable
+  with `-Cvar "cl_portal_render 0"` (or `"wz_portal_lookat 1"` to always face one).
 - **New per-frame system ⇒ ships with a `Prof.Sample` scope** (and its name added to
   `FrameProfiler.TopLevelNodeScopes`), or it will surface as `(unscoped)`/`proc:other` in the next hunt.
   The session summary prints a "scope coverage debt" line when that happens.

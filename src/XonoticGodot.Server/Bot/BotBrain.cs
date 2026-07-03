@@ -89,6 +89,17 @@ public sealed class BotBrain
     private Entity? _ignoreGoal;    // QC .ignoregoal (a danger-unreachable goal, snubbed for a timeout)
     private float _ignoreGoalTime;  // QC .ignoregoaltime
     private bool _strategyForced;   // QC navigation_goalrating_timeout_force (re-rate on next token hold)
+
+    // (perf 2026-07-03) The strategy pass is SPLIT across two thinks: the token frame runs the flood + role
+    // rating and CAPTURES the winning goal + the entry-seed set here; the ROUTE BUILD (SetGoal — goal-side
+    // lookup + multi-seed A*) runs at this bot's NEXT think, off the token. One pass used to do all of it in a
+    // single tick — the tracewalk-heavy halves stacked into the ~100ms single-tick CPU-LOGIC hitches on a debug
+    // build (stormkeep census 2026-07-03). QC runs both in the token frame; a route landing one think (~14ms)
+    // later is behaviorally invisible at a seconds-scale strategy cadence. The seeds are COPIED because the
+    // network's seed list is a shared scratch another bot's search may overwrite between the two thinks.
+    private readonly List<(Waypoint Wp, float Cost)> _pendingSeeds = new();
+    private GoalRating _pendingGoal;
+    private bool _pendingGoalSet;
     private bool _triggerHurtEscape; // QC trigger_hurt escape (skill>6): jetpack up / Devastator rocketjump out
 
     /// <summary>
@@ -291,6 +302,7 @@ public sealed class BotBrain
         {
             if (StrategyTokenHeld) OnStrategyTokenUsed?.Invoke();
             Nav.ClearRoute();
+            _pendingGoalSet = false; // a captured-but-unbuilt route died with the bot (re-rated after respawn)
             bot.Enemy = null;
             _strategyForced = true; // QC navigation_goalrating_timeout_force while dead
             // QC havocbot_role_ast_offense/defense: clears havocbot_attack_time on death so the bot doesn't
@@ -305,6 +317,26 @@ public sealed class BotBrain
         // ---- pre-game / campaign movement hold (QC bot_think:80-83 + :122-127) ----
         if (MovementHold?.Invoke() == true)
             return Emit(bot, Vector3.Zero, jumpHeld, crouch: false, attack: false, attack2: false, dt);
+
+        // 0) deferred ROUTE BUILD from the last token frame's rating (see the _pendingSeeds field doc): runs
+        // before steering so the fresh route applies this think. The IsFreed guard covers a goal item picked
+        // up / entity removed during the one-think gap.
+        if (_pendingGoalSet)
+        {
+            _pendingGoalSet = false;
+            GoalRating g = _pendingGoal;
+            if (g.Target is not { IsFreed: true })
+            {
+                using (XonoticGodot.Common.Diagnostics.Prof.Sample("bot.path")) // [profiling] A* route build
+                    Nav.SetGoal(bot.Origin, g.Position, Network, g.Target, bot.OnGround,
+                        _pendingSeeds.Count > 0 ? _pendingSeeds : null);
+            }
+            _pendingSeeds.Clear();
+            // QC navigation_goalrating_timeout_expire(2) idiom: a pass whose route build produced NO goal
+            // retries SOON — on the timer, never per-think.
+            if (!Nav.HasGoal)
+                _strategyTime = now + 2f;
+        }
 
         // 1) target selection (throttled; SUPERBOT reacts fast)
         using (XonoticGodot.Common.Diagnostics.Prof.Sample("bot.enemy")) // [profiling] enemy scan + vis traces
@@ -340,22 +372,36 @@ public sealed class BotBrain
                 // near but graph-distant (across a wall/chasm), where GoalRater.Rate would otherwise fall back to
                 // straight-line. Token-gated + sim-thread, so the per-frame cost is paid by exactly one bot.
                 // Network == null (graphless tests/roaming) keeps the straight-line fallback.
-                _rater.SeedRoute(Network, bot.Origin);
-                Role(this, _rater);
+                // (perf 2026-07-03) The flood's entry-seed set is captured and handed to the deferred SetGoal so
+                // the tracewalk-heavy seed search runs ONCE per pass — see the _pendingSeeds field doc. The two
+                // sub-scopes split a strategy hitch into its halves (seed tracewalks vs the rating loop) so a
+                // census names the culprit directly.
+                IReadOnlyList<(Waypoint Wp, float Cost)>? seeds;
+                using (XonoticGodot.Common.Diagnostics.Prof.Sample("bot.seed")) // [profiling] entry-seed tracewalks + flood
+                    seeds = _rater.SeedRoute(Network, bot.Origin);
+                using (XonoticGodot.Common.Diagnostics.Prof.Sample("bot.rate")) // [profiling] role goal-rating loop
+                    Role(this, _rater);
+                bool captured = false;
                 if (_rater.HasGoal)
                 {
                     var g = _rater.Best;
                     // QC .ignoregoal: skip a goal that danger marked unreachable, for ignoregoal_timeout secs.
                     if (!(g.Target is not null && ReferenceEquals(g.Target, _ignoreGoal) && now < _ignoreGoalTime))
-                        using (XonoticGodot.Common.Diagnostics.Prof.Sample("bot.path")) // [profiling] A* route build
-                            // QC navigation_routetogoal seeds the route from navigation_markroutes_nearestwaypoints
-                            // (several near entry nodes), not the single geometrically-nearest one; pass onGround so
-                            // SetGoal's multi-seed search uses Base's on-ground vs in-air seed-radius growth.
-                            Nav.SetGoal(bot.Origin, g.Position, Network, g.Target, bot.OnGround);
+                    {
+                        // Capture the rating + seed snapshot; the route build runs at the NEXT think (block 0).
+                        _pendingGoal = g;
+                        _pendingGoalSet = true;
+                        captured = true;
+                        _pendingSeeds.Clear();
+                        if (seeds is not null)
+                            for (int i = 0; i < seeds.Count; i++)
+                                _pendingSeeds.Add(seeds[i]);
+                    }
                 }
-                // QC navigation_goalrating_timeout_expire(2) idiom: a pass that produced NO route (nothing rated,
-                // or SetGoal found no path) retries SOON — but on the timer, never per-think (see the gate above).
-                if (!Nav.HasGoal)
+                // QC navigation_goalrating_timeout_expire(2) idiom: a pass that produced nothing to build (no
+                // rated goal, or the winner is currently ignored and no route stands) retries SOON — on the
+                // timer, never per-think (see the gate above). A captured pass re-checks after its route build.
+                if (!captured && !Nav.HasGoal)
                     _strategyTime = now + 2f;
             }
             OnStrategyTokenUsed?.Invoke(); // QC bot_strategytoken_taken = true (used this frame)

@@ -72,6 +72,10 @@ public sealed class BallStealer : Weapon
         Impulse     = 0;
         // QC weapon.qh: WEP_TYPE_OTHER | WEP_FLAG_MUTATORBLOCKED | WEP_FLAG_NOTRUEAIM
         SpawnFlags  = WeaponFlags.TypeOther | WeaponFlags.MutatorBlocked | WeaponFlags.NoTrueAim;
+        // Base's MENU program never registers WEP_NEXBALL, so its weapons list can neither show nor append
+        // it (see Weapon.MenuRegistered). Without this, opening Settings→Game→Weapons appended "ballstealer"
+        // to cl_weaponpriority and archived it into the user's config.cfg forever.
+        MenuRegistered = false;
         // QC weapon.qh: no model ATTRIBs (a utility weapon, never dropped as a pickup)
     }
 

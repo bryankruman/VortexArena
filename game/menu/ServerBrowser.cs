@@ -39,7 +39,8 @@ public sealed class MatchConfig
     public string Gametype = "";   // GameType.NetName from the registry (e.g. "dm")
     public string Map = "";
     public int BotCount;
-    public int BotSkill;           // 0..10 (QC skill rungs)
+    public int BotSkill = -1;      // 0..10 (QC skill rungs); -1 = unspecified — leave the `skill` cvar alone
+                                   // (a bare CLI `--host --bots N` must not stomp the user's/stock skill with 0)
     public int TimeLimit;          // minutes, 0 = none
     public int FragLimit;          // 0 = none
 

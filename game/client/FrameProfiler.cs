@@ -261,7 +261,11 @@ public partial class FrameProfiler : CanvasLayer
         AddChild(new FrameProfilerFence { Name = "Fence", ProcessPriority = -1_000_000 });
 
 #if DEBUG
-        const string csharpConfig = "Debug";
+        // (perf 2026-07-03) Debug builds default to JIT-OPTIMIZED codegen (Directory.Build.props); report which
+        // flavor actually ran so session censuses stay comparable — an unopt run is 2-5x slower in hot loops.
+        var dbgAttr = (System.Diagnostics.DebuggableAttribute?)Attribute.GetCustomAttribute(
+            typeof(FrameProfiler).Assembly, typeof(System.Diagnostics.DebuggableAttribute));
+        string csharpConfig = dbgAttr is { IsJITOptimizerDisabled: true } ? "Debug(unopt)" : "Debug(jit-opt)";
 #else
         const string csharpConfig = "Release(optimized)";
 #endif
@@ -271,7 +275,7 @@ public partial class FrameProfiler : CanvasLayer
                      $"refresh={DisplayServer.ScreenGetRefreshRate():0}Hz " +
                      $"cpu={OS.GetProcessorCount()}c gpu={RenderingServer.GetVideoAdapterName()}";
         _envBanner = env;
-        _debugBuild = csharpConfig == "Debug" || OS.IsDebugBuild();
+        _debugBuild = csharpConfig.StartsWith("Debug", StringComparison.Ordinal) || OS.IsDebugBuild();
         _buildTag = _debugBuild ? " | DEBUG-BUILD" : "";
         Log.Info($"[frameprofiler] {env}");
         Log.Info($"[frameprofiler] {ColumnsLegend}");   // (8) one-time legend
@@ -597,7 +601,12 @@ public partial class FrameProfiler : CanvasLayer
                 $"GC g0+{rec.G0} g1+{rec.G1} g2+{rec.G2}, pause {rec.GcPauseMs:0.0}ms, {Bytes(rec.AllocBytes)} allocated{tail}{TopAllocSuffix(rec)}");
         }
 
-        string dom = DominantScope(rec, out double domMs);
+        // A scope total can EXCEED the frame when it ran CONCURRENTLY on a worker thread (stream.predecode /
+        // iqm.anims aggregate cross-thread into the drain) — that is background work, not this frame's cause,
+        // so it must not hijack the classification (it produced phantom ASSET-BUILD verdicts on ordinary
+        // frames: "stream.predecode 294ms" inside a 25ms frame). Cap candidacy at ~the frame span; the worker
+        // totals still show in the scope tree for context.
+        string dom = DominantScope(rec, ms * 1.2 + 2.0, out double domMs);
         bool assetDom = dom.StartsWith("stream.", StringComparison.Ordinal) || dom.StartsWith("iqm.", StringComparison.Ordinal);
         if (assetDom && domMs >= 0.4 * ms)
             return (HitchClass.AssetBuild, $"{dom} {domMs:0.0}ms (asset build/upload)");
@@ -707,7 +716,7 @@ public partial class FrameProfiler : CanvasLayer
     {
         if (_worst.Count >= 10 && ms <= _worst[^1].Ms)
             return;
-        string scope = DominantScope(rec, out _);
+        string scope = DominantScope(rec, ms * 1.2 + 2.0, out _);   // skip concurrent-worker totals (see Classify)
         _worst.Add((ms, cls, scope, SessionSeconds));
         _worst.Sort(static (a, b) => b.Ms.CompareTo(a.Ms));
         if (_worst.Count > 10)
@@ -1066,15 +1075,25 @@ public partial class FrameProfiler : CanvasLayer
     // ---- small helpers ----------------------------------------------------------------------------------------
 
     /// <summary>The record's biggest inclusive scope — the FINALIZED record's own drain, not whatever the live
-    /// dictionaries currently hold (they may already describe the next frame).</summary>
-    private static string DominantScope(FrameRecord rec, out double ms)
+    /// dictionaries currently hold (they may already describe the next frame). <paramref name="maxMs"/> filters
+    /// out concurrent-worker totals (a scope bigger than the frame ran on another thread and cannot be this
+    /// frame's cause); pass <see cref="double.MaxValue"/> for the unfiltered view. Falls back to the unfiltered
+    /// winner if the filter rejects everything.</summary>
+    private static string DominantScope(FrameRecord rec, double maxMs, out double ms)
     {
         string best = "?"; double bestMs = 0.0;
+        string bestAny = "?"; double bestAnyMs = 0.0;
         foreach (ScopeRow row in rec.Scopes)
-            if (row.Ms > bestMs) { bestMs = row.Ms; best = row.Name; }
+        {
+            if (row.Ms > bestAnyMs) { bestAnyMs = row.Ms; bestAny = row.Name; }
+            if (row.Ms <= maxMs && row.Ms > bestMs) { bestMs = row.Ms; best = row.Name; }
+        }
+        if (bestMs <= 0.0) { ms = bestAnyMs; return bestAny; }
         ms = bestMs;
         return best;
     }
+
+    private static string DominantScope(FrameRecord rec, out double ms) => DominantScope(rec, double.MaxValue, out ms);
 
     /// <summary>(9) "(typ X, N× over)" suffix when a scope is far above its rolling baseline; empty otherwise.</summary>
     private string Anomaly(string scope, double ms)
@@ -1307,12 +1326,12 @@ public partial class FrameProfiler : CanvasLayer
     public static void RegisterDefaults(ICvarService cvars)
     {
         if (cvars is null) return;
-        cvars.Register("cl_frameprofiler", "0", CvarFlags.Save);
-        cvars.Register("cl_frameprofiler_hitchms", "12", CvarFlags.Save);
-        cvars.Register("cl_frameprofiler_watchdog", "1", CvarFlags.Save);
+        cvars.Register("cl_frameprofiler", "0");
+        cvars.Register("cl_frameprofiler_hitchms", "12");
+        cvars.Register("cl_frameprofiler_watchdog", "1");
         // (P7) Opt-in on-screen flash when a ≥2×floor hitch fires (class + ms at the graph) — for feel-testing
         // sessions where the console isn't being watched.
-        cvars.Register("cl_frameprofiler_alert", "0", CvarFlags.Save);
+        cvars.Register("cl_frameprofiler_alert", "0");
         // Transient trigger (NOT archived): `set cl_frameprofiler_dump 1` writes the forensic ring CSV + re-arms.
         cvars.Register("cl_frameprofiler_dump", "0");
     }

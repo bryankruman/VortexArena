@@ -64,12 +64,15 @@ public sealed class GoalRater
     /// graph, falling back to straight-line when the graph can't reach the candidate. Pass net = null to keep the
     /// prior straight-line behaviour (graphless roaming / tests).
     /// </summary>
-    public void SeedRoute(WaypointNetwork? net, Vector3 from, bool onGround = true)
+    /// <returns>The entry-seed set the flood used (null when net is null) — hand it to
+    /// <see cref="BotNavigation.SetGoal"/> so the route build skips a second identical tracewalk search
+    /// (aliases the network's scratch; copy before the next seed search — see ComputeRouteCosts).</returns>
+    public IReadOnlyList<(Waypoint Wp, float Cost)>? SeedRoute(WaypointNetwork? net, Vector3 from, bool onGround = true)
     {
         _routeNet = net;
         _routeFrom = from;
         _routeSeeded = net is not null;
-        net?.ComputeRouteCosts(from, onGround);
+        return net?.ComputeRouteCosts(from, onGround);
     }
 
     /// <summary>Rate a candidate goal (QC navigation_routerating): value <paramref name="f"/> discounted by distance.</summary>
@@ -88,6 +91,26 @@ public sealed class GoalRater
         if (!_has || rating > _best.Rating)
         {
             _best = new GoalRating(goalPos, target, rating);
+            _has = true;
+        }
+    }
+
+    /// <summary>Rate a WAYPOINT goal (perf 2026-07-03): the candidate already IS a graph node, so its route cost
+    /// reads its own flood slot directly (<see cref="WaypointNetwork.RouteCostToWaypoint"/>) — the generic
+    /// <see cref="Rate"/> path would tracewalk-Nearest its way back to the node it was handed, once per shell
+    /// candidate in the roam rating. Same cost semantics (the nearest waypoint to a waypoint is itself).</summary>
+    public void RateWaypoint(Vector3 from, Waypoint wp, float f, float rangeBias)
+    {
+        if (f <= 0f) return;
+        float cost = float.PositiveInfinity;
+        if (_routeSeeded && _routeNet is not null)
+            cost = _routeNet.RouteCostToWaypoint(wp);
+        if (float.IsPositiveInfinity(cost))
+            cost = (wp.Center - from).Length() / System.MathF.Max(1f, Cvars.MaxSpeed);
+        float rating = f * (rangeBias / (rangeBias + cost));
+        if (!_has || rating > _best.Rating)
+        {
+            _best = new GoalRating(wp.Center, null, rating);
             _has = true;
         }
     }
@@ -284,7 +307,7 @@ public static class BotRoles
                     f = 0.1f; // recently-targeted area — strongly deprioritized (QC f = 0.1)
                 else
                     f = 0.5f + (float)Rng.NextDouble() * 0.5f;
-                rater.Rate(org, null, wp.Center, f, 2000f);
+                rater.RateWaypoint(org, wp, f, 2000f); // direct node-cost path — no per-candidate Nearest
             }
             if (rater.HasGoal) break; // QC: stop at the first shell that produced navigation_bestgoal
             sradius -= range;

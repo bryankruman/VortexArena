@@ -127,6 +127,32 @@ public class MenuWeaponOrderTests
     }
 
     [Fact]
+    public void MenuRegistryView_Excludes_BallStealer_Like_Bases_Menu_Program()
+    {
+        // Base compiles menu/client/server QC separately and the MENU program never registers WEP_NEXBALL —
+        // so its weapons list can neither show nor append "ballstealer" (no real Base config.cfg contains
+        // it), and a stray token wouldn't even resolve to an id there. The port's single registry models
+        // that with Weapon.MenuRegistered; the menu widget passes menuRegistryView:true.
+        Weapon? ballstealer = XonoticGodot.Common.Framework.Registry<Weapon>.ByName("ballstealer");
+        Assert.NotNull(ballstealer);
+        Assert.False(ballstealer!.MenuRegistered);
+        string id = ballstealer.RegistryId.ToString();
+
+        // The menu-view completion never appends it…
+        string completed = WeaponOrder.FixWeaponOrder("", complete: true, menuRegistryView: true);
+        Assert.DoesNotContain(id, completed.Split(' '));
+
+        // …and a stray token from an already-dirty config is dropped (the cvar self-heals on the next
+        // weapons-dialog open, like Base's menu dropping a name its registry can't resolve)…
+        string dirty = WeaponOrder.NumberWeaponOrder("shotgun ballstealer");
+        Assert.DoesNotContain(id, WeaponOrder.FixWeaponOrder(dirty, complete: false, menuRegistryView: true).Split(' '));
+
+        // …while the default (client/server) view keeps it — Base's server program has the weapon
+        // registered, and its sentcvar W_FixWeaponOrder_ForceComplete fix-up sees it too.
+        Assert.Contains(id, WeaponOrder.FixWeaponOrder(dirty, complete: false).Split(' '));
+    }
+
+    [Fact]
     public void FixWeaponOrderForceComplete_Empty_Seeds_From_Default()
     {
         // QC W_FixWeaponOrder_ForceComplete: empty order → number the cvar default, then complete.
