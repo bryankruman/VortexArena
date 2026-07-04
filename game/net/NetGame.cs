@@ -124,7 +124,6 @@ public sealed partial class NetGame : Node3D
     private XonoticGodot.Game.Hud.ScoreboardPanel _scoreboard = null!; // the networked scoreboard (held while +showscores)
     private XonoticGodot.Game.Hud.HudNotifications? _notifications; // notification router (centerprint/killfeed/announcer) on the net path
     private MinigameClient? _minigame;          // client-side minigame coordinator (board overlay + menu + cmd forwarding)
-    private bool _minigameUiOwnedCursor;        // tracks the cursor show/recapture edge while a minigame UI is active
     private ViewEffects _viewEffects = null!;   // SEAM: T4's reusable screen-effects layer, on the net play path
     private AssetLoader? _assets;
     private ViewModel _viewModel = null!;       // first-person weapon view-model (CSQC viewmodel / wepent)
@@ -3284,18 +3283,15 @@ public sealed partial class NetGame : Node3D
         UpdateRacePanels();
         UpdateHudDynamicFollow();
 
-        // Minigame cursor (QC hud_cursormode): while a minigame board/menu owns input, show the cursor so the
-        // player can click TTT/C4 tiles + the menu; recapture for play on the edge back out. Skip while the
-        // pause menu/console own the cursor (the Shell drives those).
+        // Minigame cursor (QC hud_cursormode): while a minigame board/menu (or quickmenu / maximized radar) owns
+        // input, show the cursor so the player can click TTT/C4 tiles + the menu; recapture for play once it's
+        // dismissed. Skip while the pause menu/console own the cursor (the Shell drives those). We RE-ASSERT the
+        // desired state every frame — SetWantCapture is idempotent (it only touches Input.MouseMode on a real
+        // change) — rather than edge-latching on a remembered flag. The old latch desynced after a pause-menu
+        // round-trip OVER an open minigame board: the block is skipped while paused, resume force-captured while the
+        // board was still up, and no edge re-fired, so the cursor stayed stuck captured until the board was re-toggled.
         if (!GetTree().Paused && !ConsoleState.IsOpen)
-        {
-            bool ui = UiOwnsCursor;
-            if (ui != _minigameUiOwnedCursor)
-            {
-                _minigameUiOwnedCursor = ui;
-                MouseCapture.SetWantCapture(!ui);
-            }
-        }
+            MouseCapture.SetWantCapture(!UiOwnsCursor);
 
         // A changelevel was requested this frame (map / gotomap / nextmap / rotation / vote / samelevel): emit it
         // DEFERRED so the actual teardown+reboot (Shell) runs at idle, never inside this server tick. Capture the
