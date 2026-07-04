@@ -1,0 +1,328 @@
+unit: turret-hellion
+category: turret
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 10
+  worst_gaps:
+    - "RE-AUDITED 2026-06-28 (OPUS post-wave re-verify, no status change — every prior fix re-confirmed line-by-line against current live code: te_explosion launch puff HellionTurret.cs:129, blast radius 80 via radius:ShotRadius L122, shot_spread 0.08 L116, head-spin frame cycle L90-91 + per-shot kick L136, all four select biases L97 [missileBias 0], target_range_optimal 4500 L36, AFF gate TurretAI.cs:833, death blast REMOVED TurretAI.cs:1124-1125, respawntime 90 L81). Remaining gaps are presentation-only: the ctor STORES HeadModel=hellion.md3 but it is used only for the death-gib (TurretAI.TossDeathGibs), NOT instantiated as a live spinning-launcher bone entity, so the cycling tur_head.frame state drives no visible spin; no two-cannon tag_fire/tag_fire2 muzzle alternation (single computed ShotOrg); no PROJECTILE_ROCKET CSQC trail / MIF_SPLASH|MIF_PROXY|MIF_GUIDED_HEAT smoke. (FIXED 2026-06-25, re-confirmed: te_explosion launch puff emitted at the muzzle, HellionTurret.cs:129.)"
+    - "spawnflags still only partially mapped (FASTPROJ n/a; splash via radius damage; PLAYER/MISSILE implicit)."
+    - "FIXED since 2026-06-22 (Wave 7, commit 8cb57e3): death blast REMOVED from TurretAI.Die to match Base's commented-out RadiusDamage (sv_turrets.qc:182); TFL_FIRECHECK_AFF now modeled (RunCombat L689 + hellion FireCheck flags L67); firecheck flags now DEAD|DISTANCES|TEAMCHECK|REFIRE|AFF|AMMO_OWN with NO AIMDIST/LOS (matches Base); launcher head-spin frame cycle (tr_think 1..6->0 + ++frame per shot) now ported live in HellionTurret.Think/Attack."
+    - "Already-faithful from prior wave: blast radius 80, missile proximity 16u / stray-out 400u, shot_spread 0.08, target_range_optimal 4500, all four target-select biases (0.7/0.01/0.01/0), targetscan_maxdelay default 1, respawntime 90, track_accel 0.25/0.6/0.25, select ANGLELIMITS removed."
+features:
+  - id: turret-hellion.identity.def
+    name: "Identity, hitbox, models, spawnflags"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/turrets/turret/hellion.qh:Hellion"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/HellionTurret.cs:HellionTurret"
+    constants:
+      - { name: "mins", base: "'-32 -32 0'", port: "(-32,-32,0)", match: true }
+      - { name: "maxs", base: "'32 32 64'", port: "(32,32,64)", match: true }
+      - { name: "model", base: "models/turrets/base.md3", port: "models/turrets/base.md3", match: true }
+      - { name: "head_model", base: "models/turrets/hellion.md3", port: "none (no separate head entity)", match: false }
+      - { name: "netname", base: "hellion", port: "hellion", match: true }
+      - { name: "health", base: "500", port: "StartHealth 500", match: true }
+      - { name: "spawnflags", base: "TUR_FLAG_SPLASH|FASTPROJ|PLAYER|MISSILE", port: "splash via radius dmg; PLAYER/MISSILE select implicit; FASTPROJ n/a", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Head model (hellion.md3) not instantiated as a separate spinning-launcher head entity; no tag attachment."
+    verification:
+      - { kind: code_read, ref: "hellion.qh vs HellionTurret ctor + Spawn (unchanged by Wave-2)", result: pass }
+    confidence: high
+    notes: "Re-audited 2026-06-28 post-wave (no status change). Identity/hitbox/base model/health faithful; the ctor STORES HeadModel='models/turrets/hellion.md3' (HellionTurret.cs:74) but it is consumed ONLY by TossDeathGibs (TurretAI.cs:1207, the head debris chunk on death) — NOT instantiated as a live attached spinning head-bone entity during normal operation, so presentation stays partial. The head-spin frame STATE is cycled on the turret edict (see turret-hellion.anim.headspin) but without a rendered head bone it is not visibly rendered."
+  - id: turret-hellion.setup.tr_setup
+    name: "tr_setup: aim/select/firecheck/ammo flags, fluid-inertia tracker"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/hellion.qc:18"
+      - "common/turrets/sv_turrets.qc:turret_initialize"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/HellionTurret.cs:Think"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/HellionTurret.cs:Spawn"
+    constants:
+      - { name: "aim_flags", base: "TFL_AIM_SIMPLE", port: "aimSimple:true", match: true }
+      - { name: "select_flags", base: "LOS|PLAYERS|RANGELIMITS|TEAMCHECK (+MISSILES via TUR_FLAG_MISSILE)", port: "Los|Players|RangeLimits|TeamCheck|Missiles (ANGLELIMITS removed)", match: true }
+      - { name: "firecheck_flags", base: "DEAD|DISTANCES|TEAMCHECK|REFIRE|AFF|AMMO_OWN (no LOS, no AIMDIST)", port: "FireCheckDead|Distances|TeamCheck|Refire|Aff|AmmoOwn (no AimDist, no Los) — HellionTurret.cs:66-67", match: true }
+      - { name: "ammo_flags", base: "ROCKETS|RECHARGE", port: "ammo pool + recharge (RECHARGE)", match: true }
+      - { name: "track_type", base: "3 (fluid inertia)", port: "TrackFluidInertia (3)", match: true }
+      - { name: "track_accel_pitch", base: "0.25", port: "0.25 (TrackAccelPitch passed + consumed)", match: true }
+      - { name: "track_accel_rot", base: "0.6", port: "0.6 (TrackAccelRot passed + consumed)", match: true }
+      - { name: "track_blendrate", base: "0.25", port: "0.25 (TrackBlendRate passed + consumed)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "hellion.qc:18-24 tr_setup vs HellionTurret.cs FireCheck (L66-67) + Select (L60-61) + TurretParams: firecheck now DEAD|DISTANCES|TEAMCHECK|REFIRE|AFF|AMMO_OWN with NO AimDist/Los (matches Base exactly); the AIMDIST gate in RunCombat L696 is now flag-driven and hellion does not set it; AFF gate RunCombat L689 driven by hellion's FireCheckAff. Select drops AngleLimits; trackAccel 0.25/0.6/0.25 consumed in fluid-inertia tracker", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22 (Wave 7): firecheck_flags now bit-faithful — the previously port-added OnTarget(~AIMDIST) gate is flag-driven (hellion omits AIMDIST) and AFF is now set + honoured. No remaining logic divergence in setup; LOS at SELECT is correct (Base tr_setup L21 sets TFL_TARGETSELECT_LOS)."
+  - id: turret-hellion.spawn.liveness
+    name: "Map spawnfunc wiring + per-frame think (turret_hellion placed on map)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/hellion.qc:5"
+      - "common/turrets/sv_turrets.qc:turret_link"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:Hellion"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:210"
+      - "src/XonoticGodot.Common/GameInit.cs:InstallGameplaySystems"
+    constants:
+      - { name: "g_turrets master switch", base: "1 (default on)", port: "MasterSwitchEnabled default-on", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "MapObjectsRegistry.cs:234 SpawnFuncs.Register(turret_hellion, TurretSpawnFuncs.Hellion) -> Spawn(e,'hellion') (TurretSpawnFuncs.cs:71) -> Turrets.ByName('hellion').Spawn + per-frame Think re-armed; GameInit runs RegisterAll", result: pass }
+    confidence: high
+    notes: "Re-audited 2026-06-28 post-wave: confirmed still live — spawnfunc registered (MapObjectsRegistry.cs:234), Spawn runs def.Spawn + arms def.Think every frame, master-switch gate matches QC !autocvar_g_turrets. No regression."
+  - id: turret-hellion.combat.brain
+    name: "Acquire/aim/track/fire combat brain (AIM_SIMPLE, shared framework)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_think"
+      - "common/turrets/sv_turrets.qc:turret_aim_generic"
+      - "common/turrets/sv_turrets.qc:turret_firecheck"
+      - "common/turrets/sv_turrets.qc:turret_fire"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:RunCombat"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:AimPoint"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Fire"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:ScoreTarget"
+    constants:
+      - { name: "aim_simple (point at current pos, missile homes)", base: "yes", port: "AimPoint returns TargetCenter when AimSimple", match: true }
+      - { name: "shot_refire", base: "0.2", port: "0.2", match: true }
+      - { name: "shot_volly", base: "2", port: "2", match: true }
+      - { name: "shot_volly_refire", base: "4", port: "4", match: true }
+      - { name: "shot_dmg (ammo cost)", base: "50", port: "50", match: true }
+      - { name: "ammo_max", base: "200", port: "200", match: true }
+      - { name: "ammo_recharge", base: "50", port: "50", match: true }
+      - { name: "aim_speed", base: "100", port: "100", match: true }
+      - { name: "aim_maxrot", base: "360", port: "360", match: true }
+      - { name: "aim_maxpitch", base: "20 (cfg-capped)", port: "20", match: true }
+      - { name: "aim_firetolerance_dist", base: "200", port: "200 (FireToleranceDist now flows into ValidTarget LOS test)", match: true }
+      - { name: "target_range", base: "6000", port: "6000", match: true }
+      - { name: "target_range_min", base: "150", port: "150", match: true }
+      - { name: "target_range_optimal", base: "4500", port: "4500", match: true }
+      - { name: "target_select_rangebias", base: "0.7", port: "0.7 (RangeBias passed)", match: true }
+      - { name: "target_select_samebias", base: "0.01", port: "0.01 (SameBias passed)", match: true }
+      - { name: "target_select_anglebias", base: "0.01", port: "0.01 (AngleBias passed)", match: true }
+      - { name: "target_select_playerbias", base: "1", port: "1 (PlayerBias passed)", match: true }
+      - { name: "target_select_missilebias", base: "0", port: "0 (MissileBias passed; missiles get zero score)", match: true }
+      - { name: "targetscan_maxdelay", base: "1", port: "1 (Cvar('g_turrets_targetscan_maxdelay',1) default)", match: true }
+      - { name: "targetscan_mindelay", base: "0.1", port: "0.1 (Cvar default)", match: true }
+      - { name: "aimidle_delay", base: "5", port: "5 (Cvar default)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "turret_think/aim_generic(AIM_SIMPLE)/firecheck/fire vs RunCombat/AimPoint/Fire/ScoreTarget; HellionTurret.Think now passes rangeBias 0.7/sameBias 0.01/angleBias 0.01/missileBias 0/playerBias 1 + rangeOptimal 4500; ScoreTarget L325-328 applies all four; targetscan_maxdelay now Cvar default 1 (TurretAI.Cvar L555)", result: pass }
+    confidence: high
+    notes: "FIXED: target_range_optimal 3000->4500, all four non-player select biases now the hellion cfg values (most notably missileBias 0 — missiles get zero score), and targetscan_maxdelay default 1 (was hardcoded 0.6). Volley/refire/ammo/aim-clamp + AIM_SIMPLE point-at-current-pos remain faithful. ScoreTarget runs the full bias formula with correct weights."
+  - id: turret-hellion.weapon.launch
+    name: "HellionAttack: launch a heat-seeking missile (2-shot volley)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/hellion_weapon.qc:10"
+      - "common/turrets/sv_turrets.qc:turret_projectile"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/HellionTurret.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/GuidedProjectile.cs:Launch"
+    constants:
+      - { name: "missile size", base: "6", port: "6", match: true }
+      - { name: "missile health (shootable by FLAC)", base: "10", port: "10", match: true }
+      - { name: "movetype", base: "MOVETYPE_FLYMISSILE", port: "MoveType.FlyMissile", match: true }
+      - { name: "launch speed (shot_speed)", base: "650", port: "650", match: true }
+      - { name: "lifetime (max_health = time+9)", base: "9s", port: "ttl 9s", match: true }
+      - { name: "deathtype", base: "DEATH_TURRET_HELLION", port: "DeathTypes.TurretHellion", match: true }
+      - { name: "shot_spread (launch scatter)", base: "0.08", port: "0.08 (normalize(dir + Prandom.Vec()*0.08))", match: true }
+      - { name: "fire sound", base: "rocket_fire (CH_WEAPON_A)", port: "weapons/rocket_fire.wav", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No two-cannon tag_fire/tag_fire2 muzzle alternation (single computed ShotOrg origin). The head-spin frame state that Base uses to SELECT the tag is now cycled (turret-hellion.anim.headspin) but there is no head-model bone, so the muzzle-tag alternation stays a client-render gap."
+      - "No PROJECTILE_ROCKET CSQC trail / MIF_SPLASH|MIF_PROXY|MIF_GUIDED_HEAT flags (no visible smoke trail)."
+    verification:
+      - { kind: code_read, ref: "hellion_weapon.qc wr_think turret_projectile (normalize(v_forward + randomvec()*shot_spread)) + te_explosion(missile.origin) vs HellionTurret.Attack dir = Normalize(dir + Prandom.Vec()*ShotSpread 0.08) -> GuidedProjectile.Launch, then EffectEmitter.TeExplosion(missile.Origin) (L128) -> Emit('TE_EXPLOSION') networked temp-entity; Prandom.Vec() = signed [-1,1] per axis", result: pass }
+    confidence: high
+    notes: "FIXED 2026-06-25: te_explosion launch puff at the muzzle now emitted (HellionTurret.cs:128 EffectEmitter.TeExplosion(missile.Origin) -> EffectEmitter.cs:247 Emit('TE_EXPLOSION'), a networked point temp-entity, same convention as Hk/Mlrs/Walker turrets), matching hellion_weapon.qc:35 te_explosion(missile.origin). Presentation upgraded missing->partial. PRIOR FIX: launch spread 0.08 applied (dir + Prandom.Vec()*0.08). Launch ballistics/lifetime/shootable-hull/fire-sound faithful. Remaining presentation gaps: two-cannon muzzle-tag alternation + PROJECTILE_ROCKET smoke trail (both need the attached head bone/model + CSQC projectile trail)."
+  - id: turret-hellion.missile.guidance
+    name: "turret_hellion_missile_think: heat-seeking lead-predict + accelerate"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/hellion_weapon.qc:46"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/GuidedProjectile.cs:HellionThink"
+    constants:
+      - { name: "think interval", base: "0.05s", port: "0.05s", match: true }
+      - { name: "shot_speed_gain (per-tick accel mult)", base: "1.01", port: "1.01", match: true }
+      - { name: "shot_speed_max", base: "4000", port: "4000", match: true }
+      - { name: "heading blend factor", base: "olddir + newdir*0.35", port: "olddir + newdir*0.35", match: true }
+      - { name: "lead-point smoothing", base: "(pre_pos + enemy.origin)*0.5", port: "(prePos + enemy.origin)*0.5", match: true }
+      - { name: "imminent-hit detonate (itime<0.05)", base: "yes", port: "yes", match: true }
+      - { name: "proximity-detonate basis", base: "owner.shot_radius * 0.2 = 16u", port: "g.Radius(80)*0.2 = 16u", match: true }
+      - { name: "lost-target stray-out basis", base: "owner.shot_radius * 5 = 400u", port: "g.Radius(80)*5 = 400u", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "turret_hellion_missile_think vs GuidedProjectile.HellionThink line-by-line; g.Radius now seeded from launch radius:ShotRadius(80), so proximity g.Radius*0.2=16u and stray g.Radius*5=400u match Base owner.shot_radius=80", result: pass }
+    confidence: high
+    notes: "FIXED: proximity/stray distance basis now matches Base (radius 80 not 500). Guidance logic/timing already faithful (fuel-out, lost-target straight-fly + stray, proximity, lead+0.5 smooth, 0.35 blend, accel-cap, imminent detonate)."
+  - id: turret-hellion.missile.detonate
+    name: "Missile detonation: touch / proximity / fuel-out / shot-down -> radius damage"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_projectile_explode"
+      - "common/turrets/sv_turrets.qc:turret_projectile_touch"
+      - "common/turrets/sv_turrets.qc:turret_projectile_damage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/GuidedProjectile.cs:Launch (Explode closure)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/GuidedProjectile.cs:EnsureDeathHook"
+    constants:
+      - { name: "blast damage (owner.shot_dmg)", base: "50", port: "50", match: true }
+      - { name: "blast edge damage", base: "0", port: "0", match: true }
+      - { name: "blast radius (owner.shot_radius)", base: "80", port: "80 (radius: ShotRadius)", match: true }
+      - { name: "blast force (owner.shot_force)", base: "250", port: "250", match: true }
+      - { name: "shootable hull (FLAC intercept)", base: "health 10 -> event_damage explode", port: "Combat.Death hook detonates turret_guided", match: true }
+      - { name: "touch -> explode", base: "yes", port: "yes (Touch closure)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "turret_projectile_explode RadiusDamage(shot_dmg,0,shot_radius=80,shot_force,...) vs Explode closure RadiusDamage(damage 50, 0, radius 80, force 250); HellionTurret.Attack now passes radius:ShotRadius(80) not 500", result: pass }
+    confidence: high
+    notes: "FIXED: blast radius now 80 (was 500, 6.25x too large). Detonation mechanics (touch/proximity/fuel-out/shot-down + radius damage + remove) faithful. The previously-dead ShotRadius=80f const is now the value Attack actually passes."
+  - id: turret-hellion.anim.headspin
+    name: "Launcher head-spin animation (tr_think frame 1..6 -> 0)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/turrets/turret/hellion.qc:11"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/HellionTurret.cs:Think"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/HellionTurret.cs:Attack"
+    constants:
+      - { name: "frame cycle", base: "++frame while !=0; wrap at >=7 to 0", port: "Think: if(e.Frame!=0)e.Frame+=1; if(e.Frame>=7)e.Frame=0 (L89-90)", match: true }
+      - { name: "kick on shot (++tur_head.frame)", base: "yes (hellion_weapon.qc:42)", port: "turret.Frame += 1f on each Attack (L129)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Server-authoritative frame STATE is now cycled (idle 0 -> spinning 1..6 kicked per shot, wrap at >=7), but there is no separate head MODEL entity (hellion.md3) attached to a bone, so the cycling frame drives no VISIBLE spinning launcher and is not used to select the firing muzzle tag (tag_fire vs tag_fire2 / two-cannon alternation) — both remain client-render gaps tracked here + on turret-hellion.weapon.launch."
+    verification:
+      - { kind: code_read, ref: "hellion.qc:11-17 tr_think (frame 1..6->0) vs HellionTurret.Think L89-90 (e.Frame cycle, run every think before RunCombat); hellion_weapon.qc:42 ++actor.tur_head.frame vs Attack L129 turret.Frame+=1; Think is armed every frame on the live spawn path (turret-hellion.spawn.liveness)", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22 (Wave 7, commit 8cb57e3): the tr_think frame cycle + per-shot kick are now ported and live (logic/values/timing faithful). The port has no head-bone entity so it cycles the turret edict's own .frame (same pattern as HkTurret). Presentation (the actually-visible spin + tag-driven muzzle) still missing — needs the attached head model."
+  - id: turret-hellion.damage.lifecycle
+    name: "Damage gating, retaliation, death + respawn"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_damage"
+      - "common/turrets/sv_turrets.qc:turret_die"
+      - "common/turrets/sv_turrets.qc:turret_respawn"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:EventDamage"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Damage"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Die"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Respawn"
+    constants:
+      - { name: "respawntime", base: "90", port: "90 (HellionTurret passes RespawnTime to TurretSpawn.Init)", match: true }
+      - { name: "inactive/dead take no damage", base: "yes", port: "yes", match: true }
+      - { name: "friendlyfire gate", base: "g_friendlyfire", port: "g_friendlyfire", match: true }
+      - { name: "retaliate (attacker becomes target)", base: "TFL_DMG_RETALIATE", port: "yes", match: true }
+      - { name: "death blast", base: "NONE (RadiusDamage commented out, sv_turrets.qc:182)", port: "NONE — TurretAI.Die L918-919 omits the blast to match Base", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "turret_die (RadiusDamage commented out, sv_turrets.qc:182) vs TurretAI.Die L907-942: blast REMOVED (L918-919 explicitly note Base's disabled RadiusDamage); respawn branch schedules respawn after RespawnTime(90); NoRespawn branch matches Base FX (rocket_impact sound + ROCKET_EXPLODE). Live damage entrypoint e.GtEventDamage=TurretAI.EventDamage wired in TurretSpawn.Init L93, routed by DamageSystem; pre-damage gate (TurretAI.Damage) + own health subtract + Combat.Death on lethal", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22 (Wave 7, commit 8cb57e3): the port-added death blast that Base has commented out is now REMOVED (TurretAI.Die L918-919) — turrets deal no area damage on death, matching Base. respawntime 90 + live damage path (GtEventDamage seam) remain wired. Audio: Base respawn branch (hellion respawns) plays no death sound; the NoRespawn FX branch matches Base — so na for the hellion."
+  - id: turret-hellion.weapon.aff
+    name: "Friendly-fire-avoidance fire gate (TFL_FIRECHECK_AFF)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/hellion.qc:22"
+      - "common/turrets/sv_turrets.qc:turret_firecheck"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/HellionTurret.cs:66"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:RunCombat"
+    constants:
+      - { name: "firecheck AFF (withhold shot if a teammate is in the line of fire)", base: "TFL_FIRECHECK_AFF set", port: "FireCheckAff set (HellionTurret.cs:67) + honoured in RunCombat L689", match: true }
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "hellion.qc:22 firecheck_flags includes TFL_FIRECHECK_AFF; HellionTurret.cs:66-67 FireCheck includes TurretAI.FireCheckAff, passed via TurretParams.fireCheckFlags; RunCombat L686-690 — when (FireCheckFlags & FireCheckAff) and the predicted impact ent (st.ImpactEnt from the muzzle-forward tracebox, UpdateImpact L725) is SameTeam, the shot is withheld (return enemy)", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22 (Wave 7, commit 8cb57e3): TFL_FIRECHECK_AFF now modeled and live — the hellion sets FireCheckAff and RunCombat's fire gate (L689) withholds a shot whose predicted impact lands on a same-team entity. Driven off the real tracebox impact ent (UpdateImpact), matching Base turret_firecheck's friendly-line-of-fire test."

@@ -9,8 +9,12 @@
 //    The port queues each dynlight at spawn and resolves them in MapObjectsRegistry.RunPostSpawn (the headless
 //    analogue of the INITPRIO pass, run right after the door-link pass) — same shape as Doors.RunDeferredLinks.
 //  * The path-following branch reuses the func_train pathing in QC (setthink(train_next)). The port's
-//    TrainNext is private to MovingBrushes, so a dynlight that path-follows is snapped onto its first corner
-//    and parked; full per-corner travel is a follow-up (documented). It still spawns, toggles, and spins.
+//    TrainNext is private to MovingBrushes, so this file ports the minimal train_next/train_wait corner-walk
+//    inline (a dynlight is a zero-size point entity: no bbox, no .view_ofs offset, no TRAIN_CURVE/TRAIN_TURN
+//    spawnflags) on top of the public MapMover.CalcMove seam — the light now actually TRAVELS its path_corner
+//    chain at .speed, firing each corner's targets and honouring per-corner .wait/.speed. It still toggles
+//    and spins via avelocity throughout. (Full func_train parity — curve/turn/needactivation — stays in
+//    MovingBrushes; a dynlight QUAKED exposes none of those keys.)
 //  * There is NO dlight RENDER consumer yet (no DP-style dynamic-light system; that is T4 territory). So a
 //    dynlight spawns, ticks, toggles light_lev, and (when following/attached) rides its target — but renders
 //    no visible light. The server contract (light_lev/color/style/attach/follow/toggle) is faithful; the
@@ -181,11 +185,55 @@ namespace XonoticGodot.Common.Gameplay
 
             this_.Target = targ.Target;             // QC: this.target = targ.target;
             MapMover.SetOrigin(this_, targ.Origin); // QC: setorigin(this, targ.origin);
-            // QC: setthink(this, train_next) — reuse the func_train pathing. The port's TrainNext is private to
-            // MovingBrushes; a dynlight path-follow snaps onto the first corner and PARKS (full per-corner travel
-            // is a follow-up). It still toggles + spins via avelocity. NOTE: do NOT install DynlightThink here —
-            // that think deletes the entity when .owner is null (the FOLLOW/TAG cleanup), and a path dynlight has
-            // no owner; QC's train_next never deletes. Parked = no think (Think stays null).
+            // QC: setthink(this, train_next). The port's MovingBrushes.TrainNext is private + bbox/curve/turn-
+            // aware; a dynlight is a zero-size point light with none of those keys, so we walk the corner chain
+            // with the minimal train_next/train_wait below (built on the public MapMover.CalcMove seam). Stash
+            // the lookahead corner the way func_train_find does, then schedule the first leg.
+            this_.FutureTarget = MapMover.FindFirstByTargetName(targ.Target);
+            this_.Think = PathNext;
+            this_.NextThink = MapMover.Now() + ThinkInterval; // QC: this.nextthink = time + 0.1;
+        }
+
+        /// <summary>
+        /// Port of <c>train_next</c> (train.qc:83-135) specialised for a dynlight: move to the next path_corner
+        /// at .speed, then <see cref="PathWait"/> on arrival. No .view_ofs offset (point light), no TRAIN_CURVE
+        /// bezier and no TRAIN_TURN/NEEDACTIVATION (a dynlight exposes none of those keys).
+        /// </summary>
+        private static void PathNext(Entity this_)
+        {
+            Entity? targ = this_.FutureTarget;
+            if (targ is null)
+                return;
+
+            this_.Target = targ.Target;                                  // QC: this.target = targ.target;
+            this_.FutureTarget = MapMover.FindFirstByTargetName(targ.Target); // QC: train_next_find(targ)
+            this_.GoalEntity = targ;                                     // remember the corner we are heading to
+            this_.Wait = targ.Wait != 0f ? targ.Wait : 0.1f;            // QC: this.wait = targ.wait; if(!) 0.1;
+
+            float speed = targ.Speed != 0f ? targ.Speed : this_.Speed;  // QC: per-corner .speed else this.speed
+            MapMover.CalcMove(this_, targ.Origin, MapMover.SpeedType.Linear, speed, PathWait);
+        }
+
+        /// <summary>
+        /// Port of <c>train_wait</c> (train.qc:8-64) specialised for a dynlight: fire the arrived corner's
+        /// targets, then advance to the next leg — immediately if .wait &lt; 0, else after the dwell.
+        /// </summary>
+        private static void PathWait(Entity this_)
+        {
+            Entity? corner = this_.GoalEntity;
+            if (corner is not null)
+                MapMover.UseTargets(corner, null, null);  // QC: SUB_UseTargets(this.enemy/corner, ...)
+            this_.GoalEntity = null;
+
+            if (this_.Wait < 0f)                          // QC: if(this.wait < 0) train_next(this);
+            {
+                PathNext(this_);
+            }
+            else
+            {
+                this_.Think = PathNext;                   // QC: setthink(this, train_next);
+                this_.NextThink = MapMover.Now() + this_.Wait; // QC: this.nextthink = this.ltime + this.wait;
+            }
         }
 
         /// <summary>Port of <c>dynlight_find_target</c> (dynlight.qc:74-85): attach to a TAG on the target model.</summary>

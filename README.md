@@ -117,7 +117,9 @@ export GODOT="/path/to/Godot_v4.6.3-stable_mono_win64_console.exe"
 ```
 
 See [`RUNNING.md`](RUNNING.md) for full details on toolchain paths, visual runs, hosting a match,
-and debugging tips.
+and debugging tips. For diagnosing frame hitches / FPS problems see
+[`PERF-DEBUGGING.md`](PERF-DEBUGGING.md); for movement/netcode issues see
+[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) and [`NET-DEBUGGING.md`](NET-DEBUGGING.md).
 
 ## Contributing
 

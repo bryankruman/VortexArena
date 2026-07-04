@@ -33,23 +33,38 @@ internal static class DdsDecoder
     private enum BcKind { Dxt1, Dxt3, Dxt5 }
 
     /// <summary>
-    /// Decode <paramref name="data"/> (a full .dds file) into an RGBA8 <see cref="Image"/> (top mip), or null
-    /// if the header is malformed or the surface format is unsupported.
+    /// Decode <paramref name="data"/> (a full .dds file) into a Godot <see cref="Image"/>, or null if the
+    /// header is malformed or the surface format is unsupported. Back-compat entry — see the length overload.
     /// </summary>
-    public static Image? Decode(byte[] data)
+    public static Image? Decode(byte[] data) => Decode(data, data?.Length ?? 0);
+
+    /// <summary>
+    /// Length-taking overload (perf 2026-07-03) so the caller can hand in a POOLED, possibly-oversized file
+    /// buffer: only the first <paramref name="length"/> bytes are the file.
+    ///
+    /// <para><b>S3TC pass-through (perf 2026-07-03):</b> when the file is classic DXT1/3/5 with a full mip
+    /// chain, the compressed payload is handed to Godot AS-IS (<see cref="Image.Format.Dxt1"/>/Dxt3/Dxt5) —
+    /// no CPU block-decode, no CPU mip regeneration (the file already ships the chain the old path threw away),
+    /// and the GPU stores the texture compressed (~4-6× less VRAM + upload) — which is exactly what DarkPlaces
+    /// does with these files. Files without a full chain (or non-S3TC) keep the RGBA8 decode path.</para>
+    /// </summary>
+    public static Image? Decode(byte[] data, int length)
     {
         // "DDS " magic (4) + 124-byte DDS_HEADER = 128 bytes before the pixel data.
-        if (data == null || data.Length < 128)
+        if (data == null || length < 128)
             return null;
         if (data[0] != 'D' || data[1] != 'D' || data[2] != 'S' || data[3] != ' ')
             return null;
         if (U32(data, 4) != 124) // DDS_HEADER.dwSize
             return null;
 
+        uint hdrFlags = U32(data, 8);      // DDS_HEADER.dwFlags (DDSD_*)
         int height = (int)U32(data, 12);
         int width  = (int)U32(data, 16);
         if (width <= 0 || height <= 0 || width > 1 << 14 || height > 1 << 14)
             return null;
+        // DDSD_MIPMAPCOUNT (0x20000) gates dwMipMapCount@28; absent → a single level.
+        int mipCount = (hdrFlags & 0x20000) != 0 ? (int)U32(data, 28) : 1;
 
         uint pfFlags     = U32(data, 80);
         uint fourCc      = U32(data, 84);
@@ -60,53 +75,101 @@ internal static class DdsDecoder
         uint aMask       = U32(data, 104);
 
         const int dataOffset = 128; // no DX10 extended header (rejected below)
-        // Pooled per-thread scratch (the block/uncompressed decode writes every pixel; CreateFromData copies it
-        // out below). Collapses the per-texture decode-burst allocation (§12.6b) — see RgbaDecodeBuffer.
-        byte[] outRgba = RgbaDecodeBuffer.Rent(width * height * 4);
 
         if ((pfFlags & DDPF_FOURCC) != 0)
         {
             // FourCC "DX10" carries a 20-byte extended header we don't parse (Xonotic ships classic S3TC).
-            if (fourCc == FourCc('D', 'X', 'T', '1'))
+            BcKind kind;
+            int blockBytes;
+            Image.Format gpuFormat;
+            if (fourCc == FourCc('D', 'X', 'T', '1')) { kind = BcKind.Dxt1; blockBytes = 8;  gpuFormat = Image.Format.Dxt1; }
+            else if (fourCc == FourCc('D', 'X', 'T', '3')) { kind = BcKind.Dxt3; blockBytes = 16; gpuFormat = Image.Format.Dxt3; }
+            else if (fourCc == FourCc('D', 'X', 'T', '5')) { kind = BcKind.Dxt5; blockBytes = 16; gpuFormat = Image.Format.Dxt5; }
+            else return null; // DX10 / BC4 / BC5 / etc. — not used by Xonotic world textures
+
+            // ---- pass-through: full mip chain present → give Godot the compressed payload verbatim ----------
+            (int chainLevels, long chainBytes) = FullChainSize(width, height, blockBytes);
+            if (mipCount >= chainLevels && dataOffset + chainBytes <= length && chainBytes <= int.MaxValue)
             {
-                if (!DecodeBc(data, dataOffset, width, height, blockBytes: 8, BcKind.Dxt1, outRgba)) return null;
+                // CreateFromData copies synchronously, so the exact-size pooled slice returns to the pool here.
+                byte[] slice = RgbaDecodeBuffer.Rent((int)chainBytes, clear: false);
+                try
+                {
+                    System.Array.Copy(data, dataOffset, slice, 0, (int)chainBytes);
+                    return Image.CreateFromData(width, height, true, gpuFormat, slice);
+                }
+                catch (System.Exception)
+                {
+                    // Unexpected layout (Godot's expected chain size disagreed) — fall through to the CPU decode.
+                }
+                finally
+                {
+                    RgbaDecodeBuffer.Return(slice);
+                }
             }
-            else if (fourCc == FourCc('D', 'X', 'T', '3'))
+
+            // Pooled shared scratch (the block decode writes every pixel; CreateFromData copies it out below,
+            // so the finally can return it). Collapses the per-texture decode-burst allocation (§12.6b) — see
+            // RgbaDecodeBuffer.
+            byte[] outRgba = RgbaDecodeBuffer.Rent(width * height * 4);
+            try
             {
-                if (!DecodeBc(data, dataOffset, width, height, blockBytes: 16, BcKind.Dxt3, outRgba)) return null;
+                if (!DecodeBc(data, length, dataOffset, width, height, blockBytes, kind, outRgba))
+                    return null;
+                return Image.CreateFromData(width, height, false, Image.Format.Rgba8, outRgba);
             }
-            else if (fourCc == FourCc('D', 'X', 'T', '5'))
+            finally
             {
-                if (!DecodeBc(data, dataOffset, width, height, blockBytes: 16, BcKind.Dxt5, outRgba)) return null;
+                RgbaDecodeBuffer.Return(outRgba);
             }
-            else
-            {
-                return null; // DX10 / BC4 / BC5 / etc. — not used by Xonotic world textures
-            }
-        }
-        else if ((pfFlags & DDPF_RGB) != 0)
-        {
-            uint usedAlpha = (pfFlags & DDPF_ALPHAPIXELS) != 0 ? aMask : 0u;
-            if (!DecodeUncompressed(data, dataOffset, width, height, rgbBitCount, rMask, gMask, bMask, usedAlpha, outRgba))
-                return null;
-        }
-        else
-        {
-            return null; // luminance / YUV / other — not shipped for world textures
         }
 
-        return Image.CreateFromData(width, height, false, Image.Format.Rgba8, outRgba);
+        if ((pfFlags & DDPF_RGB) != 0)
+        {
+            byte[] outRgba = RgbaDecodeBuffer.Rent(width * height * 4);
+            try
+            {
+                uint usedAlpha = (pfFlags & DDPF_ALPHAPIXELS) != 0 ? aMask : 0u;
+                if (!DecodeUncompressed(data, length, dataOffset, width, height, rgbBitCount, rMask, gMask, bMask, usedAlpha, outRgba))
+                    return null;
+                return Image.CreateFromData(width, height, false, Image.Format.Rgba8, outRgba);
+            }
+            finally
+            {
+                RgbaDecodeBuffer.Return(outRgba);
+            }
+        }
+
+        return null; // luminance / YUV / other — not shipped for world textures
+    }
+
+    /// <summary>The level count + total byte size of a FULL block-compressed mip chain (down to 1×1) — the
+    /// layout Godot expects for CreateFromData(mipmaps: true), which matches the standard DDS packing.</summary>
+    private static (int Levels, long Bytes) FullChainSize(int width, int height, int blockBytes)
+    {
+        int w = width, h = height, levels = 0;
+        long bytes = 0;
+        while (true)
+        {
+            bytes += (long)((w + 3) / 4) * ((h + 3) / 4) * blockBytes;
+            levels++;
+            if (w == 1 && h == 1)
+                break;
+            w = System.Math.Max(1, w >> 1);
+            h = System.Math.Max(1, h >> 1);
+        }
+        return (levels, bytes);
     }
 
     /// <summary>
     /// Decode a block-compressed surface (BC1/BC2/BC3). Each 4×4 block is <paramref name="blockBytes"/> bytes;
     /// for BC2/BC3 the first 8 bytes are the alpha block and the next 8 the BC1-style colour block.
     /// </summary>
-    private static bool DecodeBc(byte[] data, int offset, int width, int height, int blockBytes, BcKind kind, byte[] outRgba)
+    private static bool DecodeBc(byte[] data, int dataLength, int offset, int width, int height, int blockBytes, BcKind kind, byte[] outRgba)
     {
         int blocksX = (width + 3) / 4;
         int blocksY = (height + 3) / 4;
-        if (offset + (long)blocksX * blocksY * blockBytes > data.Length)
+        if (offset + (long)blocksX * blocksY * blockBytes > dataLength)
             return false;
 
         // 4-entry colour palette (RGBA8) rebuilt per block; 8-entry alpha ramp for DXT5.
@@ -210,13 +273,13 @@ internal static class DdsDecoder
     }
 
     /// <summary>Decode an uncompressed RGB/RGBA surface using the pixel-format channel masks.</summary>
-    private static bool DecodeUncompressed(byte[] data, int offset, int width, int height, int bitCount,
+    private static bool DecodeUncompressed(byte[] data, int dataLength, int offset, int width, int height, int bitCount,
                                            uint rMask, uint gMask, uint bMask, uint aMask, byte[] outRgba)
     {
         int bytesPerPixel = bitCount / 8;
         if (bytesPerPixel is not (3 or 4))
             return false;
-        if (offset + (long)width * height * bytesPerPixel > data.Length)
+        if (offset + (long)width * height * bytesPerPixel > dataLength)
             return false;
 
         int rShift = MaskShift(rMask), rBits = MaskBits(rMask);

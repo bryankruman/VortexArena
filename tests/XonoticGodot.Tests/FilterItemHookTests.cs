@@ -101,19 +101,24 @@ public class FilterItemHookTests : IDisposable
         Assert.False(StartItem.LastSpawnFailed);
     }
 
-    // Duel.FilterItem (Duel.cs:79) takes a GameItemDef and is NEVER registered into the hook chain, so it must
-    // NOT fire — a powerup spawns even though Duel would (if wired) block it without g_duel_with_powerups.
-    // (Documentation note per the T66 recon: wiring Duel.FilterItem is a separate follow-up.)
+    // Duel.OnFilterItemDefinition (Duel.cs:93) IS now subscribed into the FilterItem hook chain on
+    // Activate() (QC MUTATOR_HOOKFUNCTION(duel, FilterItemDefinition)): with g_duel_with_powerups unset (0),
+    // a powerup item must be FILTERED OUT (deleted + startitem_failed), exactly as Base. We activate the Duel
+    // gametype directly (matching MayhemScoringTests) so the live subscription registers.
     [Fact]
-    public void DuelFilterItem_NotRegistered_PowerupStillSpawns()
+    public void DuelActive_FiltersPowerup_WithoutDuelPowerups()
     {
-        Boot(); // a plain boot: Duel.FilterItem is unwired, no FilterItem subscriber blocks powerups
-        var strength = Spawn("item_strength");
-        // A powerup doesn't spawn at match start (Item_ScheduleInitialRespawn hides it) — but it is NOT deleted:
-        // the unregistered Duel.FilterItem had no effect, so the edict survives, hidden, ready to respawn.
-        Assert.False(strength.IsFreed);
-        Assert.False(StartItem.LastSpawnFailed);
-        Assert.Equal(30f, strength.StrengthFinished, 3); // ItemInit ran (seeded the duration) → the item exists
+        Boot(); // g_duel_with_powerups unset → powerups blocked in duel
+        var duel = new Duel();
+        duel.Activate(); // subscribes OnFilterItemDefinition into MutatorHooks.FilterItemDefinition
+        try
+        {
+            var strength = Spawn("item_strength");
+            // QC: instanceOfPowerup → return !autocvar_g_duel_with_powerups → true → delete(this) + failed.
+            Assert.True(strength.IsFreed);
+            Assert.True(StartItem.LastSpawnFailed);
+        }
+        finally { duel.Deactivate(); }
     }
 
     // =====================================================================================

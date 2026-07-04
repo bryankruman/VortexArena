@@ -1,0 +1,302 @@
+unit: mutator-dodging
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-27"
+summary:
+  feature_count: 10
+  worst_gaps:
+    - "HEADLINE (re-verified 2026-06-27): the dodge mechanic is genuinely LIVE. PlayerPhysics.cs:271-275 writes player.MovementForward = input.MoveValues.X / MovementRight = input.MoveValues.Y / ButtonCrouch / ButtonChat / ViewAngles (RAW, pre-frozen-clamp) immediately BEFORE the PlayerPhysics hook fires (PlayerPhysics.cs:283 MutatorHooks.PlayerPhysics.Call). The chain Movement.Move (GameWorld.cs:2403/2414) -> PlayerPhysics.Move -> bridge -> hook -> DodgingMutator.OnPlayerPhysics is live on the real match path; the mutator is activated via MutatorActivation.Apply (GameWorld.cs:631). Confirmed by reading the current source — not assumed."
+    - "FIXED + re-verified: the MakePlayerObserver reset is wired. MutatorHooks.MakePlayerObserver HookChain EXISTS (MutatorHooks.cs:47) and is dispatched live from ClientManager.PutObserverInServer (ClientManager.cs:564, MutatorHooks.MakePlayerObserver.Call). DodgingMutator subscribes (DodgingMutator.cs:113, 319-323) and calls ResetPlayer. Both Base reset triggers (PlayerSpawn + MakePlayerObserver) are now live."
+    - "DRIFT CORRECTION 2026-06-27: the frozen-dodging row was over-graded. DodgingMutator.PhysFrozen (DodgingMutator.cs:273) tests FrozenStat ONLY, narrower than the port's canonical PHYS_FROZEN (PlayerPhysics.cs:1859 = FrozenStat || STATUSEFFECT_Frozen) — a status-effect-frozen player is misclassified in all three frozen dodge branches. mutator-dodging.frozen.dodge: logic faithful->partial, gaps []->1. Low impact (sv_dodging_frozen defaults 0)."
+    - "RESOLVED (Wave 8d): the dodge jump animation is faithful in its OBSERVABLE result. Base calls animdecide_setaction(ANIMACTION_JUMP) on the hop, but animdecide.qc:283 states verbatim 'currently, in CSQC this is the only jump detection, as the explicit jump action is never called!' — Base's own CLIENT renderer drives the jump clip off the IMPLICIT ground->air (ANIMIMPLICITSTATE_INAIR) transition, NOT the explicit server-pushed action. The port reconstructs the jump pose by the identical implicit path: the dodge does UNSET_ONGROUND + up-impulse (DodgingMutator.cs:365-366), and LocomotionBlend.SelectLegs returns Locomotion.Jump whenever !onGround (LocomotionBlend.cs:81). The explicit anim-action seam is absent server-side, but it has no distinct rendered effect in Base either, so the visible outcome is fully covered."
+    - "FIXED since the last audit: BOTH per-client cvars are now replicated. cl_dodging opt-in rides ClientDodgingProvider (Commands.cs:568-569 -> GetClientCvarFloat) AND cl_dodging_timeout now has a real per-client provider too — DodgingMutator.TimeoutProvider exists (DodgingMutator.cs:93) and is installed at Commands.cs:577-578 (GetClientCvarFloat 'cl_dodging_timeout' default 0.2). TimeoutFor (DodgingMutator.cs:258-262) consults it before falling back to the server-side Timeout field, so the double-tap window is now per-client, matching Base PHYS_DODGING_TIMEOUT(s) = CS_CVAR(s).cvar_cl_dodging_timeout. The baseline's 'TimeoutProvider seam does not exist' residual is resolved."
+features:
+  - id: mutator-dodging.core.enable
+    name: "Mutator registration + g_dodging enable gate"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/dodging/sv_dodging.qc:67 REGISTER_MUTATOR(dodging, cvar(g_dodging))"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:89 IsEnabled"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:Apply"
+      - "src/XonoticGodot.Server/GameWorld.cs:631 (MutatorActivation.Apply on the live game-setup path)"
+    constants:
+      - { name: "g_dodging", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "MutatorActivation.Apply() called live at GameWorld.cs:631; IsEnabled reads g_dodging cvar (DodgingMutator.cs:98). Overkill ruleset sets g_dodging 1. Re-verified 2026-06-27.", result: pass }
+    confidence: high
+    notes: "Registration/enable/activation remains fully faithful and live (MutatorActivation.Apply at GameWorld.cs:631). The mechanic it gates is now ALSO live (see input.double_tap)."
+
+  - id: mutator-dodging.input.double_tap
+    name: "Double-tap detection (PM_dodging_checkpressedkeys)"
+    layer: [authority, shared]
+    base_refs:
+      - "common/mutators/mutator/dodging/sv_dodging.qc:151 PM_dodging_checkpressedkeys"
+      - "common/mutators/mutator/dodging/sv_dodging.qc:278 PM_dodging_GetPressedKeys"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:161 CheckPressedKeys"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:271-275 (INPUT BRIDGE — writes MovementForward/Right/ButtonCrouch/ButtonChat/ViewAngles, RAW)"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:283 (MutatorHooks.PlayerPhysics.Call — live; Move called from GameWorld.cs:2403/2414)"
+    constants:
+      - { name: "cl_dodging_timeout", base: "0.2", port: "0.2 (now per-client replicated via TimeoutProvider, Commands.cs:577-578; server-side Hook() value is the fallback)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Minor: the pressed-key refresh (DodgingMutator.cs:214-221) seeds Forward/Backward/Right/Left/Jump/Crouch but omits the KEY_ATCK/KEY_ATCK2 bits Base sets in PM_dodging_GetPressedKeys (sv_dodging.qc:291-292). Those bits are not consulted by the detector's four direction branches, so behavior is unaffected, but the pressedkeys field is not a complete mirror of Base."
+    verification:
+      - { kind: code, ref: "ROOT CAUSE FIXED (re-verified 2026-06-27): PlayerPhysics.cs:271-272 writes player.MovementForward/MovementRight = input.MoveValues.X/.Y (raw, pre-frozen-clamp) right before the hook (hook Call at :283; Move invoked from GameWorld.cs:2403/2414). Bridge is on the live Movement.Move -> PlayerPhysics.Move path. The four direction branches (DodgingMutator.cs:187-209) read these real values; the frozen_no_doubletap single-tap branch and the unconditional +dodge button check both match Base's X-macro exactly. Not runtime/test-verified (no dodging tests).", result: pass }
+    confidence: high
+    notes: "FIX vs baseline: the input bridge is wired (PlayerPhysics.cs:249-253), so MovementForward/MovementRight now carry the real usercmd intent each frame and the detector actually runs on the live path — liveness dead->live, logic partial->faithful, timing unknown->faithful (the hook is fired once per physics command at the QC point). The same bridge revives multijump's dodging-redirect and bugrigs throttle/steer (they read the same fields). The pressedkeys field is the mutator's own previous-frame snapshot exactly as in Base (Base's PM_dodging_GetPressedKeys also authors this.pressedkeys) — the baseline's 'stale self-authored bits' concern was a misread; that IS the Base design. DodgeButtonHeld remains hardcoded false (no +dodge bit in headless input), but double-tap is the live trigger; +dodge is an additive convenience path in Base, so its absence does not break the core mechanic."
+
+  - id: mutator-dodging.input.delay_state_gate
+    name: "Delay cooldown + ground/wall/air state gating"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/dodging/sv_dodging.qc:186 (delay gate) + :192 (state gates)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:200 (delay) :204-206 (gates)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:264 IsCloseToGround"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:271 IsCloseToWall"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:278 TraceHitsNear"
+    constants:
+      - { name: "sv_dodging_delay", base: "0.6", port: "0.6 (cvar; hardcoded fallback 0.6)", match: true }
+      - { name: "sv_dodging_height_threshold", base: "10", port: "10", match: true }
+      - { name: "sv_dodging_wall_distance_threshold", base: "10", port: "10", match: true }
+      - { name: "sv_dodging_maxspeed", base: "450", port: "450", match: true }
+      - { name: "sv_dodging_air_maxspeed", base: "450", port: "450", match: true }
+      - { name: "sv_dodging_wall_dodging", base: "0", port: "0", match: true }
+      - { name: "sv_dodging_air_dodging", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The `if (cvar != 0) field = cvar` guards mean explicitly setting one of the *_threshold/delay cvars to 0 is ignored and the hardcoded fallback is used instead. Harmless with the shipped cfg (no stock value is 0). NOTE: MaxSpeed/AirMaxSpeed are read WITHOUT the !=0 guard (DodgingMutator.cs:117-118), so a 0 there is honoured correctly (= no cap, matching Base)."
+    verification:
+      - { kind: code, ref: "delay gate checked after key scan (matches Base ordering :186); three OR'd state gates (ground/wall/air) mirror :192-195; traces honour Q3SURFACEFLAG_SKY exclusion; is_close_to_ground = OnGround||down-trace; gate vectors built from body-yaw (Angles) not v_angle, matching Base :190. Now reached on the live path via the wired detector.", result: pass }
+    confidence: high
+    notes: "Gate ordering, the three OR'd state gates, the trace logic, and the 0.6 delay default all mirror Base. Now LIVE (liveness dead->live) because the detector that gates this is wired. Only residual is the if-nonzero fallback guard on the *_threshold/delay cvars (harmless with the shipped cfg)."
+
+  - id: mutator-dodging.force.scaling
+    name: "Speed-to-force scaling (determine_force / map_bound_ranges)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/dodging/sv_dodging.qc:142 determine_force"
+      - "lib/math.qh:map_bound_ranges"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:241 DetermineForce"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:251 MapBoundRanges"
+    constants:
+      - { name: "sv_dodging_horiz_speed_min", base: "200", port: "200", match: true }
+      - { name: "sv_dodging_horiz_speed_max", base: "1000", port: "1000", match: true }
+      - { name: "sv_dodging_horiz_force_slowest", base: "400", port: "400", match: true }
+      - { name: "sv_dodging_horiz_force_fastest", base: "400", port: "400", match: true }
+      - { name: "sv_dodging_horiz_force_frozen", base: "200", port: "200", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "DetermineForce returns HorizForceFrozen (200) when PhysFrozen, else MapBoundRanges over 2D horizontal speed — matches Base determine_force exactly (PHYS_FROZEN early return + vlen(vec2(velocity))). MapBoundRanges clamps then lerps with the fromMax<=fromMin guard. Now reached on the live path.", result: pass }
+    confidence: high
+    notes: "Logic/values faithful. With stock cvars force_slowest==force_fastest==400, so the mapped force is a flat 400 at all speeds. Now LIVE (liveness dead->live) via the wired detector."
+
+  - id: mutator-dodging.move.ramp_impulse
+    name: "Per-frame ramp + one-shot up-impulse (PM_dodging)"
+    layer: [authority, shared]
+    base_refs:
+      - "common/mutators/mutator/dodging/sv_dodging.qc:217 PM_dodging"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:334 PMDodging"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:318 BeginDodge"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:283 (PlayerPhysics hook Call)"
+    constants:
+      - { name: "sv_dodging_ramp_time", base: "0.1", port: "0.1", match: true }
+      - { name: "sv_dodging_up_speed", base: "200", port: "200", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "ramp = min(frametime/ramp_time * force_total, remaining); UNSET_ONGROUND + up_speed*up one-shot; v_angle (ViewAnglesOf) when AirDodging else body Angles; completion reset when remaining<=0 — all match Base. Abort branch is `WaterLevel>=2 || dead || (ClientSelect && !ClientDodgingEnabled && !frozenDodging)` — exactly Base's waterlevel>=SWIMMING || IS_DEAD || (CLIENTSELECT && !ENABLED && !frozen_dodging). PMDodging now receives DodgingAction != 0 because the detector is wired, so the ramp/up-impulse fires.", result: pass }
+    confidence: high
+    notes: "Ramp math, the min cap, the one-shot up flag, the air-dodge v_angle choice, the completion reset, and the clientselect+frozen abort branch all match Base. Now LIVE (liveness dead->live): the detector sets DodgingAction so the hop and horizontal lunge are actually applied on the live path."
+
+  - id: mutator-dodging.audio.jump_sound
+    name: "Dodge jump sound (sv_dodging_sound)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/dodging/sv_dodging.qc:259 (PlayerSound playersound_jump)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:368-369 (Api.Sound.Play player/jump.wav gated by sv_dodging_sound)"
+    constants:
+      - { name: "sv_dodging_sound", base: "1", port: "1 (cvar)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Api.Sound.Play(player, SoundChannel.Body, player/jump.wav) when sv_dodging_sound != 0 — same call as the regular jump. Reached on the live up-impulse now that the dodge fires.", result: pass }
+    confidence: medium
+    notes: "Faithful in intent and API (matches the port's jump-sound convention; CH_PLAYER -> SoundChannel.Body). Now LIVE (liveness dead->live) since the dodge up-impulse path executes. Confidence medium pending an in-game audio confirmation that player/jump.wav plays on a dodge."
+
+  - id: mutator-dodging.anim.jump_action
+    name: "Dodge plays the jump animation (ANIMACTION_JUMP)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/dodging/sv_dodging.qc:262 (animdecide_setaction ANIMACTION_JUMP)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:363-381 (UNSET_ONGROUND + up-impulse; animdecide comment citing animdecide.qc:283)"
+      - "src/XonoticGodot.Engine/Simulation/LocomotionBlend.cs:81 (SelectLegs returns Locomotion.Jump when !onGround)"
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The explicit server-side animdecide_setaction(ANIMACTION_JUMP) write is not ported (logic: missing) — the port has NO animdecide/anim-action server->client one-shot channel. HOWEVER this seam has no distinct rendered effect even in Base: animdecide.qc:283 states verbatim 'currently, in CSQC this is the only jump detection, as the explicit jump action is never called!' — Base's client renderer drives the jump clip off the IMPLICIT ground->air (ANIMIMPLICITSTATE_INAIR) transition, identical to the port's path. So the missing logic produces no observable presentation gap."
+    verification:
+      - { kind: code, ref: "Base animdecide.qc:280-288 sets anim_lower_implicit_action=ANIMACTION_JUMP purely on the implicit !INAIR->INAIR transition, and the comment at :283 confirms the explicit server-pushed action 'is never called' in CSQC. The port mirrors this: PMDodging does player.Flags &= ~EntFlags.OnGround (DodgingMutator.cs:365) + Velocity += UpSpeed*up, and LocomotionBlend.SelectLegs (LocomotionBlend.cs:78-81) returns Locomotion.Jump for !onGround. So the airborne dodger is shown in the jump pose by exactly the mechanism Base CSQC uses. Reached on the live up-impulse path.", result: pass }
+    confidence: high
+    notes: "FIX vs 2026-06-25 baseline (presentation partial->faithful). The Wave-8d (47edabc) comment rewrite surfaced the decisive Base fact: animdecide.qc:283 says the explicit ANIMACTION_JUMP server action 'is never called' in CSQC — Base itself reconstructs the jump clip from the implicit ground->air transition, the SAME path the port uses (LocomotionBlend.cs:81 on !onGround). The explicit animdecide_setaction overlay is still unported (logic stays missing — there is no anim-action networking seam, same as WalljumpMutator), but it has no distinct visible result in Base, so the rendered outcome is fully faithful, not merely 'largely covered'."
+
+  - id: mutator-dodging.lifecycle.reset
+    name: "Dodge state reset on spawn + observer (dodging_ResetPlayer)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/dodging/sv_dodging.qc:309 dodging_ResetPlayer"
+      - "common/mutators/mutator/dodging/sv_dodging.qc:322 PlayerSpawn"
+      - "common/mutators/mutator/dodging/sv_dodging.qc:328 MakePlayerObserver"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:412 ResetPlayer"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:311 OnPlayerSpawn"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:319 OnMakePlayerObserver"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:47 (MakePlayerObserver HookChain)"
+      - "src/XonoticGodot.Server/ClientManager.cs:564 (MutatorHooks.MakePlayerObserver.Call — live dispatch from PutObserverInServer)"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Re-verified 2026-06-27: Hook() (DodgingMutator.cs:113) subscribes BOTH MutatorHooks.PlayerSpawn AND MutatorHooks.MakePlayerObserver. The MakePlayerObserver HookChain EXISTS (MutatorHooks.cs:47) and is dispatched live from ClientManager.cs:564 inside PutObserverInServer. OnMakePlayerObserver (DodgingMutator.cs:319) and OnPlayerSpawn (DodgingMutator.cs:311) both call ResetPlayer (DodgingMutator.cs:412), which zeroes the same six dodging_* fields as Base dodging_ResetPlayer. Both Base reset triggers are wired.", result: pass }
+    confidence: high
+    notes: "Re-verified 2026-06-27: the MakePlayerObserver reset is fully wired (logic faithful, liveness live). The HookChain exists (MutatorHooks.cs:47) and is called live from ClientManager.PutObserverInServer (ClientManager.cs:564). DodgingMutator subscribes and resets state on both spawn and observer demotion, so a player who spectates mid-dodge no longer carries stale fields into a re-join."
+
+  - id: mutator-dodging.clientselect.opt_in
+    name: "Client opt-in (sv_dodging_clientselect + cl_dodging + REPLICATE)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/dodging/sv_dodging.qc:224 (clientselect abort branch)"
+      - "common/mutators/mutator/dodging/sv_dodging.qc:57-58 REPLICATE(cvar_cl_dodging / cvar_cl_dodging_timeout)"
+      - "common/mutators/mutator/dodging/cl_dodging.qc:3-4 REPLICATE"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:76 ClientSelect"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:84 ClientDodgingProvider"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:237 ClientDodgingEnabled"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:341-342 (PMDodging abort branch)"
+      - "src/XonoticGodot.Server/Commands.cs:233 (cl_dodging/cl_dodging_timeout registered replicate cvars)"
+      - "src/XonoticGodot.Server/Commands.cs:568-569 (ClientDodgingProvider -> per-client store)"
+      - "src/XonoticGodot.Server/Commands.cs:577-578 (TimeoutProvider -> per-client store)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:93 (TimeoutProvider field) + :258 TimeoutFor"
+    constants:
+      - { name: "sv_dodging_clientselect", base: "0", port: "0 (cvar read)", match: true }
+      - { name: "cl_dodging", base: "0", port: "0 (now per-client replicated via ClientDodgingProvider)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "ClientSelect read from sv_dodging_clientselect; PMDodging abort branch consults `ClientSelect && !ClientDodgingEnabled(player) && !frozenDodging` (matches Base); ClientDodgingEnabled uses ClientDodgingProvider, installed at Commands.cs:568-569 to read each Player's replicated cl_dodging from the per-client cvar store (GetClientCvarFloat). cl_dodging AND cl_dodging_timeout are BOTH registered replicate fields (Commands.cs:233) and BOTH now have per-client providers (ClientDodgingProvider Commands.cs:568-569, TimeoutProvider Commands.cs:577-578). TimeoutFor (DodgingMutator.cs:258) consults TimeoutProvider before the server-side fallback. Reached on the live path via the wired detector/PMDodging.", result: pass }
+    confidence: high
+    notes: "FIX vs baseline: BOTH per-client REPLICATE seams are now wired. cl_dodging opt-in -> ClientDodgingProvider (Commands.cs:568-569). The PREVIOUS RESIDUAL — cl_dodging_timeout had no provider — is RESOLVED: DodgingMutator.TimeoutProvider now exists (DodgingMutator.cs:93) and is installed at Commands.cs:577-578, so the double-tap window is per-client too (TimeoutFor reads it). Each client now opts in and sets their own timeout individually instead of sharing the server cvar. Defaults off (sv_dodging_clientselect 0) so practical impact is small, but the seam is fully faithful now."
+
+  - id: mutator-dodging.frozen.dodge
+    name: "Frozen dodging (sv_dodging_frozen / _frozen_doubletap / horiz_force_frozen)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/dodging/sv_dodging.qc:153-154 (frozen_dodging / frozen_no_doubletap)"
+      - "common/mutators/mutator/dodging/sv_dodging.qc:143 (determine_force PHYS_FROZEN branch)"
+      - "common/mutators/mutator/dodging/sv_dodging.qc:223-224 (PM_dodging frozen_dodging carve-out)"
+      - "common/physics/player.qc:649 (PM_check_frozen bound(-2,2) dodging sub-case)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:155-156 (frozenDodging / frozenNoDoubletap)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:243 (DetermineForce PhysFrozen branch)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs:340-347 (PMDodging frozen carve-out)"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:219-223 (frozen wishmove bound(-2,2) sub-case)"
+    constants:
+      - { name: "sv_dodging_frozen", base: "0", port: "0 (cvar read)", match: true }
+      - { name: "sv_dodging_frozen_doubletap", base: "0", port: "0 (cvar read)", match: true }
+      - { name: "sv_dodging_horiz_force_frozen", base: "200", port: "200", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "DodgingMutator.PhysFrozen (DodgingMutator.cs:273) tests `player.FrozenStat != 0` ONLY — it does NOT include the STATUSEFFECT_Frozen path. The port's own canonical PHYS_FROZEN (PlayerPhysics.IsFrozen, PlayerPhysics.cs:1859-1865) is `FrozenStat != 0 || StatusEffectsCatalog.Has(player, Frozen)`. So a player frozen by the STATUSEFFECT_Frozen status effect (e.g. a freeze/cold nade) — as opposed to the Freeze-Tag gametype stat — is NOT seen as frozen by the three dodging frozen branches: DetermineForce won't return HorizForceFrozen (200), and the frozenDodging / frozenNoDoubletap carve-outs in CheckPressedKeys + PMDodging won't engage. The frozen-wishmove bound(-2,2) at PlayerPhysics.cs:219 DOES use the cvar gate (sv_dodging_frozen) but the mutator's own frozen detection is narrower than Base PHYS_FROZEN. Low practical impact (sv_dodging_frozen defaults 0, and Freeze Tag uses FrozenStat), but a real logic divergence wrongly closed to gaps:[] in the prior audit."
+    verification:
+      - { kind: code, ref: "Three of four Base sites ported faithfully: (1) frozen_no_doubletap single-tap branch in all four detector directions (DodgingMutator.cs:187-209); (2) DetermineForce PhysFrozen->HorizForceFrozen (200, DodgingMutator.cs:268); (3) PMDodging abort frozen carve-out (DodgingMutator.cs:361-363); (4) PlayerPhysics.cs:219-223 binds a frozen player's wishmove to bound(-2,2) when sv_dodging_frozen is set instead of zeroing it (the PM_check_frozen dodging sub-case). Cvars sv_dodging_frozen/_frozen_doubletap/_horiz_force_frozen all read in Hook(). DEFECT: the mutator's PhysFrozen helper (DodgingMutator.cs:273) is FrozenStat-only, narrower than the port's PHYS_FROZEN (PlayerPhysics.cs:1859 = FrozenStat || STATUSEFFECT_Frozen) — a status-frozen player is misclassified as not-frozen by all three frozen branches. Not runtime-verified (no tests).", result: fail }
+    confidence: medium
+    notes: "DRIFT CORRECTION vs 2026-06-27 baseline (logic faithful->partial, gaps []->1, confidence high->medium): the cvar wiring and the bound(-2,2) frozen-wishmove (PlayerPhysics.cs:219, gated by sv_dodging_frozen) are correct, but DodgingMutator.PhysFrozen (DodgingMutator.cs:273) checks ONLY FrozenStat, dropping the STATUSEFFECT_Frozen term that the port's own canonical IsFrozen (PlayerPhysics.cs:1859) carries — so a status-effect-frozen (non-Freeze-Tag) player gets the wrong dodge force and no frozen carve-out. The prior audit's 'all four Base sites faithful, gaps []' was confidence inflation. Defaults off (sv_dodging_frozen 0) so the practical blast radius is small. Not runtime- or test-verified (no dodging tests exist)."

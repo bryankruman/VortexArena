@@ -16,7 +16,8 @@
 // (multi_eventdamage via the damage pipeline's Death hook), the gravity-zone exit checker entity that
 // restores gravity when a non-sticky zone is left, per-player counters + the "sequence" notifications
 // (audible/secret-count parts), and the secret/swamp/impulse/keylock families. Genuinely out of scope:
-// CTS client-specific .wait buffers, warpzone exact-trigger clipping, and CSQC networking.
+// warpzone exact-trigger clipping and CSQC networking. CTS per-client .wait buffers are now ported
+// (trigger_multiple / multi_trigger CTS branch keyed by Entity.Index via CtsTriggerTimes Dictionary).
 
 using System.Numerics;
 using XonoticGodot.Common.Framework;
@@ -52,6 +53,22 @@ public static class Triggers
             return false;
         if (self.TakeDamage == DamageMode.No || self.MaxHealthMover == 0f)
             return false;
+
+        // QC multi_eventdamage: a NOSPLASH trigger ignores indirect (non-special, splash) damage so it can't
+        // be set off by nearby blasts — only by a direct shot.
+        if ((self.SpawnFlags & MapMover.SpawnNoSplash) != 0
+            && !DeathTypes.IsSpecial(ev.DeathType) && DeathTypes.HasHitType(ev.DeathType, DeathTypes.Splash))
+            return false;
+
+        // QC multi_eventdamage: a team-restricted shootable trigger only fires for a matching-team attacker
+        // (or the opposite team with INVERT_TEAMS), mirroring the multi_touch team gate.
+        if (self.Team != 0f && ev.Attacker is not null)
+        {
+            bool noInvert = (self.SpawnFlags & MapMover.SpawnInvertTeams) == 0;
+            if (noInvert == (self.Team != ev.Attacker.Team))
+                return false;
+        }
+
         self.Health = self.MaxHealthMover; // keep it alive so the kill path's early-out fires
         self.Enemy = ev.Attacker;
         self.GoalEntity = ev.Inflictor;
@@ -76,14 +93,22 @@ public static class Triggers
         MapMover.InitTrigger(this_);
         this_.ClassName = "trigger_multiple";
 
+        // QC spawnfunc(trigger_multiple): q3compat default .wait is 0.5 (vs Xonotic's 0.2). In q3compat
+        // the field also waits forever when explicitly set to 0 in the map; the port cannot distinguish
+        // "not set" from "set to 0" (both arrive as 0f), so we only apply the 0.5 default branch here.
+        // The explicit-0-means-forever edge is recorded as a residual gap (negligible: rare q3 map pattern).
+        bool isQ3 = CompatRemaps.IsQ3Compat;
         if (this_.Wait == 0f)
-            this_.Wait = 0.2f;
+            this_.Wait = isQ3 ? 0.5f : 0.2f;
 
         this_.Use = MultiUse;
 
-        // Shootable trigger (health): killed to fire (event_damage = multi_eventdamage). Otherwise touch.
-        if (this_.Health != 0f)
+        // QC spawnfunc(trigger_multiple): in CTS, health/damage mode is not supported (multi.qc:230-233) and
+        // instead we allocate the per-client .triggertimes buffer (multi.qc:246-248 `buf_create()`).
+        bool isCts = CompatRemaps.IsCtsActive?.Invoke() ?? false;
+        if (this_.Health != 0f && !isCts)
         {
+            // Shootable trigger (health): killed to fire (event_damage = multi_eventdamage). Otherwise touch.
             this_.MaxHealthMover = this_.Health;
             this_.TakeDamage = DamageMode.Yes;
             this_.Solid = Solid.BBox;
@@ -92,6 +117,10 @@ public static class Triggers
         else if ((this_.SpawnFlags & MapMover.SpawnNoTouch) == 0)
         {
             this_.Touch = MultiTouch;
+            // QC CTS branch: allocate the per-client wait-time dictionary (port of `buf_create()` +
+            // bufstr_get/set keyed by etof(enemy)). Non-CTS: CtsTriggerTimes stays null (shared nextthink).
+            if (isCts)
+                this_.CtsTriggerTimes = new System.Collections.Generic.Dictionary<int, float>();
         }
 
         MapMover.IndexRegister(this_);
@@ -119,11 +148,42 @@ public static class Triggers
         if ((self.SpawnFlags & MapMover.SpawnAllEntities) == 0 && !MapMover.IsCreature(toucher))
             return;
 
+        // QC multi_touch:110-117 q3compat red/blue spawnflag-1/2 team filter: in a 2-team Q3 map,
+        // spawnflag bit 1 = red (NUM_TEAM_1) only, bit 2 = blue (NUM_TEAM_2) only. Xonotic maps
+        // repurpose those bits for other meanings, so this gate is ONLY applied when q3compat is active.
+        if (CompatRemaps.IsQ3Compat)
+        {
+            // AVAILABLE_TEAMS == 2 (2-team game) is implied for Q3 CTF maps; apply the filter when
+            // either bit is set (mirroring QC `if(((f1)&&t1!=R)||((f2)&&t2!=B)) return`).
+            if (((self.SpawnFlags & 1) != 0 && (int)toucher.Team != 1)    // spawnflag 1 = red team (NUM_TEAM_1 = 1)
+            ||  ((self.SpawnFlags & 2) != 0 && (int)toucher.Team != 2))   // spawnflag 2 = blue team (NUM_TEAM_2 = 2)
+                return;
+        }
+        else if (self.Team != 0f)
+        {
+            // team gate (QC multi_touch): a team-restricted trigger only fires for the matching team
+            // (or the opposite team with INVERT_TEAMS). Fire only when
+            //   (no-invert AND same-team) OR (invert AND different-team).
+            bool noInvert = (self.SpawnFlags & MapMover.SpawnInvertTeams) == 0;
+            if (noInvert == (self.Team != toucher.Team))
+                return;
+        }
+
         // facing check: if the trigger has a movedir ("angle"), the toucher must face roughly that way.
         if (self.MoveDir != Vector3.Zero)
         {
             Vector3 fwd = QMath.Forward(toucher.Angles);
             if (QMath.Dot(fwd, self.MoveDir) < 0f)
+                return;
+        }
+
+        // pressed-keys gate (QC multi_touch:135-137): a key-gated trigger only fires while the PLAYER holds one
+        // of the required keys. this.TriggerPressedKeys is the map-parsed mask (movement-key bits); the player's
+        // live key state rides toucher.PressedKeys (written each frame by the input/dodging layer). Non-player
+        // touchers ignore the gate (QC IS_PLAYER(toucher)).
+        if (self.TriggerPressedKeys != 0 && (toucher.Flags & EntFlags.Client) != 0)
+        {
+            if ((toucher.PressedKeys & self.TriggerPressedKeys) == 0)
                 return;
         }
 
@@ -138,16 +198,60 @@ public static class Triggers
         if ((self.SpawnFlags & MapMover.SpawnOnlyPlayers) != 0 && (self.Enemy?.Flags & EntFlags.Client) == 0)
             return; // only players
 
-        if (self.NextThink > MapMover.Now())
-            return; // already triggered, still in the wait window
+        float now = MapMover.Now();
+        Entity? enemy = self.Enemy;
 
-        MapMover.Sound(self.Enemy ?? self, SoundChannel.Auto, self.Noise);
+        // CTS per-client timing (QC multi_trigger:31-45): in CTS each client has its own independent
+        // re-trigger window keyed by etof(enemy) (= Entity.Index). The check is:
+        //   (a) if the client has a stored time AND hasn't respawned since → apply the wait/forever check
+        //   (b) otherwise (no prior record, or re-spawned) → allow firing
+        // Outside CTS the shared nextthink is used (same as before).
+        if (self.CtsTriggerTimes is { } ctsTimes && enemy is not null && (enemy.Flags & EntFlags.Client) != 0)
+        {
+            int cnum = enemy.Index;
+            if (ctsTimes.TryGetValue(cnum, out float storedTime))
+            {
+                // QC: `if (this.enemy.spawn_time <= triggertime)` → the player hasn't respawned since
+                // triggering, so the wait check applies. If they DID respawn (spawn_time > storedTime)
+                // the slot is stale — allow firing regardless of wait.
+                float spawnTime = enemy is Player p ? p.SpawnTime : 0f;
+                if (spawnTime <= storedTime)
+                {
+                    // Haven't respawned; apply the normal wait check.
+                    // QC: `wait <= 0 && (q3compat || wait >= -1)` → wait forever; `triggertime + wait > time` → too soon.
+                    // The port has no q3compat path, so the forever condition is `wait <= 0 && wait >= -1`
+                    // (i.e. wait in the [−1, 0] range that is NOT the xon no-wait branch).
+                    if ((self.Wait <= 0f && self.Wait >= -1f) || storedTime + self.Wait > now)
+                        return;
+                }
+            }
+        }
+        else
+        {
+            // Non-CTS: standard single shared timer check.
+            if (self.NextThink > now)
+                return; // already triggered, still in the wait window
+        }
+
+        MapMover.Sound(enemy ?? self, SoundChannel.Auto, self.Noise);
 
         self.TakeDamage = DamageMode.No; // don't re-trigger via damage until reset
 
-        MapMover.UseTargets(self, self.Enemy, self.GoalEntity);
+        MapMover.UseTargets(self, enemy, self.GoalEntity);
 
-        if (self.Wait > 0f)
+        // After firing: schedule rearm or disable, per-client or shared.
+        if (self.CtsTriggerTimes is { } ctsTimesPost && enemy is not null && (enemy.Flags & EntFlags.Client) != 0)
+        {
+            // CTS: store the trigger time for this specific client (QC bufstr_set/bufstr_add with etof−1 index).
+            ctsTimesPost[enemy.Index] = now;
+
+            // QC CTS else-branch (multi.qc:84-86): disable for NON-CLIENT touchers the same as non-CTS wait==−1.
+            // For clients, CTS triggers are always per-client: `this.nextthink = stof("inf")` blocks non-client
+            // re-triggers via the shared check, but that shared check is bypassed when CtsTriggerTimes != null.
+            // We keep NextThink at float.MaxValue to block the rare non-client path through the shared branch:
+            self.NextThink = float.MaxValue;
+        }
+        else if (self.Wait > 0f)
         {
             this_SetRearm(self);
         }
@@ -184,6 +288,9 @@ public static class Triggers
     //  trigger_hurt
     // ===================================================================
 
+    /// <summary>QC hurt.qh <c>SPAWNFLAG_HURT_SLOW</c> = BIT(0): keep the 1s creature cooldown even under q3compat.</summary>
+    public const int HurtSlow = 1 << 0; // SPAWNFLAG_HURT_SLOW
+
     /// <summary><c>spawnfunc(trigger_hurt)</c> — damages anything damageable that touches it.</summary>
     public static void HurtSetup(Entity this_)
     {
@@ -193,8 +300,10 @@ public static class Triggers
         this_.Touch = HurtTouch;
         this_.Use = HurtUse;
         this_.Enemy = null; // "I hate you all" — attribute to the world unless taken over
+        // QC spawnfunc(trigger_hurt): default .dmg is 10000 on Xonotic maps but 5 on a q3compat import
+        // (the Q3 trigger_hurt is a gentle damage volume, not the instant-death pit Xonotic uses).
         if (this_.Dmg == 0f)
-            this_.Dmg = 10000f;
+            this_.Dmg = CompatRemaps.IsQ3Compat ? 5f : 10000f;
         if (string.IsNullOrEmpty(this_.Message))
             this_.Message = "was in the wrong place";
         MapMover.IndexRegister(this_);
@@ -214,10 +323,22 @@ public static class Triggers
         if (self.Active != MapMover.ActiveActive)
             return;
 
+        // team gate (QC trigger_hurt_touch): a team-restricted hurt volume only bites the matching team
+        // (or the opposite team with INVERT_TEAMS).
+        if (self.Team != 0f)
+        {
+            bool noInvert = (self.SpawnFlags & MapMover.SpawnInvertTeams) == 0;
+            if (noInvert == (self.Team != toucher.Team))
+                return;
+        }
+
         if (MapMover.IsCreature(toucher))
         {
-            // QC throttles creatures to one hit per second (per toucher).
-            if (MapMover.Now() >= toucher.TriggerHurtTime + 1f)
+            // QC throttles creatures to one hit per `gametime` cooldown (per toucher): 1s on stock Xonotic,
+            // but a fast 0.05s under q3compat UNLESS SPAWNFLAG_HURT_SLOW is set (hurt.qc creature branch). A
+            // q3 trigger_hurt is a low-damage volume that bites rapidly; HURT_SLOW restores the 1s cadence.
+            float cooldown = (CompatRemaps.IsQ3Compat && (self.SpawnFlags & HurtSlow) == 0) ? 0.05f : 1f;
+            if (MapMover.Now() >= toucher.TriggerHurtTime + cooldown)
             {
                 toucher.TriggerHurtTime = MapMover.Now();
                 Entity attacker = (self.Enemy is not null && (self.Enemy.Flags & EntFlags.Client) != 0)
@@ -226,9 +347,11 @@ public static class Triggers
                 Combat.Damage(toucher, self, attacker, self.Dmg, DeathTypes.Void, toucher.Origin, Vector3.Zero);
             }
         }
-        else
+        else if (MapMover.IsPushable(toucher))
         {
-            // non-creatures (projectiles flagged damagedbytriggers) take damage every touch.
+            // QC gates non-creatures on toucher.damagedbytriggers (projectiles/loot/bodies); the port has no
+            // such field, so IsPushable stands in for it (same set, matching the TargetUtilities convention).
+            // Those take damage every touch.
             Combat.Damage(toucher, self, self, self.Dmg, DeathTypes.Void, toucher.Origin, Vector3.Zero);
         }
     }
@@ -279,14 +402,21 @@ public static class Triggers
         if (self.Delay > 0f)
             toucher.TriggerHealTime = MapMover.Now() + self.Delay;
 
-        // QC Heal(targ, src, amount, limit): give up to `limit` total (the field topoff).
+        // QC Heal(targ, src, amount, limit): give up to `limit` total (the field topoff). Returns whether
+        // any health was actually added (the toucher was below the cap).
+        bool playTheSound = (self.SpawnFlags & HealSoundAlways) != 0;
         float before = toucher.GetResource(ResourceType.Health);
-        if (before < self.MaxHealthMover)
-        {
+        bool healed = before < self.MaxHealthMover;
+        if (healed)
             toucher.GiveResourceWithLimit(ResourceType.Health, self.Health, self.MaxHealthMover);
+
+        // QC: play the heal sound when HEAL_SOUND_ALWAYS is set OR a heal actually happened (so a topped-off
+        // creature in a HEAL_SOUND_ALWAYS field still gets the cue).
+        if (playTheSound || healed)
             MapMover.Sound(toucher, SoundChannel.Auto, self.Noise);
-        }
     }
+
+    public const int HealSoundAlways = 1 << 2; // HEAL_SOUND_ALWAYS
 
     // ===================================================================
     //  trigger_gravity
@@ -453,8 +583,9 @@ public static class Triggers
 
         if (store.CounterCnt == self.Count)
         {
+            // CENTER_SEQUENCE_COMPLETED — a text-only MSG_CENTER NOTIF_ONE notification in QC (no sound).
             if (announce)
-                MapMover.Sound(actor, SoundChannel.Voice, "misc/talk.wav"); // CENTER_SEQUENCE_COMPLETED (audible part)
+                NotificationSystem.Send(NotifBroadcast.One, actor, MsgType.Center, "SEQUENCE_COMPLETED");
 
             doActivate = true;
 
@@ -466,8 +597,13 @@ public static class Triggers
         }
         else if (announce)
         {
-            // CENTER_SEQUENCE_COUNTER / _FEWMORE — the "N more" countdown (text is client-side).
-            MapMover.Sound(actor, SoundChannel.Voice, "misc/talk.wav");
+            // CENTER_SEQUENCE_COUNTER (>=4 to go) / _FEWMORE (<4, with the remaining count) — text-only
+            // MSG_CENTER NOTIF_ONE notifications in QC (no sound). (counter.qc:53-59)
+            int remaining = self.Count - store.CounterCnt;
+            if (remaining >= 4)
+                NotificationSystem.Send(NotifBroadcast.One, actor, MsgType.Center, "SEQUENCE_COUNTER");
+            else
+                NotificationSystem.Send(NotifBroadcast.One, actor, MsgType.Center, "SEQUENCE_COUNTER_FEWMORE", (float)remaining);
         }
 
         if (doActivate)
@@ -615,6 +751,7 @@ public static class Triggers
             return;
 
         ++MapObjectsState.SecretsFound;
+        MapMover.Centerprint(toucher, self.Message); // QC centerprints "You found a secret!" (via SUB_UseTargets)
         MapMover.UseTargets(self, toucher, toucher);
         self.Touch = null; // can't delete inside a touch callback; just disarm
     }
@@ -642,11 +779,34 @@ public static class Triggers
         MapMover.IndexRegister(this_);
     }
 
+    /// <summary>
+    /// QC <c>g_swamped</c> — the players currently claimed by some swamp this frame. Tracked here (rather than
+    /// scanning all clients) so <see cref="SwampThink"/> can clear a player's stamp the frame it leaves the
+    /// volume / the swamp goes inactive, matching QC's IL_EACH(g_swamped, …) clear-then-restamp pass.
+    /// </summary>
+    private static readonly List<Entity> _swamped = new();
+
     /// <summary>QC <c>swamp_think</c>: re-mark the players inside the volume each frame and damage on interval.</summary>
     private static void SwampThink(Entity self)
     {
         self.NextThink = MapMover.Now();
-        if (self.Active != MapMover.ActiveActive || Api.Services is null)
+        if (Api.Services is null)
+            return;
+
+        // QC: first drop every player this swamp had claimed last frame (so a player who left the volume — or
+        // is in this swamp while it is inactive — has their stamp removed and regains full speed). They get
+        // re-claimed below only if still inside an ACTIVE swamp.
+        for (int i = _swamped.Count - 1; i >= 0; i--)
+        {
+            Entity it = _swamped[i];
+            if (ReferenceEquals(it.SwampSlug, self))
+            {
+                it.SwampSlug = null;
+                _swamped.RemoveAt(i);
+            }
+        }
+
+        if (self.Active != MapMover.ActiveActive)
             return;
 
         Vector3 center = (self.AbsMin + self.AbsMax) * 0.5f;
@@ -656,15 +816,24 @@ public static class Triggers
         {
             if ((it.Flags & EntFlags.Client) == 0 || MapMover.IsDead(it))
                 continue;
-            // only claim a player not already in another active swamp this frame.
-            if (it.SwampSlug is not null && !ReferenceEquals(it.SwampSlug, self))
+            // QC: it.swampslug.active == ACTIVE_NOT — only claim a player whose current swamp is inactive
+            // (or who has no swamp). A player already in another ACTIVE swamp keeps it.
+            if (it.SwampSlug is not null && it.SwampSlug.Active == MapMover.ActiveActive)
                 continue;
 
+            if (it.SwampSlug is null)
+                _swamped.Add(it);
             it.SwampSlug = self; // marks them swamped (movement code reads SwampSlug.SwampSlowdown)
+        }
 
+        // QC: damage every player currently claimed by THIS swamp, on the per-toucher interval.
+        foreach (Entity it in _swamped)
+        {
+            if (!ReferenceEquals(it.SwampSlug, self))
+                continue;
             if (MapMover.Now() > it.SwampNextTime)
             {
-                Combat.Damage(it, self, self, self.Dmg, DeathTypes.Void, it.Origin, Vector3.Zero);
+                Combat.Damage(it, self, self, self.Dmg, DeathTypes.Swamp, it.Origin, Vector3.Zero);
                 it.SwampNextTime = MapMover.Now() + self.SwampInterval;
             }
         }
@@ -847,15 +1016,20 @@ public static class Triggers
 
         if (self.ItemKeys != 0)
         {
-            // at least one key still missing.
+            // at least one key still missing. QC names the still-missing keys in the centerprint
+            // (item_keys_keylist of the post-consume requirement): "You also need X" when SOME were
+            // supplied (CENTER_DOOR_LOCKED_ALSONEED), "You need X" when NONE were (CENTER_DOOR_LOCKED_NEED).
+            string keylist = MapObjectsRegistry.ItemKeysKeylist(self.ItemKeys);
             if (keyUsed)
             {
-                MapMover.Sound(toucher, SoundChannel.Voice, self.Noise1);
+                MapMover.Play2(toucher, self.Noise1); // QC keylock.qc:49 play2(toucher, this.noise1)
+                NotificationSystem.Send(NotifBroadcast.One, toucher, MsgType.Center, "DOOR_LOCKED_ALSONEED", keylist);
                 toucher.KeyDoorMessageTime = MapMover.Now() + 2f;
             }
             else if (toucher.KeyDoorMessageTime <= MapMover.Now())
             {
-                MapMover.Sound(toucher, SoundChannel.Voice, self.Noise2);
+                MapMover.Play2(toucher, self.Noise2); // QC keylock.qc:56 play2(toucher, this.noise2)
+                NotificationSystem.Send(NotifBroadcast.One, toucher, MsgType.Center, "DOOR_LOCKED_NEED", keylist);
                 toucher.KeyDoorMessageTime = MapMover.Now() + 2f;
             }
 
@@ -869,7 +1043,8 @@ public static class Triggers
         else
         {
             // all keys supplied: fire target, kill killtarget, remove self.
-            MapMover.Sound(toucher, SoundChannel.Voice, self.Noise);
+            MapMover.Play2(toucher, self.Noise); // QC keylock.qc:75 play2(toucher, this.noise)
+            MapMover.Centerprint(toucher, self.Message); // QC centerprint(toucher, "Unlocked!")
 
             if (!string.IsNullOrEmpty(self.Target))
                 KeylockTrigger(self, toucher, self.Target);

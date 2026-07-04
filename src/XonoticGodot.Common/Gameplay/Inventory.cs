@@ -178,6 +178,90 @@ public static class Inventory
         return string.IsNullOrEmpty(s) ? WeaponOrderByPriorityDefault : PriorityNamesToIds(s);
     }
 
+    /// <summary>
+    /// PER-CLIENT, PER-GROUP priority source (QC <c>CS_CVAR(this).cvar_cl_weaponpriorities[number]</c>, the ten
+    /// replicated <c>cl_weaponpriority0..9</c> explosives/energy/hitscan/… category lists): given the player and a
+    /// group number 0..9, returns that group's replicated priority list in NUMBER (registry-id) form (the
+    /// post-fixup value the server's <c>sentcvar</c> handler stored — see Commands.cs CmdSentCvar's
+    /// cl_weaponpriorityN W_FixWeaponOrder_AllowIncomplete branch), or null/empty for "not replicated" (fall back
+    /// to the global cvar read in <see cref="WeaponPriorityForGroup"/>). Installed by the server's
+    /// <c>Commands</c> ctor alongside <see cref="PriorityProvider"/>; null by default so the listen-server/local
+    /// path reads the cvar facade directly.
+    /// </summary>
+    public static Func<Entity, int, string?>? PriorityProviderForGroup;
+
+    /// <summary>
+    /// QC <c>CS_CVAR(this).cvar_cl_weaponpriorities[number]</c> — the player's priority list for impulse-group
+    /// <paramref name="number"/> (0..9). Consults the per-client per-group <see cref="PriorityProviderForGroup"/>
+    /// first (the sentcvar-replicated value, already in id form); otherwise the corresponding
+    /// <c>cl_weaponpriorityN</c> is read off the server cvar facade (name form → ids). Falls back to the main
+    /// <see cref="WeaponPriority"/> list when the group cvar is unset/out-of-range, matching an unset category list.
+    /// </summary>
+    public static string WeaponPriorityForGroup(Entity e, int number)
+    {
+        if (number is < 0 or > 9)
+            return WeaponPriority(e);
+
+        string? per = PriorityProviderForGroup?.Invoke(e, number);
+        if (!string.IsNullOrEmpty(per))
+            return per;
+
+        if (Api.Services is not null)
+        {
+            string s = Api.Cvars.GetString("cl_weaponpriority" + number);
+            if (!string.IsNullOrEmpty(s))
+                return PriorityNamesToIds(s);
+        }
+        // Unset group list → behave like QC's empty category (nothing to cycle); fall back to the main list so the
+        // bind still moves the player to a usable weapon rather than no-op.
+        return WeaponPriority(e);
+    }
+
+    /// <summary>
+    /// PER-CLIENT by-impulse-group order source (QC <c>CS_CVAR(this).weaponorder_byimpulse</c>, the space-separated
+    /// weapon-id list ordered by the weapons' impulse/group, used by <c>W_NextWeapon</c>/<c>W_PreviousWeapon</c>
+    /// list==1). Returns the player's replicated order in NUMBER (registry-id) form, or null/empty to fall back to
+    /// <see cref="WeaponOrderByImpulseDefault"/>. Installed by the server's <c>Commands</c> ctor; null by default.
+    /// </summary>
+    public static Func<Entity, string?>? WeaponOrderByImpulseProvider;
+
+    /// <summary>
+    /// QC <c>CS_CVAR(this).weaponorder_byimpulse</c>: the weapons in impulse/group order. Consults the per-client
+    /// <see cref="WeaponOrderByImpulseProvider"/> first, otherwise the registry-derived default.
+    /// </summary>
+    public static string WeaponOrderByImpulse(Entity e)
+    {
+        string? per = WeaponOrderByImpulseProvider?.Invoke(e);
+        return string.IsNullOrEmpty(per) ? WeaponOrderByImpulseDefault : per;
+    }
+
+    /// <summary>
+    /// Stock <c>weaponorder_byimpulse</c> default: weapon ids sorted by ascending (Impulse, RegistryId) — i.e. the
+    /// order the weapon keys 1..0 lay weapons out — built once from the registry. (QC fills this from
+    /// W_FixWeaponOrder over the impulse order; absent a replicated value we approximate with the impulse sort.)
+    /// </summary>
+    public static string WeaponOrderByImpulseDefault
+    {
+        get
+        {
+            if (_weaponOrderByImpulse is null || _weaponOrderByImpulseCount != Registry<Weapon>.Count)
+            {
+                _weaponOrderByImpulseCount = Registry<Weapon>.Count;
+                var ids = new List<int>();
+                for (int i = 0; i < _weaponOrderByImpulseCount; i++) ids.Add(i);
+                ids.Sort((a, b) =>
+                {
+                    int ia = Registry<Weapon>.ById(a).Impulse, ib = Registry<Weapon>.ById(b).Impulse;
+                    return ia != ib ? ia.CompareTo(ib) : a.CompareTo(b);
+                });
+                _weaponOrderByImpulse = string.Join(' ', ids);
+            }
+            return _weaponOrderByImpulse;
+        }
+    }
+    private static string? _weaponOrderByImpulse;
+    private static int _weaponOrderByImpulseCount = -1;
+
     /// <summary>Stock fallback priority by id (registry order, reversed → strongest first) when no cvar is set.</summary>
     public static string WeaponOrderByPriorityDefault
     {
@@ -241,11 +325,101 @@ public static class Inventory
                     || WeaponAmmo.Check(w, e, secondary: false)
                     || WeaponAmmo.Check(w, e, secondary: true);
                 if (!f)
+                {
+                    // QC selection.qc:91-95: owned but no ammo + complain + real client → the UNAVAILABLE cue.
+                    // play2(this, SND(UNAVAILABLE)) — a per-recipient 2D cue (CH_INFO / VOL_BASE / ATTEN_NONE);
+                    // "weapons/unavailable". (Send_WeaponComplain text routing is owned by the notification unit.)
+                    if (complain && e is Player { IsBot: false })
+                        SoundSystem.Play2(e, "UNAVAILABLE");
                     return false;
+                }
             }
             return true;
         }
+
+        // Not owned. QC client_hasweapon (selection.qc:106-115): on the complain path, if the weapon EXISTS as a
+        // spawn somewhere on the map (weaponsInMap & WepSet), point the player at it with WP_Weapon spawn-markers
+        // (Weapon_whereis) instead of the "you don't have it" complaint. The port has no cached weaponsInMap flag,
+        // so Weapon_whereis scans the live item set directly (same answer: a marker per matching spawn, or none).
+        if (complain && e is Player { IsBot: false })
+        {
+            // QC selection.qc:109-112: g_showweaponspawns < 3 → just this weapon; == 3 → every weapon sharing the
+            // pressed weapon's impulse group (so all alternatives bound to the same key are revealed).
+            if (Api.Services is not null && (int)Api.Cvars.GetFloat("g_showweaponspawns") >= 3)
+            {
+                for (int i = 0; i < Registry<Weapon>.Count; i++)
+                {
+                    Weapon it = Registry<Weapon>.ById(i);
+                    if (it.Impulse == w.Impulse)
+                        Weapon_whereis(it, e);
+                }
+            }
+            else
+            {
+                Weapon_whereis(w, e);
+            }
+
+            // QC selection.qc:117: after the where-is markers (or the "modified ownership" complaint), the
+            // not-owned complain path always plays the UNAVAILABLE cue. play2(this, SND(UNAVAILABLE)) — a
+            // per-recipient 2D cue (CH_INFO / VOL_BASE / ATTEN_NONE), resolving to "weapons/unavailable".
+            SoundSystem.Play2(e, "UNAVAILABLE");
+        }
         return false;
+    }
+
+    /// <summary>
+    /// Port of <c>Weapon_whereis</c> (server/weapons/selection.qc:26): when a player presses a weapon key for a
+    /// weapon they don't own — and <c>g_showweaponspawns</c> is on — spawn a short-lived <c>WP_Weapon</c> waypoint
+    /// sprite over every matching weapon-spawn item, so the player can see where to pick it up. The markers use
+    /// <c>RADARICON_NONE</c> (radar icon 0) so they appear only in-world, not on the team radar, and carry the
+    /// weapon id (QC <c>wp_extra</c>) for the client's weapon-icon resolution. Lifetime -2 (QC: full alpha for 2s
+    /// with no fade ramp, then killed — re-spawned on each press). <c>g_showweaponspawns</c>: 1 = on-key when unowned,
+    /// 2 = include dropped loot, 3 = all weapons sharing the impulse (the 3-case is dispatched by the caller).
+    /// </summary>
+    public static void Weapon_whereis(Weapon weapon, Entity requester)
+    {
+        if (Api.Services is null || requester is not Player requesterPlayer)
+            return;
+        // QC: if (!autocvar_g_showweaponspawns || this.spawnflags & WEP_FLAG_HIDDEN) return;
+        int showSpawns = (int)Api.Cvars.GetFloat("g_showweaponspawns");
+        if (showSpawns == 0 || (weapon.SpawnFlags & WeaponFlags.Hidden) != 0)
+            return;
+
+        // QC IL_EACH(g_items, it.weapon == this.m_id && it.model, …): every live spawn of this weapon that
+        // currently has a model (i.e. is shown — Item_Show clears the model when hidden/picked-up). The port maps
+        // it.weapon == m_id to "the item's weapon set contains this weapon" (weapon pickups seed exactly one).
+        System.Collections.Generic.IReadOnlyList<Entity>? all = Api.Entities.All;
+        if (all is null)
+            return;
+        for (int i = 0; i < all.Count; i++)
+        {
+            Entity it = all[i];
+            if (it.IsFreed || it.ItemDefRef is null)
+                continue;
+            if (it.Pickup is not WeaponPickup || !it.OwnedWeaponSet.Has(weapon))
+                continue;
+            if (!it.ItemAvailable || string.IsNullOrEmpty(it.Model)) // QC: && it.model (shown only)
+                continue;
+            // QC: if (ITEM_IS_LOOT(it) && autocvar_g_showweaponspawns < 2) continue;
+            if (it.ItemIsLoot && showSpawns < 2)
+                continue;
+
+            // QC WaypointSprite_Spawn(WP_Weapon, -2, 0, NULL, it.origin + ('0 0 1'*it.maxs.z)*1.2, cl, 0, NULL,
+            //   enemy, 0, RADARICON_NONE); wp.wp_extra = this.m_id.
+            // showto = cl → visible only to the requesting player (personal). RADARICON_NONE → radarIcon 0
+            // (in-world only). Lifetime -2 in QC means "full alpha for 2s, no fade ramp, then killed" (re-spawned
+            // each press); the port matches with a 2s lifetime + the NoFade flag (hard kill at expiry).
+            System.Numerics.Vector3 head = it.Origin
+                + new System.Numerics.Vector3(0f, 0f, it.Maxs.Z * 1.2f);
+            Waypoints.WaypointDef def = Waypoints.WaypointRegistry.Get("Weapon");
+            Waypoints.WaypointSprite wp = Waypoints.WaypointSprites.Spawn(
+                "Weapon", Waypoints.WaypointSprites.WhereisLifetime, 0f, null, default, head,
+                0, def.Color, radarIcon: 0); // RADARICON_NONE
+            wp.NoFade = true;                 // QC lifetime -2: full alpha for the lifetime, then hard kill (no fade)
+            wp.WpExtra = weapon.RegistryId;   // QC wp.wp_extra = this.m_id (client weapon-icon resolution)
+            // QC showto = cl: personal, visible only to the requester.
+            wp.VisibleForPlayer = viewer => ReferenceEquals(viewer, requesterPlayer);
+        }
     }
 
     /// <summary>
@@ -395,6 +569,18 @@ public static class Inventory
         if (w >= 0) SwitchWeaponWithComplain(e, Registry<Weapon>.ById(w));
     }
 
+    /// <summary>
+    /// Port of <c>weapon_priority_handle</c> (impulse.qc:89) → <c>W_CycleWeapon(this, cvar_cl_weaponpriorities[number],
+    /// dir, …)</c>: cycle the per-GROUP custom priority list (cl_weaponpriority0..9) for impulse group
+    /// <paramref name="number"/> (0..9) in <paramref name="dir"/> (prev=-1 / best=0 / next=+1). The impulse router
+    /// (WeaponImpulses.PriorityHandle, 200-229) calls this so the group number selects the right category list,
+    /// rather than always cycling the single main <c>cl_weaponpriority</c>.
+    /// </summary>
+    public static void CycleWeaponGroup(Entity e, int number, float dir)
+    {
+        CycleWeapon(e, WeaponPriorityForGroup(e, number), dir);
+    }
+
     /// <summary>Port of <c>W_NextWeaponOnImpulse</c> (selection.qc): next weapon in the impulse-share group.</summary>
     public static void NextWeaponOnImpulse(Entity e, float imp)
     {
@@ -410,7 +596,7 @@ public static class Inventory
     public static void NextWeapon(Entity e, int list)
     {
         if (list == 0) CycleWeapon(e, WeaponOrderById, -1);
-        else if (list == 1) CycleWeapon(e, WeaponPriority(e), -1); // by-impulse order not modeled; fall back to priority
+        else if (list == 1) CycleWeapon(e, WeaponOrderByImpulse(e), -1); // QC weaponorder_byimpulse (list 1)
         else if (list == 2) CycleWeapon(e, WeaponPriority(e), -1);
     }
 
@@ -418,7 +604,7 @@ public static class Inventory
     public static void PreviousWeapon(Entity e, int list)
     {
         if (list == 0) CycleWeapon(e, WeaponOrderById, +1);
-        else if (list == 1) CycleWeapon(e, WeaponPriority(e), +1);
+        else if (list == 1) CycleWeapon(e, WeaponOrderByImpulse(e), +1); // QC weaponorder_byimpulse (list 1)
         else if (list == 2) CycleWeapon(e, WeaponPriority(e), +1);
     }
 

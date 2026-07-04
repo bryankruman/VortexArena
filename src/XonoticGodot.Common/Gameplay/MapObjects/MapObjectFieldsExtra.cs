@@ -57,6 +57,13 @@ namespace XonoticGodot.Common.Framework
         /// consumption is a follow-up; the field keeps the QC math observable.</summary>
         public int ColorMapOverride;
 
+        /// <summary>The DP <c>MF_ROTATE</c> model flag (csqcmodel_hooks.qc:617-623). The ONLY edict that sets it
+        /// is the pickup key (keys.qc:117). DP's predraw spins the model in yaw by
+        /// <c>'0 100 0' * fmod(time, 3.6)</c> (a steady 100°/s, wrapping every 3.6 s = 360°). The port has no
+        /// networked modelflags channel; on the listen-server/demo path the shared edict carries this bool and
+        /// EntityNode applies the same yaw spin. (Render-only; the server entity's .angles is unchanged.)</summary>
+        public bool ModelSpinRotate;
+
         // ---- distance-fade keys (models.qc ENT_CLIENT_WALL / Ent_Wall_PreDraw) ----
         public float FadeStartDist;      // QC .fade_start
         public float FadeEndDist;        // QC .fade_end
@@ -64,9 +71,36 @@ namespace XonoticGodot.Common.Framework
         public float AlphaMin;           // QC .alpha_min — PERCENT
         public float FadeVerticalOffset; // QC .fade_vertical_offset
 
+        // ---- antiwall relay (models.qc g_clientmodel_use) ----
+        /// <summary>QC <c>.antiwall_flag</c> — the func_clientwall solid-toggle command relayed from the firing
+        /// trigger: 1 = deactivate (SOLID_NOT + hidden), 2 = activate (restore default_solid + shown), 0 = nothing.
+        /// A trigger that toggles a clientwall sets this on itself; g_clientmodel_use copies it onto the wall.</summary>
+        public int AntiwallFlag;
+        /// <summary>QC <c>.inactive</c> — a func_clientwall/func_clientillusionary deactivated by the antiwall
+        /// relay (renders alpha 0 in Ent_Wall_PreDraw and, if SOLID, is also made non-solid).</summary>
+        public bool Inactive;
+        /// <summary>QC <c>.default_solid</c> — the wall's original solidity (set at g_clientmodel_init), restored by
+        /// the antiwall relay's "activate" (flag 2) branch.</summary>
+        public Solid DefaultSolid;
+
         // ---- weather (rainsnow.qc) ----
         /// <summary>QC <c>.dest</c> — the rain/snow fall velocity (moved off <c>.velocity</c> at spawn).</summary>
         public Vector3 Dest;
+
+        // ---- trigger_multiple pressed-keys gate (multi.qc:135-137) ----
+        /// <summary>QC <c>.pressedkeys</c> as a MAP key on a trigger_multiple: a bitmask of the movement keys
+        /// (KEY_FORWARD/BACKWARD/LEFT/RIGHT/JUMP/CROUCH/ATCK/ATCK2 — the PressedKeyBits enum) the player must
+        /// be holding for the trigger to fire. Distinct from the per-frame <see cref="Entity.PressedKeys"/> the
+        /// input/dodging layer rewrites on a player edict each frame — this one is parsed once from the map and
+        /// never touched, so it can't collide with the player's live key state.</summary>
+        public int TriggerPressedKeys; // QC trigger-side .pressedkeys (multi.qc)
+
+        // ---- push interaction (triggers.qc isPushable) ----
+        /// <summary>QC <c>.pushable</c> — when set, the entity is moved by jumppads/conveyors/impulse-fields even
+        /// if it would otherwise be excluded (notably the spiderbot vehicle: vr_setup sets <c>pushable = true</c>
+        /// so it can ride jumppads, despite IS_VEHICLE normally returning false). Checked FIRST by
+        /// <c>isPushable</c> (triggers.qc:5), before the IS_VEHICLE/creature/loot tests.</summary>
+        public bool PushableFlag;
 
         // ---- music keys (target/music.qc) ----
         public float MusicLifetime;      // QC .lifetime — seconds a triggered target_music outranks the default (0 = becomes the default)
@@ -112,6 +146,8 @@ namespace XonoticGodot.Common.Gameplay
             // --- motion keys ---
             if (TryVec(fields, "velocity", out Vector3 vel)) e.Velocity = vel;
             if (TryVec(fields, "movedir", out Vector3 md)) e.MoveDir = md;
+            // trigger_multiple key-gate (multi.qc:135): the player must hold one of these movement keys.
+            if (TryF(fields, "pressedkeys", out float pk)) e.TriggerPressedKeys = (int)pk;
             if (TryVec(fields, "mins", out Vector3 mins)) { e.Mins = mins; e.Size = e.Maxs - e.Mins; }
             if (TryVec(fields, "maxs", out Vector3 maxs)) { e.Maxs = maxs; e.Size = e.Maxs - e.Mins; }
 
@@ -129,17 +165,39 @@ namespace XonoticGodot.Common.Gameplay
             if (TryF(fields, "alpha_max", out float amx)) e.AlphaMax = amx;
             if (TryF(fields, "alpha_min", out float amn)) e.AlphaMin = amn;
             if (TryF(fields, "fade_vertical_offset", out float fvo)) e.FadeVerticalOffset = fvo;
+            // .antiwall_flag rides the TRIGGER that toggles a func_clientwall (1=deactivate, 2=activate);
+            // g_clientmodel_use reads it off the activator. (models.qc:42)
+            if (TryF(fields, "antiwall_flag", out float awf)) e.AntiwallFlag = (int)awf;
 
             // --- music keys ---
             if (TryF(fields, "lifetime", out float lt)) e.MusicLifetime = lt;
             if (TryF(fields, "fade_time", out float ft)) e.MusicFadeIn = ft;
             if (TryF(fields, "fade_rate", out float fr)) e.MusicFadeOut = fr;
 
+            // --- target_changelevel keys (QC .chmap / .gametype, changelevel.qc:3) ---
+            //     `chmap` = the map to switch to ("" = end the match); `gametype` = the next map's gametype.
+            //     Without these the named-chmap + gametype-switch branches of target_changelevel_use are
+            //     unreachable (the field stays "" so only the end-match NextLevel branch ever fired).
+            if (fields.TryGetValue("chmap", out string? chmap)) e.ChMap = chmap;
+            if (fields.TryGetValue("gametype", out string? chgt)) e.ChLevelGameType = chgt;
+
             // --- keys GameWorld promotes but GameDemo's slimmer twin never did (demo-path completion) ---
             if (TryF(fields, "dmg", out float dmg)) e.Dmg = dmg;
             if (TryF(fields, "volume", out float vol)) e.Volume = vol;
             if (TryF(fields, "atten", out float att)) e.Atten = att;
             if (fields.TryGetValue("noise", out string? ns)) e.Noise = ns;
+
+            // --- Wave-1 mover soundpack + ease keys (MapObjectsCommon: ApplyDoorSounds/ApplyPlatSounds read
+            //     .sounds; .sound1/.sound2 are the legacy per-mover move/stop sound overrides; .platmovetype is
+            //     parsed by MapMover.SetPlatMoveType at the path_corner/train/plat spawnfuncs). Promoted here so
+            //     the soundpack helpers + set_platmovetype have their raw map input. ---
+            if (TryF(fields, "sounds", out float snds)) e.Sounds = (int)snds;
+            if (fields.TryGetValue("sound1", out string? s1)) e.Sound1 = s1;
+            if (fields.TryGetValue("sound2", out string? s2)) e.Sound2 = s2;
+            if (fields.TryGetValue("platmovetype", out string? pmt)) e.Platmovetype = pmt;
+
+            // --- bidirectional rotating-door reverse marker (QC .trigger_reverse on the firing trigger) ---
+            if (TryF(fields, "trigger_reverse", out float trev)) e.TriggerReverse = (int)trev;
 
             // --- T59 long-tail map-object keys (the 7 rare entities; not promoted by GameWorld's fixed key set) ---
             // dynlight (light_lev/color/dtagname/style), the generic .target2-4/.delay/.message2/.phase movers read,

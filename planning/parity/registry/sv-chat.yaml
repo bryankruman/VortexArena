@@ -1,0 +1,432 @@
+unit: sv-chat
+category: server
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-27"  # W16/17 re-audit (opus, parity-diff): ONE drift — sv-chat.helpers.printtochat liveness dead->partial (PrintToChatAll now has a live caller: Tuba melody bprint Tuba.cs:274 -> GameWorld.cs:668). Other 14 rows re-verified accurate vs current port: chat cvar/flood/IGNORE_MAXPLAYERS(16) match server.cfg+cmd.qh; say/say_team/tell/ignore/voice all route Chat.Say/Ignore* (live, code-read in Commands.cs); CmdVoice derives fake from Chat.Say return (3105-3151); DedicatedPrint sv_dedicated-gated (814); minigame branch live via Minigames.ActiveSessionOf; IsIngame includes FragsOutOfGame(-616); PlayerHealth 2342-mapvote via MapVote.Running; crosshair trace + NearestLocation item fallback present; 0 chat-hook subscribers in Base (intended_divergence holds). Supporting symbols (DeathOrigin, ViewOfs/ViewAngles, SendCenterRaw, ActiveSessionOf, MapVoting.Running) all confirmed present. Note CmdVoice is now Commands.cs:3105.
+summary:
+  feature_count: 15
+  worst_gaps:
+    - "%y/%x crosshair tokens trace the player's VIEW ANGLES (server-side) rather than Base's CSQC-reported cursor (WarpZone_crosshair_trace_plusvisibletriggers); the port does not network the cursor, so an off-view-axis aim resolves differently. %y/%x/%d are now functional (live), only the trace SOURCE differs."
+    - "Line-wrap width is an integer 82 visible chars vs Base's 82.4289758859709 px-equiv (perl averagewidth on gfx/vera-sans.width); proportional per-char widths unmodeled, so the flood==2 'too long' boundary can differ by one char on edge-length messages."
+    - "PrintToChat-family chat-line helpers (chat.qc:593-645) are ported faithfully (Chat.cs:770-823). PrintToChatAll is now LIVE — the Tuba recognized-melody bprint (Tuba.cs:274 W_Tuba_NoteOff) is wired to Commands.Chat.PrintToChatAll via GameWorld.cs:668. The other five (PrintToChat / PrintToChatTeam / DebugPrintToChat*) remain DEAD (Base has no live caller for those either)."
+features:
+  - id: sv-chat.gates.allowed_cvars
+    name: "Four g_chat_*_allowed entry gates (chat/private/spectator/team)"
+    layer: [authority]
+    base_refs:
+      - "server/chat.qc:Say"
+    port_refs:
+      - "src/XonoticGodot.Server/Chat.cs:Say"
+    constants:
+      - { name: "g_chat_allowed", base: "1", port: "1", match: true }
+      - { name: "g_chat_private_allowed", base: "1", port: "1", match: true }
+      - { name: "g_chat_spectator_allowed", base: "1", port: "1", match: true }
+      - { name: "g_chat_team_allowed", base: "1", port: "1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "ChatEngineTests.Gate_ChatDisabled_RejectsRealClient / Gate_PrivateDisabled_RejectsTell / Gate_SpectatorDisabled_RejectsObserverSay / Gate_TeamDisabled_RejectsTeamSay", result: pass }
+      - { kind: value-diff, ref: "xonotic-server.cfg:405-408 vs Chat.cs:RegisterCvars (verified 1/1/1/1 both sides)", result: pass }
+      - { kind: code-read, ref: "ServerNet.cs Commands.Execute(caller) -> Commands.cs:587-591 say/say_team/tell registered = live net path", result: pass }
+    confidence: high
+    notes: "Each gate sends the matching INFO_CHAT_*_DISABLED notification (port: NotifyInfo sprint) and returns 0; IS_REAL_CLIENT condition on g_chat_allowed faithfully ported (bots/console never gated). Verified live: client net commands dispatch through Commands.Execute on ServerNet's receive path."
+
+  - id: sv-chat.say.preprocessing
+    name: "Message preprocessing: leading-space trim, formatmessage call, colorstr/name build, magicear pass"
+    layer: [authority, shared]
+    base_refs:
+      - "server/chat.qc:Say"
+    port_refs:
+      - "src/XonoticGodot.Server/Chat.cs:Say"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:MagicEarProcessAllEars"
+    constants:
+      - { name: "g_chat_teamcolors", base: "0", port: "0", match: true }
+      - { name: "g_chat_show_playerid", base: "0", port: "0", match: true }
+      - { name: "Team_ColorCode COL_TEAM_1..4", base: "^1/^4/^3/^6", port: "^1/^4/^3/^6", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "chat.qc:53-96 vs Chat.cs:114-151", result: pass }
+      - { kind: value-diff, ref: "teams.qh:26-29 COL_TEAM_1..4 vs Chat.cs:TeamColorCode = ^1/^4/^3/^6", result: pass }
+      - { kind: code-read, ref: "Chat.cs:143 MagicEarProcessAllEars wired vs LogicGates.cs (walks MagicEars via Entity.Enemy)", result: pass }
+    confidence: high
+    notes: "DP leading-space say-bug workaround, team color code, /name colorprefix (^3 vs ^7), and the magicear pass are all present and wired. Port skips magicear for a null source (server-originated) — a faithful-enough narrowing since a server msg has no flags/origin to match. The %-expansion crosshair tokens (see sv-chat.format.crosshair_tokens) are now functional."
+
+  - id: sv-chat.say.display_strings
+    name: "Display + centerprint string construction (public/team/private, /me action form)"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/chat.qc:Say"
+    port_refs:
+      - "src/XonoticGodot.Server/Chat.cs:Say"
+    constants:
+      - { name: "say_prefix_marker", base: "\\{1} / \\{1}\\{13}", port: "\\x01 / \\x01\\x0d", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "chat.qc:98-148 vs Chat.cs:153-197", result: pass }
+    confidence: high
+    notes: "The \\{1}/\\{13} chat markers map to \\x01/\\x0d; /me anti-imitation (offset-0 only), private 'tells you' prefix + 'You tell X' splice, team parentheses, and the newline->space + trailing \\n rule are faithful. The centerprint sink is LIVE — Chat.CenterPrint (Chat.cs:725-730) records DeliveredCenter for headless tests AND routes via NotificationSystem.SendCenterRaw(OneOnly) -> MsgType.CenterRaw -> CenterPrintPanel.Add."
+
+  - id: sv-chat.flood.per_type_throttle
+    name: "Per-say-type flood control (broadcast/team/tell) with persistent timestamps + line wrapping"
+    layer: [authority]
+    base_refs:
+      - "server/chat.qc:Say"
+    port_refs:
+      - "src/XonoticGodot.Server/Chat.cs:Say"
+      - "src/XonoticGodot.Server/Chat.cs:GetWrappedLine"
+      - "src/XonoticGodot.Common/Gameplay/Player/Player.cs:FloodControlChat/FloodControlChatTeam/FloodControlChatTell"
+    constants:
+      - { name: "g_chat_flood_spl", base: "3", port: "3", match: true }
+      - { name: "g_chat_flood_burst", base: "2", port: "2", match: true }
+      - { name: "g_chat_flood_lmax", base: "2", port: "2", match: true }
+      - { name: "g_chat_flood_spl_team", base: "1", port: "1", match: true }
+      - { name: "g_chat_flood_burst_team", base: "2", port: "2", match: true }
+      - { name: "g_chat_flood_lmax_team", base: "2", port: "2", match: true }
+      - { name: "g_chat_flood_spl_tell", base: "1", port: "1", match: true }
+      - { name: "g_chat_flood_burst_tell", base: "2", port: "2", match: true }
+      - { name: "g_chat_flood_lmax_tell", base: "2", port: "2", match: true }
+      - { name: "g_chat_flood_notify_flooder", base: "1", port: "1", match: true }
+      - { name: "wrap_width_px", base: "82.4289758859709", port: "82 (int visible chars)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Line-wrap width is an integer 82 visible chars vs Base's 82.4289758859709 px-equiv (perl averagewidth on gfx/vera-sans.width); proportional per-char widths are not modeled, so long-message line-count / flood==2 'too long' boundary can differ by one char on edge-length messages."
+    verification:
+      - { kind: test, ref: "ChatEngineTests.Flood_ThirdRapidPublicSay_IsThrottled / Flood_TimestampsPersistAcrossCalls / Flood_TeamAndBroadcastUseSeparateStamps", result: pass }
+      - { kind: value-diff, ref: "xonotic-server.cfg:395-404 vs Chat.cs:RegisterCvars (all 10 match)", result: pass }
+    confidence: high
+    notes: "burst-1 headroom, mod_time = framestart + burst*spl, lines>1 spl-multiply, max(now,stamp)+spl charge, flood==1 reject / flood==2 trim are all faithful; the three stamps persist on Player (FloodControlChat/Team/Tell fields confirmed). Only the wrap-width constant is approximated."
+
+  - id: sv-chat.flood.return_and_notify
+    name: "flood==2 trim+notify, flood==1 wait-sprint, 1/0/-1 return code, flood LOG_INFO note"
+    layer: [authority]
+    base_refs:
+      - "server/chat.qc:Say"
+    port_refs:
+      - "src/XonoticGodot.Server/Chat.cs:Say"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "ChatEngineTests.Flood_ThirdRapidPublicSay_IsThrottled (ret 0 with notify on)", result: pass }
+      - { kind: code-read, ref: "chat.qc:220-280 vs Chat.cs:275-338", result: pass }
+    confidence: high
+    notes: "'message too long, trimmed' notify, the 'wait <secs> seconds' sprint, and the muted/flood/clean return cascade match. ftos of the wait time uses the port's QC-style float formatter (Ftos)."
+
+  - id: sv-chat.routing.recipients
+    name: "Recipient routing (public / team / spectator / private / minigame) with ignore + spectator-downgrade"
+    layer: [authority]
+    base_refs:
+      - "server/chat.qc:Say"
+    port_refs:
+      - "src/XonoticGodot.Server/Chat.cs:Say"
+      - "src/XonoticGodot.Server/Chat.cs:IsIngame"
+      - "src/XonoticGodot.Common/Gameplay/MinigameSessionManager.cs:ActiveSessionOf"
+    constants:
+      - { name: "g_chat_nospectators", base: "0", port: "0", match: true }
+      - { name: "g_chat_tellprivacy", base: "1", port: "1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "ChatEngineTests.Routing_PublicSay_* / Routing_TeamSay_ReachesOnlyTeammates / Routing_SpectatorSay_* / Routing_PrivateTell_ReachesOnlyTarget", result: pass }
+      - { kind: code-read, ref: "chat.qc:241-364 (INGAME(it), active_minigame, teamsay>0/<0, public) vs Chat.cs:296-429 + IsIngame/IsObserver helpers", result: pass }
+      - { kind: code-read, ref: "Chat.cs:363-378 active_minigame branch wired to _world.Minigames.ActiveSessionOf (live MinigameSessionManager, GameWorld.cs:793) — routes say_team to co-session participants + emits :chat_minigame: log", result: pass }
+      - { kind: code-read, ref: "Chat.cs:936 IsIngame = `!IsObserver(p) || p.FragsStatus == Player.FragsOutOfGame` — now matches QC INGAME() macro (frags == FRAGS_PLAYER_OUT_OF_GAME = -616; Player.FragsOutOfGame)", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22: the active_minigame team-say branch is ported and LIVE. FIXED (this wave): IsIngame() (Chat.cs:936) now includes `|| p.FragsStatus == Player.FragsOutOfGame`, matching QC's INGAME() macro exactly — an eliminated CA/LMS player still holding a round slot receives team chat and is not spectator-downgraded regardless of their IsObserver flag. The gap is fully closed at the chat layer; the CA/LMS infrastructure that SETS FragsOutOfGame on elimination is a separate in-progress item that will activate this dormant branch when those gametypes land. Public/team/spectator/private routing, the spectator say->teamsay=-1 downgrade under CHAT_NOSPECTATORS, the spectator-tells-ingame hide (ret=-1), DedicatedPrint, tellprivacy, and the team/private centerprint (Chat.CenterPrint -> SendCenterRaw) are all faithful + live."
+
+  - id: sv-chat.routing.ignore_filter
+    name: "Mutual-ignore filtering on every recipient (and tell-to-ignorer returns -1)"
+    layer: [authority]
+    base_refs:
+      - "server/chat.qc:Say"
+      - "server/command/cmd.qc:ignore_playerinlist"
+    port_refs:
+      - "src/XonoticGodot.Server/Chat.cs:IgnorePlayerInList"
+      - "src/XonoticGodot.Server/Chat.cs:Say"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "ChatEngineTests.Ignore_BlocksPublicSayFromIgnoredSender / Ignore_TellToIgnoringTarget_ReturnsMinusOne_AndDropped / Unignore_RestoresDelivery", result: pass }
+      - { kind: code-read, ref: "chat.qc:301-359 IS_REAL_CLIENT(source) guard vs Chat.cs:357/373/389/405/422 (sourceIsReal &&)", result: pass }
+    confidence: high
+    notes: "IS_REAL_CLIENT(source) guard on the ignore check is preserved (a server/bot source bypasses ignore); tell to an ignorer returns -1 and drops, matching QC. The new minigame branch (Chat.cs:373) also applies the ignore filter to co-session participants."
+
+  - id: sv-chat.muted.fake_accept
+    name: "Muted sender = fake-accept (sender sees own line, no one else does)"
+    layer: [authority]
+    base_refs:
+      - "server/chat.qc:Say"
+    port_refs:
+      - "src/XonoticGodot.Server/Chat.cs:Say"
+      - "src/XonoticGodot.Common/Gameplay/Player/Player.cs:Muted"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "ChatEngineTests.Muted_FakeAccept_SenderSeesButOthersDont", result: pass }
+      - { kind: code-read, ref: "chat.qc:255-259 + 289-294 vs Chat.cs:313-317 + 347-352 (Player.Muted field confirmed)", result: pass }
+    confidence: high
+    notes: "CS(source).muted -> ret=-1 fake-accept; the faked-message delivery branch (sprint to source + centerprint if non-private) is faithful."
+
+  - id: sv-chat.ignore.crud
+    name: "Ignore-list CRUD: ignore / unignore / clear_ignores + list cap"
+    layer: [authority]
+    base_refs:
+      - "server/command/cmd.qc:ignore_add_player"
+      - "server/command/cmd.qc:ignore_remove_player"
+      - "server/command/cmd.qc:ignore_clearall"
+      - "server/command/cmd.qh:IGNORE_MAXPLAYERS"
+    port_refs:
+      - "src/XonoticGodot.Server/Chat.cs:IgnoreAddPlayer"
+      - "src/XonoticGodot.Server/Chat.cs:IgnoreRemovePlayer"
+      - "src/XonoticGodot.Server/Chat.cs:IgnoreClearAll"
+      - "src/XonoticGodot.Server/Commands.cs:CmdIgnore"
+    constants:
+      - { name: "IGNORE_MAXPLAYERS", base: "16", port: "16", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Permanent (db-persisted) ignore tier is dropped (the QC return-2 path / ServerProgsDB by UID); ignores are keyed by PersistentId in-memory only (acceptable within a match, lost across server restarts). This is the sole remaining logic-partial reason."
+    verification:
+      - { kind: test, ref: "ChatEngineTests.Ignore_FullList_ReturnsZero / Command_Ignore_Unignore_Roundtrip / Command_ClearIgnores_* / Ignore_RejectsTargetWithoutPersistentId", result: pass }
+      - { kind: value-diff, ref: "cmd.qh:11 (16) vs Chat.cs:444 IgnoreMaxPlayers = 16", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22: IGNORE_MAXPLAYERS is now 16 (Chat.cs:444), matching Base cmd.qh:11 — the prior 50-vs-16 value drift is resolved (and the doc-comment now correctly cites cmd.qh:11=16). Add/remove/clear logic + the per-call gate cascade (empty/unresolvable/self/already/add/full) are faithful; only the intentionally-dropped permanent (db) tier remains, which is why logic stays partial. NOTE the 'Ignore_FullList_ReturnsZero' test should be re-checked to assert at 16 not 50."
+
+  - id: sv-chat.format.macros
+    name: "formatmessage %/\\ macro expansion (%%/%h/%a/%o/%O/%w/%W/%s/%S/%t/%T + \\n/\\\\, 7-budget)"
+    layer: [authority]
+    base_refs:
+      - "server/chat.qc:formatmessage"
+      - "server/chat.qc:PlayerHealth"
+      - "server/chat.qc:WeaponNameFromWeaponentity"
+      - "server/chat.qc:AmmoNameFromWeaponentity"
+    port_refs:
+      - "src/XonoticGodot.Server/Chat.cs:FormatMessage"
+      - "src/XonoticGodot.Server/Chat.cs:ResolveEscape"
+      - "src/XonoticGodot.Server/Chat.cs:PlayerHealth"
+    constants:
+      - { name: "replacement_budget_n", base: "7", port: "7", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "ChatEngineTests.Format_PercentPercent_LiteralPercent / Format_Health_ExpandsToValue / Format_Armor_ExpandsToValue / Format_UnknownEscape_LeftVerbatim / Format_ReplacementBudget_StopsAtSeven", result: pass }
+      - { kind: code-read, ref: "chat.qc:498-591 vs Chat.cs:FormatMessage+ResolveEscape (7-budget, ON_SLASH/NO_SLASH, default-verbatim all match)", result: pass }
+      - { kind: code-read, ref: "chat.qc:466 PlayerHealth 2342-mapvote case vs Chat.cs:615 _world.MapVote.Running (now modeled)", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22: PlayerHealth now models the (health == 2342 && mapvote_initialized) 'observing' case via _world.MapVote.Running (Chat.cs:615), closing the prior narrowed edge case. The 7-budget loop, ON_SLASH/NO_SLASH abort semantics, unknown-escape-verbatim default, %h/%a/%o/%O/%w/%W/%s/%S/%t/%T, and the -666/dead health branches are all faithful."
+
+  - id: sv-chat.format.crosshair_tokens
+    name: "Location/aim formatmessage tokens (%l/%y/%d/%x) + NearestLocation item fallback"
+    layer: [authority]
+    base_refs:
+      - "server/chat.qc:formatmessage"
+      - "server/chat.qc:NearestLocation"
+      - "server/chat.qc:findnearest"
+    port_refs:
+      - "src/XonoticGodot.Server/Chat.cs:ResolveEscape"
+      - "src/XonoticGodot.Server/Chat.cs:CrosshairTrace"
+      - "src/XonoticGodot.Server/Chat.cs:NearestLocation"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "%y/%x trace the player's VIEW ANGLES from the eyes (origin+view_ofs out to CurrentMaxShotDistance) rather than Base's CSQC-reported cursor (WarpZone_crosshair_trace_plusvisibletriggers, chat.qc:535); the port does not network the cursor, so an aim that diverges from the view axis (free-look) resolves a different endpoint/entity. Functionally live, faithful approximation."
+    verification:
+      - { kind: test, ref: "ChatEngineTests.Format_Location_FallsBackToSomewhere (%l -> 'somewhere' with no volumes)", result: pass }
+      - { kind: code-read, ref: "chat.qc:533-569 (crosshair trace + %y/%x/%d) vs Chat.cs:CrosshairTrace:628-642 (real view-angle Api.Trace) + ResolveEscape:585-593 (%y NearestLocation(cursor), %d NearestLocation(self.DeathOrigin), %x cursorEnt.NetName)", result: pass }
+      - { kind: code-read, ref: "Player.DeathOrigin set in DamageSystem.cs:588 on death; ViewOfs on Entity; CurrentMaxShotDistance set in GameWorld.cs:738", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22: the crosshair tokens are no longer stubbed. CrosshairTrace (Chat.cs:628-642) performs a real server-side view-angle trace, so %y resolves NearestLocation(trace endpos), %x returns the actually-hit entity's NetName (else 'nothing'), and %d now correctly uses self.DeathOrigin (Chat.cs:586) instead of self-origin. NearestLocation item fallback IS ported (Chat.cs:684-742: pass 2 with target==###item### filter, z-weighted distance axismod '1 1 4', LOS traceline check, nearest-fallback when none visible) — the prior 'still lacks' note was a stale audit error. liveness upgraded partial->live; logic/values/presentation partial->faithful. One residual unportable divergence remains: the trace SOURCE is view-angle not CSQC cursor (no cursor networking in the port)."
+
+  - id: sv-chat.voice.say_coupling
+    name: "VoiceMessage text routed through Say (flood-throttle + chat display + fake/real sound gating)"
+    layer: [authority]
+    base_refs:
+      - "common/effects/qc/globalsound.qh:VoiceMessage"
+    port_refs:
+      - "src/XonoticGodot.Server/Commands.cs:CmdVoice"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "globalsound.qh:144-155 (VoiceMessage: ownteam=teamradio; int flood = Say(this,ownteam,NULL,msg,true); fake = IS_SPEC||IS_OBSERVER||flood<0; flood==0 break) vs Commands.cs:3052-3097 CmdVoice", result: pass }
+      - { kind: code-read, ref: "Commands.cs:906 Register(\"voice\", CmdVoice) = live client-command path; CmdVoice (3052) calls Chat.Say then derives fake and returns on flood==0", result: pass }
+      - { kind: code-read, ref: "SoundSystem.GlobalSound honors `fake` per-voicetype (TeamRadio fake->emitter-only; LastAttacker fake->skip attacker)", result: pass }
+    confidence: high
+    notes: "CmdVoice (Commands.cs:3052-3097) routes the optional [<message>] arg through Chat.Say(p, ownteam?1:0, null, msg, true) — voice/radio text appears in chat, is flood-throttled, a spectator say downgrades — then derives fake (flood<0) and returns (no GlobalSound) on flood==0, matching the Base macro's break. ownteam = VoiceType.TeamRadio. The port returns early for dead/observer/spec BEFORE the Say call (Commands.cs:3069-3070), so the macro's IS_SPEC||IS_OBSERVER fake terms are mooted and fake==flood<0 is exactly equivalent on the reachable path. All five dimensions faithful + live."
+
+  - id: sv-chat.delivery.dedicated_print_gating
+    name: "dedicated_print gated on sv_dedicated (server-console echo)"
+    layer: [authority]
+    base_refs:
+      - "server/main.qc:dedicated_print"
+      - "server/chat.qc:Say"
+    port_refs:
+      - "src/XonoticGodot.Server/Chat.cs:DedicatedPrint"
+    constants:
+      - { name: "sv_dedicated_gate", base: "if (autocvar_sv_dedicated) print(input)", port: "if (Cvars.Bool(\"sv_dedicated\")) ChatConsole.Invoke", match: true }
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "main.qc:233-236 (sv_dedicated gate) vs Chat.cs:736-740 (now `if (Cvars.Bool(\"sv_dedicated\")) _world.Commands.ChatConsole?.Invoke(text)`)", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22: DedicatedPrint (Chat.cs:736-740) now gates the server-console echo on sv_dedicated, matching Base dedicated_print (main.qc:233-236). On a listen server (sv_dedicated 0) it is a no-op, so routed chat lines and tellprivacy-off tells no longer spam the host stdout. logic/presentation partial->faithful."
+
+  - id: sv-chat.helpers.printtochat
+    name: "PrintToChat / PrintToChatAll / PrintToChatTeam (+ Debug* developer-gated variants) chat-line emitters"
+    layer: [authority]
+    base_refs:
+      - "server/chat.qc:PrintToChat"
+      - "server/chat.qc:PrintToChatAll"
+      - "server/chat.qc:PrintToChatTeam"
+    port_refs:
+      - "src/XonoticGodot.Server/Chat.cs:PrintToChat"
+      - "src/XonoticGodot.Server/Chat.cs:PrintToChatAll"
+      - "src/XonoticGodot.Server/Chat.cs:PrintToChatTeam"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "All six helpers (PrintToChat / DebugPrintToChat / PrintToChatAll / DebugPrintToChatAll / PrintToChatTeam / DebugPrintToChatTeam) are ported faithfully (Chat.cs:770-823): the \\{1}^7 (\\x01^7) chat marker + trailing \\n, the autocvar_developer>0 gate on the Debug* variants (Cvars.Float(\"developer\") > 0), and the bprint server-console echo (modeled by the sv_dedicated-gated DedicatedPrint tail). LIVENESS is now PARTIAL: PrintToChatAll has ONE live caller (the Tuba recognized-melody broadcast — Tuba.cs:274 invokes Tuba.TubaMelodyBprint, wired in GameWorld.cs:663-668 to Commands.Chat.PrintToChatAll, the QC W_Tuba_NoteOff bprint). The other five (PrintToChat / PrintToChatTeam / DebugPrintToChat / DebugPrintToChatAll / DebugPrintToChatTeam) remain DEAD — no port caller, matching Base (every teamplay.qc / sv_random_items.qc use of those is commented-out debug)."
+    verification:
+      - { kind: code-read, ref: "Chat.cs:770-823 = all six helpers present + faithful formatting (\\x01^7 marker, \\n suffix, developer-gate, DedicatedPrint echo)", result: pass }
+      - { kind: code-read, ref: "grep '\\.PrintToChatAll' over port/src = GameWorld.cs:668 (Tuba.TubaMelodyBprint seam) -> LIVE caller; invoked at Tuba.cs:274 on the W_Tuba_NoteOff melody-match path", result: pass }
+      - { kind: code-read, ref: "grep '\\.PrintToChat\\b|\\.PrintToChatTeam|\\.DebugPrintToChat' over port/src = only Chat.cs defs + internal Debug*->Print* delegation; NO external caller (those five dead)", result: fail }
+      - { kind: code-read, ref: "grep uncommented 'PrintToChat|DebugPrintToChat' over Base qcsrc (excl chat.qc) = 0 live callers; all teamplay.qc + sv_random_items.qc uses are //-commented debug", result: pass }
+    confidence: high
+    notes: "DRIFT FOUND 2026-06-27 (re-audit): liveness moved dead->partial. The prior 'nothing in the port calls them' note was STALE — PrintToChatAll acquired a live caller via the Tuba melody-recognition bprint (Tuba.cs:274 -> TubaMelodyBprint -> GameWorld.cs:668 -> Commands.Chat.PrintToChatAll). Impl axis unchanged (logic/presentation faithful, formatting + developer-gate + fan-out all match Base chat.qc:593-645). The remaining five helpers are still dead, deliberately (Base has no live caller for them); intended_divergence stays false since the row tracks the genuine reachability fact."
+
+  - id: sv-chat.mutator.hooks
+    name: "Chat mutator hooks (ChatMessage / ChatMessageTo / PreFormatMessage / FormatMessage)"
+    layer: [authority]
+    base_refs:
+      - "server/chat.qc:Say"
+      - "server/mutators/events.qh"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: true
+    divergence_rationale: "No chat mutator bus in the port. Verified these four hooks have NO core subscribers in Base (declared in events.qh, invoked only by chat.qc itself), so omitting them has zero observable effect on stock gameplay. A future custom-mutator path could re-add them."
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "grep MUTATOR_HOOKFUNCTION(.*ChatMessage|FormatMessage) over common/+server/ = 0 subscribers", result: pass }
+    confidence: high
+    notes: "Marked intended_divergence because no stock behavior depends on it; the empty port_refs reflects the deliberate omission, not an oversight. Note MX_Say (matrix bridge) is likewise omitted with no stock effect."

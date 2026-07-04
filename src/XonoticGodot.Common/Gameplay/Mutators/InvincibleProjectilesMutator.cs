@@ -40,4 +40,10 @@ public sealed class InvincibleProjectilesMutator : MutatorBase
             proj.SetResourceExplicit(ResourceType.Health, 0f);
         return false;
     }
+
+    // MUTATOR_HOOKFUNCTION(invincibleprojectiles, BuildMutatorsString) — sv_invincibleproj.qc:17-20
+    public override string BuildMutatorsString(string s) => s + ":InvincibleProjectiles";
+
+    // MUTATOR_HOOKFUNCTION(invincibleprojectiles, BuildMutatorsPrettyString) — sv_invincibleproj.qc:22-25
+    public override string BuildMutatorsPrettyString(string s) => s + ", Invincible Projectiles";
 }

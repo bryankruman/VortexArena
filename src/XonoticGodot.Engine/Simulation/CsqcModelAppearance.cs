@@ -20,6 +20,14 @@ public static class CsqcModelAppearance
     /// <summary>QC NUM_SPECTATOR (common/teams.qh:10) — the team value that means "spectating".</summary>
     public const int NumSpectator = 5;
 
+    /// <summary>QC <c>_cl_playermodel</c> default (xonotic-client.cfg) — the guaranteed-good fallback model the
+    /// FORCEMODEL cascade resolves to when the entity's own networked model is missing
+    /// (<see cref="ForcedModelSource.GuaranteedGood"/>) and the <c>cl_forceplayermodels</c> target.</summary>
+    public const string DefaultPlayerModel = "models/player/erebus.iqm";
+
+    /// <summary>QC <c>_cl_playerskin</c> default (xonotic-client.cfg).</summary>
+    public const int DefaultPlayerSkin = 0;
+
     /// <summary>Which model a player entity should render as, after the FORCEMODEL branch resolves
     /// (csqcmodel_hooks.qc:204-235). Mirrors the QC if/else cascade as a pure decision.</summary>
     public enum ForcedModelSource
@@ -77,10 +85,14 @@ public static class CsqcModelAppearance
     /// <param name="cm">QC <c>cm</c> — this entity's resolved colormap (&gt;=1024).</param>
     /// <param name="playerLocalNum">QC <c>player_localnum</c>.</param>
     /// <param name="entityNum">QC <c>entnum</c> (or <c>sv_entnum</c>) for the unique-color combo.</param>
+    /// <param name="teamCount">QC active-team count — a friend-only force is suppressed if it equals ANY active
+    /// team's colormap (<c>1024 + 17*t</c> for <c>t</c> in <c>1..teamCount</c>), per csqcmodel_hooks.qc:281-292.
+    /// <c>&lt;= 1</c> (FFA/unknown) falls back to the local-team check only.</param>
     /// <returns>The forced colormap (&gt;=1024), or 0 to keep the entity's own colormap.</returns>
     public static int ResolveForcedColormap(
         bool forcePlayerColorsEnabled, int forceMyColors, int clColor, bool forceUnique,
-        bool isLocalPlayer, bool is1v1, bool teamplay, int myTeam, int cm, int playerLocalNum, int entityNum)
+        bool isLocalPlayer, bool is1v1, bool teamplay, int myTeam, int cm, int playerLocalNum, int entityNum,
+        int teamCount)
     {
         if (teamplay)
         {
@@ -98,11 +110,22 @@ public static class CsqcModelAppearance
                 if (forcecolorEnemy == myFull)
                     forcecolorEnemy = 0;
             }
-            // NOTE: QC also re-checks a friend-only force against every team color (csqcmodel_hooks.qc:281-292);
-            // the port doesn't network the team list here, so it compares against the LOCAL team only (the common
-            // collision). Documented parity gap — a friend force equal to another team's color isn't suppressed.
+            // QC re-checks a friend-only force against EVERY active team's color (csqcmodel_hooks.qc:281-292): a
+            // friend force equal to ANY team's color is ambiguous and must be suppressed, not only one equal to the
+            // local team's. The active team colormaps are 1024 + 17*t for t in 1..teamCount (the port's canonical
+            // team→colormap form, same as myFull). teamCount<=1 (FFA/unknown) falls back to the local-team check.
             if (forcecolorFriend != 0 && forcecolorEnemy == 0)
             {
+                int teams = teamCount > 1 ? teamCount : 1;
+                for (int t = 1; t <= teams; t++)
+                {
+                    if (forcecolorFriend == 1024 + 17 * t)
+                    {
+                        forcecolorFriend = 0;
+                        break;
+                    }
+                }
+                // Always also test the local team (covers teamCount==0/1 and a myteam outside 1..teamCount).
                 if (forcecolorFriend == myFull)
                     forcecolorFriend = 0;
             }
@@ -118,6 +141,12 @@ public static class CsqcModelAppearance
             if (forceUnique && !isLocalPlayer && !is1v1)
                 return UniqueColormap(entityNum - 1);
             if (forcePlayerColorsEnabled)
+                // NOTE: Base (csqcmodel_hooks.qc:322) assigns the bare `player_localnum + 1` here — a player
+                // SLOT index, NOT the 1024+ explicit-RGB colormap form the other branches use; downstream it
+                // is resolved through entcs_GetClientColors. The port resolves the colormap directly and its
+                // consumer (ModelTint) expects the >=1024 explicit form, so we bias it into that form for
+                // contract-safety. Bit-exact slot semantics would need ModelTint to accept a <1024 index too
+                // (cross-file — see todos); kept as 1024+ to match the row's `values: faithful` status.
                 return 1024 + playerLocalNum + 1;
             return 0;
         }
@@ -215,6 +244,94 @@ public static class CsqcModelAppearance
             minFactor /= 2f;
         float glowFade = Bound(0f, 1f - (now - deathTime) / deathglow, 1f);
         return minFactor + glowFade * (1f - minFactor);
+    }
+
+    /// <summary>
+    /// A per-player presentation override the Wave-3 client/HUD layer fills and the per-frame effects pass
+    /// (<see cref="XonoticGodot.Engine.Simulation"/> consumers / <c>CsqcModelEffects.Apply</c>) consumes. It carries
+    /// the EXTRA <see cref="CsqcModelEffectFlags"/> EF_* bits to OR onto a model's networked effect field
+    /// (role-glow / powerup / flame visuals — Base sets these server-side; the port re-derives them client-side
+    /// from the player's role until they're networked), the locally-classified MF_* model flags (so MF trails +
+    /// the MF_ROCKET jetpack loop can fire for a known player), and an optional FORCED glowmod color (&lt;0 = unset
+    /// = keep the colormap-derived glowmod). Default-constructed = the no-override identity (no extra effects, no
+    /// model flags, glowmod untouched), so a caller that supplies nothing gets exactly today's behavior.
+    /// </summary>
+    public readonly record struct ForcedAppearance
+    {
+        /// <summary>Extra EF_* bits to OR onto the entity's networked effects (masked to
+        /// <see cref="CsqcModelEffectFlags.ForcedEffectFlags"/> by the consumer so only presentation-owned bits force).</summary>
+        public int ExtraEffects { get; init; }
+
+        /// <summary>Locally-classified MF_* model flags (csqcmodel_hooks.qc model flags) — drives the MF→trail map
+        /// and the MF_ROCKET jetpack loop for a player the presentation layer recognizes (MF_* isn't networked).</summary>
+        public int ModelFlags { get; init; }
+
+        /// <summary>An optional forced glowmod (r,g,b). Any component &lt; 0 means "unset" — keep the
+        /// colormap-derived glowmod (the default). Set all three ≥ 0 to override the model's glow tint per player
+        /// (e.g. a gametype role color); the death-fade still multiplies it.</summary>
+        public (float r, float g, float b) ForcedGlowmod { get; init; }
+
+        /// <summary>The no-override identity: no extra effects, no model flags, glowmod untouched
+        /// (<c>(-1,-1,-1)</c>). Use as the base before composing per-player state.</summary>
+        public static ForcedAppearance None => new() { ForcedGlowmod = (-1f, -1f, -1f) };
+
+        /// <summary>True when <see cref="ForcedGlowmod"/> is set (all three components ≥ 0).</summary>
+        public bool HasForcedGlowmod => ForcedGlowmod.r >= 0f && ForcedGlowmod.g >= 0f && ForcedGlowmod.b >= 0f;
+    }
+
+    /// <summary>
+    /// Compose a per-player <see cref="ForcedAppearance"/> from the player's presentation role: strength/shield
+    /// powerup glow (EF_BLUE/EF_RED via <see cref="CsqcModelEffectFlags.RoleGlowFlags"/>), a jetpack flag
+    /// (MF_ROCKET → trail + loop), and an optional forced glowmod color. Pure so Wave-3 can unit-test the mapping;
+    /// the <c>extraEffects</c> result is already masked to <see cref="CsqcModelEffectFlags.ForcedEffectFlags"/>.
+    /// </summary>
+    /// <param name="strength">Player has the Strength powerup (→ EF_BLUE glow, Base strength.qc:31).</param>
+    /// <param name="shield">Player has the Shield powerup (→ EF_RED glow, Base shield.qc:31).</param>
+    /// <param name="jetpackActive">Player's jetpack is firing (→ MF_ROCKET trail + loop).</param>
+    /// <param name="forcedGlowmod">Optional forced glow color; pass <c>(-1,-1,-1)</c> for none (the default).</param>
+    public static ForcedAppearance ComposeForcedAppearance(
+        bool strength, bool shield, bool jetpackActive, (float r, float g, float b) forcedGlowmod)
+    {
+        int eff = CsqcModelEffectFlags.RoleGlowFlags(strength, shield) & CsqcModelEffectFlags.ForcedEffectFlags;
+        int mf = jetpackActive ? CsqcModelEffectFlags.MF_ROCKET : 0;
+        return new ForcedAppearance { ExtraEffects = eff, ModelFlags = mf, ForcedGlowmod = forcedGlowmod };
+    }
+
+    /// <summary>
+    /// QC respawn-ghost color suppression (csqcmodel_hooks.qc:331-336): when the model carries
+    /// <c>CSQCMODEL_EF_RESPAWNGHOST</c> and <c>cl_respawn_ghosts_keepcolors</c> is off, the appearance pass
+    /// returns early with glowmod <c>'0 0 0'</c> and colormap 0 (the ghost renders uncolored). Returns true
+    /// when that early-out applies, so the Godot glue can skip the glowmod/death-fade tail entirely.
+    /// </summary>
+    public static bool RespawnGhostClearsColors(bool isRespawnGhost, bool keepColors)
+        => isRespawnGhost && !keepColors;
+
+    /// <summary>
+    /// QC glowmod base (csqcmodel_hooks.qc:340-342): a colored model (<c>colormap &gt; 0</c>) glows in its low
+    /// colormap nibble's palette color (<c>colormapPaletteColor(..&amp;0x0F, isPants:true)</c>); an uncolored model
+    /// glows white (<c>'1 1 1'</c>). <paramref name="lowNibble"/> is the resolved <c>colormap &amp; 0x0F</c>.
+    /// </summary>
+    public static (float r, float g, float b) BaseGlowmod(bool hasColor, int lowNibble, float time)
+        => hasColor ? ColormapPaletteColor(lowNibble & 0x0F, isPants: true, time) : (1f, 1f, 1f);
+
+    /// <summary>
+    /// QC glowmod-zero guard (csqcmodel_hooks.qc:353-354): after the death-fade multiply, a fully-black glowmod
+    /// is nudged to <c>x = 0.000001</c> so the engine doesn't treat it as "unset" (which would let it re-inflate
+    /// the glow). Only applied inside the dead branch in QC; pass the post-fade glowmod.
+    /// </summary>
+    public static (float r, float g, float b) GuardGlowmodZero((float r, float g, float b) glowmod)
+        => (glowmod.r == 0f && glowmod.g == 0f && glowmod.b == 0f) ? (0.000001f, 0f, 0f) : glowmod;
+
+    /// <summary>
+    /// QC engine-glow clamp (csqcmodel_hooks.qc:359-360): "don't let the engine increase player's glowmod" —
+    /// when <c>r_hdr_glowintensity &gt; 1</c> the glowmod is divided by it. Returns the glowmod unchanged when
+    /// intensity &lt;= 1.
+    /// </summary>
+    public static (float r, float g, float b) ApplyHdrGlowClamp((float r, float g, float b) glowmod, float hdrGlowIntensity)
+    {
+        if (hdrGlowIntensity <= 1f)
+            return glowmod;
+        return (glowmod.r / hdrGlowIntensity, glowmod.g / hdrGlowIntensity, glowmod.b / hdrGlowIntensity);
     }
 
     private static float Bound(float lo, float v, float hi) => Math.Min(Math.Max(v, lo), hi);

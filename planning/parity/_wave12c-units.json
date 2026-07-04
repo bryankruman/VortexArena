@@ -1,0 +1,180 @@
+[
+ {
+  "unit": "net-entity-state",
+  "tier": "haiku",
+  "notes": [
+   "[logic/values/timing] net-entity-state.wepent.switch_alpha_misc: Remote weapon switch animation coarse: only the resolved active weapon is networked, not wepent m_switchweapon/m_switchingweapon — a remote player's weapon raise/lower transition is not reproduced. ; wepent m_alpha (weapon fade), m_gunalign, porto_v_angle_held (Porto held-angle viewmodel), tuba_instrument, viewmodel skin are not networked.",
+   "[values] net-entity-state.replicate.client_cvars: Two replicated cvars are stored server-side but have no server-side consumer yet: cl_autoscreenshot + g_xonoticversion are in SentCvarAllowlist (Commands.cs:233/236) so they are accepted+stored per-client, but nothing on the server reads the REPLICATED value (autoscreenshot is driven CLIENT-locally off the networked intermission flag reading the client's own Api.Cvars cl_autoscreenshot — NetGame.cs:3289 — not the per-client replicated store; g_xonoticversion is unenforced). FIX 2026-06-25: cl_cl"
+  ]
+ },
+ {
+  "unit": "overkill-weapons",
+  "tier": "sonnet",
+  "notes": [
+   "[logic] overkill-weapons.shared.secondary_blaster_jump: refire_type==0 secondary path (blaster on the shared ATTACK_FINISHED timer) is not handled; only refire_type==1 is. Default is 1 for all five OK weapons, so no observable gap at stock balance. ; FIRE2 weapon animation / animdecide_setaction not driven (no third-person fire-2 pose).",
+   "[logic/values] overkill-weapons.okhmg.nadesupport: STILL OPEN: throwing a nade while holding the OK HMG deals full nade self-damage instead of 10%. NadeProjectile.cs:186 explicitly defers the Nade_Damage mutator hook; no okhmg branch was added by Wave-8b (it only touched FX).",
+   "[liveness] overkill-weapons.mode.enablement: Mode reachable only by exec'ing ruleset-overkill.cfg / setting g_overkill via console — no in-menu arena radio. VERIFIED this MATCHES Base (Base dialog_multiplayer_create_mutators.qc also exposes only g_instagib + g_nix radios). So this is faithful to Base, NOT a port-side regression."
+  ]
+ },
+ {
+  "unit": "physics-movetypes",
+  "tier": "opus",
+  "notes": [
+   "[logic/values/timing] physics-movetypes.matchticrate.interp: STILL OPEN: No Movetype_Physics_MatchTicrate equivalent and no tic_* snapshot fields on Entity (grep: zero hits in src/ for MatchTicrate/tic_origin/tic_velocity). Entities advance only on the fixed server tick, with no between-tick interpolation in this layer. In Base this smooths CSQC gibs/casings/projectiles/trains at render rate; whether visible in the port depends on its separate render-side interpolation (PredictionBuffer/ClientNet — out of this unit's scope)."
+  ]
+ },
+ {
+  "unit": "physics-player",
+  "tier": "sonnet",
+  "notes": [
+   "[logic] physics-player.water.swim: Viewloc (1D-rail) water sub-cases not ported: physics.qc:269-270 sets wishvel.z = -160 when this.viewloc, and physics.qc:408-416 runs a SEPARATE accel path (plain addspeed accel, no PM_Accelerate QW pass) when in a viewloc. The port always runs the non-viewloc path. Inert on stock Xonotic maps (no 1D viewloc rails), so logic:partial not missing. ; Liveness of the swim path on a live water map not behaviorally confirmed this audit (depends on CheckWater correctly setting WaterLevel from map liqui",
+   "[logic] physics-player.ladder: func_water waterlevel-from-volume override (physics.qc:280-299: clamp wishvel to ladder_entity.speed, set watertype=skin, compute waterlevel from origin.z+view_ofs.z vs ladder maxs_z) is NOT computed in LadderMove — the port only EARLY-RETURNS from CheckWater for a func_water ladder (PlayerPhysics.cs:949) but never fills the waterlevel/watertype from the volume bounds, so a func_water ladder gives WaterLevelNone. ; Viewloc ladder sub-case (physics.qc:277-278: wishvel.z = movement_old.x) not port",
+   "[logic] physics-player.crouch: Viewloc force-crouch (player.qc:192-193: viewloc && !(VIEWLOC_FREEMOVE) && movement.x < 0 => do_crouch=true) is NOT ported. ; have_hook force-uncrouch (player.qc:175-195: a grappling hook held in any weapon slot forces do_crouch=false) is NOT ported — the port models the frozen/dead/PlayerCanCrouch-hook force-false but not the hook or in-vehicle (PHYS_INVEHICLE) force-false sub-cases. ; Q1BSP crouch-disable (PL_CROUCH_MAX.z == PL_MAX.z => do_crouch=false, player.qc:207-208) not modelled (Xonotic"
+  ]
+ },
+ {
+  "unit": "scoring",
+  "tier": "sonnet",
+  "notes": [
+   "[liveness] scoring.winningcondition.remaining_frags_announce: PARTIAL MODE COVERAGE: Deathmatch (RecomputeLeader -> CountFragsRemaining), TDM (UpdateLeaderAndCheckLimit -> CountFragsRemaining) AND Keepaway (RecomputeLeader -> AnnounceFragsRemaining -> CountFragsRemaining, gated on g_keepaway_score_timepoints==0) now call it live. Base enables the Scores_CountFragsRemaining hook for 11 modes (ca/dm/duel/ft/ka/mayhem/rc/surv/tdm/tka/tmayhem — verified by grep of MUTATOR_HOOKFUNCTION over the gametype tree); the other 8 (ca/duel/ft/mayhem/rc/surv/tka/tmayhem)",
+   "[liveness] scoring.lifecycle.clear: STILL DEAD ARM: ClearPlayerOnJoin faithfully models the QC mode logic (0 keep / 1 wipe / -1 wipe-unless-PreferPlayerScore_Clear) but has ZERO call sites — grep over src+tests finds only the definition; no join/spawn/Teamplay path invokes it. So a player who specs out and rejoins still keeps their score regardless of g_score_resetonjoin (0/-1/1). No-op at the default 0; only diverges when an admin sets 1 or -1.",
+   "[logic/values] scoring.display.scorelog: The server score-log / event-log standings dump (DumpStats(final), server/world.qc:1264) — which emits the `:labels:player:`, `:player:see-labels:<scores>:<time>:<team>`, and (teamplay) `:teamscores:` lines built by GetPlayerScoreString/GetTeamScoreString/GetScoreLogLabel to the console / sv_eventlog / sv_logscores_filename — is NOT ported (grep DumpStats/logscores/GetPlayerScoreString over src -> no match). Base calls it at intermission (world.qc:1429, final=true) and via a server command (sv_c"
+  ]
+ },
+ {
+  "unit": "weapon-arc",
+  "tier": "opus",
+  "notes": [
+   "[timing] weapon-arc.beam.dps_core: Damage applied along a single straight trace; Base traces a multi-segment bezier (control point pulled toward wantdir by tightness) so the beam body can clip geometry differently near a swept corner. Endpoint hit-reg matches. UNCHANGED. ; LagComp.Begin/End bracket around the damage trace (Arc.cs:389-395) mirrors Base WarpZone_traceline_antilag. Provider IS installed live (ServerNet ctor assigns LagComp.Provider = new LagCompProvider). Remaining true gap: the warpzone TRANSFORM half of WarpZone_t",
+   "[values] weapon-arc.beam.curve_direction: tightness / degreespersegment / distancepersegment / ARC_MAX_SEGMENTS loaded but unused: no bezier control point, no segmentation. The beam_dir blend math itself is bit-faithful. UNCHANGED.",
+   "[logic] weapon-arc.beam.heat_overheat: Structural divergence (UNCHANGED): Base stores beam_heat on the beam ENTITY (arc_beam) and DELETES that entity when the beam ends — heat is gone, and arc_overheat/arc_cooldown are pure timestamps. The port keeps heat as a persistent slot-state value (st.BeamHeat) drained over time by BeamCooldown. Observably close at stock values; not bit-structurally identical. ; cooldown_release still ignored at stock (Arc.cs:230 CooldownSpeed branch only sets ArcOverheat when CooldownRelease != 0); Base sets ",
+   "[logic/timing] weapon-arc.bolt.secondary_burst: Whole bolt_count burst fires in ONE WrThink call (one PrepareAttack, a for-loop over count at Arc.cs:493); Base fires one bolt per bolt_refire via misc_bulletcounter counting up from -to_shoot, enforcing bolt_refire2 only after the last bolt. Dormant at stock bolt_count 1. UNCHANGED. ; Ammo-fraction scaling is ported (Arc.cs:473-481: to_shoot = floor(count*min(1,ammo/bolt_ammo)), TakeResource(min(bolt_ammo,ammo))) matching arc.qc:610-622 — but applied once to the whole one-shot burst, not per-bo",
+   "[logic/values/timing] weapon-arc.beam.visual: The beam does NOT route through BeamRenderer.Beam. arc_beam is registered isTrail:true (EffectsList.cs:51), classified as Trail first, so the EffectClass.Beam route is never reached; the arc_beam effectinfo block is `type spark` trailspacing 10 with no `orientation beam` line. Renders as a SPARK PARTICLE TRAIL swept origin->endpos, not a cylindric beam. UNCHANGED. ; No dedicated networked beam entity (ENT_CLIENT_ARC_BEAM): the beam is re-emitted as an arc_beam trail each SERVER tick and drawn ST",
+   "[logic] weapon-arc.heat_persistence: DROP/PICKUP migration (wr_drop/wr_pickup) still unported: arc_overheat/arc_cooldown are not migrated to a dropped Arc and restored on pickup. The port has no weapon-throw/heat-carry path yet (WeaponThrowing.cs:51 notes no weapon implements wr_drop). Mostly dormant since primary beam_heat is 0. UNCHANGED. ; Reset is per-slot in WrSetup, not a respawn-wide hook: WrSetup runs on every weapon switch-in/raise, so a switch away+back also clears heat (benign — the beam is gone while holstered). Base wr",
+   "[logic/values/timing] weapon-arc.bot_aim: Arc's weapon-specific wr_aim (bot_aim with beam_botaimspeed/beam_botaimlifetime, or the 1000000/0.001 fallback for the continuous beam) is not ported in Arc.cs. Bot aiming is handled by the generic port bot-aim system, not this per-weapon hook — likely a coverage gap rather than a true behavioral defect, but the Arc-specific continuous-beam aim tuning (long lifetime, instant) is not modeled per-weapon."
+  ]
+ },
+ {
+  "unit": "weapon-blaster",
+  "tier": "opus",
+  "notes": [
+   "[liveness] weapon-blaster.offhand.fire: Live only when g_offhand_blaster is set (default 0 in mutators.cfg:435), so liveness stays partial — but when enabled the behaviour is now faithful.",
+   "[logic/values/liveness] weapon-blaster.bot.aim_dodge: bot_dodge danger-list CONSUMER still NOT implemented: the bolt now SETS bot_dodge=true/bot_dodgerating (Blaster.cs:156-157, producer fixed) and Entity carries BotDodge/BotDodgeRating, but no havocbot_dodge consumer (findchainfloat(bot_dodge,true)) exists in src/.../Bot, so the flags are inert and bots still do not specifically avoid incoming blaster bolts. The generic CombatMovement strafe is evasive combat movement, not the QC bolt-specific avoidance. ; lead is a GENERIC engine-level projectile"
+  ]
+ },
+ {
+  "unit": "weapon-crylink",
+  "tier": "haiku",
+  "notes": [
+   "[logic/values] crylink.bot.wr_aim: No Crylink WrAim override — the QC METHOD(Crylink, wr_aim) (10% chance primary via bot_aim(speed,0,middle_lifetime), else secondary) is not ported. Bots cannot select/lead a crylink shot through the per-weapon bot-aim path. Other weapons (Vaporizer/Shotgun/Minelayer/Rifle/Fireball/Devastator/Machinegun) DO have WrAim, so a generic fallback does not cover crylink. Same un-ported-bot-aim shape as several other weapons."
+  ]
+ },
+ {
+  "unit": "weapon-devastator",
+  "tier": "sonnet",
+  "notes": [
+   "[liveness] weapon-devastator.presentation.flight_fx: Muzzle-flash MODEL (models/flash.md3) is not attached at the muzzle — only the ROCKET_MUZZLEFLASH particle effect is emitted (Attack: EffectEmitter.Emit ROCKET_MUZZLEFLASH, no flash-model attach). ; Crosshair image/size (gfx/crosshairrocketlauncher, 0.7) not audited in this pass."
+  ]
+ },
+ {
+  "unit": "weapon-electro",
+  "tier": "opus",
+  "notes": [
+   "[logic/values] electro.bot_aim: No Electro-specific bot aim is ported. Base wr_aim leads with bot_aim at primary_speed (or hitscan-ish when speed==0) and, with a small random chance (bot_secondary_electromooth), switches to a secondary mortar-style lob using secondary_speed/speed_up; switches back at >1000u range. The port BotBrain.cs has no electro branch. Bots can still fire generically but without the primary/secondary mix or the lead-time tuning.",
+   "[values] electro.orb.csqc_netlink_draw: The dedicated REGISTER_NET_LINKED(Electro_Orb) link/draw is not reproduced 1:1: Base streams the orb as its own CSQC entity (electro_orb_send writes origin+owner+lifetime; electro_orb_draw applies a (ltime-time)-based scale shrink as the orb nears expiry plus an avelocity spin '7 0 11', alpha 0.7). The port renders the orb via the generic ProjectileCatalog/ProjectileRenderer Electro body (ebomb model + TR_NEXUIZPLASMA trail + dynamic light + electro_fly loop). The in-flight identity matches; the",
+   "[logic] electro.describe_guide: The MENUQC weapon-guide describe paragraphs (electro.qc:753-767 — primary/secondary/combo description + DPS guide line) are not ported; the port has no in-menu weapon guide for electro.",
+   "[logic/values] electro.secondary.orb_damagedbycontents: g_balance_electro_secondary_damagedbycontents defaults 1 (ON), so in Base a live orb resting in lava/slime or fully submerged takes content damage and detonates. The port never pushes the orb onto g_damagedbycontents (no DamagedByContents wiring for projectiles at all — only monsters/turrets/instagib reference the field), so an orb is immune to environmental hazards. The only on-by-default electro secondary feature that is unported."
+  ]
+ },
+ {
+  "unit": "weapon-fireball",
+  "tier": "sonnet",
+  "notes": [
+   "[timing] weapon-fireball.primary.shootable: Depletion explode is SYNCHRONOUS (fired inside the damage call) rather than Base's deferred next-frame W_PrepareExplosionByDamage (nextthink=time; setthink), and the port does NOT call the MUTATOR_CALLHOOK(PrepareExplosionByDamage) hook. Shared Projectiles.MakeShootable simplification (Devastator/Electro/Hagar/Arc/Minelayer/Mortar/Seeker/OkRpc all share it). Only observable when a server raises g_balance_fireball_primary_health > 0 — at the stock health 0 the whole path is a faithful no-op. NOTE",
+   "[values] weapon-fireball.bot.obituary: Bot wr_aim secondary lead-speed: when the bot is in firemine mode the brain still leads by the PRIMARY speed (1200) rather than QC's bot_aim(speed 900, speed_up 100). The mode-switch toggle (0.02/0.01 random flip) and the primary lead ARE ported and live; only the secondary lead speed/up is the shared port wr_aim simplification (BotAimShotSpeed returns a single speed)."
+  ]
+ },
+ {
+  "unit": "weapon-hook",
+  "tier": "opus",
+  "notes": [
+   "[logic] weapon-hook.primary.fire_grapplinghook: No dedicated hook entity stream (GrapplingHookSend / ENT_CLIENT_HOOK with hook_start/hook_end). The chain HEAD IS networked via the generic projectile feed (ServerNet.Classify -> Projectile: FL_PROJECTILE/Item + Owner + MoveType.Fly) and renders as a red Hookbomb spike — but with no rope-endpoint stream there is no rope line (see weapon-hook.presentation.rope_line). ; No WarpZone refsys tracking (WarpZone_RefSys_SpawnSameRefSys).",
+   "[logic] weapon-hook.primary.remove_reset: No central RemoveGrapplingHooks reset on freezetag-freeze / teleport / vehicle-enter / wr_resetplayer; the hook is cleared only via the weapon's own state machine. ; Shoot-down frag attribution sets pusher/pushltime but hardcodes istypefrag=false (chat-input PHYS_INPUT_BUTTON_CHAT not wired), so the istypefrag obituary classification differs from Base in the chat-while-shot-down edge case.",
+   "[timing] weapon-hook.offhand.mutator: Residual 1-tick read/publish latency: OffhandFirePressed is published in PlayerPostThink (WeaponFireDriver.Frame, line 66) but read in PlayerPreThink (HookMutator.OnPlayerPreThink), which runs EARLIER in the same OnClientMove tick — so the offhand-think observes the +hook button one server tick (~1/72 s) stale. QC dispatches offhand_think inside W_WeaponFrame same-frame. Functionally castable; minor latency (timing: partial). ; No useammo ammo_factor toggle on the Hook weapon (handled via fuel t",
+   "[logic/values/timing] weapon-hook.presentation.rope_line: No hook ROPE line is drawn. There is no GrapplingHookSend/ENT_CLIENT_HOOK stream (with hook_start/hook_end), no Draw_CylindricLine, and no team-coloured rope texture/WarpZone-traced segment in game/. The chain HEAD is networked + rendered as a Hookbomb spike while in flight (and disappears once latched), but the connecting rope between the firer's gun and the latch point is entirely absent."
+  ]
+ },
+ {
+  "unit": "weapon-machinegun",
+  "tier": "haiku",
+  "notes": [
+   "[liveness] machinegun.notification.kill_suicide: The message-SELECTION code is faithful and wired live (Scores.cs obituary path calls SelectKillMessage/SelectSuicideMessage; DeathMessages keys SNIPE/SPRAY on HasHitType(deathType, Secondary)). The SNIPE branch is reachable ONLY from the mode-0 secondary (now correctly carrying HITTYPE_SECONDARY in the port) — but mode 0 is non-default and dead, so in default mode-1 play BOTH Base and the port emit MURDER_SPRAY (faithful).",
+   "[logic] machinegun.reload.checkammo: wr_reload (the forced-reload branch at the top of wr_think, plus the manual W_Reload that respects misc_bulletcounter<0 to let a burst finish) is NOT modeled. Comment in WrThink (Machinegun.cs:141) explicitly notes 'reload_ammo isn't modeled, so ammo == the resource'. reload_ammo defaults 0 in bal-wep-xonotic.cfg so the path is dead in stock play; a server setting reload_ammo>0 would diverge (no clip, no reload cycle). ; wr_checkammo2 is not ported as a separate gate: it returns false (suppresse"
+  ]
+ },
+ {
+  "unit": "weapon-minelayer",
+  "tier": "opus",
+  "notes": [
+   "[liveness] minelayer.fire.lay_mine: WEP_FLAG_MUTATORBLOCKED (Minelayer.cs:63): the weapon is excluded from the default loadout/allweapons (GiveItems.cs:340 = SpawnFlags & (MutatorBlocked|Hidden) != 0), so this fire path is NOT reached in a normal match. Live only when granted via weaponarena/NewToys/impulse-give. WrThink dispatch (WeaponFireDriver) is correct on that conditional path. Liveness stays partial.",
+   "[liveness] minelayer.fire.mine_limit: Liveness partial: MUTATORBLOCKED weapon (see minelayer.fire.lay_mine).",
+   "[liveness] minelayer.mine.stick: Liveness partial: MUTATORBLOCKED weapon (see minelayer.fire.lay_mine).",
+   "[liveness] minelayer.mine.proximity: Base proximity loop also skips IS_INDEPENDENT_PLAYER(head); the port does not model independent-player mode, so that exclusion is absent (no functional effect outside that unported mode). ; Liveness partial: MUTATORBLOCKED weapon (see minelayer.fire.lay_mine).",
+   "[liveness] minelayer.mine.lifetime_countdown: Port lifetime-arm branch adds an extra `self.Frame == 0f` term to the QC `!mine_time && cnt > 0` guard. Redundant (Frame is only set to 1 after MaxHealth is set, so MaxHealth==0f already excludes re-entry; deathTime is always >0 since lifetime-countdown=29.5) — no behavioral difference. Model note only. ; Liveness partial: MUTATORBLOCKED weapon (see minelayer.fire.lay_mine).",
+   "[liveness] minelayer.mine.owner_death: HITTYPE_BOUNCE deathtype tag on the auto-detonate is carried only as a bool param (the port's int weapon-id deathtype has no bounce flag); the obituary picks the same splash murder string regardless, so this is documentation-only (minor). ; Liveness partial: MUTATORBLOCKED weapon (see minelayer.fire.lay_mine).",
+   "[liveness] minelayer.fire.remote_detonate: Port detonates inline in RemoteDetonate rather than flagging minelayer_detonate=true and letting each mine's own W_MineLayer_Think call W_MineLayer_RemoteExplode the next tick (one-tick timing difference; behaviorally equivalent in practice). ; deathtype HITTYPE_BOUNCE tag on remote blasts not set (obituary picks the splash murder string regardless; inert). ; Liveness partial: MUTATORBLOCKED weapon (see minelayer.fire.lay_mine).",
+   "[liveness] minelayer.mine.explode: Airshot achievement (ANNCE_ACHIEVEMENT_AIRSHOT on a direct hit to an enemy flying player) not implemented. ; Out-of-ammo forced weapon switch after the last mine fires (Base W_MineLayer_Explode tail: ATTACK_FINISHED + m_switchweapon = w_getbestweapon) is not done here. ; Liveness partial: MUTATORBLOCKED weapon (see minelayer.fire.lay_mine).",
+   "[liveness] minelayer.mine.render: No CSQCProjectile(PROJECTILE_MINE) in-flight networking analogue: Base networks the in-flight mine as a CSQC projectile and only the STUCK mine is a plain server entity. The port renders the mine as a plain server model for its whole life, so in-flight prediction/trail networking differs (functional but not the CSQC path).",
+   "[liveness] minelayer.ammo.checks: Port WrThink omits the forced-reload branch, but reload_ammo defaults to 0 so Base never enters it either — faithful at default values (would diverge if reload_ammo were set). ; Base wr_checkammo1 also counts clip_load (weapon_load) as a second ammo source; port checks only the rocket resource. Inert at reload_ammo=0 (clip is never loaded), so no behavioral difference at defaults. ; Liveness partial: MUTATORBLOCKED weapon (see minelayer.fire.lay_mine)."
+  ]
+ },
+ {
+  "unit": "weapon-porto",
+  "tier": "opus",
+  "notes": [
+   "[logic] weapon-porto.fire.aim_hold: The hold is set on a Secondary tick and cleared when the held-angle shot is consumed (Porto.cs:117-132), but the QC release condition `if (!(fire & 2)) porto_v_angle_held = 0` cannot be reproduced from a Primary-only tick — the port can't observe an 'ATCK2 released' edge — so the hold is never released until a shot consumes it, which diverges from Base when the player taps then releases secondary without firing primary. ; Only reachable when g_balance_porto_secondary=0 (non-default); dormant in ",
+   "[logic] weapon-porto.touch.placement_tree: Surface-flag gating logic differs from Base in WHERE the flags come from: Base reads trace_dphit* off the ORIGINAL bouncemissile collision trace; the port re-probes with a short worldonly traceline (ProbeImpact, Porto.cs:319-337) because the engine touch carries no per-contact flags. The TraceService genuinely fills DpHitQ3SurfaceFlags/DpHitContents from the BSP surface, so the slick/clip + noimpact branches are now reachable and play the right cues — but the re-trace can disagree with the true ",
+   "[logic] weapon-porto.lifecycle.lifetime_self_destruct: No throwable-drop: when a combined porto fails softly Base can drop it as a pickup (W_ThrowNewWeapon) with CENTER_PORTO_FAILED; the port just cleans up. ; No center-print notifications (CENTER_PORTO_CREATED_IN/OUT/FAILED) anywhere.",
+   "[liveness] weapon-porto.lifecycle.death_reset_cleanup: Dispatch is current-weapon-scoped: WrPlayerDeath is invoked from DamageSystem.cs:634-638 only for Inventory.CurrentWeapon(victim) at slot 0, and WrResetPlayer from SpawnSystem.cs:825-836 only for the current weapon at slot 0. In Base, Portal_ClearAll on death runs regardless of which weapon the player holds, and wr_resetplayer runs for EVERY owned weapon. So in the port, if the player is NOT holding porto at the moment of death/respawn, the porto death/reset cleanup does not run — a placed porta",
+   "[logic/values/timing] weapon-porto.presentation.trajectory_preview: While holding porto (non-secondary mode), Base draws a reflecting red/blue cylindric-line polyline (with the same slick-continue / noimpact-stop / CheckWireframeBox size checks the placement uses) predicting where the in/out portals will land. The port STILL renders nothing — the signature porto view feature is absent.",
+   "[logic/values/timing] weapon-porto.bot.aim: Base wr_aim clears ATCK/ATCK2 then, in non-secondary mode, calls bot_aim(speed, lifetime) and presses ATCK if a target is found — this is how a bot decides to fire the porto. The port has NO WrAim override on Porto.cs and no bot porto-aim path, so bots never fire the porto via the QC aim heuristic. Newly mapped 2026-06-25 (was absent from the registry).",
+   "[logic/values] weapon-porto.bot.dodge_projectile: Base flags the launched porto projectile as bot-dodgeable (bot_dodge=true, bot_dodgerating=200) and pushes it onto g_bot_dodge so bots steer away from it. The port's Attack (Porto.cs:162-198) sets no bot_dodge/bot_dodgerating and there is no g_bot_dodge list registration for the porto gren, so bots do not avoid it. Newly mapped 2026-06-25."
+  ]
+ },
+ {
+  "unit": "weapon-shotgun",
+  "tier": "sonnet",
+  "notes": [
+   "[values] weapon-shotgun.primary.firebullet_falloff: g_ballistics_penetrate_clips (default 1) / weapclip handling still not modeled (no weapclip distinction in the penetration loop).",
+   "[logic/liveness] weapon-shotgun.secondary.melee_routing: Alt triple-shot (secondary==2) still fires a single Attack (W_Shotgun_Attack) instead of the staged Frame1->Frame2 3-blast sequence + its dry-fire W_SwitchWeapon_Force. Non-default mode (the single-blast path now uses the correct alt_refire/alt_animtime timing).",
+   "[values] weapon-shotgun.ammo.checkammo_reload: wr_checkammo1/2 in Base also OR the clip load (weapon_load[m_id] >= ammo) (shotgun.qc:357,370); the port's CheckAmmoPrimary/Secondary DO include the GetWeaponLoad OR-term (Shotgun.cs:366-367,374-375), so the clip-load term is now present. reload_ammo defaults 0 so no clip is used by default. ; pickup_ammo (15) still not read in Shotgun.cs (item-pickup concern, not the weapon's checkammo)."
+  ]
+ },
+ {
+  "unit": "weapon-tuba",
+  "tier": "haiku",
+  "notes": [
+   "[values/timing] weapon-tuba.note.sustain_lifetime: W_WeaponRateFactor scaling on the keep-alive — the port DOES multiply refire*2 by WeaponRateFactor(actor) (Tuba.cs:163), so this matches Base; only relevant under haste/rate modifiers. ; No W_Tuba_NoteThink server-side per-listener volume/angle re-origin + SendFlags (moot until tuba-note sound networking exists). The port's NoteThink only models the teleport_time self-expiry, not the re-origin broadcast.",
+   "[values/timing] weapon-tuba.audio.note_sound: No two-sample cos/sin crossfade: Base's in-range branch plays the floor sample at cos(pi/2 m/step) AND the upper neighbour at sin(...) for a smooth timbre blend; the port plays only the floor neighbour at full volume (residual PITCH is shifted via 2^(m/12), but the upper-neighbour timbre blend needs a second emitter and is unported). ; No cl_tuba_fadetime release ramp: NoteOff Stops the loop cleanly rather than ramping volume down over 0.25s (needs a client-side per-frame volume think). ; No ENT"
+  ]
+ },
+ {
+  "unit": "weapon-vaporizer",
+  "tier": "sonnet",
+  "notes": [
+   "[values] weapon-vaporizer.primary.beam_particle: Beam is a generic networked trail effect (TE_TEI_G3 / _HIT), not the Base cylindric gauntletbeam/lgbeam beam; no team-color (cl_vaporizerbeam_teamcolor) or colorboost tint, no 0.8 beam lifetime cvar.",
+   "[liveness] weapon-vaporizer.secondary.blaster_laser: Optional Blaster-ammo decrement (W_DecreaseAmmo if WEP_CVAR_PRI(BLASTER,ammo) set) is omitted — harmless at the default Blaster ammo 0.",
+   "[values/liveness] weapon-vaporizer.ammo.consumption: Instagib flag is hardcoded true on the class default; in non-instagib play the bare default loadout/CheckAmmoPrimary treat it as instagib (1 cell). Attack/CheckAmmoPrimary DO re-read g_instagib via InstagibActive for the actual decrement/check, so under the mutator it is correct — but the bare class default is wrong."
+  ]
+ },
+ {
+  "unit": "weapon-vortex",
+  "tier": "sonnet",
+  "notes": [
+   "[values] weapon-vortex.fx.beam: Beam is emitted at a constant intensity: alpha/fade/trail-spacing are NOT scaled by sqrt(charge), so a barely-charged shot and a full shot look identical. EffectRequest carries colorMin/colorMax but no per-emission alpha, so the sqrt(charge) brightness modulation has no port-side hook. ; Team tint is computed server-side from the FIRER's charge+team and broadcast as a single colour (EmitBeam), so the per-recipient cl_tracers_teamcolor / cl_particles_oldvortexbeam client-cvar nuance is collapsed ",
+   "[logic] weapon-vortex.fx.charge_glow: QC's wr_glow brightens the wielder's player model proportionally to vortex_charge (via vortex_glowcolor, team-tinted, f scaled by charge_animlimit). The port has no wr_glow override and emits no charge-driven player-model glow — the carrier looks identical regardless of charge. Also blocked by charge not being networked to clients.",
+   "[liveness] weapon-vortex.hud.charge_ring: Host-only: the charge stat is fed from LocalServerPlayer's slot state (NetGame.UpdateCrosshairWeaponRings), so the ring fills on a listen-server / single-player host but a PURE remote client has no charge data and still sees no ring. QC networks vortex_charge as a STAT to every client; the port still has no cross-client charge stat (the wepent-props follow-up).",
+   "[logic] weapon-vortex.bot.wr_aim: QC wr_aim calls bot_aim(actor, weaponentity, 1000000, 0, 1, false, true) and presses ATTACK when the bot has a lined-up target — the per-weapon bot aiming hook. The port's Weapon base has no WrAim/bot-aim override path at all (grep for WrAim/bot_aim over the weapon system returns nothing), so vortex bots have no weapon-specific aim solver. Likely belongs to a future bot unit; recorded here as a Base-side coverage gap for this weapon file."
+  ]
+ }
+]

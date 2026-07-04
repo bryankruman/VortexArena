@@ -140,7 +140,8 @@ public class InvasionMonsterSpawnTests
             => new Vector2(a.Origin.X - b.Origin.X, a.Origin.Y - b.Origin.Y).Length();
         float startDist = DistXY(m, player);
 
-        // Tick ~4s: past the spawn-anim gate (≈1/3s) + the enemy re-check stagger (≤1s), with time left to chase.
+        // Tick ~4s (300 ticks @ 72 Hz): past the spawn-anim gate (≈2s from zombie.dpm group 30: 61 frames @ 30 fps)
+        // + the enemy re-check stagger (≤1s), with time left to chase.
         for (int i = 0; i < 300; i++)
             h.Sim.Tick();
 

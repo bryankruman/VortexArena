@@ -1,0 +1,383 @@
+unit: mapobject-movers-platforms
+category: mapobject
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 12
+  worst_gaps:
+    - "CPMA sound_start/sound_end + pt1_strt/pt1_end map-pack FILE probe still unported (the only residual q3compat plat gap): the q3compat path is LIVE (CompatRemaps.IsQ3Compat wired from the .arena/.defi VFS probe at GameWorld boot, GameWorld.cs:548-558), so a Q3/Q3DF func_plat correctly gets speed 200 / lip 8 / dmg 2 / spawnflags 0 / medplat sounds — but the CPMA per-mapper sound-override keys (sound_start/sound_end and the pt1_strt/pt1_end default-file probe) are still skipped because they need GetField_fullspawndata / FindFileInMapPack, unavailable headless. Medplat default still applies, so Q3 plats are audible & correct, just not CPMA-custom-sound-overridable. (Sole remaining audio gap in the unit.)"
+    - "plat_outside_touch (PlatOutsideTouch) is implemented & faithful but has no live caller — neither stock Base nor the port ever spawns an outside trigger (Base platforms.qc only DEFINES plat_outside_touch, line 111, and never installs it). So this handler being dead is itself faithful to Base; it is reachable only via custom-mapper wiring the port's spawnfunc does not generate."
+features:
+  - id: mapobject-movers-platforms.plat.spawn_setup
+    name: "func_plat spawnfunc: defaults, pos1/pos2, brush init, reset"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/plat.qc:spawnfunc(func_plat)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:PlatSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:42"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:ApplyPlatSounds"
+    constants:
+      - { name: "speed default (non-q3)", base: "150", port: "150", match: true }
+      - { name: "lip default (non-q3)", base: "16", port: "16", match: true }
+      - { name: "height default", base: "size.z - lip", port: "Size.Z - Lip", match: true }
+      - { name: "CRUSH spawnflag dmg", base: "10000", port: "10000", match: true }
+      - { name: "crush message", base: "\"was squished\"", port: "\"was squished\"", match: true }
+      - { name: "crush message2 default", base: "\"was squished by\"", port: "\"was squished by\" (PlatSetup:48-49)", match: true }
+      - { name: "pos1/pos2", base: "pos1=origin, pos2.z=origin.z-height", port: "Pos1=Origin, Pos2.Z=Origin.Z-Height", match: true }
+      - { name: "sounds==1 pack", base: "plat1/plat2", port: "plat1/plat2 (ApplyPlatSounds)", match: true }
+      - { name: "sounds==2 pack", base: "medplat1/medplat2", port: "medplat1/medplat2 (ApplyPlatSounds)", match: true }
+      - { name: "legacy sound1/sound2 override", base: "noise=sound1, noise1=sound2", port: "Noise=Sound1, Noise1=Sound2 (ApplyPlatSounds)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "draggable=drag_undraggable and effects|=EF_LOWPRECISION not set (no gameplay/networking impact in the port)."
+      - "q3compat-specific defaults (speed 200/lip 8/dmg 2/spawnflags 0/medplat/CPMA probe) live under the q3compat flag — see the dedicated plat.q3compat_defaults row (now LIVE; only the CPMA file-probe remains a gap)."
+    verification:
+      - { kind: code, ref: "Platforms.cs:PlatSetup (28-88) vs plat.qc spawnfunc 59-158; registered MapObjectsRegistry.cs:42 (SpawnFuncs.Register func_plat); spawnfunc consumed on the live --host map-spawn path — GameWorld SpawnMapEntities -> SpawnFuncs.TrySpawn, called from Boot", result: pass }
+      - { kind: code, ref: "Message2 \"was squished by\" default set in PlatSetup:48-49 when .dmg && Message2 empty — matches plat.qc:75-78", result: pass }
+      - { kind: code, ref: "ApplyPlatSounds (MapObjectsCommon.cs:940-957) reproduces plat.qc:80-97 sounds==1->plat1/2, sounds==2/q3->medplat, then sound1/sound2 overrides; .sounds/.sound1/.sound2 promoted live in MapObjectFieldsExtra before spawnfunc dispatch", result: pass }
+    confidence: high
+    notes: "Re-audited 2026-06-25 (line refs refreshed): unchanged-faithful. PlatSetup line numbers shifted slightly (q3compat branch now uses the live flag) but the non-q3 defaults/pos1/pos2/message2/sound-pack logic is identical to Base. The 'sounds' selector + legacy sound1/sound2 overrides are read via MapMover.ApplyPlatSounds(this, q3compat). The medplat default now actually fires on Q3 maps because q3compat is live. The q3compat default block is its own (now-live) row."
+
+  - id: mapobject-movers-platforms.plat.q3compat_defaults
+    name: "Q3/Q3DF compat: speed 200, lip 8, dmg 2, medplat sounds, CPMA sound keys"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/plat.qc:spawnfunc(func_plat)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:PlatSetup (q3compat = CompatRemaps.IsQ3Compat)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/CompatRemaps.cs:Q3CompatProvider/IsQ3Compat"
+      - "src/XonoticGodot.Server/GameWorld.cs:573-575 (q3compat probe + Q3CompatProvider wire)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:ApplyPlatSounds (q3compat medplat branch)"
+    constants:
+      - { name: "q3 speed default", base: "200", port: "200 (q3compat true branch — Platforms.cs:69)", match: true }
+      - { name: "q3 lip default", base: "8", port: "8 (Platforms.cs:70)", match: true }
+      - { name: "q3 default dmg", base: "2", port: "2 (Platforms.cs:39)", match: true }
+      - { name: "q3 spawnflags zeroing", base: "spawnflags=0 for Q3 plats", port: "SpawnFlags=0 (Platforms.cs:38)", match: true }
+      - { name: "q3 sounds", base: "plats/medplat1.wav / medplat2.wav", port: "medplat via ApplyPlatSounds(e, q3compat) — fires on sounds==2 OR q3compat", match: true }
+      - { name: "CPMA sound_start/sound_end + pt1_strt/pt1_end probe", base: "honored", port: "ignored (documented map-pack file-probe gap)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "CPMA sound_start/sound_end + the pt1_strt/pt1_end default-file probe are not ported (require GetField_fullspawndata / FindFileInMapPack, unavailable headless). The medplat default still applies, so a Q3 plat is audible and correct — only the CPMA per-mapper sound OVERRIDE keys are skipped. Sole residual gap on this row; audio marked partial for it."
+    verification:
+      - { kind: code, ref: "Platforms.cs:34 `bool q3compat = CompatRemaps.IsQ3Compat;` (no longer hardcoded false). Q3 branch Platforms.cs:36-44 (spawnflags=0, dmg default 2), :69-70 (speed 200 / lip 8) all reachable when q3compat true", result: pass }
+      - { kind: code, ref: "CompatRemaps.IsQ3Compat => Q3CompatProvider?.Invoke() ?? false (CompatRemaps.cs:82); Q3CompatProvider WIRED in GameWorld.Boot at GameWorld.cs:575 from a real .arena/.defi VFS probe (GameWorld.cs:573-574), computed BEFORE SpawnMapEntities (wire at :575 vs SpawnMapEntities later in Boot)", result: pass }
+      - { kind: code, ref: "Live ConfigReader: game/net/NetGame.cs:594 sets _serverWorld.ConfigReader = path => _vfs.Exists(path) ? _vfs.ReadText(path) : null — so on a real host a map with a sibling .arena/.defi flips q3compat on and the Q3 plat defaults engage", result: pass }
+      - { kind: code, ref: "ApplyPlatSounds medplat branch (MapObjectsCommon.cs:947) fires on `e.Sounds == 2 || q3compat`; with q3compat true a Q3 plat (sounds unset) now correctly gets medplat1/medplat2", result: pass }
+    confidence: high
+    notes: "FIXED since baseline. Baseline had this dead/missing (q3compat hardcoded false, no setter). Wave-5 introduced a REAL live q3compat flag: CompatRemaps.Q3CompatProvider is assigned in GameWorld.Boot (GameWorld.cs:575) from a companion-file (.arena/.defi) probe over the live VFS ConfigReader (game/net/NetGame.cs:594), set before the spawnfuncs run. Verified the constants match Base plat.qc:59-72 exactly (speed 200/lip 8/dmg 2/spawnflags 0/medplat). logic/values now faithful, liveness live. The ONLY residual is the CPMA sound_start/sound_end/pt1_strt/pt1_end map-pack file probe (audio: partial). Re-audited 2026-06-27 (post W16/W17): unchanged-faithful, code re-read line-by-line; GameWorld line refs refreshed (573-575), NetGame :594, full IsQ3Compat->Q3CompatProvider chain re-verified live."
+
+  - id: mapobject-movers-platforms.plat.center_trigger
+    name: "plat_spawn_inside_trigger: ride-detect center trigger volume"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/platforms.qc:plat_spawn_inside_trigger"
+      - "common/mapobjects/func/plat.qc:plat_delayedinit"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:SpawnInsideTrigger"
+    constants:
+      - { name: "tmin inset", base: "absmin + '25 25 0'", port: "AbsMin + (25,25,0)", match: true }
+      - { name: "tmax inset", base: "absmax - '25 25 -8'", port: "AbsMax - (25,25,-8)", match: true }
+      - { name: "tmin.z", base: "tmax.z - (pos1.z - pos2.z + 8)", port: "tmax.Z - (Pos1.Z - Pos2.Z + 8)", match: true }
+      - { name: "PLAT_LOW_TRIGGER cap", base: "tmax.z = tmin.z + 8", port: "tmax.Z = tmin.Z + 8", match: true }
+      - { name: "size<=50 slab collapse (x,y)", base: "center +1 unit", port: "center +1 unit", match: true }
+      - { name: "degenerate-box reject", base: "tmin>=tmax -> delete + objerror", port: "tmin>=tmax -> RemoveEntity + return (SpawnInsideTrigger:192-196)", match: true }
+      - { name: "Q3 spawn gate", base: "!Q3COMPAT_COMMON || targetname==\"\"", port: "!q3compat || empty TargetName (PlatSetup:88)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "SpawnInsideTrigger (Platforms.cs:161-199) vs plat_spawn_inside_trigger (platforms.qc:21-59) box geometry line-by-line; degenerate box drops the trigger (RemoveEntity) instead of registering an inverted box", result: pass }
+      - { kind: code, ref: "Q3 gate now LIVE: PlatSetup:88 `if (!q3compat || string.IsNullOrEmpty(this_.TargetName))` matches plat_delayedinit's `if (!Q3COMPAT_COMMON || this.targetname == \"\")` (plat.qc:11). A TARGETED Q3 plat now correctly gets NO inside trigger", result: pass }
+    confidence: high
+    notes: "Re-audited 2026-06-22: unchanged-faithful, and the Q3 spawn gate is now actually exercised (q3compat live): a targeted Q3/Q3DF plat skips the ride-detect volume exactly like Base. The degenerate/inverted-box path deletes the trigger matching QC delete+objerror. Trigger touch is PlatCenterTouch via the engine TriggerTouch path. Base plat_delayedinit defers to INITPRIO_FINDTARGET; the port spawns inline (no observable ordering difference for a single plat)."
+
+  - id: mapobject-movers-platforms.plat.state_machine
+    name: "Up/down/top/bottom state machine + dwell timers"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/platforms.qc:plat_go_up"
+      - "common/mapobjects/platforms.qc:plat_go_down"
+      - "common/mapobjects/platforms.qc:plat_hit_top"
+      - "common/mapobjects/platforms.qc:plat_hit_bottom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:PlatGoUp"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:PlatGoDown"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:PlatHitTop"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:PlatHitBottom"
+    constants:
+      - { name: "top dwell", base: "ltime + 3 s", port: "LTime + 3 s", match: true }
+      - { name: "STATE_* ids (TOP/BOTTOM/UP/DOWN)", base: "0/1/2/3", port: "0/1/2/3", match: true }
+      - { name: "move speedtype", base: "TSPEED_LINEAR", port: "SpeedType.Linear", match: true }
+      - { name: "sound channel", base: "CH_TRIGGER_SINGLE = 3", port: "SoundChannel.Item = 3 (Platforms.cs:205,214,223,233)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "PlatGoUp/Down/HitTop/HitBottom (Platforms.cs:204-237) vs platforms.qc:61-88 — state, CalcMove targets, 3s dwell all match", result: pass }
+      - { kind: code, ref: "Base platforms.qc:63,72,78,85 all use CH_TRIGGER_SINGLE=3; port plat Sound calls now pass SoundChannel.Item (Services.cs:119 Item=3, the CH_TRIGGER_SINGLE equivalent) at Platforms.cs:205,214,223,233 — channel constant now MATCHES Base (re-verified 2026-06-27)", result: pass }
+    confidence: high
+    notes: "Re-audited 2026-06-25: go_up/go_down play noise, hit_top/hit_bottom play noise1; top dwell sets Think=PlatGoDown at LTime+3 — bit-faithful. FIXED since baseline: the plat go/hit sounds now pass SoundChannel.Item (=3) which equals Base CH_TRIGGER_SINGLE (=3), not the old Voice (=2). audio now faithful, gap cleared, channel constant matches. Verified Item=3 in Services.cs:119 and all four state functions (Platforms.cs:207/216/225/235) pass SoundChannel.Item."
+
+  - id: mapobject-movers-platforms.plat.center_touch
+    name: "plat_center_touch: live creature raises / refreshes plat"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/platforms.qc:plat_center_touch"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:PlatCenterTouch"
+    constants:
+      - { name: "top-refresh dwell", base: "ltime + 1 s", port: "LTime + 1 s", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "PlatCenterTouch (Platforms.cs:236-248) vs SVQC plat_center_touch (platforms.qc:90-109): iscreature + health>0 guard, BOTTOM->go_up, TOP->refresh ltime+1", result: pass }
+    confidence: high
+    notes: "Re-audited 2026-06-22, unchanged. Guard uses MapMover.IsCreature (Client|Monster flags) + GetResource(Health)>0, matching SVQC .iscreature + RES_HEALTH>0. CSQC IS_PLAYER branch is N/A (server-authoritative)."
+
+  - id: mapobject-movers-platforms.plat.trigger_use
+    name: "plat_trigger_use / plat_use: external trigger send-down"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/platforms.qc:plat_trigger_use"
+      - "common/mapobjects/platforms.qc:plat_use"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:PlatTriggerUse"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:PlatUse"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "PlatTriggerUse (Platforms.cs:251-256) vs plat_trigger_use (platforms.qc:130-135) — one-shot 'already has a think' guard faithful; PlatUse (Platforms.cs:120-126) vs plat_use (platforms.qc:168-174) clears .use then `state != STATE_UP -> return` (QC objerror-equivalent) then go_down", result: pass }
+    confidence: high
+    notes: "Re-audited 2026-06-22: PlatUse returns only when state != STATE_UP (matching plat_use's `if state != STATE_UP objerror`). plat_trigger_use one-shot guard (return if a think exists) is faithful. logic remains faithful."
+
+  - id: mapobject-movers-platforms.plat.crush
+    name: "plat_crush: CRUSH instakill / .dmg bite + reverse"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/platforms.qc:plat_crush"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:PlatCrush"
+    constants:
+      - { name: "CRUSH dmg", base: "10000", port: "10000", match: true }
+      - { name: "dead-gib dmg", base: "10000", port: "10000", match: true }
+      - { name: "deathtype", base: "DEATH_HURTTRIGGER", port: "DeathTypes.Void (\"void\", documented = DEATH_HURTTRIGGER)", match: true }
+      - { name: "bite dmgtime cooldown", base: "none (plat_crush has NO dmgtime rate-limit)", port: "none", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "PlatCrush (Platforms.cs:259-279) vs plat_crush (platforms.qc:138-166): CRUSH 10000 / .dmg bite / dead-gib 10000 / STATE_UP->down, STATE_DOWN->up reverse, other states no-op", result: pass }
+      - { kind: code, ref: "wired as Entity.Blocked (PlatSetup:67 this.Blocked=PlatCrush) and invoked from the PushMove revert path FlyMove.cs:470 pusher.Blocked?.Invoke(pusher, check)", result: pass }
+    confidence: high
+    notes: "Re-audited 2026-06-22, unchanged. The plat's blocked handler is plat_crush, NOT generic_plat_blocked. plat_crush has NO dmgtime cooldown and the port omits it too. DeathTypes.Void is documented = DEATH_HURTTRIGGER."
+
+  - id: mapobject-movers-platforms.plat.reset
+    name: "plat_reset: targeted=start-raised, else start-bottom"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/platforms.qc:plat_reset"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:PlatReset"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "SendFlags |= SF_TRIGGER_RESET not set (CSQC reset networking; dead in stock Base — plat_link commented out — so no live impact)."
+    verification:
+      - { kind: code, ref: "PlatReset (Platforms.cs:94-115) vs plat_reset (platforms.qc:188-206): targeted&&!q3compat->pos1/STATE_UP/PlatUse; else pos2/STATE_BOTTOM/(targeted&&q3compat?PlatTargetUse:PlatTriggerUse). q3compat is now the live CompatRemaps.IsQ3Compat flag, so the (targetname && q3compat) -> PlatTargetUse fork is reachable on a Q3 targeted plat", result: pass }
+    confidence: high
+    notes: "Re-audited 2026-06-22: full plat_reset structure including the (targetname && Q3COMPAT) -> plat_target_use fork is reproduced AND now reachable (q3compat is live). On a stock Xonotic map (q3compat false) the non-q3 path is taken (bit-faithful); on a Q3/Q3DF targeted import the ground-plat fork installs PlatTargetUse. logic remains faithful. The previous 'dead q3compat branch' caveat is removed — the branch is now live."
+
+  - id: mapobject-movers-platforms.plat.outside_target_use
+    name: "plat_outside_touch / plat_target_use (Q3 + mapper-wired)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/platforms.qc:plat_outside_touch"
+      - "common/mapobjects/platforms.qc:plat_target_use"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:PlatOutsideTouch"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:PlatTargetUse"
+    constants:
+      - { name: "outside_touch refresh", base: "STATE_TOP -> plat_go_down", port: "StateTop -> PlatGoDown", match: true }
+      - { name: "target_use top refresh", base: "STATE_TOP -> ltime+1, else !STATE_UP -> plat_go_up", port: "StateTop -> LTime+1, else !StateUp -> PlatGoUp", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "PlatOutsideTouch is implemented and faithful but DEAD — and that is itself faithful to Base: Base platforms.qc only DEFINES plat_outside_touch (line 111) and never installs/spawns an outside trigger anywhere, so stock func_plat never calls it. The port matches (no outside trigger generated). Reachable only via custom-mapper wiring neither Base nor the port produces."
+    verification:
+      - { kind: code, ref: "PlatOutsideTouch (Platforms.cs:145-155) vs plat_outside_touch (platforms.qc:111-128): creature+health guard, STATE_TOP->plat_go_down on this.enemy — faithful", result: pass }
+      - { kind: code, ref: "PlatTargetUse (Platforms.cs:133-139) vs plat_target_use (platforms.qc:176-182): STATE_TOP->nextthink ltime+1, else state!=STATE_UP->plat_go_up — faithful", result: pass }
+      - { kind: code, ref: "PlatTargetUse is now LIVE-reachable: PlatReset (Platforms.cs:111-113) installs it on the (targetname && q3compat) fork, and q3compat is now a live flag (CompatRemaps.IsQ3Compat, wired GameWorld.cs:575) — a targeted Q3/Q3DF plat gets PlatTargetUse. PlatOutsideTouch still has no caller (grep 2026-06-27 — definition only at Platforms.cs:143), matching Base", result: pass }
+    confidence: high
+    notes: "FIXED since baseline (liveness dead->partial). PlatTargetUse went dead->live: it is reachable on a Q3/Q3DF targeted plat now that q3compat is a real live flag. PlatOutsideTouch remains code-faithful but with no live caller — which is itself faithful to Base (Base never installs an outside trigger either; the handler is vestigial). Hence liveness=partial: one of the two handlers is live on Q3 imports, the other is dead-by-design matching Base."
+
+  - id: mapobject-movers-platforms.subs.calcmove
+    name: "SUB_CalcMove mover driver (linear branch + bezier easing)"
+    layer: [shared]
+    base_refs:
+      - "common/mapobjects/subs.qc:SUB_CalcMove"
+      - "common/mapobjects/subs.qc:SUB_CalcMove_Bezier"
+      - "common/mapobjects/subs.qc:SUB_CalcMove_controller_think"
+      - "common/mapobjects/subs.qc:SUB_CalcMoveDone"
+      - "lib/math.qh:cubic_speedfunc"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:CalcMove"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:CalcMoveBezier"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:CalcMoveControllerThink"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:CubicSpeedFunc"
+    constants:
+      - { name: "short-anim cutoff", base: "traveltime < 0.15 -> linear", port: "0.15f -> linear (CalcMove)", match: true }
+      - { name: "non-positive traveltime clamp", base: "<=0 -> 0.001", port: "<=0 -> 0.001f (CalcMove)", match: true }
+      - { name: "linear velocity", base: "delta * (1/traveltime)", port: "delta * (1/travelTime)", match: true }
+      - { name: "linear-shortcut platmovetype test", base: "platmovetype_start==1 && _end==1", port: "PlatMoveStart==1 && PlatMoveEnd==1", match: true }
+      - { name: "platmovetype default", base: "0/0 (uninitialized float -> bezier smoothstep)", port: "0/0 (PlatMoveStart/End default 0 -> bezier)", match: true }
+      - { name: "bezier control point", base: "(origin+dest)*0.5", port: "(Origin+dest)*0.5", match: true }
+      - { name: "bezier useless-anim cutoff", base: "traveltime < 0.1", port: "0.1f (CalcMoveBezier)", match: true }
+      - { name: "cubic_speedfunc", base: "(((s+e-2)t-2s-e+3)t+s)t", port: "identical (CubicSpeedFunc)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "CalcMove/CalcMoveBezier/CalcMoveControllerThink/CubicSpeedFunc (MapObjectsCommon.cs:572-760) vs subs.qc + cubic_speedfunc — linear-shortcut keys on PlatMoveStart/End==1 with default 0/0", result: pass }
+    confidence: high
+    notes: "Re-audited 2026-06-22: unchanged-faithful. Entity.PlatMoveStart/PlatMoveEnd default to 0, matching Base's uninitialized .float platmovetype_start/_end. With 0/0 the (start==1 && end==1) linear shortcut FAILS, so a long (>=0.15s) mover runs the bezier smoothstep branch as in Base. CalcMoveDone snaps to FinalDest, zeroes velocity, nextthink=-1 — bit-faithful. Scheduling on the mover's local clock LTime as in QC."
+
+  - id: mapobject-movers-platforms.subs.platmovetype_parse
+    name: "set_platmovetype / cubic_speedfunc_is_sane (platmovetype key parse + sanity reject)"
+    layer: [shared]
+    base_refs:
+      - "common/mapobjects/platforms.qc:set_platmovetype"
+      - "lib/math.qh:cubic_speedfunc_is_sane"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:SetPlatMoveType"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:CubicSpeedFuncIsSane"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:65 (PlatSetup calls SetPlatMoveType)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MovingBrushes.cs:252,301,372 (train/corner)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectFieldsExtra.cs (.platmovetype promoted)"
+    constants:
+      - { name: "platmovetype_start default", base: "0 (no key)", port: "0 (no key — SetPlatMoveType returns true, leaves PlatMoveStart=0)", match: true }
+      - { name: "one-token sets both ends", base: "end = start", port: "PlatMoveEnd = PlatMoveStart when n<2", match: true }
+      - { name: "'force' 3rd token skips check", base: "argv(2)==\"force\" -> return true", port: "argv[2]==\"force\" -> return true", match: true }
+      - { name: "stof unparsable -> 0", base: "stof() = 0", port: "StofFloat() = 0", match: true }
+      - { name: "reverse-curve reject", base: "cubic_speedfunc_is_sane -> objerror false", port: "CubicSpeedFuncIsSane -> return false", match: true }
+      - { name: "is_sane neg reject", base: "start<0 || end<0 -> false", port: "identical", match: true }
+      - { name: "is_sane <=3 accept", base: "start<=3 && end<=3 -> true", port: "identical", match: true }
+      - { name: "is_sane ellipse", base: "3*(se-4)^2 + (s-e)^2 <= 12", port: "identical", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "SetPlatMoveType (MapObjectsCommon.cs:1032-1052) vs set_platmovetype (platforms.qc:209-235): tokenize, stof, force token, is_sane reject — line-by-line match; returns false on an insane curve (objerror-equivalent)", result: pass }
+      - { kind: code, ref: "CubicSpeedFuncIsSane (MapObjectsCommon.cs:1064-1080) vs cubic_speedfunc_is_sane (lib/math.qh): neg reject, <=3 accept, ellipse condition — identical", result: pass }
+      - { kind: code, ref: "Live wiring + reject now honored EVERYWHERE: PlatSetup (Platforms.cs:68-69 `if (!SetPlatMoveType(...)) return;`) now bails out on an insane curve exactly like the train path (MovingBrushes.cs:332-333) and func_train default (MovingBrushes.cs:283/403); .platmovetype promoted onto the edict in MapObjectFieldsExtra on the live host map-spawn path", result: pass }
+    confidence: high
+    notes: "FIXED this wave (Platforms.cs diff): the sole residual gap is closed. PlatSetup previously called SetPlatMoveType WITHOUT checking the return, so a func_plat with a reverse/insane platmovetype kept the bad curve instead of being rejected; PlatSetup now does `if (!MapMover.SetPlatMoveType(this, this.Platmovetype)) return;` (Platforms.cs:68-69), mirroring the train path and matching Base's objerror reject. set_platmovetype + cubic_speedfunc_is_sane were already fully ported + wired (PlatSetup, func_train, path_corner). logic/values faithful, liveness live, gaps now empty."
+
+  - id: mapobject-movers-platforms.engine.pusher_integration
+    name: "MOVETYPE_PUSH integration: think on ltime, rider carry, blocked revert"
+    layer: [shared]
+    base_refs:
+      - "common/mapobjects/subs.qc:InitMovingBrushTrigger"
+    port_refs:
+      - "src/XonoticGodot.Engine/Simulation/FlyMove.cs:PhysicsPusher"
+      - "src/XonoticGodot.Engine/Simulation/FlyMove.cs:PushMove"
+      - "src/XonoticGodot.Engine/Simulation/MoveTypePhysics.cs:31"
+      - "src/XonoticGodot.Engine/Simulation/SimulationLoop.cs:243"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "SimulationLoop RunEntity over every non-client entity each tick -> MoveTypePhysics case Push -> PhysicsPusher (LTime/think) + PushMove; FlyMove revert-on-block (FlyMove.cs:470) -> pusher.Blocked?.Invoke (= PlatCrush)", result: pass }
+    confidence: high
+    notes: "Re-audited 2026-06-22, unchanged. Confirms the plat MOVES on the live server tick, carries/sweeps riders, and on a true block reverts the pusher + every moved rider then fires .Blocked = PlatCrush. This is the liveness link that makes the whole unit live. Server-authoritative — Base's CSQC plat link (plat_link) is commented out, so the port's lack of CSQC plat prediction is faithful, not a gap."

@@ -34,4 +34,15 @@ public partial class Entity
 {
     /// <summary>QC <c>.spawnshieldtime</c> on a rocket/mine: the remote-detonate gate. See the type doc.</summary>
     public float ProjectileDetonateTime = -1f;
+
+    /// <summary>
+    /// QC CSQC projectile sub-variant: the bouncing model selector. Base picks the networked CSQC projectile
+    /// type from the grenade's <c>type</c> cvar — <c>PROJECTILE_GRENADE</c> for an impact/stick grenade
+    /// (type 0/2) vs <c>PROJECTILE_GRENADE_BOUNCING</c> for a bouncing grenade (type 1) — which only differ in
+    /// the client model + its sideways tumble (mortar.qc:203-207 / :254-256). The grenade entity itself shares
+    /// one classname/netname for both modes (the remote-detonate sweep filters on those), so this flag carries
+    /// the bouncing distinction to the entity-network catalog key without disturbing them. Default <c>false</c>
+    /// (the non-bouncing model) for every non-grenade projectile.
+    /// </summary>
+    public bool CsqcProjectileBouncing;
 }

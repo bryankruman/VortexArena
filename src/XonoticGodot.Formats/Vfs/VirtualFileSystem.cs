@@ -222,6 +222,45 @@ public sealed class VirtualFileSystem : IDisposable
         throw new AssetParseException($"Asset not found in any mount: \"{key}\".");
     }
 
+    /// <summary>
+    /// (perf 2026-07-03) Like <see cref="ReadBytes"/> but into a caller-owned, GROW-ONLY buffer: the buffer is
+    /// (re)allocated only when too small, and the return value is the byte count actually read — the buffer's
+    /// tail beyond it is stale. Exists for the texture/model streaming path, whose per-file `new byte[]`
+    /// (4-16 MB per uncompressed TGA / mip-chained DDS, ~11 textures per player model) was the dominant
+    /// LOH churn behind the 130-430 MB single-frame allocation storms → gen2 collections at load/join.
+    /// Same resolution + error semantics as <see cref="ReadBytes"/>.
+    /// </summary>
+    public int ReadBytesInto(string vpath, ref byte[]? buffer)
+    {
+        string key = AssetPaths.Normalize(vpath);
+        if (key.Length == 0)
+            throw new AssetParseException($"Invalid (empty) virtual path: \"{vpath}\".");
+
+        foreach (IMount m in _mounts)
+        {
+            if (!m.Contains(key))
+                continue;
+            try
+            {
+                return m.ReadBytesInto(key, ref buffer);
+            }
+            catch (Exception ex) when (ex is not AssetParseException)
+            {
+                throw new AssetParseException(
+                    $"Failed to read \"{key}\" from mount \"{m.SourcePath}\": {ex.Message}", ex);
+            }
+        }
+
+        throw new AssetParseException($"Asset not found in any mount: \"{key}\".");
+    }
+
+    /// <summary>Grow-only capacity helper for <see cref="ReadBytesInto"/> buffers.</summary>
+    private static void EnsureCapacity(ref byte[]? buffer, int length)
+    {
+        if (buffer is null || buffer.Length < length)
+            buffer = new byte[length];
+    }
+
     /// <summary>Reads the file as UTF-8 text (BOM-aware). Used for <c>.shader</c>, entity lumps, etc.</summary>
     public string ReadText(string vpath)
     {
@@ -418,6 +457,10 @@ public sealed class VirtualFileSystem : IDisposable
         /// <summary><paramref name="key"/> must already be normalized.</summary>
         bool Contains(string key);
 
+        /// <summary>(perf 2026-07-03) Read into a caller-owned, grow-only buffer (see
+        /// <see cref="VirtualFileSystem.ReadBytesInto"/>). Returns the byte count actually read.</summary>
+        int ReadBytesInto(string key, ref byte[]? buffer);
+
         /// <summary>Reads the entry; <paramref name="key"/> must already be normalized and present.</summary>
         byte[] ReadBytes(string key);
     }
@@ -457,6 +500,19 @@ public sealed class VirtualFileSystem : IDisposable
             if (!_index.TryGetValue(key, out string? full))
                 throw new AssetParseException($"\"{key}\" not present in directory mount \"{_root}\".");
             return File.ReadAllBytes(full);
+        }
+
+        public int ReadBytesInto(string key, ref byte[]? buffer)
+        {
+            if (!_index.TryGetValue(key, out string? full))
+                throw new AssetParseException($"\"{key}\" not present in directory mount \"{_root}\".");
+            using var fs = new FileStream(full, FileMode.Open, FileAccess.Read, FileShare.Read);
+            long len = fs.Length;
+            if (len > int.MaxValue)
+                throw new AssetParseException($"\"{key}\" is implausibly large ({len} bytes).");
+            EnsureCapacity(ref buffer, (int)len);
+            fs.ReadExactly(buffer!, 0, (int)len);
+            return (int)len;
         }
 
         public void Dispose() { /* nothing to release */ }
@@ -582,6 +638,43 @@ public sealed class VirtualFileSystem : IDisposable
                     Array.Resize(ref buffer, read);
                 }
                 return buffer;
+            }
+        }
+
+        public int ReadBytesInto(string key, ref byte[]? buffer)
+        {
+            // Follow symlink redirects (Xonotic dedup) to the real entry, guarding against cycles.
+            for (int hops = 0; _symlinks.TryGetValue(key, out string? target); hops++)
+            {
+                if (hops >= 8)
+                    throw new AssetParseException($"symlink chain too deep starting at \"{key}\" in \"{_path}\".");
+                key = target;
+            }
+
+            if (!_index.TryGetValue(key, out string? entryName))
+                throw new AssetParseException($"\"{key}\" not present in pk3 \"{_path}\".");
+
+            lock (_gate)
+            {
+                ZipArchive archive = _archive
+                    ?? throw new AssetParseException($"pk3 \"{_path}\" has been disposed.");
+                ZipArchiveEntry? entry = archive.GetEntry(entryName)
+                    ?? throw new AssetParseException($"zip entry \"{entryName}\" vanished from \"{_path}\".");
+
+                long len = entry.Length;
+                if (len < 0 || len > int.MaxValue)
+                    throw new AssetParseException($"zip entry \"{entryName}\" has implausible length {len}.");
+                EnsureCapacity(ref buffer, (int)len);
+                using Stream es = entry.Open();
+                int read = 0;
+                while (read < (int)len)
+                {
+                    int n = es.Read(buffer!, read, (int)len - read);
+                    if (n == 0)
+                        break; // stored length disagreed — the return count reflects the real bytes
+                    read += n;
+                }
+                return read;
             }
         }
 

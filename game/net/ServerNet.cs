@@ -6,11 +6,15 @@ using XonoticGodot.Common.Diagnostics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Physics;
+using XonoticGodot.Common.Services;
 using XonoticGodot.Net;
 using XonoticGodot.Server;
 using NVec3 = System.Numerics.Vector3;
 using BitWriter = XonoticGodot.Net.BitWriter;
 using BitReader = XonoticGodot.Net.BitReader;
+// [W14b LI1] alias the animdecide unit — the `Player` class in XonoticGodot.Common.Gameplay (imported above) shadows
+// the `...Gameplay.Player` namespace, so `Player.AnimDecide` would bind to the class. The alias resolves the unit.
+using AnimDecideUnit = XonoticGodot.Common.Gameplay.AnimDecide;
 
 namespace XonoticGodot.Game.Net;
 
@@ -95,6 +99,10 @@ public sealed class ServerNet : IDisposable
     // and "relevant again" into a spawn against THIS client's baseline, exactly like DP's per-client entity frame.
     private readonly Dictionary<int, (NVec3 Min, NVec3 Max)> _entityBounds = new();
     private readonly Dictionary<int, NetEntityState> _relevantScratch = new();
+
+    // Per-recipient viewpoint clusters for the PVS entity cull: the viewer's own cluster plus the exit cluster
+    // of every linked warpzone whose window the viewer can see (see RelevantEntitiesFor's warpzone union).
+    private readonly List<int> _viewClustersScratch = new();
     // Memoized "<classname> <netname>" catalog keys for model-less projectiles so BuildEntitySet doesn't
     // allocate a fresh interpolated string per projectile per tick-frame (3.2-4). Keyed by (classname, netname)
     // — both stable per projectile — so the set of distinct entries is tiny (one per projectile type).
@@ -110,6 +118,12 @@ public sealed class ServerNet : IDisposable
     // this tick's scoreboard snapshot (built once, broadcast to all; per-client gated by _scoreVersion).
     private readonly List<XonoticGodot.Net.ScoreRowWire> _scoreRows = new();
     private readonly List<(int team, int score)> _scoreTeams = new();
+    // QC the race/CTS rankings table (Scoreboard_Rankings_Draw): best-first (time, holder) for this map,
+    // captured from the persistent RaceRecords DB; empty in non-race modes.
+    private readonly List<(int timeEncoded, string holder)> _scoreRankings = new();
+    // QC the CTS/race speed award (race_send_speedaward / _best): the round-best + persisted all-time best planar
+    // speed (qu/s, rounded) + holder names, captured from the live Cts gametype; zeroed in non-CTS modes.
+    private (int speed, string holder, int best, string bestHolder) _scoreSpeedAward;
     private int _scoreVersion;
     // this tick's score-LAYOUT generation (the active label/flag set + gametype/teamplay): the ScoreInfo block
     // (QC ENT_CLIENT_SCORES_INFO) is sent per-client only when this changed since they last got it (a mode
@@ -178,6 +192,12 @@ public sealed class ServerNet : IDisposable
         public readonly Queue<InputCommand> Pending = new();
         public InputCommand Last;       // last applied input (repeated if the queue starves — held keys)
         public bool HasLast;
+
+        /// <summary>The last <see cref="NetControl.ItemsTime"/> payload key sent to this peer (tier + send-gate +
+        /// the encoded table) — so the reliable message is resent only when THIS peer's view changes (the table,
+        /// the tier, or its own send-gate flipping when it joins/observes — QC's ClientConnect /
+        /// MakePlayerObserver / PlayerSpawn full-sync vs reset). "" = never sent. </summary>
+        public string ItemsTimeKey = "";
 
         // Legacy gentle-drain state (fix for the 3–7-deep "dead zone" the hard Trim leaves untouched). A client
         // HITCH can leave the queue sitting a few commands deep FOREVER — producer + consumer both pace at 72 Hz,
@@ -296,6 +316,11 @@ public sealed class ServerNet : IDisposable
         // Install the lag-compensation hook so hitscan weapon traces rewind other players to the shooter's view
         // time (antilag.qc). Weapons call LagComp.Begin/End ambiently; this routes it to our rewind/restore.
         LagComp.Provider = new LagCompProvider(this);
+
+        // Feed the anticheat's snap-aim suppression window the real per-client ping (QC ANTILAG_LATENCY = the same
+        // CS(e).ping the lag-comp rewind uses). FixAngle takes ping in MILLISECONDS (it multiplies by 0.001 like
+        // QC), but EstimatedPing returns the smoothed round trip in SECONDS, so scale up. 0 for a LAN/bot client.
+        _world.AntiCheat.PingProvider = p => EstimatedPing(p) * 1000f;
 
         // Per-player physics resolution (T54, QC Physics_UpdateStats → Physics_ClientOption): the shared sim
         // asks this for each player's preset-resolved movevar vector. Returns null when g_physics_clientselect
@@ -468,7 +493,10 @@ public sealed class ServerNet : IDisposable
             BroadcastSnapshots();
             SendMinigameState(); // [T38] push per-peer minigame session snapshots (reliable channel)
             SendMatchState();    // global match clock (GAMESTARTTIME/TIMELIMIT/warmup) → TIMER panel
+            SendMapVote();       // per-peer end-of-match map/gametype ballot (QC ENT_CLIENT_MAPVOTE) → MapVotePanel
             SendWaypoints(); // per-peer waypoint sprites (CTF flags + player pings…) → 3D markers + radar icons
+            SendRadarLinks(); // Onslaught control-point/generator connection lines (QC ENT_CLIENT_RADARLINK) → radar
+            SendItemsTime(); // per-peer item respawn-time table (QC itemstime IT_Write) → ItemsTimePanel countdowns
             FlushEventBundles();
         }
 
@@ -581,21 +609,35 @@ public sealed class ServerNet : IDisposable
     }
 
     /// <summary>The DP infostring a browser sees: hostname, map, gametype, player counts, protocol parity.</summary>
-    private Dictionary<string, string> BuildServerInfo(int port) => new()
+    private Dictionary<string, string> BuildServerInfo(int port)
     {
-        ["hostname"] = _serverName,
-        ["mapname"] = _world.Services.Cvars.GetString("mapname"),
-        ["gametype"] = _world.GameType?.RegistryName ?? "dm",
-        ["clients"] = _byPlayer.Count.ToString(),
-        // g_maxplayers 0/unset means "no gameplay cap" — report the transport's connection cap so the
-        // browser's players column shows real slots instead of "/0".
-        ["sv_maxclients"] = _world.Services.Cvars.GetFloat("g_maxplayers") > 0
-            ? _world.Services.Cvars.GetString("g_maxplayers")
-            : _maxClients.ToString(),
-        ["protocol"] = NetProtocol.BuildParity().ToString(),
-        ["port"] = port.ToString(),
-        ["gamename"] = "Xonotic",
-    };
+        // QC server/client.qc:1107 MUTATOR_CALLHOOK(BuildMutatorsPrettyString, ""): accumulate each active
+        // mutator's ", Token" pretty label, then strip the leading ", " (QC substring(s, 2, strlen(s)-2)).
+        // Appended as the "modifications" key so the server browser / welcome screen can surface it.
+        string prettyMutators = MutatorActivation.BuildMutatorsPrettyString("");
+        if (prettyMutators.StartsWith(", ", StringComparison.Ordinal))
+            prettyMutators = prettyMutators.Substring(2);
+
+        var info = new Dictionary<string, string>
+        {
+            ["hostname"] = _serverName,
+            ["mapname"] = _world.Services.Cvars.GetString("mapname"),
+            ["gametype"] = _world.GameType?.RegistryName ?? "dm",
+            ["clients"] = _byPlayer.Count.ToString(),
+            // g_maxplayers 0/unset means "no gameplay cap" — report the transport's connection cap so the
+            // browser's players column shows real slots instead of "/0".
+            ["sv_maxclients"] = _world.Services.Cvars.GetFloat("g_maxplayers") > 0
+                ? _world.Services.Cvars.GetString("g_maxplayers")
+                : _maxClients.ToString(),
+            ["protocol"] = NetProtocol.BuildParity().ToString(),
+            ["port"] = port.ToString(),
+            ["gamename"] = "Xonotic",
+        };
+        // QC WriteString(msg_type, modifications) — only include the field when there are active mutators.
+        if (prettyMutators.Length > 0)
+            info["modifications"] = prettyMutators;
+        return info;
+    }
 
     private static bool TryResolve(string hostPort, out IPEndPoint? ep)
     {
@@ -839,6 +881,43 @@ public sealed class ServerNet : IDisposable
     /// ignore list? Delegates to the chat engine's PersistentId-keyed check.</summary>
     public static bool IgnorePlayerInList(Player self, Player other) => Chat.IgnorePlayerInList(self, other);
 
+    /// <summary>
+    /// QC <c>soundto(MSG_ONE, emitter, channel, sample, volume, atten, 0)</c>: send one positional sound to a
+    /// single client only (the <c>target_speaker ACTIVATOR</c> BIT3 per-client sound). Encodes a one-record
+    /// <see cref="NetControl.SoundBundle"/> using the same <see cref="XonoticGodot.Net.SoundWire"/> codec as
+    /// <see cref="FlushSounds"/> and delivers it ONLY to <paramref name="client"/>'s peer (reliable so it
+    /// arrives even on a laggy connection — matching QC's reliable SOUND channel for MSG_ONE). No-op if the
+    /// player has no accepted peer (bot, unconnected, or non-remote entity).
+    /// </summary>
+    public void SendSoundToPlayer(
+        Player client, Entity emitter, SoundChannel channel, string sample, float volume, float attenuation)
+    {
+        if (client is null || string.IsNullOrEmpty(sample)) return;
+        if (!_byPlayer.TryGetValue(client, out PeerState? st) || !st.Accepted) return;
+
+        // Build a one-record SoundBundle using the shared SoundWire codec (same layout as FlushSounds).
+        _scratchWriter.Reset();
+        _scratchWriter.WriteByte((byte)NetControl.SoundBundle);
+        int countPos = ReserveCount(_scratchWriter);
+        var rec = new XonoticGodot.Net.SoundWire
+        {
+            Sample = sample,
+            Origin = emitter.Origin + (emitter.Mins + emitter.Maxs) * 0.5f,
+            Volume = volume,
+            Attenuation = attenuation,
+            Channel = (int)channel,
+            SourceNetId = NetIdForEntity(emitter),
+            Loop = false,
+            Stop = false,
+            Pitch = 1f,
+        };
+        rec.Write(_scratchWriter);
+        PatchCount(_scratchWriter, countPos, 1);
+        // Use reliable delivery — QC's soundto MSG_ONE goes on the reliable channel so the cue arrives
+        // even when unreliable packets are lost. Mirrors SendChatToPlayer's reliable send pattern.
+        _transport.Send(st.PeerId, _scratchWriter.WrittenSpan, reliable: true);
+    }
+
     /// <summary>[T38] Push each changed minigame session's snapshot to its participating peers (QC
     /// <c>minigame_resend</c> + <c>minigame_CheckSend</c>), each carrying that peer's own team; and an empty
     /// envelope to anyone who just left / whose session ended (QC the per-entity removal → CSQC
@@ -875,6 +954,7 @@ public sealed class ServerNet : IDisposable
 
     private float _nextMatchStateSend;
     private string _lastMatchStateKey = "";
+    private readonly System.Text.StringBuilder _itemsTimeSb = new(); // reused fold buffer for SendItemsTime dedup
 
     /// <summary>Broadcast the GLOBAL match-clock state (QC STAT(GAMESTARTTIME)/TIMELIMIT/WARMUP) to every
     /// accepted peer so the TIMER panel can count up/down on the play path. Sent immediately when a value
@@ -887,8 +967,18 @@ public sealed class ServerNet : IDisposable
         bool warmup = _world.Warmup.WarmupStage;
         float warmupLimit = _world.Warmup.WarmupLimit;
         bool intermission = _world.Intermission.Running;
+        // QC Set_NextMap / Send_NextMap_To_Player: the upcoming map name → the scoreboard "Next map:" line.
+        string nextMap = _world.NextMapBroadcast ?? "";
+        // QC STAT(OVERTIMES) (common/stats.qh): 0 = none, N = "Overtime #N", OVERTIME_SUDDENDEATH = "Sudden Death".
+        // Drives the TIMER panel's persistent overtime/sudden-death subtext (the one-shot center notifications are
+        // sent separately by the overtime cascade).
+        int overtimes = _world.OverTime.Overtimes;
+        // [W14a] QC randomseed: the networked deterministic-RNG seed (re-rolled every 5s). Rides this packet (the
+        // smallest diff that reaches every accepted peer); the changed value is part of the dedup key below so a
+        // re-roll forces an immediate re-send instead of waiting for the ~1×/s heartbeat.
+        int randomSeed = _world.RandomSeed.Current;
 
-        string key = $"{gameStart:F2}|{timeLimitSec:F1}|{(warmup ? 1 : 0)}|{warmupLimit:F1}|{(intermission ? 1 : 0)}";
+        string key = $"{gameStart:F2}|{timeLimitSec:F1}|{(warmup ? 1 : 0)}|{warmupLimit:F1}|{(intermission ? 1 : 0)}|{nextMap}|{overtimes}|{randomSeed}";
         if (key == _lastMatchStateKey && _world.Time < _nextMatchStateSend)
             return;
         _lastMatchStateKey = key;
@@ -901,10 +991,196 @@ public sealed class ServerNet : IDisposable
         _scratchWriter.WriteBool(warmup);
         _scratchWriter.WriteFloat(warmupLimit);
         _scratchWriter.WriteBool(intermission);
+        _scratchWriter.WriteString(nextMap);
+        _scratchWriter.WriteLong(overtimes); // 32-bit: OVERTIME_SUDDENDEATH (1<<24) exceeds the 24-bit range
+        // [W14a] QC randomseed.cnt (0..65535) — APPENDED at the END (an old client stops reading before this and is
+        // unaffected; ClientNet.HandleMatchState reads it in this same trailing position). Reserve a comment for any
+        // future trailing match-state field: it MUST go AFTER this and be read in the same order.
+        _scratchWriter.WriteUShort(randomSeed);
 
         foreach (PeerState st in _peers.Values)   // real network peers (matches BroadcastSnapshots; excludes bots)
             if (st.Accepted && st.Player is not null)
                 _transport.Send(st.PeerId, _scratchWriter.WrittenSpan, reliable: true);
+    }
+
+    private float _nextMapVoteSend;
+    private bool _lastMapVoteShowing;
+
+    /// <summary>QC the <c>mapvote</c> net entity (server/mapvoting.qc) sent to every client: push the live
+    /// end-of-match ballot so a pure remote client's <c>MapVotePanel</c> (QC client/mapvoting.qc MapVote_Draw)
+    /// lights up. Sent PER-PEER because the own-vote field (QC <c>mv_ownvote</c>) differs per client — the rest of
+    /// the ballot is identical, but stamping each peer's <see cref="MapVoting.SelectionOf"/> is cheap. Throttled to
+    /// ~2×/s while the vote runs (live counts), plus an immediate edge send on the running→idle transition so the
+    /// panel hides promptly. Field order mirrors <c>ClientNet.HandleMapVote</c>. Reliable channel.</summary>
+    private void SendMapVote()
+    {
+        MapVoting vote = _world.MapVote;
+        // QC mv_active: the panel draws while the vote runs or while the finished winner is being revealed.
+        bool showing = vote.Running || (vote.Finished && !string.IsNullOrEmpty(vote.WinningMap));
+        if (!showing)
+        {
+            // Edge: send one final "not showing" frame so a remote panel clears, then go quiet.
+            if (!_lastMapVoteShowing)
+                return;
+            _lastMapVoteShowing = false;
+        }
+        else
+        {
+            // Throttle live updates to ~2×/s except on the first showing frame (push the ballot identity at once).
+            if (_lastMapVoteShowing && _world.Time < _nextMapVoteSend)
+                return;
+            _lastMapVoteShowing = true;
+            _nextMapVoteSend = _world.Time + 0.5f;
+        }
+
+        IReadOnlyList<MapVoteCandidate> cands = vote.Candidates;
+        // QC mv_timeout: send SECONDS-REMAINING (not absolute server time) so the client converts it against its own
+        // sim clock — the listen/remote clocks differ, and the panel counts down vs Api.Clock.Time.
+        float remaining = vote.Timeout > 0f ? System.Math.Max(0f, vote.Timeout - _world.Time) : -1f;
+        // QC mv_winner (1-based, 0 = not yet): the ballot index of the chosen map among the non-abstain options.
+        int winner1Based = 0;
+        if (vote.Finished && !string.IsNullOrEmpty(vote.WinningMap))
+        {
+            int slot = 0;
+            foreach (MapVoteCandidate c in cands)
+            {
+                if (c.IsAbstain) continue;
+                slot++;
+                if (string.Equals(c.MapName, vote.WinningMap, System.StringComparison.OrdinalIgnoreCase)) { winner1Based = slot; break; }
+            }
+        }
+
+        foreach (PeerState st in _peers.Values)   // real network peers (matches SendMatchState; excludes bots)
+        {
+            if (!st.Accepted || st.Player is null)
+                continue;
+
+            _scratchWriter.Reset();
+            _scratchWriter.WriteByte((byte)NetControl.MapVote);
+            _scratchWriter.WriteBool(showing);
+            _scratchWriter.WriteBool(vote.Finished);
+            _scratchWriter.WriteBool(vote.IsGametypeVote);
+            _scratchWriter.WriteBool(_world.Services.Cvars.GetFloat("sv_vote_gametype_detail") != 0f); // QC mv_detail
+            _scratchWriter.WriteFloat(remaining);
+            _scratchWriter.WriteShort(winner1Based);
+            // QC mv_ownvote: this peer's own selection (-1 = none / abstain), so the panel highlights the right cell.
+            int own = vote.SelectionOf(st.Player);
+            bool ownAbstain = own >= 0 && own < cands.Count && cands[own].IsAbstain;
+            _scratchWriter.WriteShort(ownAbstain ? -1 : own);
+            // QC mv_abstain: the appended "Don't care" slot is present on the ballot.
+            bool abstain = false;
+            foreach (MapVoteCandidate c in cands) if (c.IsAbstain) { abstain = true; break; }
+            _scratchWriter.WriteBool(abstain);
+            // Candidate list (excluding the abstain slot — the client renders it from the abstain flag). The
+            // client computes the pic/pretty-name/description from the name itself (GameTypes registry / map pic),
+            // exactly like the listen-server feed in NetGame.UpdateMapVotePanel, so only the raw fields ride here.
+            int n = 0;
+            foreach (MapVoteCandidate c in cands) if (!c.IsAbstain) n++;
+            _scratchWriter.WriteByte((byte)n);
+            foreach (MapVoteCandidate c in cands)
+            {
+                if (c.IsAbstain) continue;
+                _scratchWriter.WriteString(c.MapName);
+                _scratchWriter.WriteShort(c.Available ? c.Votes : -1); // QC mv_votes: -1 = unavailable/hidden
+                _scratchWriter.WriteBool(c.Available);
+                _scratchWriter.WriteString(c.Suggester ?? "");
+            }
+
+            _transport.Send(st.PeerId, _scratchWriter.WrittenSpan, reliable: true);
+        }
+    }
+
+    /// <summary>
+    /// [W14a-QW4] QC <c>ClientInit_misc</c> (server/client.qc:907) — the one-shot per-server gameplay-constant bundle
+    /// sent once to a joining client right after <see cref="NetControl.HandshakeAccept"/> (the welcome/accept
+    /// handshake leg). Carries the constants a pure remote client needs at session init: the hook muzzle shot origin,
+    /// <c>g_trueaim_minrange</c>, <c>g_balance_damagepush_speedfactor</c>, <c>g_balance_armor_blockpercent</c>, the
+    /// networked <c>serverflags</c>, the map fog string, and <c>g_nexball_meter_period</c>. Field order mirrors
+    /// <see cref="ClientNet.HandleClientInit"/>.
+    ///
+    /// Port divergence vs Base: QC sends FOUR hook + four arc shot origins (one per cl_gunalign side) compressed via
+    /// compressShotOrigin; the port models the hook muzzle as a single offset (<c>Hook.HookShotOrigin</c>) and computes
+    /// the arc muzzle inline (no stored arc_shotorigin), so only the single hook origin is networked here as a raw
+    /// vector. The per-align arc array is RESERVED for a later wave if/when the port models it server-side.
+    /// </summary>
+    private void SendClientInit(int peerId)
+    {
+        var cvars = _world.Services.Cvars;
+        _scratchWriter.Reset();
+        _scratchWriter.WriteByte((byte)NetControl.ClientInit);
+        // QC hook_shotorigin[s] (a single port offset; see the divergence note above) — raw float vector.
+        _scratchWriter.WriteVector(XonoticGodot.Common.Gameplay.Hook.HookShotOrigin, NetPrecision.Float);
+        // QC autocvar_g_trueaim_minrange (WriteCoord) — the min range below which true-aim is skipped.
+        _scratchWriter.WriteFloat(cvars.GetFloat("g_trueaim_minrange"));
+        // QC this.cnt * 255 → g_balance_damagepush_speedfactor; this.count * 255 → g_balance_armor_blockpercent. The
+        // port sends them as raw floats (no /255 byte quantization) — a faithful value with more precision than Base.
+        _scratchWriter.WriteFloat(cvars.GetFloat("g_balance_damagepush_speedfactor"));
+        _scratchWriter.WriteFloat(cvars.GetFloat("g_balance_armor_blockpercent"));
+        // QC serverflags (the networked SERVERFLAG_* bitmap — fullbright/forbid-pickuptimer/teamplay).
+        _scratchWriter.WriteLong(XonoticGodot.Common.Gameplay.ServerFlags.Value);
+        // QC: if (autocvar_sv_foginterval && world.fog != "") WriteString(world.fog) else WriteString("").
+        string fog = cvars.GetFloat("sv_foginterval") != 0f ? cvars.GetString("sv_fog") : "";
+        _scratchWriter.WriteString(fog ?? "");
+        // QC g_nexball_meter_period (the nexball powershot meter cycle period).
+        _scratchWriter.WriteFloat(cvars.GetFloat("g_nexball_meter_period"));
+        _transport.Send(peerId, _scratchWriter.WrittenSpan, reliable: true);
+    }
+
+    /// <summary>Push the item respawn-time table to each peer — the C# port of QC's CSQC <c>itemstime</c> net
+    /// message + <c>Item_ItemsTime_SetTimesForPlayer</c> / <c>SetTimesForAllPlayers</c> (itemstime.qc). The table
+    /// is the <see cref="XonoticGodot.Common.Gameplay.ItemstimeMutator"/>'s <c>CurrentTimes</c> (absolute respawn
+    /// times with the negative "another copy available now" encoding) plus the live <c>STAT(ITEMSTIME)</c> tier
+    /// (= <c>sv_itemstime</c>). QC's <c>SetTimesForAllPlayers</c> only sends to a peer when
+    /// <c>warmup_stage || !IS_PLAYER(it) || sv_itemstime == 2</c> — i.e. only spectators get times in a live
+    /// non-warmup round unless <c>sv_itemstime==2</c>; a live player whose send-gate is closed gets the RESET
+    /// table (Item_ItemsTime_ResetTimesForPlayer: -1 for absent item types, else 0) so its panel hides the
+    /// countdowns. Reliable + small; resent to a peer only when ITS view changes (the table, the tier, or its
+    /// own send-gate flipping on join/observe/spawn — covers QC's ClientConnect / MakePlayerObserver / PlayerSpawn
+    /// hooks). The client decode mirrors this field order (<see cref="ClientNet.HandleItemsTime"/>).</summary>
+    private void SendItemsTime()
+    {
+        if (XonoticGodot.Common.Gameplay.Mutators.ByName("itemstime")
+            is not XonoticGodot.Common.Gameplay.ItemstimeMutator itm || !itm.IsEnabled)
+            return;
+
+        int tier = itm.Tier; // QC STAT(ITEMSTIME) = autocvar_sv_itemstime (0/1/2)
+        bool warmup = _world.Warmup.WarmupStage;
+        System.Collections.Generic.IReadOnlyDictionary<string, float> times = itm.CurrentTimes;
+
+        // Fold the (peer-independent) table once; the per-peer dedup key is just tier|sendFull prepended.
+        _itemsTimeSb.Clear();
+        foreach (System.Collections.Generic.KeyValuePair<string, float> kv in times)
+            _itemsTimeSb.Append(kv.Key).Append('=').Append(kv.Value.ToString("F2")).Append(';');
+        string tableFold = _itemsTimeSb.ToString();
+
+        foreach (PeerState st in _peers.Values)
+        {
+            if (!st.Accepted || st.Player is null)
+                continue;
+            // QC IS_PLAYER(it): a live in-game client gets the table only in warmup or sv_itemstime==2; a
+            // spectator/observer always gets it (Item_ItemsTime_SetTimesForAllPlayers send gate).
+            bool sendFull = warmup || st.Player.IsObserver || tier == 2;
+
+            // Per-peer dedup: resend the reliable message only when this peer's resolved view changed (the table,
+            // the tier, or its own send-gate flipping on join/observe/spawn).
+            string key = $"{tier}|{(sendFull ? 1 : 0)}|{tableFold}";
+            if (key == st.ItemsTimeKey)
+                continue;
+            st.ItemsTimeKey = key;
+
+            _scratchWriter.Reset();
+            _scratchWriter.WriteByte((byte)NetControl.ItemsTime);
+            _scratchWriter.WriteByte((byte)tier);
+            _scratchWriter.WriteByte((byte)System.Math.Min(times.Count, 255));
+            foreach (System.Collections.Generic.KeyValuePair<string, float> kv in times)
+            {
+                _scratchWriter.WriteString(kv.Key);
+                // QC SetTimesForPlayer sends the real time; a gated-out live player gets the reset value. The
+                // port's table only ever holds present items, so the reset value is the panel's "hide" sentinel -1.
+                _scratchWriter.WriteFloat(sendFull ? kv.Value : -1f);
+            }
+            _transport.Send(st.PeerId, _scratchWriter.WrittenSpan, reliable: true);
+        }
     }
 
     private readonly System.Collections.Generic.List<XonoticGodot.Common.Gameplay.Waypoints.WaypointSprite> _wpScratch = new();
@@ -951,8 +1227,17 @@ public sealed class ServerNet : IDisposable
                 _scratchWriter.WriteFloat(o.Y);
                 _scratchWriter.WriteFloat(o.Z);
                 _scratchWriter.WriteByte((byte)(wp.Team & 0xFF));
-                _scratchWriter.WriteString(wp.SpriteName);
-                _scratchWriter.WriteByte((byte)(wp.RadarIcon & 0xFF));
+                // QC Draw_WaypointSprite SPRITERULE_TEAMPLAY (waypointsprites.qc:514): a teamplay waypoint shows a
+                // DIFFERENT image to own-team / enemy / spectator (model2 / model1 / model3). The port resolves it
+                // here, per peer, instead of networking the triple. Non-teamplay rules return SpriteName unchanged.
+                string spriteFor = wp.SpriteFor((int)peer.Team, peer.IsObserver);
+                _scratchWriter.WriteString(spriteFor);
+                // QC packs the radar-icon byte: low 7 bits = m_radaricon (0/1), bit 7 = "ping now" (cnt|BIT(7)),
+                // which the client turns into an expanding gfx/teamradar_ping ring. waypointsprites.qc:187-192.
+                int radarByte = (wp.RadarIcon & 0x7F);
+                if (XonoticGodot.Common.Gameplay.Waypoints.WaypointSprites.IsPinging(wp))
+                    radarByte |= 0x80;
+                _scratchWriter.WriteByte((byte)radarByte);
                 _scratchWriter.WriteByte(Clamp255(wp.Color.X));
                 _scratchWriter.WriteByte(Clamp255(wp.Color.Y));
                 _scratchWriter.WriteByte(Clamp255(wp.Color.Z));
@@ -966,18 +1251,100 @@ public sealed class ServerNet : IDisposable
         }
     }
 
+    private readonly System.Collections.Generic.List<XonoticGodot.Common.Gameplay.Onslaught.RadarLinkSegment> _radarLinkScratch = new();
+    private bool _radarLinksWasNonEmpty;
+
+    /// <summary>Push the live Onslaught radar links (QC the networked ENT_CLIENT_RADARLINK entities) to every
+    /// accepted peer so the team radar can draw the control-point/generator connection lines (QC
+    /// draw_teamradar_link). Only Onslaught produces links; other modes never send (and send one clearing message
+    /// when a mode that HAD links drops to none, mirroring SendWaypoints). The set is identical for every peer
+    /// (links are not team-filtered — QC draws all of them), so it is encoded once and broadcast. Unreliable
+    /// (positions/ownership change as points are captured).</summary>
+    private void SendRadarLinks()
+    {
+        _radarLinkScratch.Clear();
+        if (_world.GameType is XonoticGodot.Common.Gameplay.Onslaught ons)
+            ons.CollectRadarLinks(_radarLinkScratch);
+
+        if (_radarLinkScratch.Count == 0 && !_radarLinksWasNonEmpty)
+            return; // link-less mode: never spam empty messages
+        _radarLinksWasNonEmpty = _radarLinkScratch.Count > 0;
+
+        int count = System.Math.Min(_radarLinkScratch.Count, 255);
+        _scratchWriter.Reset();
+        _scratchWriter.WriteByte((byte)NetControl.RadarLinks);
+        _scratchWriter.WriteByte((byte)count);
+        for (int i = 0; i < count; i++)
+        {
+            XonoticGodot.Common.Gameplay.Onslaught.RadarLinkSegment seg = _radarLinkScratch[i];
+            _scratchWriter.WriteFloat(seg.A.X);
+            _scratchWriter.WriteFloat(seg.A.Y);
+            _scratchWriter.WriteByte((byte)(seg.TeamA & 0xFF));
+            _scratchWriter.WriteFloat(seg.B.X);
+            _scratchWriter.WriteFloat(seg.B.Y);
+            _scratchWriter.WriteByte((byte)(seg.TeamB & 0xFF));
+        }
+
+        foreach (PeerState st in _peers.Values)
+            if (st.Accepted && st.Player is not null)
+                _transport.Send(st.PeerId, _scratchWriter.WrittenSpan, reliable: false);
+    }
+
     private static byte Clamp255(float c) => (byte)System.Math.Clamp((int)(c * 255f), 0, 255);
 
-    /// <summary>QC WaypointSprite_visible_for_player: a waypoint's team/rule/predicate gate for one viewer.</summary>
-    private static bool WaypointVisible(XonoticGodot.Common.Gameplay.Waypoints.WaypointSprite wp, Player peer)
+    /// <summary>QC WaypointSprite_visible_for_player (waypointsprites.qc:982): a waypoint's team/rule/predicate
+    /// gate for one viewer. Mirrors the QC control flow: personal-waypoint predicate first, then the SPECTATOR
+    /// (sv_itemstime-gated) and the team-restricted DEFAULT branches.</summary>
+    private bool WaypointVisible(XonoticGodot.Common.Gameplay.Waypoints.WaypointSprite wp, Player peer)
     {
+        // QC: personal waypoints (enemy set) — visible only to that one viewer.
         if (wp.VisibleForPlayer is not null) return wp.VisibleForPlayer(peer);
-        return wp.Rule switch
+
+        // QC IS_PLAYER(view): an in-game client (not an observer/spectator).
+        bool isPlayer = !peer.IsObserver;
+
+        // MUTATOR_HOOKFUNCTION(powerups, CustomizeWaypoint) (sv_powerups.qc:61): a flag/objective carrier holding
+        // the Invisibility powerup is hidden from ENEMY radar — their waypoint sprite is restricted to their own
+        // team. QC: IS_CLIENT(wp.owner) && (viewentity == viewer) && DIFF_TEAM(wp.owner, viewer)
+        //          && StatusEffects_active(STATUSEFFECT_Invisibility, wp.owner). Only applies to real players
+        // (a spectator is not "the view-entity", so they still see it — matches the QC e==player guard).
+        if (wp.Owner is XonoticGodot.Common.Gameplay.Player carrier && isPlayer
+            && (int)carrier.Team != (int)peer.Team
+            && XonoticGodot.Common.Gameplay.StatusEffectsCatalog.ByName("invisibility") is { } invisDef
+            && XonoticGodot.Common.Gameplay.StatusEffectsCatalog.Has(carrier, invisDef))
         {
-            XonoticGodot.Common.Gameplay.Waypoints.SpriteRule.Teamplay => wp.Team == 0 || wp.Team == (int)peer.Team,
-            XonoticGodot.Common.Gameplay.Waypoints.SpriteRule.Spectator => peer.IsObserver,
-            _ => true, // SPRITERULE_DEFAULT: visible to everyone
-        };
+            return false;
+        }
+
+        switch (wp.Rule)
+        {
+            case XonoticGodot.Common.Gameplay.Waypoints.SpriteRule.Spectator:
+            {
+                // QC: hidden entirely when sv_itemstime == 0; for live players hidden unless warmup or sv_itemstime == 2.
+                float itemstime = _world.Services.Cvars.GetFloat("sv_itemstime");
+                if (itemstime == 0f)
+                    return false;
+                if (!_world.Warmup.WarmupStage && isPlayer && itemstime != 2f)
+                    return false;
+                return true;
+            }
+            case XonoticGodot.Common.Gameplay.Waypoints.SpriteRule.Teamplay:
+                // QC Draw_WaypointSprite SPRITERULE_TEAMPLAY (waypointsprites.qc:514) is visible to EVERYONE — it
+                // never hides on team; it only swaps the IMAGE (own/enemy/spectator, resolved in SendWaypoints via
+                // SpriteFor). The only "hide" is when the chosen image is "" (QC: if(spriteimage=="") return). So
+                // skip this viewer only when SpriteFor yields an empty image (e.g. a producer left model2 unset).
+                return !string.IsNullOrEmpty(wp.SpriteFor((int)peer.Team, !isPlayer));
+            default: // SPRITERULE_DEFAULT
+                // QC: a team-set Default waypoint is visible only to the same team AND only to live players.
+                if (wp.Team != 0)
+                {
+                    if (wp.Team != (int)peer.Team)
+                        return false;
+                    if (!isPlayer)
+                        return false;
+                }
+                return true;
+        }
     }
 
     /// <summary>
@@ -1067,6 +1434,12 @@ public sealed class ServerNet : IDisposable
         _scratchWriter.WriteFloat(1f / SimulationLoopTicRate);     // server tick RATE in Hz (1/dt) for client timing
         _scratchWriter.WriteString(_serverName);                   // server display name (for the client UI)
         _transport.Send(peerId, _scratchWriter.WrittenSpan, reliable: true);
+
+        // [W14a-QW4] QC ClientInit_misc (server/client.qc:907): right after the accept, send the one-shot per-server
+        // gameplay-constant bundle (the welcome/accept handshake leg) so a pure remote client has the constants the
+        // hook/arc/trueaim/damagepush/armor/fog paths read.
+        SendClientInit(peerId);
+
         GD.Print($"[ServerNet] peer {peerId} accepted as '{info.Player.NetName}' (netId {peerId}, id {st.IdentityFingerprint[..8]}).");
     }
 
@@ -1254,7 +1627,7 @@ public sealed class ServerNet : IDisposable
         // re-boarding. Routed to the server-authoritative VehicleBoarding.UseKey (Common-side, headless).
         bool useDown = resolved.ButtonUse;
         if (useDown && !st.UsePrevDown)
-            VehicleBoarding.UseKey(p);
+            UseKeyEdge(p);
         st.UsePrevDown = useDown;
 
         st.TickInput = resolved;
@@ -1360,12 +1733,26 @@ public sealed class ServerNet : IDisposable
         // +use rising edge from the merged state (once per tick, like the legacy path).
         bool useDown = merged.ButtonUse;
         if (useDown && !st.UsePrevDown)
-            VehicleBoarding.UseKey(p);
+            UseKeyEdge(p);
         st.UsePrevDown = useDown;
 
         st.TickInput = merged;
         st.TickInputTime = now;
         return merged;
+    }
+
+    /// <summary>
+    /// The +use rising-edge dispatcher (QC PlayerUseKey, client.qc): the engine fires PlayerUseKey once per press
+    /// and every interested mutator/gametype hooks it. We run the vehicle board/exit hook first (matching the
+    /// shipped order), then — if no vehicle consumed the key — the active gametype's +use hook. CTF's hook
+    /// (Ctf.HandleUseKey) throws the carried flag (g_ctf_throw) or requests a pass from the nearest carrier
+    /// (g_ctf_pass_request); the roster is the live player list it scans to find a carrier to request from.
+    /// </summary>
+    private void UseKeyEdge(Player p)
+    {
+        VehicleBoarding.UseKey(p);
+        if (_world.GameType is Ctf ctf)
+            ctf.HandleUseKey(p, _world.Clients.Players);
     }
 
     /// <summary>
@@ -1410,6 +1797,18 @@ public sealed class ServerNet : IDisposable
             ButtonAttack1 = (b & InputButtons.Attack) != 0,
             ButtonAttack2 = (b & InputButtons.Attack2) != 0,
             ButtonUse = (b & InputButtons.Use) != 0,
+            // PHYS_INPUT_BUTTON_HOOK — the +hook / offhand-fire button, driving the offhand-weapon think
+            // (grapple hook, offhand blaster, nade prime/throw) in WeaponFireDriver.Frame.
+            ButtonHook = (b & InputButtons.Hook) != 0,
+            // PHYS_INPUT_BUTTON_ZOOM — the +zoom bind. The rifle reads it (via the slot's ButtonZoom mirror)
+            // to re-aim a scoped shot straight from the eye (rifle.qc:16-20). The wire bit is already sent by
+            // the client (NetGame.cs InputButtons.Zoom); this is the missing server-side decode.
+            ButtonZoom = (b & InputButtons.Zoom) != 0,
+            // PHYS_INPUT_BUTTON_CHAT — the client is typing (chat prompt / console open). The client sends this
+            // bit even while it has otherwise gone input-inactive (movement zeroed), so the typing flag actually
+            // reaches the server. PlayerPhysics writes it onto player.ButtonChat, which the camp-check typecheck
+            // gate, the type-frag classifier, spawn-near-teammate and monster-typefrag all consult.
+            Typing = (b & InputButtons.Chat) != 0,
             // Carry the one-shot impulse (QC CS(this).impulse) so the spectator free-flight speed ladder
             // (PlayerPhysics.SpectatorControl) sees it. For a live PLAYER the impulse was already dispatched as
             // a weapon command in ProvideInput; PlayerPhysics' spectator branch is gated on IsObserver, so this
@@ -1456,6 +1855,14 @@ public sealed class ServerNet : IDisposable
 
         // (§12.8) DP sv_cullentities_pvs: read once per broadcast — the per-recipient PVS filter is applied below.
         bool cullEntitiesPvs = _world.Services.Cvars.GetFloat("sv_cullentities_pvs") != 0f;
+
+        // ent_cs enemy-privacy mask (common/ent_cs.qc:_entcs_send ENTCS_PUBLICMASK gating). Read the two server-side
+        // globals the gate depends on ONCE per broadcast: `radar_showenemies` (a server global Race forces true and
+        // Nexball mirrors from g_nexball_radar_showallplayers — when set, every player's private fields go to
+        // everyone) and `teamplay` (SAME_TEAM is `teamplay ? a.team==b.team : a==b`). When neither holds, a live
+        // player's private ent_cs fields (origin/angles/health/armor) are stripped for enemy recipients below.
+        bool radarShowEnemies = _world.Services.Cvars.GetFloat("radar_showenemies") != 0f;
+        bool teamplay = _world.GameType?.TeamGame ?? false;
 
         foreach (PeerState st in _peers.Values)
         {
@@ -1523,7 +1930,7 @@ public sealed class ServerNet : IDisposable
             _snapshotWriter.WriteBool(sendScores);
             if (sendScores)
             {
-                XonoticGodot.Net.ScoreboardBlock.Serialize(_snapshotWriter, _scoreRows, _scoreTeams);
+                XonoticGodot.Net.ScoreboardBlock.Serialize(_snapshotWriter, _scoreRows, _scoreTeams, _scoreRankings, _scoreSpeedAward);
                 st.LastScoreVersion = _scoreVersion;
             }
 
@@ -1552,7 +1959,8 @@ public sealed class ServerNet : IDisposable
             // delta-compressed entity section (everyone but the recipient's own entity). DP-faithful per-client
             // PVS cull (sv_cullentities_pvs): out-of-PVS entities are dropped from THIS client's set and the
             // delta encoder removes them against its baseline (re-spawning them when they return into view).
-            IReadOnlyDictionary<int, NetEntityState> sendSet = RelevantEntitiesFor(owner, st.NetId, cullEntitiesPvs);
+            IReadOnlyDictionary<int, NetEntityState> sendSet =
+                RelevantEntitiesFor(st, owner, st.NetId, cullEntitiesPvs, radarShowEnemies, teamplay);
             st.SnapHistory.EncodeSnapshot(_snapshotWriter, sendSet, _snapshotSeq, excludeEntNum: st.NetId);
 
             // Snapshots are normally unreliable (latest-wins, loss-tolerant), but the FIRST frame to a client is a
@@ -1618,18 +2026,34 @@ public sealed class ServerNet : IDisposable
             bool teleported = _lastSnapOrigin.TryGetValue(p, out NVec3 prev)
                               && (p.Origin - prev).Length() > TeleportTickDistance;
 
+            // [sv-antilag.clear.on_spawn] Explicit antilag_clear request from the spawn/teleport/vehicle-board
+            // lifecycle (PutPlayerInServer sets Entity.AntilagNeedsClear, port of PutClientInServer's
+            // antilag_clear, client.qc:858). This catches a (re)spawn/teleport that lands WITHIN the
+            // TeleportTickDistance heuristic's threshold of the previous origin — which the jump test alone
+            // would miss, leaving stale history that could rewind a fresh player toward its corpse. One-shot.
+            bool explicitClear = p.AntilagNeedsClear;
+            p.AntilagNeedsClear = false;
+
             // record the position history for lag compensation (antilag_record(it, CS(it), altime)).
             if (!_antilag.TryGetValue(p, out AntilagBuffer? hist))
             {
                 hist = new AntilagBuffer();
                 _antilag[p] = hist;
             }
-            if (teleported)
+            if (teleported || explicitClear)
             {
                 hist.Clear();                 // antilag_clear: drop pre-teleport history before recording the new pos
                 _lastSnapOrigin.Remove(p);    // forget the pre-jump origin so the post-jump baseline is this frame's
             }
             hist.Store(altime, p.Origin);
+
+            // [W14b LI1/LI3] resolve + expire the upper-body animdecide action for the wire. QC's
+            // animdecide_getupperanim runs per frame on the CLIENT; the port decides server-side (the set-site is the
+            // weapon-fire commit) and networks the EXPIRY-RESOLVED action so the client renders a stable contract: an
+            // ACTIVE action while its window (start + numframes/framerate, e.g. SHOOT = 0.2s) hasn't elapsed, else
+            // None. AnimActionTime is the action's start time (the death_time-class raw-float client-observed divergence).
+            var (resolvedAction, _) = AnimDecideUnit.GetUpperAnim(
+                p.AnimUpperAction, p.AnimActionStart, now);
 
             var s = new NetEntityState
             {
@@ -1647,12 +2071,32 @@ public sealed class ServerNet : IDisposable
                 Velocity = p.Velocity,
                 Health = (int)p.Health,
                 Armor = (int)p.ArmorValue, // [T68] networked entcs armor → teammate shownames armor sub-bar
+                Alpha = QuantizeAlpha(p.Alpha), // [W1-alpha-net] Cloaked/RunningGuns/Invisibility player transparency
+                // Networked colormap is the player's TEAM only — never the Survival role. Survival's green-prey/
+                // red-hunter override is applied CLIENT-side (ClientWorld.ResolveForcedColormap, from the disclosed
+                // SurvivalHunterIds set) so it honors the per-recipient hunter-disclosure gate; stamping the role
+                // into this shared snapshot byte would leak hunter identity to prey mid-round (cl_survival.qc derives
+                // e.colormap from the disclosure-gated survival_status, not server-side).
                 Colormap = (int)p.Team,
-                Weapon = p.ActiveWeaponId, // renders the remote player's held weapon (QC wepent)
+                // QC wepent: the remote third-person held weapon model follows the EXTERIOR weapon entity's
+                // weaponname (CL_ExteriorWeaponentity_Think → w_ent.weaponname), which is the weapon slot's
+                // ACTIVE/RAISING weapon (m_weapon) — set only at the WS_CLEAR→WS_RAISE transition in the switch
+                // state machine, NOT the switch target. The port's p.ActiveWeaponId is the immediate switch
+                // mirror (Inventory.SwitchWeapon sets it at once), so during the drop window it would jump the
+                // remote's held model to the new weapon before the old one finished lowering. Network the slot-0
+                // CurrentWeaponId (the weapon actually held this tick, post-lower) so the remote model snaps to
+                // the new weapon at the same moment Base's exterior model does — the held weapon raise/lower
+                // transition is reproduced. Falls back to ActiveWeaponId before the slot is first driven (a fresh
+                // spawn / a non-weapon-sim entity whose CurrentWeaponId is still -1).
+                Weapon = HeldWeaponId(p),
                 Model = p.Model,           // QC .model (playermodel) — the client loads the skeletal IQM by name
                 Flags = (p.OnGround ? NetEntityFlags.OnGround : 0)
                       | (p.IsDead ? NetEntityFlags.Dead : 0)
-                      | (p.IsDucked ? NetEntityFlags.Crouched : 0), // QC FL_DUCKED → remote crouch anim/hull
+                      | (p.IsDucked ? NetEntityFlags.Crouched : 0) // QC FL_DUCKED → remote crouch anim/hull
+                        // QC common/physics/player.qc:878 — csqcmodel_modelflags |= MF_ROCKET when
+                        // (IT_USING_JETPACK && !IS_DEAD && !intermission). Networked so the client re-derives
+                        // MF_ROCKET (rocket trail + looping jetpack-fly sound) for this player.
+                      | (p.UsingJetpack && !p.IsDead && !_world.Intermission.Running ? NetEntityFlags.UsingJetpack : 0),
                 // [T41/T46] the Feedback stats the client diffs/draws (view.qc HitSound + objective rings):
                 //   - HitDamageDealtTotal: cumulative damage dealt — the client diffs it to fire the hit sound.
                 //   - NadeTimer: 0..1 held-nade charge — drives the nade objective ring.
@@ -1662,8 +2106,67 @@ public sealed class ServerNet : IDisposable
                 HitDamageDealtTotal = p.HitsoundDamageDealtTotal,
                 NadeTimer = p.NadeTimer,
                 ReviveProgress = p.ReviveProgress,
+                // [W-nadeclient] owner-only nade STATs, carried in the SAME EntityField.Feedback block (appended after
+                // the four ring floats in NetEntity.cs). NadeDarknessTime = QC STAT(NADE_DARKNESS_TIME) (absolute
+                // expiry — the client computes remaining = NadeDarknessTime - now to fade the darkness overlay);
+                // NadeBonus/NadeBonusType/NadeBonusScore = the banked-bonus count/type-id/progress driving the
+                // ammo-panel nade-bonus counter + bonus-progress bar. All 0 on a fresh/no-nade player → the Feedback
+                // bit stays clear; the privacy gate already strips this whole block for non-owner viewers (it's owner-
+                // only state, never networked to remotes — see the WepentView/owner-block precedent).
+                NadeDarknessTime = p.NadeDarknessTime,
+                NadeBonus = p.NadeBonus,
+                NadeBonusType = p.NadeBonusType,
+                NadeBonusScore = p.NadeBonusScore,
+                // [W14b LI1] the animdecide upper-body action overlay (SHOOT this wave) + its start time. The server
+                // latches the action at the weapon-fire commit (WeaponFireGate) and networks the expiry-resolved id
+                // (resolvedAction above): the client plays it as a torso overlay over the velocity-derived legs (LI3).
+                // None (idle) keeps the EntityField.AnimAction bit clear (Diff) so a not-shooting player costs nothing.
+                UpperAction = (byte)resolvedAction,
+                AnimActionTime = p.AnimActionStart,
+                // [W14a-wepent] the exterior-weapon block (QC common/wepent.qh) populated from the live slot-0 weapon
+                // state machine — the remote third-person held weapon's switch/transparency/skin.
+                SwitchWeapon = p.WeaponState(new WeaponSlot(0)).SwitchWeaponId,
+                SwitchingWeapon = p.WeaponState(new WeaponSlot(0)).SwitchingWeaponId,
+                // QC the slot's WS_* .state compressed to the render-relevant phase: WS_RAISE → 1, WS_DROP → 2, else 0.
+                WepPhase = p.WeaponState(new WeaponSlot(0)).State switch
+                {
+                    WeaponFireState.Raise => (byte)1,
+                    WeaponFireState.Drop => (byte)2,
+                    _ => (byte)0,
+                },
+                // QC the exterior weapon entity's .alpha — quantized exactly like the body alpha (0 = opaque, not
+                // networked; 255 = hidden). Running Guns hides the body (body Alpha = -1 hidden) but keeps the gun
+                // (DefaultWeaponAlpha = +1), and Cloaked fades both; the exterior-weapon alpha is the SetDefaultAlpha
+                // hook's DefaultWeaponAlpha, networked independently of the body Alpha above so the two can differ.
+                WepAlpha = (byte)QuantizeAlpha(XonoticGodot.Common.Gameplay.MutatorHooks.DefaultWeaponAlpha),
+                // [W-wepent-view] the per-player wepent HUD view-state — the spectatee/third-person counterpart of
+                // the owner-block OwnerWeaponRings; every client viewing this player gets its charge/clip/heat/beam.
+                // Resolved by the SAME WepentResolver the owner block uses (ResolveOwnerWeaponRings now delegates to
+                // it), so the owner's own rings and other players' views of this player stay in lockstep. An idle /
+                // no-charge player resolves to WepentViewState.None, which NetEntityState.Diff compares field-by-field
+                // against the baseline → the EntityField.WepentView bit stays clear and that player costs nothing here.
+                WepentView = XonoticGodot.Common.Gameplay.WepentResolver.Resolve(p, CountLiveMines, _world.Time),
+                // [W-vehicleview] the per-player vehicle HUD view-state — the seated-pilot health/shield/energy/ammo/
+                // reload bars, the vehicle hud id, weapon-2 mode, and lock strength/flags. Resolved off the
+                // authoritative player exactly like WepentView above; an on-foot / observing player resolves to
+                // VehicleViewState.None (VehKind 0), which NetEntityState.Diff compares field-by-field against the
+                // baseline → the EntityField.VehicleView bit stays clear and that player costs nothing here.
+                VehicleView = XonoticGodot.Common.Gameplay.VehicleViewResolver.Resolve(p),
+                // ViewmodelSkin / GunAlign have NO server-side producer in the port (the viewmodel skin variant and
+                // cl_gunalign side are client-local concepts; QC networks them off the wepent entity, which the port
+                // doesn't yet model server-side). Left at their defaults (0) — the wire is RESERVED for a later wave
+                // once a server-side exterior-weapon entity carries them; defaulting keeps them from desyncing.
             };
-            if (teleported)
+            // QC PutPlayerInServer sets effects |= EF_TELEPORT_BIT on every (re)spawn (client.qc:630), which tells
+            // the engine to CANCEL position interpolation for that update so the model snaps to its spawn spot
+            // instead of sliding across the map. The port carries that as NetEntityFlags.Teleported. The distance
+            // heuristic (`teleported`) catches the common far jump, but a respawn that lands WITHIN
+            // TeleportTickDistance of the death spot would still lerp — so also raise the flag on the explicit
+            // spawn/teleport/board signal (Entity.AntilagNeedsClear → `explicitClear`), the same one-shot
+            // PutPlayerInServer raises. This is the no-interp half of EF_TELEPORT_BIT, faithful regardless of jump
+            // distance (EF_RESTARTANIM_BIT — anim restart — is a no-op for the port's stateless procedural
+            // LocomotionBlend, which re-derives the pose every frame from live velocity/flags).
+            if (teleported || explicitClear)
                 s.Flags |= NetEntityFlags.Teleported;
             _lastSnapOrigin[p] = p.Origin;
 
@@ -1693,13 +2196,20 @@ public sealed class ServerNet : IDisposable
                 continue;
             if (!string.IsNullOrEmpty(e.Model) && e.Model.StartsWith('*'))
                 continue;                          // inline brush model — drawn by the map, not networked
+            if (e.PhysNetSuppressed)
+                continue;                          // QC setSendEntity(func_null): physical_items hid this item
+                                                   // behind its ghost — the real edict no longer networks
             NetEntityKind kind = Classify(e);
             if (kind == NetEntityKind.None)
                 continue;
             // Projectiles carry NO server-side .model (QC sets the model client-side via CSQCProjectile); the
             // client renders them procedurally (ProjectileRenderer + ProjectileCatalog). So a projectile networks
             // even with an empty model — only NON-projectiles are dropped for having nothing to draw.
-            if (kind != NetEntityKind.Projectile && e.ModelIndex <= 0 && string.IsNullOrEmpty(e.Model))
+            // [W-nadeclient] a NadeOrb (like a Projectile) carries NO server-side model — the client renders it
+            // procedurally from the NadeOrbState block (OrbType/OrbExpire/OrbRadius). So exempt it from the
+            // empty-model drop alongside Projectile; only OTHER kinds are dropped for having nothing to draw.
+            if (kind != NetEntityKind.Projectile && kind != NetEntityKind.NadeOrb
+                && e.ModelIndex <= 0 && string.IsNullOrEmpty(e.Model))
                 continue;                          // nothing to render
 
             // Give a model-less projectile a catalog key so the client picks the right type (rocket/grenade/
@@ -1707,7 +2217,22 @@ public sealed class ServerNet : IDisposable
             // model field. ProjectileRenderer ignores the model geometry, so this only feeds ProjectileCatalog.
             string netModel = e.Model;
             if (kind == NetEntityKind.Projectile && string.IsNullOrEmpty(netModel))
+            {
                 netModel = ProjectileCatalogKey(e.ClassName, e.NetName);
+                // QC CSQCProjectile sub-variant: a bouncing grenade (mortar type 1) networks its own model token so
+                // the client picks PROJECTILE_GRENADE_BOUNCING (sideways tumble) instead of PROJECTILE_GRENADE.
+                if (e.CsqcProjectileBouncing)
+                    netModel += " bouncing";
+                // [W-nadeclient] a thrown nade encodes its TYPE into the same catalog key so the client classifier
+                // picks the right CSQCProjectile model/trail (napalm/ice/heal/…) instead of the generic nade. The
+                // registry id 0 is the "random/null" sentinel (no specific type) — only append a concrete netname.
+                if (e.ClassName == "nade")
+                {
+                    var def = XonoticGodot.Common.Gameplay.Nades.NadeRegistry.ById(e.NadeBonusType);
+                    if (def is not null && def.Id != 0)
+                        netModel += " " + def.NetName;
+                }
+            }
 
             int netId = EntityNetBase + e.Index;
             if (netId > ushort.MaxValue)
@@ -1717,6 +2242,11 @@ public sealed class ServerNet : IDisposable
                 EntNum = netId,
                 Kind = kind,
                 ModelIndex = e.ModelIndex,
+                // [W14a-wepent] non-player entities carry no exterior-weapon block; default the switch ids to the
+                // -1 "none" sentinel so they MATCH the NetEntityState.Empty baseline and the EntityField.Wepent bit
+                // stays clear (a non-player entity costs nothing for the wepent group on the wire).
+                SwitchWeapon = -1,
+                SwitchingWeapon = -1,
                 Model = netModel,                  // QC .model (or, for a projectile, its catalog key) — resolved by name
                 Frame = (int)e.Frame,
                 Skin = (int)e.Skin,
@@ -1726,6 +2256,7 @@ public sealed class ServerNet : IDisposable
                 Effects = e.Effects,
                 Colormap = (int)e.Team,
                 Health = (int)e.Health,
+                Alpha = QuantizeAlpha(e.Alpha), // [W1-alpha-net] per-entity render transparency (e.g. Cloaked items)
                 Owner = (e.Owner is Player op && _byPlayer.TryGetValue(op, out PeerState? ops)) ? ops.PeerId : 0,
                 // QC ItemStatus bits (items.qc). ITS_EXPIRING: a loot item in its despawn-fx window — set the
                 // frame it flips so the client starts the despawn animation. ITS_ANIMATE1/2: the item's static
@@ -1739,6 +2270,47 @@ public sealed class ServerNet : IDisposable
                         | (e.ItemAnimate == 2 ? NetEntityFlags.ItemAnimate2 : NetEntityFlags.None)
                         | (kind == NetEntityKind.Item && !e.ItemAvailable ? NetEntityFlags.ItemGhost : NetEntityFlags.None),
             };
+
+            // [objstream] Fold the turret-head + objective-state extras into the SAME snapshot record (no second
+            // loop): both groups stay default on every non-turret/non-objective entity, so NetEntityState.Diff
+            // leaves EntityField.TurretHead / EntityField.ObjState clear and a normal item/projectile costs nothing
+            // for them. Read the struct back, set the extras, write it back (NetEntityState is a value type).
+            var s = _entityScratch[netId];
+            // TURRET head aim/active (QC cl_turrets tur_head.angles/.avelocity + .active/DEAD_DEAD): TryGetState is the
+            // non-allocating probe (State(e) would alloc for every non-turret entity each tick), so only a real turret
+            // populates the head block; everything else leaves it default.
+            if (XonoticGodot.Common.Gameplay.TurretAI.TryGetState(e, out var tst))
+            {
+                s.TurHeadPitch = tst.HeadAngles.X;
+                s.TurHeadYaw = tst.HeadAngles.Y;
+                s.TurHeadAVelYaw = tst.HeadAVelocity.Y;
+                byte tf = 0;
+                if (tst.Active) tf |= 1;             // bit0 = QC .active (awake / team-owned)
+                if (e.DeadState != DeadFlag.No) tf |= 2; // bit1 = QC DEAD_DEAD (destroyed pose)
+                s.TurFlags = tf;
+            }
+            // OBJECTIVE health fraction + build/own state (QC generator/CP-pad/icon STATUS hp/255 + build-bar): only
+            // an entity that carries objective health (GtObjMaxHealth > 0) sets these — a normal entity has 0 max and
+            // leaves the block default so the EntityField.ObjState bit stays clear.
+            if (e.GtObjMaxHealth > 0f)
+            {
+                float frac = e.GtObjHealth / e.GtObjMaxHealth;
+                s.ObjHealthByte = (byte)System.Math.Clamp((int)MathF.Round(frac * 255f), 0, 255);
+                s.ObjState = ResolveObjState(e);
+            }
+            // [W-nadeclient] the nade_orb STATE block (QC the orb's networked id/expiry/radius — carried under
+            // EntityField.NadeOrbState, present ONLY on a NadeOrb entity). OrbType = the Nades registry id (selects the
+            // orb model + flash color); OrbExpire = the absolute expiry the client derives the scale-up/fade phase from
+            // (QC .ltime, stored on e.NadeOrbExpire by the boom); OrbRadius = the hull half-width doubled into the full
+            // qu diameter that drives the in-orb color-flash containment test + 3D model scale. The Origin rides the
+            // normal Origin field. Default on every other kind so the NadeOrbState bit stays clear.
+            if (kind == NetEntityKind.NadeOrb)
+            {
+                s.OrbType = (byte)e.NadeBonusType;
+                s.OrbExpire = e.NadeOrbExpire;
+                s.OrbRadius = (int)(e.Maxs.X * 2f);
+            }
+            _entityScratch[netId] = s;
             _entityBounds[netId] = RelevanceBounds(e.Origin, e.Mins, e.Maxs);
         }
 
@@ -1766,32 +2338,164 @@ public sealed class ServerNet : IDisposable
     }
 
     /// <summary>
-    /// (§12.8) Build the per-recipient entity set fed to the delta encoder: DP's <c>SV_MarkWriteEntityStateToClient</c>
-    /// PVS cull (<c>sv_cullentities_pvs</c>). Returns <see cref="_entityScratch"/> unchanged when culling is off /
-    /// the map is unvised / the recipient is dead-or-spectating (no stable own-eye viewpoint) / the eye is in solid
-    /// — all conservative "send everything" fallbacks. Otherwise drops entities whose bounds aren't in the
-    /// recipient's PVS; the delta encoder turns those into removals against this client's baseline (and re-spawns
-    /// them when they return), so appear/disappear is handled by the existing per-client history.
+    /// [objstream] The objective entity's networked state byte (QC the cpicon build-bar vs generator healthbar
+    /// selector): 3 = destroyed (no health left); for a control-point build icon (classname
+    /// <c>onslaught_controlpoint_icon</c>) 1 = building / 2 = built; otherwise (a generator / Domination pad) 2 when
+    /// the objective is team-owned, else 0 = neutral/idle. Mirrors the client's decoded <c>Entity.ObjState</c>.
     /// </summary>
-    private IReadOnlyDictionary<int, NetEntityState> RelevantEntitiesFor(Player owner, int ownNetId, bool cullPvs)
+    private static byte ResolveObjState(Entity e)
     {
-        if (!cullPvs || _world.Pvs is not { HasVis: true } pvs || owner.IsDead || owner.IsObserver)
+        if (e.GtObjHealth <= 0f)
+            return 3; // destroyed
+        if (e.ClassName == "onslaught_controlpoint_icon")
+            return e.GtIconBuilt ? (byte)2 : (byte)1; // mid-build vs captured
+        return e.Team != 0f && e.Team != Teams.None ? (byte)2 : (byte)0; // owned vs neutral
+    }
+
+    /// <summary>
+    /// The weapon a player is ACTUALLY holding (raising/in-use) this tick — the QC <c>wepent</c> exterior weapon's
+    /// <c>m_weapon</c> (CL_ExteriorWeaponentity_Think reads <c>w_ent.weaponname</c>, which the switch state machine
+    /// sets to the new weapon only at the WS_CLEAR→WS_RAISE transition, server/weapons/weaponsystem.qc:547). The
+    /// port drives that in <see cref="XonoticGodot.Common.Gameplay.WeaponFireDriver"/> via slot-0
+    /// <c>CurrentWeaponId</c>, which (unlike the immediately-mirrored <see cref="Player.ActiveWeaponId"/>) still
+    /// holds the OLD weapon through the drop window — so the remote third-person held model lowers the old weapon
+    /// and only snaps to the new one when the raise begins, exactly like Base's exterior weapon entity. Falls back
+    /// to <see cref="Player.ActiveWeaponId"/> before the slot has been driven (CurrentWeaponId still -1 on a fresh
+    /// spawn) so a just-spawned player still shows its weapon immediately.
+    /// </summary>
+    private static int HeldWeaponId(Player p)
+    {
+        int held = p.WeaponState(new WeaponSlot(0)).CurrentWeaponId;
+        return held >= 0 ? held : p.ActiveWeaponId;
+    }
+
+    /// <summary>
+    /// (§12.8) Build the per-recipient entity set fed to the delta encoder. Two per-recipient filters compose here:
+    /// <list type="bullet">
+    /// <item>DP's <c>SV_MarkWriteEntityStateToClient</c> PVS cull (<c>sv_cullentities_pvs</c>): drop entities whose
+    /// bounds aren't in the recipient's PVS (the delta encoder turns those into removals against this client's
+    /// baseline and re-spawns them when they return). Disabled when culling is off / the map is unvised / the
+    /// recipient is dead-or-spectating / the eye is in solid — all conservative "send everything" fallbacks.</item>
+    /// <item>The ent_cs enemy-privacy mask (common/ent_cs.qc:_entcs_send, ENTCS_PUBLICMASK): for a live remote
+    /// PLAYER whose recipient is an enemy active player (not <paramref name="radarShowEnemies"/>, not SAME_TEAM),
+    /// strip the private ent_cs HEALTH/ARMOR resource slice so a modified client can't read every enemy's exact
+    /// hit-points. Stripped fields are zeroed on the wire (a constant, so the delta sends one zero on first sight
+    /// then nothing — equivalent to QC never including the bit in this recipient's SendFlags; the client's enemy
+    /// value stays the default 0, and the shownames status bar is team-gated client-side anyway).</item>
+    /// </list>
+    /// NB on ORIGIN/ANGLES: QC also marks those ent_cs props private, but in QC the VISIBLE player MODEL is a
+    /// SEPARATE csqcmodel channel that is sent (PVS-gated) regardless of the ent_cs mask — the mask only hides the
+    /// out-of-PVS radar GPS. The port folds the model + ent_cs into one state whose origin IS the render position,
+    /// and already PVS-culls the whole entity when out of view (the bullet above), so an enemy's origin is governed
+    /// by PVS exactly as QC's csqcmodel origin is. Freezing origin here would wrongly stall a VISIBLE enemy's model,
+    /// so only HEALTH/ARMOR (which have no csqcmodel counterpart and are otherwise leaked even for visible enemies)
+    /// are stripped. The residual out-of-PVS GPS degrade is its own tracked gap (csqcmodel.force_updates).
+    ///
+    /// Returns <see cref="_entityScratch"/> unchanged only when NEITHER filter applies (a fast no-op path).
+    /// </summary>
+    private IReadOnlyDictionary<int, NetEntityState> RelevantEntitiesFor(
+        PeerState st, Player owner, int ownNetId, bool cullPvs, bool radarShowEnemies, bool teamplay)
+    {
+        // ent_cs privacy applies only when the recipient is an enemy that could read another player's private
+        // fields: a live, active player (IS_PLAYER(to) || INGAME(to) → !IsObserver) in a game where enemies aren't
+        // globally revealed. A spectator/observer recipient gets everyone's private fields (QC: the
+        // `!(IS_PLAYER(to) || INGAME(to))` branch keeps them) — free spectating sees all.
+        bool applyPrivacy = !radarShowEnemies && !owner.IsObserver;
+
+        bool havePvsCull = cullPvs && _world.Pvs is { HasVis: true } && !owner.IsDead && !owner.IsObserver;
+
+        // Fast path: neither filter narrows the set → send the shared scratch as-is.
+        if (!havePvsCull && !applyPrivacy)
             return _entityScratch;
 
-        NVec3 eye = owner.Origin + owner.ViewOfs;
-        int viewerCluster = pvs.LeafCluster(pvs.FindLeaf(eye));
-        if (viewerCluster < 0)
-            return _entityScratch; // eye in solid / outside the tree → conservatively send all
+        int viewerCluster = -1;
+        XonoticGodot.Formats.Bsp.BspPvs? pvs = null;
+        if (havePvsCull)
+        {
+            pvs = _world.Pvs;
+            NVec3 eye = owner.Origin + owner.ViewOfs;
+            viewerCluster = pvs!.LeafCluster(pvs.FindLeaf(eye));
+            if (viewerCluster < 0)
+                havePvsCull = false; // eye in solid / outside the tree → conservatively send all (no PVS cull)
+        }
+
+        // [warpzone] Cluster UNION through visible portals: if the recipient can see a linked warpzone's window,
+        // everything at its EXIT is on-screen through the portal — Base networks csqc items with NO PVS gate
+        // (ItemSend) and DP's culling never blocks the warpzone view, so a per-client PVS cull that ignores
+        // portals makes far-side items/players/projectiles VANISH from the through-portal view (the live
+        // "can't see items through the warpzone" report). Zone windows are static; two FindLeaf calls per
+        // linked zone per recipient per snapshot are negligible.
+        _viewClustersScratch.Clear();
+        if (havePvsCull)
+        {
+            _viewClustersScratch.Add(viewerCluster);
+            IReadOnlyList<XonoticGodot.Common.Gameplay.Warpzone> zones = _world.Warpzones.Zones;
+            for (int zi = 0; zi < zones.Count; zi++)
+            {
+                XonoticGodot.Common.Gameplay.Warpzone wz = zones[zi];
+                if (!wz.Linked) continue;
+                NVec3 inP = wz.Transform.InOrigin + wz.Transform.InForward * 8f;
+                int inC = pvs!.LeafCluster(pvs.FindLeaf(inP));
+                if (inC < 0 || !pvs.ClustersVisible(viewerCluster, inC)) continue;
+                NVec3 outP = wz.Transform.OutOrigin + wz.Transform.OutForward * 8f;
+                int outC = pvs.LeafCluster(pvs.FindLeaf(outP));
+                if (outC >= 0 && !_viewClustersScratch.Contains(outC)) _viewClustersScratch.Add(outC);
+            }
+        }
+
+        // Privacy still applies even with PVS culling off, so if neither now narrows the set, take the fast path.
+        if (!havePvsCull && !applyPrivacy)
+            return _entityScratch;
+
+        int ownerTeam = (int)owner.Team;
 
         _relevantScratch.Clear();
         foreach (KeyValuePair<int, NetEntityState> kv in _entityScratch)
         {
-            // Never cull the recipient's own entity (EncodeSnapshot excludes it anyway), and keep anything whose
-            // bounds touch a cluster the recipient can see.
-            if (kv.Key == ownNetId
-                || !_entityBounds.TryGetValue(kv.Key, out (NVec3 Min, NVec3 Max) b)
-                || pvs.BoxAnyClusterVisibleFrom(viewerCluster, b.Min, b.Max))
-                _relevantScratch[kv.Key] = kv.Value;
+            bool isOwn = kv.Key == ownNetId;
+
+            // PVS cull: never cull the recipient's own entity (EncodeSnapshot excludes it anyway); keep anything
+            // whose bounds touch a cluster the recipient can see — DIRECTLY or THROUGH a visible portal (the
+            // warpzone cluster union above).
+            if (havePvsCull && !isOwn
+                && _entityBounds.TryGetValue(kv.Key, out (NVec3 Min, NVec3 Max) b))
+            {
+                bool anyVisible = false;
+                for (int vc = 0; vc < _viewClustersScratch.Count && !anyVisible; vc++)
+                    anyVisible = pvs!.BoxAnyClusterVisibleFrom(_viewClustersScratch[vc], b.Min, b.Max);
+                if (!anyVisible)
+                    continue; // out of PVS (incl. through portals) → drop (delta turns it into a removal)
+            }
+
+            NetEntityState state = kv.Value;
+
+            // ent_cs enemy-privacy mask: a live remote PLAYER (the entcs owner IS_PLAYER) whose recipient is an
+            // enemy → strip the private HEALTH/ARMOR slice. SAME_TEAM = teamplay ? sameTeamColor : (to == player);
+            // a distinct player is never the same entity, so in a non-team game EVERY other player is an enemy (you
+            // never learn anyone else's HP — FFA). Own entity is excluded from the snapshot anyway, so it's unmasked.
+            if (applyPrivacy && !isOwn && state.Kind == NetEntityKind.Player)
+            {
+                bool sameTeam = teamplay && ownerTeam != 0 && state.Colormap == ownerTeam;
+                if (!sameTeam)
+                {
+                    // Zero the private resource fields (constant → one zero on first sight, then the delta is silent;
+                    // matches QC ANDing HEALTH/ARMOR out of this recipient's SendFlags so its value stays default 0).
+                    state.Health = 0;
+                    state.Armor = 0;
+                }
+            }
+
+            // [W-vehicleview] the cockpit block is owner-private: the host path reads only LocalServerPlayer.VehicleView,
+            // so a remote client must see its OWN seated HUD and never another pilot's bars. Reset every non-own player's
+            // VehicleView to None so EntityField.VehicleView stays clear for remotes (independent of the enemy-privacy
+            // gate above, which only fires for enemy recipients — vehicle state is private from teammates too).
+            if (applyPrivacy && !isOwn && state.Kind == NetEntityKind.Player
+                && !state.VehicleView.Equals(XonoticGodot.Net.VehicleViewState.None))
+            {
+                state.VehicleView = XonoticGodot.Net.VehicleViewState.None;
+            }
+
+            _relevantScratch[kv.Key] = state;
         }
         return _relevantScratch;
     }
@@ -1831,11 +2535,16 @@ public sealed class ServerNet : IDisposable
                 hist = new AntilagBuffer();
                 _antilagEntities[e] = hist;
             }
-            // A monster/nade that teleported or (re)spawned in place gets its ring wiped first, mirroring the
-            // player-side antilag_clear, so a shot can't rewind it to a pre-jump position. altime is strictly
+            // A monster/nade/vehicle that teleported or (re)spawned in place gets its ring wiped first, mirroring
+            // the player-side antilag_clear, so a shot can't rewind it to a pre-jump position. altime is strictly
             // newer than every stored stamp, so SampleAt(altime) returns the head (last recorded) origin to
-            // diff against without a new API.
-            if (hist.HasData && (e.Origin - hist.SampleAt(altime)).Length() > TeleportTickDistance)
+            // diff against without a new API. The explicit one-shot AntilagNeedsClear flag is the QC
+            // antilag_clear lifecycle (vehicle enter/exit sets it on the body, sv_vehicles.qc) — it catches a
+            // board/unboard that doesn't move the body far enough to trip the jump heuristic.
+            bool explicitClear = e.AntilagNeedsClear;
+            e.AntilagNeedsClear = false;
+            if (explicitClear
+                || (hist.HasData && (e.Origin - hist.SampleAt(altime)).Length() > TeleportTickDistance))
                 hist.Clear();
             hist.Store(altime, e.Origin);
         }
@@ -1855,9 +2564,25 @@ public sealed class ServerNet : IDisposable
     }
 
     /// <summary>Is this non-player entity one the antilag engine rewinds — a monster (FL_MONSTER, the same flag test
-    /// <c>Invasion</c> uses) or a thrown nade (<c>classname == "nade"</c>)? (antilag.qc antilag_takeback_all set.)</summary>
+    /// <c>Invasion</c> uses), a thrown nade (<c>classname == "nade"</c>), or a MANNED vehicle body
+    /// (antilag.qc antilag_takeback_all set)? Base records/rewinds a vehicle through the piloting player's
+    /// <c>antilag_record</c>/<c>antilag_takeback</c> recursion into <c>e.vehicle</c> (skipping a VHF_PLAYERSLOT
+    /// gunner slot). The port instead tracks the occupied vehicle directly as an antilag entity — equivalent,
+    /// since the vehicle keeps its own ring and is rewound when other players' shots take back. A vehicle is
+    /// "manned" while it has a piloting <see cref="Entity.Owner"/>; an unoccupied vehicle has no shooter to
+    /// compensate for and Base never records it (no player recurses into it), so it drops out of the set.</summary>
     private static bool IsAntilagged(Entity e)
-        => (e.Flags & EntFlags.Monster) != 0 || e.ClassName == "nade";
+        => (e.Flags & EntFlags.Monster) != 0
+           || e.ClassName == "nade"
+           || IsMannedVehicle(e);
+
+    /// <summary>A non-PLAYERSLOT vehicle body with a piloting owner — the entity Base's <c>antilag_record</c>
+    /// recurses into via the player's <c>.vehicle</c> link (the <c>vehicle_flags != VHF_PLAYERSLOT</c> guard
+    /// skips a multislot gunner SLOT, whose movement is its parent vehicle's, not its own).</summary>
+    private static bool IsMannedVehicle(Entity e)
+        => (e.VehicleFlags & VehicleFlags.IsVehicle) != 0
+           && (e.VehicleFlags & VehicleFlags.PlayerSlot) == 0
+           && e.Owner is Player;
 
     /// <summary>
     /// Snapshot the score table for this tick (QC PlayerScore_SendEntity / TeamScore_SendEntity). Mirrors the
@@ -1888,20 +2613,101 @@ public sealed class ServerNet : IDisposable
         for (int i = 0; i < players.Count; i++)
         {
             Player p = players[i];
+            // QC ping_packetloss (server/world.qc:74): a connected human's measured ENet packet loss, quantized
+            // to a 0..255 byte (min(ceil(loss*255),255)); bots and unmapped players send 0.
+            int plByte = 0;
+            // QC SP_PING (scoreboard.qc:1041): a connected human's measured ENet round-trip time (ms); bots and
+            // unmapped players send -1 (unknown → the client renders the neutral '-' rather than a fake number).
+            int pingMs = -1;
+            if (_byPlayer.TryGetValue(p, out PeerState? plSt))
+            {
+                plByte = System.Math.Min((int)System.MathF.Ceiling(_transport.PacketLoss(plSt.PeerId) * 255f), 255);
+                pingMs = _transport.RoundTripMs(plSt.PeerId);
+            }
             // carry the entcs name/team slice so the client can label/group the row without an entcs stream
             // (the port has no entcs name source; the scoreboard would otherwise have an opaque net id).
             _scoreRows.Add(new XonoticGodot.Net.ScoreRowWire(NetIdFor(p),
-                XonoticGodot.Common.Gameplay.Scoring.GameScores.CaptureColumns(p), p.NetName, (int)p.Team));
+                XonoticGodot.Common.Gameplay.Scoring.GameScores.CaptureColumns(p), p.NetName, (int)p.Team,
+                // QC pl.team == NUM_SPECTATOR: an observer is listed in the scoreboard spectator block, not the
+                // score table. The port keeps the observer's last team color, so flag it explicitly here.
+                isSpectator: p.IsObserver || p.FragsStatus == Player.FragsSpectator,
+                packetLossByte: plByte,
+                pingMs: pingMs)); // QC SP_PING: the human's ENet RTT (-1 for bots / unmapped)
         }
 
         _scoreTeams.Clear();
         if (_world.Teamplay is { IsTeamGame: true })
             foreach (int t in XonoticGodot.Common.Gameplay.Teams.Active(_world.Teamplay.TeamCount))
                 _scoreTeams.Add((t, _world.Scores.TeamScore(t)));
+
+        // QC the race/CTS rankings table (Scoreboard_Rankings_Draw): in race modes, snapshot the persistent
+        // RaceRecords DB's best-first ranked times for this map so the client scoreboard's rankings block has
+        // data (the C# stand-in for RACE_NET_SERVER_RANKINGS). Non-race modes leave it empty (one byte on the wire).
+        _scoreRankings.Clear();
+        _scoreSpeedAward = default;
+        string gt = _world.GameType?.NetName ?? "";
+        if (gt == "rc" || gt == "cts")
+        {
+            string map = _world.Services.Cvars.GetString("mapname");
+            string recordType = gt == "cts"
+                ? XonoticGodot.Common.Gameplay.RaceRecords.CtsRecord
+                : XonoticGodot.Common.Gameplay.RaceRecords.RaceRecord;
+            // QC race_send_rankings_cnt: m = min(RANKINGS_CNT, autocvar_g_cts_send_rankings_cnt) — the number of
+            // ranked records networked for display. Base default g_cts_send_rankings_cnt = 15 (gametypes-server.cfg),
+            // hard-capped at RANKINGS_CNT (99). Read the cvar live so a server config edit takes effect.
+            int displayCnt = 15;
+            string rcStr = _world.Services.Cvars.GetString("g_cts_send_rankings_cnt");
+            if (!string.IsNullOrEmpty(rcStr))
+            {
+                float rc = _world.Services.Cvars.GetFloat("g_cts_send_rankings_cnt");
+                if (float.IsFinite(rc) && rc >= 0f) displayCnt = (int)rc;
+            }
+            displayCnt = System.Math.Clamp(displayCnt, 0, XonoticGodot.Common.Gameplay.RaceRecords.RankingsCnt);
+            for (int pos = 1; pos <= displayCnt; pos++)
+            {
+                float t = XonoticGodot.Common.Gameplay.RaceRecords.ReadTime(map, recordType, pos);
+                if (t == 0f) break; // ranked table is dense from rank 1; first empty slot ends it
+                _scoreRankings.Add((
+                    XonoticGodot.Common.Gameplay.Scoring.GameScores.TimeEncode(t),
+                    XonoticGodot.Common.Gameplay.RaceRecords.ReadName(map, recordType, pos)));
+            }
+
+            // QC race_send_speedaward / _best (server/race.qc:267): Race and CTS both track the round-best +
+            // persisted all-time best planar speed; rounded to an int (QC floor(speed + 0.5)). Now that Race owns
+            // SpeedAwardFrame too, feed both gametypes.
+            int SpeedRound(float s) => (int)System.MathF.Floor(s + 0.5f);
+            if (_world.GameType is XonoticGodot.Common.Gameplay.Cts cts)
+            {
+                _scoreSpeedAward = (SpeedRound(cts.SpeedAwardSpeed), cts.SpeedAwardHolder,
+                                    SpeedRound(cts.SpeedAwardBest), cts.SpeedAwardBestHolder);
+            }
+            else if (_world.GameType is XonoticGodot.Common.Gameplay.Race raceGt)
+            {
+                _scoreSpeedAward = (SpeedRound(raceGt.SpeedAwardSpeed), raceGt.SpeedAwardHolder,
+                                    SpeedRound(raceGt.SpeedAwardBest), raceGt.SpeedAwardBestHolder);
+            }
+        }
     }
 
     /// <summary>Net-id base for non-player entities, above the small ENet peer ids (so the two id spaces can't collide).</summary>
     private const int EntityNetBase = 16384;
+
+    /// <summary>
+    /// [W1-alpha-net] Quantize an entity's render alpha (QC csqcmodel m_alpha) to the wire byte: a fully-opaque
+    /// entity (alpha &gt;= 1) sends 0 so the <see cref="EntityField.Alpha"/> bit stays clear and costs nothing;
+    /// a transparent entity sends 1..254 (clamped so a real fade never rounds to the 0 = opaque sentinel and a
+    /// near-opaque value doesn't disappear); the QC <c>-1</c> "do not render" sentinel (Running Guns hides the
+    /// player model; gibbing) sends 255 as a DISTINCT hidden marker — it is NOT opaque. The client maps 0 →
+    /// opaque, 255 → hidden (-1), else <c>byte/255</c>.
+    /// </summary>
+    private static int QuantizeAlpha(float alpha)
+    {
+        if (alpha < 0f)
+            return 255; // QC -1 "don't render" sentinel — hidden, distinct from opaque (Running Guns player)
+        if (alpha >= 1f)
+            return 0;   // opaque — not networked
+        return System.Math.Clamp((int)MathF.Round(alpha * 255f), 1, 254);
+    }
 
     private static bool IsProjectileMoveType(MoveType mt)
         => mt is MoveType.Fly or MoveType.Toss or MoveType.FlyMissile or MoveType.Bounce or MoveType.BounceMissile;
@@ -1926,6 +2732,12 @@ public sealed class ServerNet : IDisposable
         if ((e.Flags & EntFlags.Item) != 0 && e.Owner is not null && IsProjectileMoveType(e.MoveType))
             return NetEntityKind.Projectile;
 
+        // [W-nadeclient] the nade_orb effect entity (heal/ammo/entrap/veil/ice/darkness orb) is SOLID_TRIGGER, so the
+        // generic Trigger→Item branch below would mis-classify it as an Item AND then drop it for carrying no server
+        // model (orbs render procedurally, like projectiles). Classify it explicitly BEFORE that branch.
+        if (cn == "nade_orb")
+            return NetEntityKind.NadeOrb;
+
         if (cn.Contains("_item") || e.Solid == Solid.Trigger)
             return NetEntityKind.Item;
         return NetEntityKind.Generic; // monsters, turrets, vehicles, mapobjects with alias models
@@ -1940,6 +2752,76 @@ public sealed class ServerNet : IDisposable
             _playerNetIds[p] = id;
         }
         return id;
+    }
+
+    /// <summary>
+    /// [W-wepent-charges] Resolve the owner-only weapon-HUD ring values (QC the networked wepent.* fields:
+    /// vortex_charge / vortex_chargepool_ammo / clip_load / clip_size / hagar_load / minelayer_mines /
+    /// arc_heat_percent) for the local viewmodel slot, off the AUTHORITATIVE player. This is the server-side
+    /// twin of NetGame.UpdateCrosshairWeaponRings (which reads the same slot-0 scratch state on a listen host);
+    /// the resolved scalars ride the owner block (WriteOwnerState) so a PURE remote / dedicated-server client
+    /// gets the same crosshair rings the host already shows. Each value uses the panel's -1 'no data' sentinel
+    /// when the active weapon doesn't own that ring (so only the held weapon's ring draws), exactly like the host
+    /// feeder. Caps (HagarLoadMax / MineLimit) are sent resolved from the descriptor too, because a pure client's
+    /// g_balance_* cvars aren't guaranteed to match the server's.
+    /// </summary>
+    private void ResolveOwnerWeaponRings(
+        Player p,
+        out float charge, out float chargePool,
+        out float clipLoad, out float clipSize,
+        out float hagarLoad, out float hagarLoadMax,
+        out float mineCount, out float mineLimit,
+        out float arcHeat)
+    {
+        // The owner block and the per-player WepentView field are produced by the SAME resolver
+        // (WepentResolver.Resolve) so they can never drift. The resolver returns the unified WepentViewState
+        // (charges/clip/load/heat) off the authoritative player; this method maps that struct into the owner
+        // block's existing out-params (translating the struct's 0-means-inactive representation into the
+        // CrosshairPanel -1 "no ring" sentinel the owner wire expects) and resolves the two owner-only CAPS
+        // (HagarLoadMax / MineLimit) locally — those caps are NOT on the per-player WepentView wire (the design
+        // keeps resolved caps owner-only; the client clamps the per-player view against the panel defaults).
+        WepentViewState v = XonoticGodot.Common.Gameplay.WepentResolver.Resolve(p, CountLiveMines, _world.Time);
+
+        // [0,1] charge/pool/heat: the struct carries 0 when the active weapon doesn't own that ring; the owner
+        // wire hides a ring with -1, so translate 0 → -1 (a held charge weapon at exactly 0 reads as hidden for
+        // that frame, which matches "no ring to draw"). Clip uses matching sentinels already (-1 load / 0 size).
+        charge = NoRingOr(v.VortexCharge);
+        chargePool = NoRingOr(v.VortexChargePool);
+        clipLoad = v.ClipLoad;                       // -1 = needs-reload sentinel preserved straight
+        clipSize = v.ClipSize;                       // 0 = weapon has no clip → ring hidden
+        hagarLoad = v.HagarLoad <= 0 ? -1f : v.HagarLoad;
+        mineCount = v.MinelayerMines <= 0 ? -1f : v.MinelayerMines;
+        arcHeat = NoRingOr(v.ArcHeat);
+
+        // Resolved caps (owner-only): default to the CrosshairPanel defaults, overridden from the live weapon
+        // descriptor when the matching ring is active so a pure client's g_balance_* needn't match the server.
+        hagarLoadMax = 4f;
+        mineLimit = 3f;
+        Weapon? active = Inventory.CurrentWeapon(p);
+        if (active is null || p.IsDead || p.IsObserver)
+            return;
+        if (active is Hagar hg && hg.Secondary.LoadMax > 0f)
+            hagarLoadMax = hg.Secondary.LoadMax;
+        if (active is Minelayer ml && ml.Cvars.Limit > 0)
+            mineLimit = ml.Cvars.Limit;
+
+        // Local helper: map the resolver's 0-means-inactive [0,1] value to the owner wire's -1 "no ring" sentinel.
+        static float NoRingOr(float value) => value > 0f ? value : -1f;
+    }
+
+    /// <summary>
+    /// [W-wepent-view] Count this player's live mines (QC the W_MineLayer_Count <c>g_mines</c> scan) — the
+    /// Mine Layer count ring's current value, which isn't cached on the weapon slot. Extracted from the old
+    /// ResolveOwnerWeaponRings so BOTH the owner block and the per-player WepentView (which pass this as the
+    /// <c>mineCounter</c> delegate to <see cref="XonoticGodot.Common.Gameplay.WepentResolver.Resolve"/>)
+    /// reuse the same authoritative count.
+    /// </summary>
+    private int CountLiveMines(Player p)
+    {
+        int n = 0;
+        foreach (Entity e in _world.Services.Entities.FindByClass("mine"))
+            if (ReferenceEquals(e.Owner, p) && !e.IsFreed) ++n;
+        return n;
     }
 
     /// <summary>Owner-replicated authoritative state: origin + velocity (full precision) + onground + HUD stats +
@@ -1974,10 +2856,23 @@ public sealed class ServerNet : IDisposable
         p.SpectateeStatus = spec;
         w.WriteShort(spec);
 
+        // QC STAT(PRESSED_KEYS) (server/client.qc GetPressedKeys :2840 / SpectateCopy :1820): the owner's held-key
+        // bitset (KEY_FORWARD/BACK/LEFT/RIGHT/JUMP/CROUCH/ATCK/ATCK2, bits 0..7 — the layout PressedKeysPanel reads).
+        // GetPressedKeys keeps p.PressedKeys current each server frame for a live owner, the observer branch clears
+        // it, and SpectateCopy copies the spectatee's bits onto a following observer — so this single owner-block
+        // field already carries the RIGHT keys whether the owner is playing or spectating someone, and the client
+        // HUD's pressedkeys/strafe cluster can show a SPECTATED player's keys (closes the frame.pressed_keys net gap).
+        w.WriteShort(p.PressedKeys);
+
         // QC view punch (PM_check_punch): the weapon-recoil view kick, decayed server-side and applied to the
         // owner's rendered view angles client-side. Owner-only (only the local player sees their own kick), so
         // it rides the owner block, not the entity stream. Small + cheap; sent unconditionally for lockstep.
         w.WriteVector(p.PunchAngle, XonoticGodot.Net.NetPrecision.Float);
+
+        // QC view punch ORIGIN kick (PM_check_punch punchvector, decayed 30u/s server-side): added to the rendered
+        // view ORIGIN (vieworg += view_punchvector, cl_player.qc:570) — owner-only, same block as PunchAngle. Stock
+        // content never sets it non-zero, but the seam is now wired end-to-end so any future origin kick is faithful.
+        w.WriteVector(p.PunchVector, XonoticGodot.Net.NetPrecision.Float);
 
         // QC STAT(MOVEVARS_HIGHSPEED) per-player (Physics_UpdateStats): the RESOLVED top-speed multiplier this tick
         // — the Speed powerup ×, the speed/disability buffs ×, the entrap nade × all folded into player.SpeedMultiplier
@@ -2006,6 +2901,26 @@ public sealed class ServerNet : IDisposable
             w.WriteBytes(bytes.AsSpan(0, n));
             st.LastAccuracyGen = accGen;
         }
+
+        // [W-wepent-charges] the owner-only weapon-HUD ring values (QC networked wepent vortex_charge /
+        // vortex_chargepool_ammo / clip_load / clip_size / hagar_load / minelayer_mines / arc_heat_percent + the
+        // resolved caps). Resolved server-side off the authoritative player so a pure remote / dedicated-server
+        // client renders the same crosshair charge/clip/load/heat rings the listen host already does (previously
+        // host-only). Written at the END of the owner block, read in lockstep by ClientNet.HandleSnapshot.
+        ResolveOwnerWeaponRings(p,
+            out float wsCharge, out float wsChargePool,
+            out float wsClipLoad, out float wsClipSize,
+            out float wsHagarLoad, out float wsHagarLoadMax,
+            out float wsMineCount, out float wsMineLimit,
+            out float wsArcHeat);
+        new XonoticGodot.Net.OwnerWeaponRings
+        {
+            VortexCharge = wsCharge, VortexChargePool = wsChargePool,
+            ClipLoad = wsClipLoad, ClipSize = wsClipSize,
+            HagarLoad = wsHagarLoad, HagarLoadMax = wsHagarLoadMax,
+            MineCount = wsMineCount, MineLimit = wsMineLimit,
+            ArcHeat = wsArcHeat,
+        }.Write(w); // ClientNet.HandleSnapshot reads this via OwnerWeaponRings.Read, in lockstep
     }
 
     // =====================================================================================
@@ -2067,19 +2982,24 @@ public sealed class ServerNet : IDisposable
             _world.Services.Entities.SetOrigin(kv.Key, kv.Value.SampleAt(t));
         }
 
-        // monsters + nades (IL_EACH g_monsters / IL_EACH g_projectiles[classname=="nade"] → antilag_takeback(it, it, ...)).
+        // monsters + nades + manned vehicles (IL_EACH g_monsters / IL_EACH g_projectiles[classname=="nade"] →
+        // antilag_takeback(it, it, ...); the vehicle case is Base's recursion into the player's `.vehicle`).
+        // The shooter's OWN vehicle is excluded too: Base reaches a vehicle via its pilot's antilag_takeback,
+        // and the player loop skips `it == ignore`, so a shooter piloting a vehicle never rewinds their own body.
+        Entity? shooterVehicle = sp.Vehicle;
         _antilagEntityRestore.Clear();
         foreach (KeyValuePair<Entity, AntilagBuffer> kv in _antilagEntities)
         {
-            if (ReferenceEquals(kv.Key, shooter) || kv.Key.IsFreed || !kv.Value.HasData)
+            if (ReferenceEquals(kv.Key, shooter) || ReferenceEquals(kv.Key, shooterVehicle)
+                || kv.Key.IsFreed || !kv.Value.HasData)
                 continue;
             _antilagEntityRestore[kv.Key] = kv.Key.Origin;
             _world.Services.Entities.SetOrigin(kv.Key, kv.Value.SampleAt(t));
         }
     }
 
-    /// <summary><see cref="ILagCompensation.End"/>: restore every rewound entity — players, monsters, nades — to
-    /// its authoritative present position (<c>antilag_restore_all</c>).</summary>
+    /// <summary><see cref="ILagCompensation.End"/>: restore every rewound entity — players, monsters, nades, and
+    /// manned vehicle bodies — to its authoritative present position (<c>antilag_restore_all</c>).</summary>
     public void EndLagComp()
     {
         if (!_lagCompActive)
@@ -2207,12 +3127,33 @@ public sealed class ServerNet : IDisposable
     /// </summary>
     private bool WriteEffect(BitWriter w, in EffectRequest r)
     {
-        byte[]? body = EffectNetProtocol.Encode(r);
-        if (body is null || r.Effect is null)
+        // Engine-fallback by-name path (QC Send_Effect_ → __pointparticles(_particleeffectnum(name))): no registered
+        // Effect carries the name, so write the ByNameSentinelId + the effectinfo NAME and let the client resolve it
+        // through its own effectinfo.txt catalog (DP's _particleeffectnum). This makes unregistered effectinfo names
+        // (arbitrary cheat args, non-canonical impact_<material>) reach REMOTE clients, not just the listen-server
+        // in-process mirror.
+        if (r.Effect is null)
+        {
+            byte[]? nameBody = EffectNetProtocol.EncodeByName(r);
+            if (nameBody is null)
+                return false;
+            w.WriteUShort(EffectNetProtocol.ByNameSentinelId);
+            // body = length-prefixed name string, then the EFF_NET payload (framed together so the reader knows the
+            // record extent from the single bodyLen, like the registered branch).
+            int namePos = ReserveCount(w); // reuse the ushort-length reservation helper for the body length prefix
+            int start = w.Length;
+            w.WriteString(r.EffectName);
+            w.WriteBytes(nameBody);
+            PatchCount(w, namePos, w.Length - start);
+            return true;
+        }
+
+        byte[]? regBody = EffectNetProtocol.Encode(r);
+        if (regBody is null)
             return false;
         w.WriteUShort(r.Effect.RegistryId);
-        w.WriteUShort(body.Length);
-        w.WriteBytes(body);
+        w.WriteUShort(regBody.Length);
+        w.WriteBytes(regBody);
         return true;
     }
 
@@ -2312,7 +3253,11 @@ public sealed class ServerNet : IDisposable
         _notifyQueue.Clear();
     }
 
-    /// <summary>Does a notification's broadcast/target reach this player? (the QC NOTIF_ONE/ALL/EXCEPT routing).</summary>
+    /// <summary>
+    /// Does a notification's broadcast/target reach this player? (the QC NOTIF_ONE/ALL/EXCEPT routing).
+    /// Includes spectator-follow routing: IS_SPEC(to) && to.enemy == other for NOTIF_ONE/ALL_EXCEPT;
+    /// IS_SPEC(to) && to.enemy.team == other.team for NOTIF_TEAM[_EXCEPT].
+    /// </summary>
     private static bool NotificationReaches(in NotificationDispatch d, Player p)
     {
         switch (d.Broadcast)
@@ -2320,14 +3265,31 @@ public sealed class ServerNet : IDisposable
             case NotifBroadcast.All:
                 return true;
             case NotifBroadcast.AllExcept:
-                return !ReferenceEquals(d.Target, p);
+                // Exclude the target and spectators following the target.
+                return !ReferenceEquals(d.Target, p)
+                    && !(p.IsObserver && p.Spectatee == d.Target);
             case NotifBroadcast.One:
+                // Reach the target and spectators following the target.
+                return ReferenceEquals(d.Target, p)
+                    || (p.IsObserver && p.Spectatee == d.Target);
             case NotifBroadcast.OneOnly:
+                // Reach only the target, not spectators.
                 return ReferenceEquals(d.Target, p);
             case NotifBroadcast.Team:
-                return d.Target is Player t && t.Team == p.Team;
+                // Reach the target's team and spectators following the target's team.
+                if (d.Target is not Player t)
+                    return false;
+                return t.Team == p.Team
+                    || (p.IsObserver && p.Spectatee?.Team == t.Team);
             case NotifBroadcast.TeamExcept:
-                return d.Target is Player te && te.Team == p.Team && !ReferenceEquals(d.Target, p);
+                // Reach the target's team except the target, and spectators following the target's team
+                // (but not the target themselves).
+                if (d.Target is not Player te)
+                    return false;
+                // QC factors `to_client != other_client` over BOTH branches (all.qc:78-82): never reach the target.
+                return !ReferenceEquals(d.Target, p)
+                    && (te.Team == p.Team
+                        || (p.IsObserver && p.Spectatee != d.Target && p.Spectatee?.Team == te.Team));
             default:
                 return true;
         }
@@ -2340,7 +3302,7 @@ public sealed class ServerNet : IDisposable
     private void WriteNotification(BitWriter w, in NotificationDispatch d)
     {
         w.WriteUShort(d.Notification.RegistryId);
-        w.WriteByte((byte)d.Notification.Type);
+        w.WriteByte((byte)d.WireType); // normally d.Notification.Type; a CenterKill retraction overrides it
         w.WriteString(d.Text);
         w.WriteByte(d.StringArgs.Length);
         for (int i = 0; i < d.StringArgs.Length; i++) w.WriteString(d.StringArgs[i]);

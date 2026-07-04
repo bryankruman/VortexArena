@@ -194,11 +194,14 @@ public class IqmReaderTests
                 $"anim '{a.Name}' frame range exceeds decoded frames");
         if (iqm.Bounds is not null)
             Assert.Equal(iqm.Frames.Length, iqm.Bounds.Length);
-        // Skinning arrays are mandatory for an animated model (DP hard requirement).
+        // Skinning arrays are mandatory for an animated model (DP hard requirement). They are FLAT
+        // vertex*4 ubyte layouts (see IqmData), so length pins both presence and shape.
         if (iqm.Frames.Length > 0 || iqm.Anims.Length > 0)
         {
             Assert.NotNull(iqm.BlendIndexes);
             Assert.NotNull(iqm.BlendWeights);
+            Assert.Equal(iqm.VertexCount * 4, iqm.BlendIndexes!.Length);
+            Assert.Equal(iqm.VertexCount * 4, iqm.BlendWeights!.Length);
         }
     }
 }

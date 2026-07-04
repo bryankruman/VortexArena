@@ -17,5 +17,13 @@ namespace XonoticGodot.Common.Framework
         /// natural ones restored to their spawn point at full health). Null = the entity has no reset behaviour.
         /// </summary>
         public System.Action<Entity>? Reset;
+
+        /// <summary>
+        /// QC <c>.reset2</c>: the SECOND-pass round-restart hook. <c>reset_map</c> (server/command/vote.qc:404)
+        /// fires every non-client entity's <c>.reset2</c> AFTER the whole <c>.reset</c> pass has completed, so the
+        /// "come last" objects (waypoint sprites and the Assault round-start trigger) re-arm only once the movers /
+        /// spawnpoints they depend on have already been reset. Null = the entity has no second-pass reset.
+        /// </summary>
+        public System.Action<Entity>? Reset2;
     }
 }

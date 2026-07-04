@@ -22,10 +22,51 @@ namespace XonoticGodot.Server.Bot;
 public sealed class BotNavigation
 {
     private const int MaxGoals = 32;        // QC goalstack depth (goalcurrent + goalstack01..31)
+
+    // Waypoint types whose first node must NOT be skipped by the path-optimization shortcut: they carry
+    // traversal semantics Steer needs (jump/crouch the link, climb a ladder, enter a teleporter trigger) or are
+    // hand-authored special links (QC WPFLAGMASK_NORELINK = TELEPORT|LADDER|JUMP|CUSTOM_JP|SUPPORT, extended here
+    // with CROUCH since the port encodes "crouch this link" on the node).
+    private const WaypointFlags WaypointFlagsNoSkip =
+        WaypointFlags.Teleport | WaypointFlags.Ladder | WaypointFlags.Jump
+        | WaypointFlags.CustomJp | WaypointFlags.Support | WaypointFlags.Crouch;
+
     private const float GoalReachedXY = 24f; // horizontal "touched the waypoint" radius
     private const float GoalReachedZ = 48f;  // vertical tolerance
-    public const float StepHeight = 34f;    // QC stepheightvec.z — walkable step
-    public const float JumpStepHeight = 48f; // QC jumpstepheightvec.z — reachable with a jump (brain danger check reads it)
+    public const float StepHeight = 34f;    // QC stepheightvec.z default (sv_stepheight) — walkable step
+    public const float JumpStepHeight = 48f; // QC jumpstepheightvec.z default — reachable with a jump (brain danger check reads it)
+
+    // ---- live step/jump-reach heights (QC bot_calculate_stepheightvec, bot.qc:615-621) ----
+    // QC derives these from sv_stepheight/sv_jumpvelocity/sv_gravity at init and on cvar change, so a map or
+    // server that retunes the physics cvars gets matching bot jump reach. The const fields above stay as the
+    // stock defaults (they're the public symbols other files reference); Steer reads these live properties.
+    //   stepheightvec.z   = sv_stepheight
+    //   jumpheight_vec.z  = sv_jumpvelocity^2 / (2 * sv_gravity)        (apparent jump apex)
+    //   jumpstepheightvec.z = stepheight + jumpheight_vec.z * 0.85       (reduced "easy jump" reach)
+
+    /// <summary>QC stepheightvec.z — sv_stepheight (walkable step), read live so non-default physics adjusts it.</summary>
+    private static float StepHeightLive => Cvars.FloatOr("sv_stepheight", StepHeight);
+
+    /// <summary>QC jumpheight_vec.z — the apparent jump apex sv_jumpvelocity^2/(2*sv_gravity).</summary>
+    private static float JumpHeightApex
+    {
+        get
+        {
+            float jv = Cvars.JumpVelocity;
+            float g = Cvars.Gravity;
+            return g > 0f ? (jv * jv) / (2f * g) : 0f;
+        }
+    }
+
+    /// <summary>
+    /// QC jumpstepheightvec.z (bot_calculate_stepheightvec, bot.qc:619): <c>stepheightvec + jumpheight_vec * 0.85</c>
+    /// — the "easy jump" reach (the apex reduced a bit so the bot commits jumps it can actually clear). ≈70 @ stock
+    /// (34 + 84.5*0.85). Read live so non-default sv_stepheight/sv_jumpvelocity/sv_gravity adjust it. This is the
+    /// height QC's havocbot_movetogoal:1146 compares a high goal against (goal above this ⇒ on an upper platform),
+    /// which the brain's danger check uses; the public <see cref="JumpStepHeight"/> const stays as the stock default
+    /// for any caller that wants a compile-time symbol.
+    /// </summary>
+    public static float JumpStepHeightLive => StepHeightLive + JumpHeightApex * 0.85f;
 
     /// <summary>One entry on the goal stack: a world point plus the waypoint flags that govern how to
     /// traverse it (jump/crouch/teleport/ladder) and the source waypoint (for box-volume reach tests).</summary>
@@ -59,8 +100,21 @@ public sealed class BotNavigation
     /// <summary>Set true while steering when an obstacle/up-step needs a jump (QC PHYS_INPUT_BUTTON_JUMP).</summary>
     public bool WantJump { get; private set; }
 
+    /// <summary>Force the jump intent for this frame (QC trigger_hurt jetpack escape sets +jump alongside the
+    /// jetpack so a cl_jetpack_jump host activates the pack). Used by <see cref="BotBrain"/>; Steer overwrites
+    /// WantJump next frame as usual.</summary>
+    public void ForceJump() => WantJump = true;
+
     /// <summary>Set true while steering when traversing a crouch waypoint (QC PHYS_INPUT_BUTTON_CROUCH).</summary>
     public bool WantCrouch { get; private set; }
+
+    /// <summary>
+    /// QC <c>havocbot_bunnyhop</c> wants a jump this frame to maintain run speed toward a far goal. Kept
+    /// SEPARATE from <see cref="WantJump"/> because Base only bunnyhops when <c>!evadedanger &amp;&amp; !do_break</c>
+    /// (havocbot.qc:1315): the per-frame danger brake runs in <see cref="BotBrain"/> AFTER <see cref="Steer"/>,
+    /// so the brain ANDs this with "no danger brake this frame" before folding it into the jump button.
+    /// </summary>
+    public bool WantBunnyhop { get; private set; }
 
     /// <summary>The current goal point, or null if the stack is empty (QC <c>.goalcurrent</c>).</summary>
     public Vector3? Current => _goals.Count > 0 ? _goals[0].Pos : null;
@@ -156,8 +210,15 @@ public sealed class BotNavigation
     /// and load it onto the goal stack (QC navigation_routetogoal). If origin and goal are directly
     /// reachable (or there's no network), pushes just the goal. The final <paramref name="goalEntity"/>
     /// (item/enemy) is remembered as <see cref="GoalEntity"/>.
+    ///
+    /// <paramref name="onGround"/> mirrors Base's navigation_markroutes_nearestwaypoints on-ground-vs-air seed
+    /// radius growth (on-ground 750/50000, air 500/1500). It is threaded through to the network's nearest-seed
+    /// search (<see cref="WaypointNetwork.NearestSeeds"/>), which seeds the multi-seed A*; the single-nearest
+    /// start is used only as a fallback when no seed is reachable. Defaults to true so non-brain callers (tests)
+    /// keep compiling.
     /// </summary>
-    public void SetGoal(Vector3 origin, Vector3 goalPos, WaypointNetwork? net, Entity? goalEntity = null)
+    public void SetGoal(Vector3 origin, Vector3 goalPos, WaypointNetwork? net, Entity? goalEntity = null, bool onGround = true,
+        IReadOnlyList<(Waypoint Wp, float Cost)>? seeds = null)
     {
         ClearRoute();
         GoalEntity = goalEntity;
@@ -172,14 +233,64 @@ public sealed class BotNavigation
         if (net is null || net.Count == 0)
             return; // no graph: just head toward the goal and rely on obstacle avoidance
 
-        var startWp = net.Nearest(origin);
-        var goalWp = net.Nearest(goalPos);
-        if (startWp is null || goalWp is null)
+        // QC navigation_findnearestwaypoint(ent, walkfromwp): the goal node is reached by walking FROM the
+        // waypoint TO the goal (walkfromwp = false) — see routetogoal, which seeds the goal's with !walkfromwp.
+        // An ENTITY goal rides the QC .nearestwaypoint cache (perf/parity 2026-07-03: QC routetogoal reads the
+        // cache here too — a static item binds once per match instead of re-tracewalking every route build).
+        var goalWp = goalEntity is not null ? net.NearestForGoal(goalEntity, goalPos) : net.Nearest(goalPos, walkFromWp: false);
+        if (goalWp is null)
             return;
 
-        var path = net.FindPath(startWp, goalWp);
+        // QC navigation_routetogoal seeds the flood from navigation_markroutes_nearestwaypoints — EVERY waypoint
+        // reachable within an expanding radius (on-ground 750/50000, air 500/1500), each pre-charged with its
+        // bot→seed entry cost — then A*s from that seed set to the goal node, so the planner picks the best graph
+        // entry point rather than forcing the single geometrically-nearest one (the nearest is sometimes behind a
+        // wall / on the wrong side of a ledge, so a slightly-farther seed can open the cheaper overall route).
+        // Fall back to the single-nearest start node when no seed is reachable (e.g. no collision world in tests).
+        // The caller may hand in the seed set its rating flood already computed from the same origin (perf
+        // 2026-07-03) — the tracewalk-heavy search then runs ONCE per strategy pass instead of twice.
+        seeds ??= net.NearestSeeds(origin, onGround, walkFromWp: true);
+        List<Waypoint>? path = seeds.Count > 0 ? net.FindPath(seeds, goalWp) : null;
+        if (path is null || path.Count == 0)
+        {
+            var startWp = net.Nearest(origin, walkFromWp: true);
+            if (startWp is null)
+                return;
+            path = net.FindPath(startWp, goalWp);
+        }
         if (path is null || path.Count == 0)
             return;
+
+        // Path optimization (QC navigation_routetogoal:1488-1538 "often path can be optimized by not adding the
+        // nearest waypoint"): if the bot can walk straight to the SECOND node, the nearest (first) waypoint is a
+        // needless detour — drop it. Only when the shortcut is genuinely shorter than going via the first node
+        // (QC's vlen2 comparison), so we never trade a clear path for a longer straight line. Cheap one-trace win
+        // that keeps bots from doubling back to a waypoint behind them.
+        if (path.Count >= 2)
+        {
+            Waypoint first = path[0], second = path[1];
+            if ((first.Flags & WaypointFlagsNoSkip) == 0
+                && (origin - second.Center).LengthSquared() < (first.Center - second.Center).LengthSquared()
+                && CanWalkStraight(origin, second.Center))
+            {
+                path.RemoveAt(0);
+            }
+        }
+
+        // QC navigation_routetogoal teleport-goal forcing (navigation.qc:1318-1334): when the planned route ENDS
+        // at a teleporter/jumppad box, the goal isn't the box itself — it's the far side. Force the box's single
+        // outgoing destination (its wp00 link) onto the stack ahead of the box so the bot commits to the trigger
+        // and is steered toward where the teleport drops it, instead of trying to stand inside the trigger volume.
+        if (path.Count > 0)
+        {
+            Waypoint last = path[^1];
+            if (last.HasFlag(WaypointFlags.Teleport) && last.Links.Count > 0)
+            {
+                Waypoint exit = last.Links[0].To; // wp00 = the teleport destination
+                if (!ReferenceEquals(exit, goalWp))
+                    PushRoute(new Goal(exit.Center, exit.Flags, exit));
+            }
+        }
 
         // Push intermediate waypoints in reverse so the FIRST waypoint ends up at the front of the stack,
         // ahead of the final goal point (which is already at the front). QC pushes goal first, then walks
@@ -203,6 +314,7 @@ public sealed class BotNavigation
     {
         WantJump = false;
         WantCrouch = false;
+        WantBunnyhop = false;
 
         // Pop any goals we've effectively reached (QC navigation_poptouchedgoals). A teleport/jumppad goal is
         // "reached" once we've entered its trigger volume — the trigger then moves us, so we note the time and
@@ -248,12 +360,12 @@ public sealed class BotNavigation
         if (trFlat.Fraction < 1f && trFlat.PlaneNormal.Z < 0.7f)
         {
             // Wall ahead. Can we walk up it as a step?
-            var step = new Vector3(0f, 0f, StepHeight);
+            var step = new Vector3(0f, 0f, StepHeightLive);
             var trStep = Trace(bot, bot.Origin + step, ahead + step);
             if (trStep.Fraction < trFlat.Fraction + 0.01f && trStep.PlaneNormal.Z < 0.7f)
             {
-                // Still blocked at step height: try a full jump's height.
-                var jh = new Vector3(0f, 0f, JumpStepHeight);
+                // Still blocked at step height: try a full jump's height (QC stepheight + jumpheight_vec on ground).
+                var jh = new Vector3(0f, 0f, StepHeightLive + JumpHeightApex);
                 var trJump = Trace(bot, bot.Origin + jh, ahead + jh);
                 if (trJump.Fraction > trStep.Fraction && onGround)
                     WantJump = true;
@@ -261,7 +373,7 @@ public sealed class BotNavigation
         }
 
         // ---- goal above us -> jump up onto it (unless on a ladder, where we just climb) ----
-        if (!onLadder && onGround && diff.Z > StepHeight && flat.Length() < Maxs.X * 2f)
+        if (!onLadder && onGround && diff.Z > StepHeightLive && flat.Length() < Maxs.X * 2f)
             WantJump = true;
 
         // ---- dangerous edge / fall ahead -> brake (QC do_break, simplified) ----
@@ -292,15 +404,112 @@ public sealed class BotNavigation
         float side = QMath.Dot(worldMove, right);
         float vert = QMath.Dot(worldMove, up);
 
+        // ---- keyboard-movement emulation (QC havocbot_keyboard_movement, havocbot.qc:272-341) ----
+        // Below skill 10 the bot doesn't move with a fully analog wish-move: it quantizes the analog direction
+        // onto keyboard keys (forward/back/strafe, with skill tiers that gate diagonals) on a skill-scaled
+        // clock, then blends back toward the analog move as it nears the goal (so close-in maneuvering stays
+        // smooth). This makes low-skill bots strafe/turn coarser, matching stock. (fwd/side/vert are already the
+        // normalized -1..1 move = QC's CS(this).movement / sv_maxspeed.)
+        if (Skill < 10f)
+            KeyboardMovement(bot, goal.Pos, ref fwd, ref side, ref vert);
+
         // ---- bunnyhop tuning (QC havocbot_bunnyhop): keep jumping to maintain speed toward a far goal ----
-        if (Bunnyhop(bot, dir, onGround, goal, attacking: false))
-            WantJump = true;
+        // QC havocbot.qc:1315 forbids bunnyhop when do_break/evadedanger is set this frame. The Steer-internal
+        // ledge brake (do_break analogue, above) gates it here; the BotBrain per-frame danger brake (which runs
+        // AFTER Steer) gates it by ANDing WantBunnyhop with "no danger this frame" before pressing jump. Result
+        // is reported via WantBunnyhop (not WantJump) so the brain owns the final danger-suppression decision.
+        if (brake == Vector3.Zero && Bunnyhop(bot, dir, onGround, goal, attacking: false))
+            WantBunnyhop = true;
 
         return new Vector3(fwd, side, vert) * MaxSpeed;
     }
 
     /// <summary>Bot skill (QC <c>skill</c>), set by the brain — gates whether the bot bunnyhops at all.</summary>
     public float Skill = 5f;
+
+    /// <summary>
+    /// QC <c>bot_moveskill</c>, added to <see cref="Skill"/> in the bunnyhop gate (havocbot.qc:1315). Stock default 0;
+    /// the midair mutator forces it to 0 on spawn so high-skill bots stop bunnyhopping while keeping aim/reaction.
+    /// </summary>
+    public float MoveSkill;
+
+    // ---- keyboard-movement emulation state (QC havocbot.qh .havocbot_keyboardtime / .havocbot_keyboard) ----
+    private float _keyboardTime;      // QC .havocbot_keyboardtime — next time the keyboard direction may change
+    private Vector3 _keyboard;        // QC .havocbot_keyboard — the last latched quantized move (×sv_maxspeed)
+    private readonly Random _kbRng = new();
+
+    /// <summary>
+    /// QC <c>havocbot_keyboard_movement</c> (havocbot.qc:272-341): quantize the analog wish-move onto keyboard
+    /// directions on a skill-scaled clock, then blend back toward the analog move as the bot nears the goal.
+    /// Operates in place on the normalized local move (<paramref name="fwd"/>/<paramref name="side"/>/
+    /// <paramref name="vert"/> = QC's CS(this).movement / sv_maxspeed, range -1..1). Skill tiers gate which
+    /// directions/diagonals are allowed, so low-skill bots strafe/turn coarser exactly like stock.
+    /// </summary>
+    private void KeyboardMovement(Entity bot, Vector3 destorg, ref float fwd, ref float side, ref float vert)
+    {
+        float now = Now;
+        if (now <= _keyboardTime)
+        {
+            // not time to re-key yet: keep blending the latched keyboard move with the analog move (below).
+            BlendKeyboard(bot, destorg, ref fwd, ref side, ref vert);
+            return;
+        }
+
+        float sk = Skill + MoveSkill;               // QC: skill + bot_moveskill (havocbot_keyboardskill folded to 0)
+        // QC re-key clock: faster (more responsive) the higher the skill; +small random jitter.
+        _keyboardTime = MathF.Max(
+            _keyboardTime
+                + 0.05f / MathF.Max(1f, sk)
+                + (float)_kbRng.NextDouble() * 0.025f / MathF.Max(0.00025f, Skill),
+            now);
+
+        // start from the analog move (already normalized -1..1 = QC keyboard = movement/maxspeed).
+        var keyboard = new Vector3(fwd, side, vert);
+        float trigger = Cvars.FloatOr("bot_ai_keyboard_threshold", 0.57f);
+
+        // categorize forward movement (QC's skill-tiered direction gating):
+        //  sk < 1.5: only forward; sk < 2.5: only individual dirs; sk < 4.5: + forward diagonals; else all.
+        if (keyboard.X > trigger)
+        {
+            keyboard.X = 1f;
+            if (sk < 2.5f) keyboard.Y = 0f;
+        }
+        else if (keyboard.X < -trigger && sk > 1.5f)
+        {
+            keyboard.X = -1f;
+            if (sk < 4.5f) keyboard.Y = 0f;
+        }
+        else
+        {
+            keyboard.X = 0f;
+            if (sk < 1.5f) keyboard.Y = 0f;
+        }
+        if (sk < 4.5f) keyboard.Z = 0f;
+
+        keyboard.Y = keyboard.Y > trigger ? 1f : (keyboard.Y < -trigger ? -1f : 0f);
+        keyboard.Z = keyboard.Z > trigger ? 1f : (keyboard.Z < -trigger ? -1f : 0f);
+
+        // anti-stuck: if nothing is pressed, don't hold the (high) re-key clock for long (QC havocbot.qc:330).
+        if (keyboard == Vector3.Zero)
+            _keyboardTime = MathF.Min(_keyboardTime, now + 0.2f);
+
+        _keyboard = keyboard; // QC stores keyboard * sv_maxspeed; here normalized (×maxspeed applied by Steer's caller)
+        BlendKeyboard(bot, destorg, ref fwd, ref side, ref vert);
+    }
+
+    /// <summary>
+    /// QC havocbot_keyboard_movement tail (havocbot.qc:337-340): blend the analog move toward the latched
+    /// keyboard move, the blend strength scaling with distance to the goal (full keyboard far out, fully analog
+    /// once within <c>bot_ai_keyboard_distance</c> so close-in maneuvering stays smooth / 360-degree).
+    /// </summary>
+    private void BlendKeyboard(Entity bot, Vector3 destorg, ref float fwd, ref float side, ref float vert)
+    {
+        float kbDist = MathF.Max(1f, Cvars.FloatOr("bot_ai_keyboard_distance", 250f));
+        float blend = QMath.Bound(0f, (destorg - bot.Origin).Length() / kbDist, 1f);
+        fwd += (_keyboard.X - fwd) * blend;
+        side += (_keyboard.Y - side) * blend;
+        vert += (_keyboard.Z - vert) * blend;
+    }
 
     /// <summary>
     /// QC <c>havocbot_bunnyhop</c>: decide whether to jump this frame to bunnyhop toward the goal. The bot
@@ -311,9 +520,11 @@ public sealed class BotNavigation
     /// </summary>
     private bool Bunnyhop(Entity bot, Vector3 dir, bool onGround, Goal goal, bool attacking)
     {
-        // skill gate (QC: bunnyhopping bots are skill >= bot_ai_bunnyhop_skilloffset; ships 7).
+        // skill gate (QC havocbot.qc:1315: skill + bot_moveskill >= bot_ai_bunnyhop_skilloffset; ships 7). The
+        // midair mutator zeroes MoveSkill on spawn but leaves Skill intact, so a high-skill bot still bhops unless
+        // a configured moveskill pushed the sum over the offset (faithful to Base, which only nukes moveskill).
         float skillOffset = Cvars.FloatOr("bot_ai_bunnyhop_skilloffset", 7f);
-        if (Skill < skillOffset)
+        if (Skill + MoveSkill < skillOffset)
             return false;
         if (attacking || !onGround)
             return false;

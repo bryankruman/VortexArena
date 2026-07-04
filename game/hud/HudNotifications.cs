@@ -110,6 +110,12 @@ public sealed class HudNotifications
     /// </summary>
     public void OnNotification(Notification? notif, MsgType type, string text, string[] strs, float[] flts)
     {
+        // QC ARG_CS key-bind tokens (pass_key/nade_key/join_key): the server formatted these to a sentinel
+        // because only the client knows its binds (Base resolves them CSQC-side via getcommandkey). Swap each
+        // sentinel for the local key now, before the text reaches the centerprint / kill-feed panels.
+        if (!string.IsNullOrEmpty(text) && text.Contains(NotifTokens.KeyBindSentinelPrefix, StringComparison.Ordinal))
+            text = SubstituteKeyBinds(text);
+
         switch (type)
         {
             case MsgType.Center:
@@ -123,6 +129,32 @@ public sealed class HudNotifications
                 // notification's queuetime governs the queue spacing (QC notif.nent_queuetime).
                 PlayAnnouncer(!string.IsNullOrEmpty(text) ? text : notif?.Sound ?? "", notif?.Queuetime ?? 0f);
                 break;
+            case MsgType.CenterKill:
+                // QC MSG_CENTER_KILL (all.qc:1372): retract a centerprint group, or all groups when the cpid is
+                // empty (CPID_Null → centerprint_KillAll). The cpid travels in `text`.
+                if (string.IsNullOrEmpty(text))
+                    _hud.CenterPrint.ClearAll();
+                else
+                    _hud.CenterPrint.Kill(text);
+                break;
+            case MsgType.CenterTitle:
+                // QC centerprint_SetTitle/_ClearTitle (announcer.qc Announcer_Gamestart): the gametype-name title
+                // above the countdown. Empty text clears it.
+                if (string.IsNullOrEmpty(text))
+                    _hud.CenterPrint.ClearTitle();
+                else
+                    _hud.CenterPrint.SetTitle(text);
+                break;
+            case MsgType.CenterDuelTitle:
+                // QC centerprint_SetDuelTitle (announcer.qc Announcer_Duel): "left vs right". Names in s1/s2.
+                _hud.CenterPrint.SetDuelTitle(strs.Length > 0 ? strs[0] : "", strs.Length > 1 ? strs[1] : "");
+                break;
+            case MsgType.CenterRaw:
+                // QC raw centerprint() builtin (chat /tell, map/trigger .message, target_print, MOTD): push the
+                // literal text via centerprint_AddStandard (no cpid group).
+                if (!string.IsNullOrEmpty(text))
+                    _hud.CenterPrint.Add(text);
+                break;
             default:
                 // MSG_MULTI/MSG_CHOICE are fanned out server-side into INFO/CENTER/ANNCE before the wire, so
                 // they never arrive here; ignore defensively.
@@ -133,6 +165,48 @@ public sealed class HudNotifications
     /// <summary>Convenience overload taking the same tuple <c>ClientNet.NotificationEvent</c> carries.</summary>
     public void OnNotification(in DecodedNotification ev)
         => OnNotification(ev.Notification, ev.Type, ev.Text, ev.StringArgs, ev.FloatArgs);
+
+    /// <summary>
+    /// Replace each QC <c>ARG_CS</c> key-bind sentinel (<see cref="NotifTokens.KeyBindSentinelPrefix"/> ..
+    /// <see cref="NotifTokens.KeyBindSentinelSuffix"/>, carrying the bare token name) with the display name of
+    /// the key currently bound to that command — the C# successor to QC resolving <c>pass_key</c>/<c>nade_key</c>/
+    /// <c>join_key</c> CSQC-side via <c>getcommandkey</c> (notifications/all.qh). The lookup uses the client's live
+    /// <see cref="XonoticGodot.Engine.Console.BindTable"/> (the same table NetGame reads for the respawn-jump hint);
+    /// an unbound command falls back to QC's human-readable descriptive name.
+    /// </summary>
+    private static string SubstituteKeyBinds(string text)
+    {
+        int idx;
+        while ((idx = text.IndexOf(NotifTokens.KeyBindSentinelPrefix, StringComparison.Ordinal)) >= 0)
+        {
+            int start = idx + NotifTokens.KeyBindSentinelPrefix.Length;
+            int end = text.IndexOf(NotifTokens.KeyBindSentinelSuffix, start, StringComparison.Ordinal);
+            if (end < 0)
+                break; // malformed: leave the rest as-is rather than loop forever
+            string token = text.Substring(start, end - start);
+            string key = ResolveKeyBind(token);
+            text = string.Concat(text.AsSpan(0, idx), key,
+                text.AsSpan(end + NotifTokens.KeyBindSentinelSuffix.Length));
+        }
+        return text;
+    }
+
+    /// <summary>
+    /// Map a key-bind token to the key bound to its command (QC <c>getcommandkey(descriptive, command)</c>).
+    /// The command strings are the ones the port's bind table actually stores from <c>binds-xonotic.cfg</c>:
+    /// <c>+use</c> (CTF flag-pass request / vehicle enter / onslaught teleport, key <c>f</c>), <c>weapon_drop</c>
+    /// (the drop-weapon bind that primes/throws the nade, keys <c>g</c>/<c>BACKSPACE</c>) and <c>+jump</c>
+    /// (spectator join, <c>SPACE</c>). When no key is bound,
+    /// <see cref="XonoticGodot.Engine.Console.BindTable.CommandKey"/> returns the descriptive fallback (Base's
+    /// <c>_("drop flag")</c>/<c>_("throw nade")</c>/<c>_("jump")</c>).
+    /// </summary>
+    private static string ResolveKeyBind(string token) => token switch
+    {
+        "pass_key" => XonoticGodot.Engine.Console.BindTable.CommandKey("drop flag", "+use"),
+        "nade_key" => XonoticGodot.Engine.Console.BindTable.CommandKey("throw nade", "weapon_drop"),
+        "join_key" => XonoticGodot.Engine.Console.BindTable.CommandKey("jump", "+jump"),
+        _ => "",
+    };
 
     /// <summary>A net-decoupled mirror of <c>ClientNet.NotificationEvent</c> the host can adapt to.</summary>
     public readonly record struct DecodedNotification(
@@ -148,13 +222,73 @@ public sealed class HudNotifications
             return;
 
         string cpid = notif?.Cpid ?? "";
-        // QC durcnt encodes an optional COUNT token + duration; we don't carry it on the wire, so drive the
-        // countdown from the first float arg when the message actually contains the ^COUNT placeholder.
-        int count = -1;
-        if (text.Contains(CenterPrintPanel.CountToken, StringComparison.Ordinal) && flts.Length > 0)
-            count = Math.Max(0, (int)flts[0]);
 
-        _hud.CenterPrint.Push(text, CenterPrintPanel.DefaultDuration, cpid, count);
+        // QC durcnt ("DURATION COUNT") is resolved at centerprint time (Local_Notification_centerprint_Add,
+        // notifications/all.qc:1069): token 0 is the display duration (arg_slot[0]) and token 1 the ^COUNT
+        // count (arg_slot[1]). Each token is a literal, an fN float-arg reference, or item_centime
+        // (== notification_item_centerprinttime = 1.5). The notification carries the raw durcnt; we resolve it
+        // here from the float args. An absent/"0 0" durcnt → duration 0 (the panel's default time) and no count.
+        ResolveDurcnt(notif?.Durcnt ?? "", flts, out float duration, out int durcntCount);
+
+        int count = -1;
+        if (text.Contains(CenterPrintPanel.CountToken, StringComparison.Ordinal))
+        {
+            // The ^COUNT countdown number comes from the durcnt count token when present, else from f1 (the
+            // standard countdown notifs encode "1 fN", so this matches; a "0 0"/absent durcnt falls back to f1).
+            count = durcntCount >= 0 ? durcntCount
+                  : (flts.Length > 0 ? Math.Max(0, (int)flts[0]) : -1);
+        }
+
+        _hud.CenterPrint.Push(text, duration, cpid, count);
+    }
+
+    /// <summary>QC notification_item_centerprinttime (common/notifications/all.qh:310). The display time of
+    /// item-pickup centerprints; mirrored here as the resolution of the durcnt <c>item_centime</c> token.</summary>
+    private const float ItemCenterprintTime = 1.5f;
+
+    /// <summary>
+    /// Resolve a MSG_CENTER durcnt ("DURATION COUNT") spec — the C# successor to the arg_slot loop in QC
+    /// <c>Local_Notification_centerprint_Add</c> (notifications/all.qc:1069). Token 0 → <paramref name="duration"/>
+    /// (seconds; 0/absent ⇒ the panel default time), token 1 → <paramref name="count"/> (the ^COUNT count;
+    /// -1 ⇒ none). Each token is the literal <c>item_centime</c> (== notification_item_centerprinttime),
+    /// an <c>fN</c> float-arg reference (1-based into <paramref name="flts"/>), or a literal number.
+    /// </summary>
+    private static void ResolveDurcnt(string durcnt, float[] flts, out float duration, out int count)
+    {
+        // QC default when durcnt is "" / "0 0": duration 0 (→ panel default time), no countdown.
+        duration = 0f;
+        count = -1;
+        if (string.IsNullOrEmpty(durcnt))
+            return;
+
+        string[] tok = durcnt.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (tok.Length > 0) duration = ResolveDurcntToken(tok[0], flts);
+        if (tok.Length > 1)
+        {
+            float c = ResolveDurcntToken(tok[1], flts);
+            count = c > 0f ? (int)c : (c == 0f ? -1 : 0); // 0 ⇒ no countdown (QC stof("0") with no ^COUNT)
+        }
+    }
+
+    private static float ResolveDurcntToken(string token, float[] flts)
+    {
+        if (string.Equals(token, "item_centime", StringComparison.Ordinal))
+        {
+            // QC ftos(autocvar_notification_item_centerprinttime); read the cvar if present, else the 1.5 default.
+            if (XonoticGodot.Common.Services.Api.Services is not null)
+            {
+                float v = XonoticGodot.Common.Services.Api.Cvars.GetFloat("notification_item_centerprinttime");
+                if (v != 0f) return v;
+            }
+            return ItemCenterprintTime;
+        }
+        // fN → the (N-1)th float arg (QC's f1..f4 map to arg_slot via the same numbered tokens).
+        if (token.Length >= 2 && (token[0] == 'f' || token[0] == 'F')
+            && int.TryParse(token.AsSpan(1), out int idx) && idx >= 1 && idx <= flts.Length)
+            return flts[idx - 1];
+        // literal number (QC: default branch stof(selected)).
+        return float.TryParse(token, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out float lit) ? lit : 0f;
     }
 
     // =====================================================================================
@@ -354,7 +488,7 @@ public sealed class HudNotifications
 
             // Capture by value (struct copy of the immutable arrays' references — they're not mutated).
             Notification n = d.Notification;
-            MsgType type = n.Type;
+            MsgType type = d.WireType; // normally n.Type; a CenterKill retraction overrides it
             string text = d.Text;
             string[] strs = d.StringArgs;
             float[] flts = d.FloatArgs;

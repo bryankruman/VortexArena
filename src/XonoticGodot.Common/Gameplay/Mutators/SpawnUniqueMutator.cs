@@ -67,12 +67,128 @@ public sealed class SpawnUniqueMutator : MutatorBase
         return false;
     }
 
-    /// <summary>QC <c>expr_evaluate(s)</c> for a cvar string: false for "" / "0" / "false", true otherwise.</summary>
+    /// <summary>
+    /// Faithful port of QC <c>expr_evaluate(s)</c> (lib/cvar.qh:48). A mini-expression evaluator over a
+    /// space-tokenized string: a leading '+' is stripped, a leading '-' negates the final result. Each token is
+    /// either a binop (<c>cvar &gt;=/&lt;=/&gt;/&lt;/==/!=</c> against a number, or <c>cvar_string ===/!==</c>
+    /// against a literal) or a bare term (optional <c>!</c> negation, then a literal number or cvar truthiness).
+    /// An empty string tokenizes to zero terms and evaluates to TRUE (matching Base); any failing token makes the
+    /// whole expression false (modulo the leading-sign negation). Used for the <c>g_spawn_unique</c> enable cvar.
+    /// </summary>
     private static bool ExprEvaluate(string s)
     {
-        if (string.IsNullOrEmpty(s)) return false;
-        s = s.Trim();
-        if (s == "0" || string.Equals(s, "false", System.StringComparison.OrdinalIgnoreCase)) return false;
+        s ??= string.Empty;
+
+        // QC: leading '+' strip; leading '-' sets ret=true and strips.
+        bool ret = false;
+        if (s.Length > 0 && s[0] == '+')
+            s = s.Substring(1);
+        else if (s.Length > 0 && s[0] == '-')
+        {
+            ret = true;
+            s = s.Substring(1);
+        }
+
+        bool exprFail = false;
+        string[] tokens = TokenizeConsole(s);
+        foreach (string tokRaw in tokens)
+        {
+            string tok = tokRaw;
+            bool ok;
+            // BINOP order matches Base exactly (strstrofs, first match wins). Note '==' is tested before
+            // '===' / '!==' just as in QC, so a '===' literal is caught by the '==' branch first — a faithful quirk.
+            if (TryBinop(tok, ">=", out string k, out string v)) ok = Cvar(k) >= Stof(v);
+            else if (TryBinop(tok, "<=", out k, out v)) ok = Cvar(k) <= Stof(v);
+            else if (TryBinop(tok, ">", out k, out v)) ok = Cvar(k) > Stof(v);
+            else if (TryBinop(tok, "<", out k, out v)) ok = Cvar(k) < Stof(v);
+            else if (TryBinop(tok, "==", out k, out v)) ok = Cvar(k) == Stof(v);
+            else if (TryBinop(tok, "!=", out k, out v)) ok = Cvar(k) != Stof(v);
+            else if (TryBinop(tok, "===", out k, out v)) ok = CvarString(k) == v;
+            else if (TryBinop(tok, "!==", out k, out v)) ok = CvarString(k) != v;
+            else
+            {
+                // Bare term: optional '!' negation, then numeric-literal-or-cvar truthiness.
+                k = tok;
+                bool b = true;
+                if (k.Length > 0 && k[0] == '!')
+                {
+                    k = k.Substring(1);
+                    b = false;
+                }
+                float f = Stof(k);
+                // QC: boolean((ftos(f) == k) ? f : cvar(k)) == b — if k is a plain number use it, else look it up.
+                float val = Ftos(f) == k ? f : Cvar(k);
+                ok = (val != 0f) == b;
+            }
+
+            if (!ok)
+            {
+                exprFail = true;
+                break;
+            }
+        }
+
+        if (!exprFail)
+            ret = !ret;
+        return ret;
+    }
+
+    // QC strstrofs-based BINOP: find op in s; k = prefix, v = suffix after op. Returns false if op absent.
+    private static bool TryBinop(string s, string op, out string k, out string v)
+    {
+        int o = s.IndexOf(op, System.StringComparison.Ordinal);
+        if (o < 0) { k = string.Empty; v = string.Empty; return false; }
+        k = s.Substring(0, o);
+        v = s.Substring(o + op.Length);
         return true;
+    }
+
+    private static float Cvar(string name) => Api.Services is not null ? Api.Cvars.GetFloat(name) : 0f;
+
+    private static string CvarString(string name) =>
+        Api.Services is not null ? Api.Cvars.GetString(name) ?? string.Empty : string.Empty;
+
+    // QC stof: parse a leading float, 0 on failure (lenient like the engine's atof).
+    private static float Stof(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return 0f;
+        return float.TryParse(s, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out float f) ? f : 0f;
+    }
+
+    // QC ftos: float-to-string. The engine prints integers without a decimal point and trims trailing zeros,
+    // which is what the (ftos(f) == k) "is this a plain number literal" test in expr_evaluate relies on.
+    private static string Ftos(float f) =>
+        f == (int)f
+            ? ((int)f).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : f.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture);
+
+    // QC tokenize_console: split on whitespace, honoring double-quoted spans. Empty string -> zero tokens.
+    private static string[] TokenizeConsole(string s)
+    {
+        var list = new System.Collections.Generic.List<string>();
+        if (string.IsNullOrEmpty(s)) return System.Array.Empty<string>();
+
+        int i = 0, n = s.Length;
+        var sb = new System.Text.StringBuilder();
+        while (i < n)
+        {
+            while (i < n && char.IsWhiteSpace(s[i])) i++;
+            if (i >= n) break;
+
+            sb.Clear();
+            if (s[i] == '"')
+            {
+                i++;
+                while (i < n && s[i] != '"') sb.Append(s[i++]);
+                if (i < n) i++; // closing quote
+            }
+            else
+            {
+                while (i < n && !char.IsWhiteSpace(s[i])) sb.Append(s[i++]);
+            }
+            list.Add(sb.ToString());
+        }
+        return list.ToArray();
     }
 }

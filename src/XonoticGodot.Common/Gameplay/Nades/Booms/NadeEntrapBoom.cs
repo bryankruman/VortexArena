@@ -11,8 +11,10 @@
 // since the part-A NadesMutator (which this task does not own) doesn't wire PlayerPhysics, the entrap speed
 // slow is wired here as a small self-contained [Mutator] (g_nades-gated) that rides MutatorHooks.PlayerPhysics
 // and multiplies player.SpeedMultiplier — the same SpeedMultiplier the part-A PlayerPhysics edit applies via
-// mp.ApplyHighSpeed. The MonsterMove run/walk slow + the veil monster-alpha lapse are omitted (the port has
-// no MonsterMove hook chain; orbs affecting monsters are out of scope, consistent with the headless sim).
+// mp.ApplyHighSpeed. The QC MonsterMove hook (entrap.qc:48 — entrap run/walk slow + the veil monster-alpha
+// lapse) is ported inline in MonsterAI.Move (the port inlines MonsterMove-hook effects there, like the
+// spiderweb slow). Note both monster effects are dormant for the same reason as Base: the orb touch only
+// flags nade_entrap_time / nade_veil_time on REAL CLIENTS (IsRealClient), never on monsters.
 
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Services;

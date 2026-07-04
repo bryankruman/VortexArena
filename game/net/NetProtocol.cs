@@ -71,8 +71,35 @@ public static class NetProtocol
     /// v9: added the waypoint-sprite channel (<see cref="NetControl.Waypoints"/>) — per-peer team/rule-filtered
     /// waypoint sprites (CTF flags + player pings + objective markers) driving the 3D in-world sprite layer + the
     /// radar icons (the C# port of QC's ENT_CLIENT_WAYPOINT entities).
+    ///
+    /// v10: added the items-time channel (<see cref="NetControl.ItemsTime"/>) — the C# port of QC's CSQC
+    /// <c>itemstime</c> net-temp message (itemstime.qc IT_Write/NET_HANDLE). A per-peer push of the item
+    /// respawn-time table (with the negative "available now" encoding) plus the live <c>STAT(ITEMSTIME)</c>
+    /// tier, gated by QC's <c>Item_ItemsTime_SetTimesForAllPlayers</c> send rule
+    /// (<c>warmup_stage || !IS_PLAYER || sv_itemstime==2</c>) so the ItemsTimePanel works for a pure remote
+    /// client (not just the listen host). Unknown to old clients (dispatch falls through harmlessly).
+    ///
+    /// v11: extended the match-clock channel (<see cref="NetControl.MatchState"/>) with STAT(OVERTIMES) — a
+    /// trailing 32-bit field so the TIMER panel's persistent "Overtime #N" / "Sudden Death" subtext shows on
+    /// every client (the one-shot overtime center notifications were already wired). Same-build lockstep: the
+    /// field is read unconditionally, so the version bump keeps the parity hash honest.
+    ///
+    /// v12: the C2S input button byte gained the PHYS_INPUT_BUTTON_CHAT bit (<see cref="InputButtons.Chat"/>,
+    /// 1&lt;&lt;7). The client sets it whenever a text prompt (the in-game console) is open and the server decodes
+    /// it into <c>MovementInput.Typing</c> → <c>player.ButtonChat</c>, so the typing exemption (camp-check
+    /// g_campcheck_typecheck, type-frag, spawn-near-teammate, monster-typefrag) is finally live for real network
+    /// clients. The byte size is unchanged (a previously-zero bit now carries meaning); the bump keeps the parity
+    /// hash honest so a mixed-build client can't silently mis-signal typing.
     /// </summary>
-    public const uint ProtocolVersion = 9;
+    /// v13: added the end-of-match map-vote channel (<see cref="NetControl.MapVote"/>) — a per-peer S2C push of
+    /// the live ballot (running/finished flags, gametype/abstain/detail, the seconds-remaining countdown, each
+    /// candidate's name/votes/availability/suggester, the winner, and THIS peer's own-vote index) so a pure
+    /// remote (--connect) client can see the ballot and have its number-key vote highlighted. The vote CAST
+    /// itself rides the existing C2S <see cref="InputCommand.Impulse"/> byte (v5): the server's gated impulse path
+    /// (<c>Commands.DispatchImpulse</c>) already routes impulse 1..N to <c>MapVoting.CastVote</c> while the vote
+    /// runs, so only the S2C ballot needed a new opcode. Additive (old clients drop the unknown frame), but the
+    /// version bump keeps the parity hash honest.
+    public const uint ProtocolVersion = 13;
 
     /// <summary>Ordered, reliable ENet channel — handshake, spawns/removes, notifications, scores.</summary>
     public const int ReliableChannel = 0;
@@ -191,4 +218,43 @@ public enum NetControl : byte
     /// tick on the unreliable channel (positions move with carriers). Each entry = id + origin + team + sprite
     /// name + radar icon + color + health + fade + helpme + maxdist + hideable. Unknown to old clients.</summary>
     Waypoints = 19,
+
+    // ---- items-time (the C# port of QC's CSQC itemstime net-temp message) ----
+    /// <summary>Server → client (reliable): the item respawn-time table (QC <c>itemstime</c> IT_Write /
+    /// NET_HANDLE) — for each tracked timed item (Mega/Big Health+Armor, Strength/Shield, the Superweapons
+    /// aggregate) its absolute scheduled respawn time, with the negative "another copy available now" encoding;
+    /// plus the live <c>STAT(ITEMSTIME)</c> tier (0/1/2). Sent per-peer, gated by QC's
+    /// <c>Item_ItemsTime_SetTimesForAllPlayers</c> rule (only spectators in a live round, everyone in warmup /
+    /// when <c>sv_itemstime==2</c>), so the ItemsTimePanel respawn countdowns work for a pure remote client.
+    /// Decoded into <see cref="ClientNet"/>'s item-time fields; unknown to old clients.</summary>
+    ItemsTime = 20,
+
+    // ---- client init constants (the C# port of QC's ENT_CLIENT_INIT / ClientInit_misc bundle) ----
+    /// <summary>Server → client (reliable): the one-shot ClientInit_misc constant bundle (QC server/client.qc:907) —
+    /// the per-server gameplay constants the client needs at session init: the hook + arc shot origins, the fog
+    /// string, armor blockpercent, damagepush speedfactor, serverflags, g_trueaim_minrange, and the nexball meter
+    /// period. Sent once right after <see cref="HandshakeAccept"/> (the welcome/accept handshake). Decoded into
+    /// <see cref="ClientNet"/>'s client-init constant stores; unknown to old clients (dispatch falls through).</summary>
+    ClientInit = 21,
+
+    // ---- end-of-match map vote (the C# port of QC's networked ENT_CLIENT_MAPVOTE entity) ----
+    /// <summary>Server → client (reliable): the live end-of-match map/gametype ballot (QC client/mapvoting.qc
+    /// <c>MapVote_Draw</c> fed by the <c>mapvote</c> net entity). Carries the running/finished flags, the
+    /// gametype/abstain/detail flags, the seconds-remaining countdown, every candidate's name + vote count +
+    /// availability + suggester, the winner (1-based, 0 = not yet), and THIS peer's own-vote candidate index
+    /// (QC <c>mv_ownvote</c>, stamped per-peer from <c>MapVoting.SelectionOf</c>). Sent per-peer (the own-vote
+    /// field differs per client) on change + ~2×/s while a vote runs, so the MapVotePanel lights up for a pure
+    /// remote client (not just the listen host). The vote CAST rides the C2S impulse byte. Unknown to old
+    /// clients (dispatch falls through harmlessly).</summary>
+    MapVote = 22,
+
+    // ---- onslaught radar links (the C# port of QC's networked ENT_CLIENT_RADARLINK entities) ----
+    /// <summary>Server → client (unreliable): the live Onslaught control-point/generator connection lines (QC
+    /// <c>ENT_CLIENT_RADARLINK</c> + <c>draw_teamradar_link</c>, client/teamradar.qc). Each entry is one power
+    /// link — the two endpoint world positions (XY) plus each end's owning team color code — so the radar can
+    /// draw the per-end team-colored connection quad between two linked nodes. Sent per-peer each network tick on
+    /// the unreliable channel (the graph + ownership change as points are captured); only emitted in Onslaught.
+    /// Decoded into <see cref="ClientNet"/>'s <c>RadarLinks</c> list; unknown to old clients (dispatch falls
+    /// through harmlessly).</summary>
+    RadarLinks = 23,
 }

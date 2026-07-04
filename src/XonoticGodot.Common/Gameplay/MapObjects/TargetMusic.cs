@@ -37,6 +37,12 @@ public static class TargetMusic
         if (this_.Volume == 0f)
             this_.Volume = 1f;
 
+        // QC spawnfunc(target_music) installs both this.use AND this.reset unconditionally; the round handler
+        // fires this.reset(this) on every map reset. target_music_reset re-asserts the untargeted DEFAULT
+        // (QC target_music_sendto(MSG_ALL,true)) — and here also clears any lifetime-0 default-slot claim a
+        // triggered track made (MusicActivationTime), so the round restart resumes the map's own default music.
+        this_.Reset = TargetMusicReset;
+
         // If no targetname, this is the DEFAULT music for the map (same role as cdtrack).
         // If it HAS a targetname, it's a triggered override.
         if (!string.IsNullOrEmpty(this_.TargetName))
@@ -54,6 +60,27 @@ public static class TargetMusic
     }
 
     /// <summary>
+    /// Port of <c>target_music_reset</c> (music.qc:41-47): the round-restart hook fired by the round handler on
+    /// every entity. QC re-sends the untargeted default track to all clients; a TRIGGERED override (targetname
+    /// set) does nothing there. In the listen-server model the MusicPlayer reads live state, so the only state
+    /// to undo on reset is a triggered track's activation stamp — clearing it drops both its lifetime window and
+    /// any lifetime-0 default-slot claim, so the map's own untargeted default resumes (matching QC's behaviour
+    /// where the per-activator override is not re-sent on reset and the default reclaims the slot).
+    /// </summary>
+    private static void TargetMusicReset(Entity self)
+    {
+        if (!string.IsNullOrEmpty(self.TargetName))
+        {
+            self.Active = MapMover.ActiveNot;       // a triggered override goes silent again until re-used
+            self.MusicActivationTime = -1f;         // clear the lifetime window / default-slot claim
+        }
+        else
+        {
+            self.Active = MapMover.ActiveActive;    // the untargeted default re-asserts (QC sendto MSG_ALL,true)
+        }
+    }
+
+    /// <summary>
     /// Port of <c>target_music_use</c> (music.qc:59-72): each trigger RE-SENDS the track to the activator —
     /// it never toggles off. The override then lives for <see cref="Entity.MusicLifetime"/> seconds
     /// (client-side: <c>e.lifetime = time + tim</c> in Net_TargetMusic, evaluated by TargetMusic_Advance);
@@ -63,6 +90,15 @@ public static class TargetMusic
     /// </summary>
     private static void TargetMusicUse(Entity self, Entity activator)
     {
+        // QC target_music_use: `if(!actor) return;` then only sends to a REAL client actor (+ its spectators).
+        // The port's MusicPlayer is global to the single listen-server local player, so we don't (and can't)
+        // route per-activator, but we keep QC's gates: a null/non-client trigger source must NOT activate the
+        // override (e.g. a logic relay with no carried activator) — only a real player triggering it does.
+        if (activator is null)
+            return;
+        if ((activator.Flags & EntFlags.Client) == 0)
+            return;
+
         self.Active = MapMover.ActiveActive;
         self.MusicActivationTime = MapMover.Now();
     }
@@ -87,22 +123,27 @@ public static class TargetMusic
         // inside any trigger_music volume. We set the Touch delegate so the touch system fires it.
         this_.Touch = TriggerMusicTouch;
 
-        // Spawnflag 1 = START_DISABLED (from QC: can be toggled via relay_activate/deactivate).
-        if ((this_.SpawnFlags & 1) != 0)
-            this_.Active = MapMover.ActiveNot;
-        else
-            this_.Active = MapMover.ActiveActive;
+        // QC spawnfunc(trigger_music) installs use + reset UNCONDITIONALLY (use = generic_netlinked_legacy_use,
+        // reset = trigger_music_reset) and then CALLS this.reset(this) to apply the initial active state from the
+        // START_DISABLED spawnflag. Mirror that: the use handler toggles active for relay_activate/deactivate
+        // (works even on an untargeted volume, matching QC), and reset re-applies START_DISABLED on round restart.
+        this_.Use = TriggerMusicActivateUse;
+        this_.Reset = TriggerMusicReset;
+        TriggerMusicReset(this_);   // QC: this.reset(this) — set the initial active state
 
         // Register so relay_activate / relay_deactivate can find it by targetname.
-        if (!string.IsNullOrEmpty(this_.TargetName))
-        {
-            this_.Use = TriggerMusicActivateUse;
-            MapMover.IndexRegister(this_);
-        }
-        else
-        {
-            MapMover.IndexRegister(this_);
-        }
+        MapMover.IndexRegister(this_);
+    }
+
+    /// <summary>
+    /// Port of <c>trigger_music_reset</c> (music.qc:135-145): set active from the START_DISABLED spawnflag
+    /// (BIT(0)=1). Called at spawn (QC's <c>this.reset(this)</c>) and on every round restart by the round handler,
+    /// so a volume toggled off mid-round by a relay returns to its mapped default state.
+    /// </summary>
+    private static void TriggerMusicReset(Entity self)
+    {
+        // START_DISABLED (spawnflag 1) starts the volume inactive; otherwise active.
+        self.Active = (self.SpawnFlags & 1) != 0 ? MapMover.ActiveNot : MapMover.ActiveActive;
     }
 
     /// <summary>

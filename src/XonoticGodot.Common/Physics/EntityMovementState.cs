@@ -35,6 +35,12 @@ public partial class Entity
     /// on landing and on jump. Not load-bearing for the core accel math but kept for fidelity.</summary>
     public int JumpPadCount;
 
+    /// <summary>QC <c>.jumppadsused[NUM_JUMPPADSUSED]</c> (jumppads.qh:29, NUM_JUMPPADSUSED=3): the ring of
+    /// the last few jumppads that launched this player in the current air-time, used by jumppad_push to
+    /// dedupe a re-touch of the same pad before bumping <see cref="JumpPadCount"/> (multi-pad combo credit).
+    /// Lazily allocated; never read outside the dedup loop.</summary>
+    public Entity?[]? JumpPadsUsed;
+
     /// <summary>Xonotic's <c>FL_ONSLICK</c> flag (slick/icy surface under the player). The base
     /// <see cref="EntFlags"/> enum does not define it, so the port tracks it here. Set from a
     /// downward trace whose surface carries <c>Q3SURFACEFLAG_SLICK</c> (PM_check_slick).</summary>

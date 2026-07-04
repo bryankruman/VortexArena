@@ -72,18 +72,23 @@ public class WeaponByIdTests
     public void ByIdOrder_Covers_Every_ImpulseReachable_Weapon_Exactly_Once()
     {
         var order = WeaponOrder.ByIdOrder();
-        // No port weapon is impulse-skipped (no SPECIALATTACK, no Ball-Stealer MUTATORBLOCKED+TYPE_OTHER),
-        // so the by-id order is a permutation of the whole registry.
-        int skipped = Registry<Weapon>.All.Count(w =>
+        // A weapon is impulse-skipped if it is SPECIALATTACK, or the Ball-Stealer (MUTATORBLOCKED + TYPE_OTHER).
+        // Three weapons hit this: the Nexball ball-stealer (MUTATORBLOCKED|TYPE_OTHER), the hidden Hunter-Killer
+        // player weapon (WEP_HK / HunterKillerAttack, WEP_FLAG_SPECIALATTACK | WEP_FLAG_HIDDEN, impulse 9), and the
+        // FLAC turret weapon (WEP_TUR_FLAC / FlacWeapon, WEP_FLAG_SPECIALATTACK | WEP_FLAG_HIDDEN) — all three are
+        // excluded from the impulse-reachable by-id order, faithfully matching QC's weaponorder skip.
+        // The by-id order is therefore a permutation of the registry MINUS the skipped weapon(s).
+        bool IsSkipped(Weapon w) =>
             (w.SpawnFlags & WeaponFlags.SpecialAttack) != 0
-            || ((w.SpawnFlags & WeaponFlags.MutatorBlocked) != 0 && (w.SpawnFlags & WeaponFlags.TypeOther) != 0));
-        Assert.Equal(0, skipped);
+            || ((w.SpawnFlags & WeaponFlags.MutatorBlocked) != 0 && (w.SpawnFlags & WeaponFlags.TypeOther) != 0);
+        int skipped = Registry<Weapon>.All.Count(IsSkipped);
+        Assert.Equal(3, skipped); // nexball ball-stealer (MUTATORBLOCKED|TYPE_OTHER) + Hunter-Killer (WEP_HK, SPECIALATTACK) + FlacWeapon (WEP_TUR_FLAC, SPECIALATTACK|HIDDEN)
 
-        Assert.Equal(Registry<Weapon>.Count, order.Count);
+        Assert.Equal(Registry<Weapon>.Count - skipped, order.Count);
         Assert.Equal(order.Count, order.Select(w => w.NetName).Distinct().Count());
-        // Every registry weapon appears.
+        // Every NON-skipped registry weapon appears exactly once.
         Assert.Equal(
-            Registry<Weapon>.All.Select(w => w.NetName).OrderBy(n => n).ToList(),
+            Registry<Weapon>.All.Where(w => !IsSkipped(w)).Select(w => w.NetName).OrderBy(n => n).ToList(),
             order.Select(w => w.NetName).OrderBy(n => n).ToList());
     }
 }

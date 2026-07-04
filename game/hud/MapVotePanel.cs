@@ -94,6 +94,14 @@ public partial class MapVotePanel : HudPanel
     /// <summary>QC <c>mv_selection</c>: index of the cell currently under the cursor/keyboard (-1 = none).</summary>
     public int Selection { get; set; } = -1;
 
+    /// <summary>QC <c>mv_num_maps</c>: the number of map cells on the grid (excludes the abstain row). Stamped
+    /// each frame by <see cref="DrawPanel"/> so the input handler (QC <c>MapVote_Move*</c>) can navigate.</summary>
+    public int MapCount => _candidates.Count;
+
+    /// <summary>QC <c>mv_columns</c>: the grid column count chosen by the best-aspect layout, stamped each frame
+    /// by <see cref="DrawPanel"/> so the keyboard up/down navigation matches what's drawn.</summary>
+    public int Columns { get; private set; } = 1;
+
     /// <summary>QC <c>mv_winner</c>: 1-based index of the winning candidate once decided (0 = not yet).</summary>
     public int Winner { get; set; }
 
@@ -119,12 +127,51 @@ public partial class MapVotePanel : HudPanel
     /// <summary>Slave the countdown to this clock; &lt; 0 uses the sim clock (else its own ticker).</summary>
     public double Now { get; set; } = -1.0;
 
+    /// <summary>QC <c>MV_FADETIME</c> (0.2s): the selection-highlight / post-select color ease duration.</summary>
+    private const float FadeTime = 0.2f;
+
+    /// <summary>QC <c>mv_select_lasttime[id]</c>: the sim time each cell was last the selection, driving the
+    /// <c>(time - lasttime) / MV_FADETIME</c> fade of its highlight fill + its settle from yellow to base.</summary>
+    private readonly double[] _selectLastTime = new double[MaxCandidates];
+
+    /// <summary>QC <c>mv_top2_time</c>: when the ballot was reduced to the top 2 (the unavailable options start
+    /// fading then). 0 = no reduce has happened.</summary>
+    private double _top2Time;
+
+    /// <summary>QC <c>mv_top2_alpha = max(0.2, 1 - (time - mv_top2_time)^2)</c>: the fading alpha for options
+    /// that just lost availability in the mid-vote reduce. 0 ⇔ no reduce in effect (full dim 0.2 fallback).</summary>
+    private float Top2Alpha(double now)
+    {
+        if (_top2Time <= 0.0 || !double.IsFinite(_top2Time)) return 0f;
+        float dt = (float)(now - _top2Time);
+        if (!float.IsFinite(dt) || dt < 0f) dt = 0f;
+        return Mathf.Max(0.2f, 1f - dt * dt);
+    }
+
+    /// <summary>QC <c>mv_suggester_cache</c>: the last non-empty suggester name shown, kept so the
+    /// "Suggested by: …" line fades out (over <see cref="FadeTime"/>) instead of vanishing on deselect.</summary>
+    private string _suggesterCache = "";
+
+    /// <summary>QC <c>mv_suggester_cachetime</c>: sim time the suggester cache was last refreshed.</summary>
+    private double _suggesterCacheTime;
+
     public override bool IsDynamic => true;
 
     private double _localClock;
+    private int _lastStampedSelection = -1;
     public override void _Process(double delta)
     {
         _localClock += delta;
+
+        // QC MapVote_Selection stamps mv_select_lasttime[mv_selection] = time while a cell is selected, so the
+        // moment it stops being the selection its highlight + color fade out over MV_FADETIME. Selection is fed
+        // externally here, so detect the change and keep stamping the current selection each frame.
+        int sel = Selection;
+        if (sel != _lastStampedSelection)
+            _lastStampedSelection = sel;
+        if (sel >= 0 && sel < _selectLastTime.Length)
+            _selectLastTime[sel] = CurrentTime();
+
         QueueRedraw();
     }
 
@@ -156,14 +203,15 @@ public partial class MapVotePanel : HudPanel
     public static void RegisterDefaults(XonoticGodot.Engine.Simulation.CvarService c)
     {
         const XonoticGodot.Common.Services.CvarFlags save = XonoticGodot.Common.Services.CvarFlags.Save;
-        // _hud_descriptions.cfg ships hud_panel_mapvote_highlight_border "2".
-        c.Register("hud_panel_mapvote_highlight_border", "2", save);
+        // Base ships hud_panel_mapvote_highlight_border "1" in every HUD skin (hud_luma.cfg etc.);
+        // _hud_descriptions.cfg ships it empty (""). Match the shipped skin default of 1.
+        c.Register("hud_panel_mapvote_highlight_border", "1", save);
     }
 
     /// <summary>QC <c>autocvar_hud_panel_mapvote_highlight_border</c> (live; clamped non-negative).</summary>
     private float HighlightBorder()
     {
-        float b = GlobalF("hud_panel_mapvote_highlight_border", 2f);
+        float b = GlobalF("hud_panel_mapvote_highlight_border", 1f);
         // A garbage cvar value (NaN/Inf, or an absurd width) would feed DrawRect/DrawBorderLines bad geometry
         // every frame; clamp to a sane, finite, non-negative pixel range.
         if (!float.IsFinite(b) || b < 0f) return 0f;
@@ -191,7 +239,26 @@ public partial class MapVotePanel : HudPanel
         Abstain = abstain;
         Winner = 0;
         WinnerTime = 0.0;
+        // Reset the per-cell fade state for the new ballot (QC zeroes mv_select_lasttime / the reduce + suggester
+        // caches when a fresh mapvote entity arrives).
+        System.Array.Clear(_selectLastTime, 0, _selectLastTime.Length);
+        _top2Time = 0.0;
+        _suggesterCache = "";
+        _suggesterCacheTime = 0.0;
+        _lastStampedSelection = -1;
         Active = _candidates.Count > 0;
+        QueueRedraw();
+    }
+
+    /// <summary>QC <c>MapVote_TouchMask</c> reduce: mark the mid-vote moment the ballot was cut to the top
+    /// options so the now-unavailable candidates fade away (QC <c>mv_top2_time</c> / <c>mv_top2_alpha</c>)
+    /// instead of snapping to the flat 0.2 dim. Pass the per-option availability for the reduced ballot.</summary>
+    public void SetReduce(IReadOnlyList<bool> available)
+    {
+        if (available is null) return;
+        for (int i = 0; i < _candidates.Count && i < available.Count; i++)
+            _candidates[i] = _candidates[i].WithAvailable(available[i]);
+        _top2Time = CurrentTime();
         QueueRedraw();
     }
 
@@ -209,12 +276,18 @@ public partial class MapVotePanel : HudPanel
         QueueRedraw();
     }
 
-    /// <summary>Update the per-option availability mask (QC <c>MapVote_UpdateMask</c> / the top-2 reveal).</summary>
+    /// <summary>Update the per-option availability mask (QC <c>MapVote_UpdateMask</c> / the top-2 reveal). If any
+    /// option newly loses availability this stamps the reduce clock so it fades (QC <c>mv_top2_alpha</c>).</summary>
     public void SetAvailability(IReadOnlyList<bool> available)
     {
         if (available is null) return;
+        bool newlyRemoved = false;
         for (int i = 0; i < _candidates.Count && i < available.Count; i++)
+        {
+            if (_candidates[i].Available && !available[i]) newlyRemoved = true;
             _candidates[i] = _candidates[i].WithAvailable(available[i]);
+        }
+        if (newlyRemoved && _top2Time <= 0.0) _top2Time = CurrentTime();
         QueueRedraw();
     }
 
@@ -291,10 +364,16 @@ public partial class MapVotePanel : HudPanel
         // QC item_aspect: gametype items are wider (3:1) than map items (5:3) to fit the description text.
         float itemAspect = GametypeVote ? 3f / 1f : 5f / 3f;
         int columns = BestColumns(n, w, gridH, itemAspect);
+        Columns = columns; // QC mv_columns: expose the live layout to the input handler's up/down navigation.
         int rows = Mathf.CeilToInt(n / (float)columns);
 
         float cellW = w / columns;
         float cellH = gridH / rows;
+
+        // Cache the grid geometry so a mouse click can hit-test the drawn cells (QC mv_mouse_selection).
+        _gridOrigin = new Vector2(pad, gridTop);
+        _cellSize = new Vector2(cellW, cellH);
+        _gridColumns = columns;
 
         // QC mv_winner_alpha = max(0.2, 1 - sqrt(max(0, time - mv_winner_time))): losers fade back on reveal.
         float winnerAlpha = 1f;
@@ -330,6 +409,52 @@ public partial class MapVotePanel : HudPanel
             string label = FormatMapItem(abstainId, "Don't care", abstainVotes, false, -1);
             DrawTextCentered(new Vector2(pad, Size2.Y - pad - abstainSize), w, label, rgb, abstainSize);
         }
+
+        // --- "Suggested by: <name>" line (QC MapVote_DrawSuggester), centered at the very bottom ---
+        DrawSuggester(pad, w, abstainSize);
+    }
+
+    /// <summary>
+    /// QC <c>MapVote_DrawSuggester</c>: show who suggested the winning (or currently-selected) map, with a
+    /// cache that fades the line out over <see cref="FadeTime"/> when the selection leaves a suggested map
+    /// (so it eases away instead of snapping). Drawn only when <see cref="Detail"/> reveals suggesters and a
+    /// suggester string is available.
+    /// </summary>
+    private void DrawSuggester(float pad, float w, int size)
+    {
+        // QC: id = mv_winner ? mv_winner - 1 : mv_selection.
+        int id = Winner > 0 ? Winner - 1 : Selection;
+
+        float theAlpha = 0f;
+        if (id >= 0 && id < _candidates.Count && _candidates[id].Available)
+        {
+            string sug = _candidates[id].Suggester;
+            if (string.IsNullOrEmpty(_suggesterCache) && string.IsNullOrEmpty(sug))
+                return; // nothing to show and nothing cached
+            if (!string.IsNullOrEmpty(sug)) // refresh the cache to the current suggester, full alpha
+            {
+                _suggesterCache = sug;
+                _suggesterCacheTime = CurrentTime();
+                theAlpha = 1f;
+            }
+        }
+
+        // QC: a cached-but-no-longer-current suggester fades out over MV_FADETIME, then clears.
+        if (!string.IsNullOrEmpty(_suggesterCache) && theAlpha != 1f)
+        {
+            float frac = (float)((CurrentTime() - _suggesterCacheTime) / FadeTime);
+            if (!float.IsFinite(frac) || frac >= 1f) { _suggesterCache = ""; return; }
+            theAlpha = 1f - Mathf.Sqrt(frac < 0f ? 0f : frac);
+        }
+
+        if (theAlpha <= 0f || string.IsNullOrEmpty(_suggesterCache)) return;
+
+        string label = $"Suggested by: {StripName(_suggesterCache)}";
+        var color = new Color(1f, 1f, 1f, theAlpha * LiveFgAlpha);
+        // Sit just above the bottom padding (below the abstain row when present).
+        float yBottom = Size2.Y - pad - (Abstain ? size + Size2.Y * 0.02f + size : 0f) - size;
+        if (yBottom < 0f) yBottom = Size2.Y - pad - size;
+        DrawColorCoded(new Vector2(pad, yBottom), w, label, color, size);
     }
 
     /// <summary>
@@ -351,7 +476,11 @@ public partial class MapVotePanel : HudPanel
         // QC alpha: dim unavailable options (top-2 reveal), dim losers on winner reveal.
         float a;
         if (!c.Available)
-            a = 0.2f; // QC: the gametype isn't supported / dropped from the top-2.
+        {
+            // QC: !(mv_flags[id] & GTV_AVAILABLE) && mv_top2_alpha ⇒ fade with mv_top2_alpha; else flat 0.2.
+            float top2 = Top2Alpha(CurrentTime());
+            a = top2 > 0f ? top2 : 0.2f;
+        }
         else if (Winner > 0)
             a = (Winner - 1 == id) ? 1f : winnerAlpha;
         else
@@ -370,9 +499,13 @@ public partial class MapVotePanel : HudPanel
                 DrawRect(rectFill, new Color(rgb.R, rgb.G, rgb.B, 0.1f * a));
                 DrawBorderLines(rectFill, new Color(rgb.R, rgb.G, rgb.B, a), hb);
             }
-            else if (id == Selection)
+            else
             {
-                DrawRect(rectFill, new Color(1f, 1f, 1f, 0.1f * LiveFgAlpha));
+                // QC: drawfill('1 1 1', 0.1 * (1 - sqrt(time_frac)) * panel_fg_alpha) — the selection-highlight
+                // box stays solid for the selected cell (time_frac = 0) and fades out over MV_FADETIME after.
+                float frac = id == Selection ? 0f : SelectFraction(id);
+                if (frac < 1f)
+                    DrawRect(rectFill, new Color(1f, 1f, 1f, 0.1f * (1f - Mathf.Sqrt(frac)) * LiveFgAlpha));
             }
         }
         else if (Winner > 0 && Winner - 1 == id)
@@ -623,7 +756,21 @@ public partial class MapVotePanel : HudPanel
             return new Color(0f, 1f, 0f, alpha);       // QC '0 1 0'
         if (id == Selection)
             return new Color(1f, 1f, 0f, alpha);       // QC '1 1 0'
-        return new Color(1f, 1f, 0.55f, alpha);        // QC '1 1 0' + a little blue (post-select fade settled)
+        // QC: '1 1 0' + eZ * (time_frac >= 1 ? 1 : sqrt(time_frac)) — the blue channel ramps in as the cell
+        // settles from a recent selection (yellow) back to the resting cream over MV_FADETIME.
+        float blue = SelectFraction(id) >= 1f ? 1f : Mathf.Sqrt(SelectFraction(id));
+        return new Color(1f, 1f, blue, alpha);
+    }
+
+    /// <summary>QC <c>(time - mv_select_lasttime[id]) / MV_FADETIME</c>, clamped to [0,1] (1 = fully settled).</summary>
+    private float SelectFraction(int id)
+    {
+        if (id < 0 || id >= _selectLastTime.Length) return 1f;
+        double last = _selectLastTime[id];
+        if (last <= 0.0) return 1f;
+        float frac = (float)((CurrentTime() - last) / FadeTime);
+        if (!float.IsFinite(frac) || frac >= 1f) return 1f;
+        return frac < 0f ? 0f : frac;
     }
 
     /// <summary>QC <c>MapVote_RGB</c> for the abstain option id (no availability flag, so it reads as own/sel).</summary>
@@ -632,5 +779,178 @@ public partial class MapVotePanel : HudPanel
         if (abstainId == OwnVote) return new Color(0f, 1f, 0f, alpha);
         if (abstainId == Selection) return new Color(1f, 1f, 0f, alpha);
         return new Color(1f, 1f, 0.55f, alpha);
+    }
+
+    // =====================================================================================
+    //  Input (QC client/mapvoting.qc MapVote_InputEvent + MapVote_Move* + MapVote_SendChoice)
+    // =====================================================================================
+
+    /// <summary>Set by the host (NetGame) to forward a chosen 0-based ballot index to the server as
+    /// <c>impulse N+1</c> — the port's <c>MapVote_SendChoice</c> (QC <c>localcmd("impulse ", index+1)</c>).</summary>
+    public System.Action<int>? CastChoice { get; set; }
+
+    /// <summary>True when this option index is available (QC <c>mv_flags[i] &amp; GTV_AVAILABLE</c>).</summary>
+    private bool IsAvailable(int i) => i >= 0 && i < _candidates.Count && _candidates[i].Available;
+
+    // QC MapVote_MoveLeft/Right/Up/Down: move the selection, skipping unavailable cells (except the own vote).
+    private int MoveLeft(int pos)
+    {
+        int n = MapCount;
+        if (n <= 0) return -1;
+        int imp = pos < 0 ? n - 1 : (pos < 1 ? n - 1 : pos - 1);
+        if (!IsAvailable(imp) && imp != OwnVote) imp = MoveLeft(imp);
+        return imp;
+    }
+    private int MoveRight(int pos)
+    {
+        int n = MapCount;
+        if (n <= 0) return -1;
+        int imp = pos < 0 ? 0 : (pos >= n - 1 ? 0 : pos + 1);
+        if (!IsAvailable(imp) && imp != OwnVote) imp = MoveRight(imp);
+        return imp;
+    }
+    private int MoveUp(int pos)
+    {
+        int n = MapCount;
+        if (n <= 0) return -1;
+        int cols = System.Math.Max(1, Columns);
+        int imp;
+        if (pos < 0) imp = n - 1;
+        else
+        {
+            imp = pos - cols;
+            if (imp < 0)
+            {
+                int rows = Mathf.CeilToInt(n / (float)cols);
+                imp = imp == -cols ? cols * rows - 1 : imp + cols * rows - 1; // pos == 0 wraps to last cell
+            }
+        }
+        if (imp >= n) imp = n - 1; // a ragged last row can leave imp past the cells
+        if (!IsAvailable(imp) && imp != OwnVote) imp = MoveUp(imp);
+        return imp;
+    }
+    private int MoveDown(int pos)
+    {
+        int n = MapCount;
+        if (n <= 0) return -1;
+        int cols = System.Math.Max(1, Columns);
+        int imp;
+        if (pos < 0) imp = 0;
+        else
+        {
+            imp = pos + cols;
+            if (imp >= n)
+            {
+                int col = imp % cols;
+                imp = col == cols - 1 ? 0 : col + 1; // wrap to the next column's top
+            }
+        }
+        if (imp >= n) imp = 0;
+        if (!IsAvailable(imp) && imp != OwnVote) imp = MoveDown(imp);
+        return imp;
+    }
+
+    /// <summary>QC <c>MapVote_SendChoice(index)</c>: cast the 0-based ballot option (forwarded as impulse N+1).</summary>
+    private void SendChoice(int index)
+    {
+        if (index < 0 || index >= MapCount) return;
+        CastChoice?.Invoke(index);
+    }
+
+    private int _firstDigit;
+
+    /// <summary>
+    /// QC <c>MapVote_InputEvent</c> (client/mapvoting.qc:930): move the selection (arrows), cast the selection
+    /// (enter/space), cast by number (digits, Ctrl+digit for two-digit indices), or cast/select by mouse click.
+    /// Returns true if the event was consumed (so the host can mark it handled). No-op once a winner is shown or
+    /// while the panel isn't active (QC <c>!mv_active</c>).
+    /// </summary>
+    public bool HandleVoteKey(Key key, bool ctrl)
+    {
+        if (!Active || MapCount <= 0) return false;
+        if (Winner > 0) return true; // a winner is being revealed — swallow but do nothing (QC `if (mv_winner) return true`).
+
+        switch (key)
+        {
+            case Key.Right: Selection = MoveRight(Selection); return true;
+            case Key.Left:  Selection = MoveLeft(Selection);  return true;
+            case Key.Down:  Selection = MoveDown(Selection);  return true;
+            case Key.Up:    Selection = MoveUp(Selection);    return true;
+            case Key.Enter:
+            case Key.KpEnter:
+            case Key.Space:
+                if (Selection >= 0) SendChoice(Selection);
+                return true;
+        }
+
+        // QC digit cast: '1'..'9' → 1..9, '0' → 10. Keypad digits map the same.
+        int imp = DigitImpulse(key);
+        if (imp == 0) return false;
+
+        // QC Ctrl+digit two-digit entry: first digit is buffered, second completes the index.
+        if (ctrl)
+        {
+            if (_firstDigit == 0) { _firstDigit = imp % 10; return true; }
+            imp = _firstDigit * 10 + (imp % 10);
+            _firstDigit = 0;
+        }
+
+        if (imp <= MapCount)
+            SendChoice(imp - 1); // QC localcmd impulse imp (1-based) → 0-based choice
+        return true;
+    }
+
+    /// <summary>QC the mouse path in <c>MapVote_InputEvent</c>: a left-click on the hovered cell casts it.</summary>
+    public bool HandleVoteClick(Vector2 localPos)
+    {
+        if (!Active || MapCount <= 0 || Winner > 0) return false;
+        int hit = CellAt(localPos);
+        if (hit < 0) return false;
+        Selection = hit;
+        SendChoice(hit);
+        return true;
+    }
+
+    /// <summary>QC <c>mv_mouse_selection</c>: mouse hover moves the selection (highlight) without casting.</summary>
+    public void HandleVoteHover(Vector2 localPos)
+    {
+        if (!Active || MapCount <= 0 || Winner > 0) return;
+        int hit = CellAt(localPos);
+        if (hit >= 0) Selection = hit;
+    }
+
+    /// <summary>Map a digit/keypad key to its 1-based ballot impulse (QC the '1'..'0' / K_KP_* cases).</summary>
+    private static int DigitImpulse(Key key) => key switch
+    {
+        Key.Key1 or Key.Kp1 => 1,
+        Key.Key2 or Key.Kp2 => 2,
+        Key.Key3 or Key.Kp3 => 3,
+        Key.Key4 or Key.Kp4 => 4,
+        Key.Key5 or Key.Kp5 => 5,
+        Key.Key6 or Key.Kp6 => 6,
+        Key.Key7 or Key.Kp7 => 7,
+        Key.Key8 or Key.Kp8 => 8,
+        Key.Key9 or Key.Kp9 => 9,
+        Key.Key0 or Key.Kp0 => 10,
+        _ => 0,
+    };
+
+    // Cached grid geometry from the last DrawPanel so a click can be hit-tested against the drawn cells.
+    private Vector2 _gridOrigin;
+    private Vector2 _cellSize;
+    private int _gridColumns = 1;
+
+    /// <summary>Hit-test a panel-local point against the drawn candidate grid; returns the 0-based cell index or -1.</summary>
+    private int CellAt(Vector2 localPos)
+    {
+        if (_cellSize.X <= 0f || _cellSize.Y <= 0f) return -1;
+        float rx = localPos.X - _gridOrigin.X;
+        float ry = localPos.Y - _gridOrigin.Y;
+        if (rx < 0f || ry < 0f) return -1;
+        int col = (int)(rx / _cellSize.X);
+        int row = (int)(ry / _cellSize.Y);
+        if (col < 0 || col >= _gridColumns) return -1;
+        int idx = row * _gridColumns + col;
+        return idx >= 0 && idx < MapCount ? idx : -1;
     }
 }

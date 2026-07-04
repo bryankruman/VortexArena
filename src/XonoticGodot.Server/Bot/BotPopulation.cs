@@ -47,10 +47,16 @@ public sealed class BotPopulation
 
     private float _nextThink;            // QC botframe_nextthink (fixcount backoff on spawn failure)
     private bool _waypointsLoaded;       // QC botframe_spawnedwaypoints (load-once latch)
+    private int _itemPrewarmCursor;      // (perf) staggered item→waypoint cache prewarm — see block (g2)
+    private bool _itemPrewarmDone = true;
     private float _lastSkillCvar = float.NaN; // QC the `skill` global resync (bot.qc:725-736)
     private int _tokenIndex;             // QC bot_strategytoken (index into _brains)
     private bool _tokenTaken = true;     // QC bot_strategytoken_taken (true → rotate next frame)
     private int _seedCounter = 1;
+    private float _autoskillNextThink;   // QC autoskill_nextthink (5 s autoskill recheck clock)
+    private float _nextDangerTime;        // QC botframe_nextdangertime (danger-detection recompute clock)
+    // QC the per-client totalfrags_lastcheck baseline: frags-since-last-autoskill is ScoreFrags - this.
+    private readonly Dictionary<Player, int> _fragsLastCheck = new();
 
     // per-tick input cache (the both-readers-one-command seam; mirrors ServerNet's TickInputTime cache).
     // TickInput implements IMovementInput by delegating to its struct field so InputFor can return the SAME
@@ -130,8 +136,9 @@ public sealed class BotPopulation
         }
 
         // (d) live `skill` cvar resync (bot.qc:725-736): a console `skill N` retunes every bot. (QC also
-        // re-costs waypoint links across the bunnyhop threshold — the port's link costs aren't skill-scaled,
-        // so that branch has no analogue.) Per-bot BotSkill is the authoritative knob; the cvar change writes
+        // re-costs waypoint links across the bunnyhop threshold; the port bakes the shared graph's costs once
+        // at LoadWaypointNetwork using the server skill — see WaypointNetwork.ForMap's skill seed — rather than
+        // re-costing live on a mid-match skill change.) Per-bot BotSkill is the authoritative knob; the cvar change writes
         // it for all bots, and the per-frame brain sync below picks up any direct BotSkill write too.
         float skillCvar = Cvars.Skill;
         if (skillCvar != _lastSkillCvar)
@@ -146,9 +153,18 @@ public sealed class BotPopulation
         {
             b.Skill = b.Bot.BotSkill;
             b.Nav.Skill = b.Bot.BotSkill;
+            b.Nav.MoveSkill = b.Bot.BotMoveSkill;   // QC bot_moveskill term in the bunnyhop gate (midair zeroes it)
         }
 
-        // (e) autoskill (bot.qc:741-747) — ships skill_auto 0; unported (see residuals).
+        // (e) autoskill (bot.qc:741-747): every 5 s, if skill_auto is set, retune the `skill` cvar toward the
+        // best human's recent frag rate (the cvar resync above then writes it onto every bot next frame).
+        if (time > _autoskillNextThink)
+        {
+            float a = Cvars.Float("skill_auto");
+            if (a != 0f)
+                Autoskill(a);
+            _autoskillNextThink = time + 5f;
+        }
 
         // (f) population fill/trim (bot.qc:749-753): one add per frame; a failed spawn backs off 10s.
         if (time > _nextThink)
@@ -165,6 +181,37 @@ public sealed class BotPopulation
             Network = _world.LoadWaypointNetwork();
             foreach (BotBrain b in _brains)
                 b.Network = Network;
+            _itemPrewarmCursor = 0;          // arm the staggered item→waypoint prewarm below
+            _itemPrewarmDone = Network is null;
+        }
+
+        // (g2) (perf 2026-07-03) Staggered item→waypoint prewarm: the FIRST strategy pass per bot used to pay
+        // the whole QC .nearestwaypoint cache fill in one tick (~every rateable item × a tracewalk-verified
+        // Nearest each — the 80-115ms join-window CPU-LOGIC hitches on a debug build, stormkeep census). Bind a
+        // few items per frame here instead — the SAME cache with the SAME position-derived values
+        // (WaypointNetwork.NearestForGoal), just filled off the strategy hot path. Static items bind once per
+        // match; the cursor walks the entity list once per graph load.
+        if (Network is { } net && !_itemPrewarmDone)
+        {
+            var all = Common.Services.Api.Entities.All;
+            if (all is null)
+                _itemPrewarmDone = true;
+            else
+            {
+                const int PerFrame = 3;   // ~1-3 tracewalks each — a sub-millisecond-scale slice per tick
+                int bound = 0;
+                while (_itemPrewarmCursor < all.Count && bound < PerFrame)
+                {
+                    Entity e = all[_itemPrewarmCursor++];
+                    if (e is { IsFreed: false } && (e.Flags & EntFlags.Item) != 0)
+                    {
+                        net.NearestForGoal(e, e.Origin);
+                        bound++;
+                    }
+                }
+                if (_itemPrewarmCursor >= all.Count)
+                    _itemPrewarmDone = true;
+            }
         }
 
         // (h) strategy token rotation (bot.qc:786-813): when the token was consumed, pass it to the next bot
@@ -187,8 +234,22 @@ public sealed class BotPopulation
                 b.AutoReadied = false; // re-arm for the next warmup (ready set is cleared on restart)
         }
 
-        // (j) botframe_updatedangerousobjects (bot.qc:815-822) — per-waypoint danger costs; unported (the
-        // port's live danger check is the per-bot havocbot_checkdanger probe in BotBrain). See residuals.
+        // (j) botframe_updatedangerousobjects (bot.qc:815-822 → navigation.qc:1874): every
+        // bot_ai_dangerdetectioninterval (0.25 s) recompute each waypoint's static .dmg danger bias from the
+        // g_bot_dodge hazard list (in-flight rockets, turret beams). FindPath folds Waypoint.Danger into the A*
+        // cost so bots route AROUND hazards, complementing the per-frame havocbot_checkdanger brake in BotBrain.
+        if (Network is not null && time >= _nextDangerTime)
+        {
+            float interval = Cvars.FloatOr("bot_ai_dangerdetectioninterval", 0.25f);
+            // QC: catch up the clock if we fell more than 1.5 intervals behind, then advance one interval.
+            if (_nextDangerTime < time - interval * 1.5f)
+                _nextDangerTime = time;
+            _nextDangerTime += interval;
+
+            var all = Common.Services.Api.Entities.All;
+            if (all is not null)
+                Network.UpdateDangerousObjects(all, (int)Cvars.FloatOr("bot_ai_dangerdetectionupdates", 64f));
+        }
     }
 
     /// <summary>
@@ -221,11 +282,23 @@ public sealed class BotPopulation
     private bool FixCount(float time)
     {
         int activeRealPlayers = 0, realPlayers = 0;
+        // QC MUTATOR_HOOKFUNCTION(lms, Bot_FixCount, CBC_ORDER_EXCLUSIVE) (sv_lms.qc:693): LMS overrides the
+        // active-real-player count so that eliminated (out-of-game) players no longer keep a bot slot filled —
+        // only INGAME real clients count as activerealplayers. Mirror that by checking OutOfGame on LmsState.
+        bool lmsActive = _world.GameType is XonoticGodot.Common.Gameplay.LastManStanding;
+        XonoticGodot.Common.Gameplay.LastManStanding? lms =
+            lmsActive ? (XonoticGodot.Common.Gameplay.LastManStanding)_world.GameType! : null;
         foreach (ClientManager.ClientInfo c in _world.Clients.Clients)
         {
             if (c.IsBot) continue;
             realPlayers++;
-            if (!c.Player.IsObserver) activeRealPlayers++; // QC IS_PLAYER (joined, not observing)
+            if (!c.Player.IsObserver)
+            {
+                // QC IS_PLAYER (joined, not observing). For LMS, also require INGAME (not eliminated/out-of-game).
+                // Use LivesOf (0 when not in _states or Lives==0); a 0-lives player is out-of-game in LMS.
+                if (lms is null || lms.LivesOf(c.Player) > 0)
+                    activeRealPlayers++;
+            }
         }
 
         int target = TargetBotCount(
@@ -237,7 +310,9 @@ public sealed class BotPopulation
             minPlayers: Cvars.Float("minplayers"),
             minPlayersPerTeam: Cvars.Float("minplayers_per_team"),
             botNumber: Cvars.Float("bot_number"),
-            playerLimit: Cvars.Int("g_maxplayers"),
+            // QC bot_fixcount calls GetPlayerLimit() (server/client.qc:2155), which short-circuits to 2 for
+            // duel — so bot-fill respects the 1v1 cap, not the raw g_maxplayers.
+            playerLimit: _world.GameType is Duel ? Duel.PlayerLimit : Cvars.Int("g_maxplayers"),
             maxClients: MaxClients,
             currentBots: _currentBots,
             time: time,
@@ -322,18 +397,51 @@ public sealed class BotPopulation
     /// The brain is created by the ClientManager OnBotConnected hook → <see cref="RegisterBot"/>.</summary>
     private BotBrain? SpawnBot(string? name, float? skill)
     {
-        (string botName, string model) = string.IsNullOrWhiteSpace(name)
-            ? PickNameAndModel()
-            : (name!, "");
+        (string botName, string model, string skin, int forcedTeam, int color, float aggresSkill, float aimSkill)
+            = string.IsNullOrWhiteSpace(name)
+                ? PickNameAndModel()
+                : (name!, "", "", 0, -1, 0f, 0f);
 
         ClientManager.ClientInfo info = _world.Clients.ClientConnect(isBot: true, netName: botName);
         Player p = info.Player;
         p.BotSkill = skill ?? Cvars.Skill;                  // QC the global `skill` cvar seeds new bots
-        if (!string.IsNullOrEmpty(model))
+        // QC the bots.txt per-bot fire-skill modifiers (bot.qc:282/285): carried so the aim fire decision +
+        // max-fire-deviation reflect each bot's aggression/aim personality (default 0 when no column present).
+        p.BotAggresSkill = aggresSkill;
+        p.BotAimSkill = aimSkill;
+
+        // QC bot_forced_team (bot.qc:255-262 / client.qc:592): a bots.txt-pinned team (argv5) overrides the
+        // auto-balance that ClientConnect just ran — but only in teamplay and not under bot_vs_human/2-team.
+        // Pin it via Teamplay.SetBotForcedTeam (so future autobalance/shuffle keeps honoring it) and re-run
+        // AssignBestTeam, which already early-outs on a pinned bot; the initial call ran before the pin existed.
+        if (forcedTeam != 0 && _world.Teamplay.IsTeamGame
+            && !(Cvars.Bool("bot_vs_human") && _world.Teamplay.TeamCount == 2))
         {
-            _preferredModel[p] = model;
-            ApplyPreferredModel(p);                          // the connect auto-Join already spawned it
+            _world.Teamplay.SetBotForcedTeam(p, forcedTeam);
+            _world.Teamplay.AssignBestTeam(p, _world.Clients.Players);
         }
+
+        // QC bot_skin (bot.qc:343 this.playerskin): a bots.txt skin index overrides the default player skin.
+        // Stored so it survives respawns (FixPlayermodel re-honors the client's playerskin) and applied now
+        // since ClientConnect already auto-joined+spawned the bot.
+        if (int.TryParse(skin, NumberStyles.Integer, CultureInfo.InvariantCulture, out int skinIdx) && skinIdx >= 0)
+            _preferredSkin[p] = skinIdx;
+
+        // QC bot_setnameandstuff:315-318: setcolor(this, 16*shirt+pants) then save bot_preferredcolors. In FFA
+        // the chosen shirt/pants is the bot's actual color; in a team game setcolor's team change is undone and
+        // the team color wins (bot.qc:316 + the team-join SetPlayerColors), so only apply the personal color in
+        // FFA where it's visible. Store the preference so it survives respawns (re-stamped in OnBotSpawned).
+        if (color >= 0)
+        {
+            _preferredColor[p] = color;
+            if (!_world.Teamplay.IsTeamGame)
+                _world.Teamplay.SetColor(p, color); // QC setcolor (FFA: team stays neutral, clientcolors = color)
+        }
+
+        if (!string.IsNullOrEmpty(model))
+            _preferredModel[p] = model;
+        if (!string.IsNullOrEmpty(model) || _preferredSkin.ContainsKey(p))
+            ApplyPreferredModel(p);                          // the connect auto-Join already spawned it
         // the OnBotConnected hook registered the brain; sync its skill now that BotSkill is final.
         if (_byPlayer.TryGetValue(p, out BotBrain? brain))
         {
@@ -417,6 +525,9 @@ public sealed class BotPopulation
         }
         _tickInputs.Remove(p);
         _preferredModel.Remove(p);
+        _preferredSkin.Remove(p);
+        _preferredColor.Remove(p);
+        _fragsLastCheck.Remove(p);
         BotRemoved?.Invoke(p);
     }
 
@@ -431,15 +542,28 @@ public sealed class BotPopulation
            || (Cvars.Bool("g_campaign") && !_world.Campaign.BotsMayStart);
 
     private readonly Dictionary<Player, string> _preferredModel = new();
+    // QC .playerskin (bot.qc:343): the bots.txt skin index for a bot, re-applied after each spawn (which resets
+    // p.Skin to sv_defaultplayerskin), matching QC FixPlayermodel honoring the client's playerskin.
+    private readonly Dictionary<Player, int> _preferredSkin = new();
+    // QC .bot_preferredcolors (bot.qc:318): the bots.txt-derived packed shirt/pants color, re-applied (FFA only)
+    // after each spawn — mirrors QC re-stamping setcolor(e, e.bot_preferredcolors) for bots (bot.qc:418).
+    private readonly Dictionary<Player, int> _preferredColor = new();
 
     private void ApplyPreferredModel(Player p)
     {
-        if (!_preferredModel.TryGetValue(p, out string? model) || string.IsNullOrEmpty(model))
-            return;
-        if (Common.Services.Api.Services is not null)
-            Common.Services.Api.Entities.SetModel(p, model);
-        else
-            p.Model = model;
+        if (_preferredModel.TryGetValue(p, out string? model) && !string.IsNullOrEmpty(model))
+        {
+            if (Common.Services.Api.Services is not null)
+                Common.Services.Api.Entities.SetModel(p, model);
+            else
+                p.Model = model;
+        }
+        if (_preferredSkin.TryGetValue(p, out int skin))
+            p.Skin = skin; // QC this.playerskin → the player's rendered skin index
+        // QC bot.qc:418 re-stamps setcolor(e, e.bot_preferredcolors) for bots; in FFA the personal shirt/pants
+        // is the bot's color (a team game forces the team color, so skip there — the team join owns ClientColors).
+        if (_preferredColor.TryGetValue(p, out int color) && !_world.Teamplay.IsTeamGame)
+            _world.Teamplay.SetColor(p, color);
     }
 
     // =============================================================================================
@@ -480,10 +604,70 @@ public sealed class BotPopulation
     }
 
     // =============================================================================================
+    // autoskill (QC autoskill, bot.qc:569-613)
+    // =============================================================================================
+
+    /// <summary>
+    /// QC <c>autoskill(factor)</c>: compare the best human's and best bot's frags gained since the last check;
+    /// if bots lag by ≥2 (scaled by <paramref name="factor"/>) bump <c>skill</c> up (cap 17), if they lead by
+    /// ≥2 bump it down (floor 0). When no human or no bot scored this window, only the counters are reset; in
+    /// the "nothing to do" middle band the counters are KEPT so they keep accumulating (QC the early return).
+    /// The <c>skill</c> cvar write is picked up by the per-frame resync above (branch d).
+    /// </summary>
+    private void Autoskill(float factor)
+    {
+        int bestBot = -1, bestPlayer = -1;
+        foreach (ClientManager.ClientInfo c in _world.Clients.Clients)
+        {
+            Player p = c.Player;
+            if (p.IsObserver) continue;                       // QC IS_PLAYER
+            int gained = p.ScoreFrags - (_fragsLastCheck.TryGetValue(p, out int last) ? last : 0);
+            if (c.IsBot)
+                bestBot = System.Math.Max(bestBot, gained);
+            else
+                bestPlayer = System.Math.Max(bestPlayer, gained);
+        }
+
+        if (bestBot < 0 || bestPlayer < 0)
+        {
+            // no human or no bot scoring this window: do nothing, but fall through to reset the counters.
+        }
+        else if (bestBot <= bestPlayer * factor - 2f)
+        {
+            float skill = Cvars.Skill;
+            if (skill < 17f)
+                Cvars.Set("skill", skill + 1f);
+        }
+        else if (bestBot >= bestPlayer * factor + 2f)
+        {
+            float skill = Cvars.Skill;
+            if (skill > 0f)
+                Cvars.Set("skill", skill - 1f);
+        }
+        else
+        {
+            return; // "not doing anything" middle band: keep the counters, wait for them to accumulate.
+        }
+
+        // reset the per-client baselines (QC FOREACH_CLIENT it.totalfrags_lastcheck = it.totalfrags).
+        foreach (ClientManager.ClientInfo c in _world.Clients.Clients)
+            if (!c.Player.IsObserver)
+                _fragsLastCheck[c.Player] = c.Player.ScoreFrags;
+    }
+
+    // =============================================================================================
     // bots.txt (QC bot_setnameandstuff — the name/model slice)
     // =============================================================================================
 
-    private List<(string Name, string Model)>? _botRows; // parsed once per world; null until first use
+    // QC bots.txt rows: name (argv0), model (argv1), skin (argv2), shirt (argv3), pants (argv4), forced-team
+    // (argv5, 1..4; 0 = none), then the 12 skill-modifier columns (argv6..17). The port carries the columns it
+    // can apply faithfully: shirt/pants → ClientColors (16*shirt+pants), and the two fire-relevant skill
+    // modifiers bot_aggresskill (argv11) + bot_aimskill (argv13) → the aim fire decision. The remaining 10 skill
+    // columns stay folded into the single BotSkill knob (the documented skill.modifiers intended divergence).
+    private readonly record struct BotRow(
+        string Name, string Model, string Skin, int ForcedTeam,
+        int Color, float AggresSkill, float AimSkill);
+    private List<BotRow>? _botRows; // parsed once per world
 
     /// <summary>
     /// Pick a name + model from the bot config file (QC bot_setnameandstuff over bot_config_file=bots.txt):
@@ -493,7 +677,7 @@ public sealed class BotPopulation
     /// small built-in name table when the file isn't mounted. The skin/shirt/pants columns and the 12 skill
     /// modifiers are unported (single-knob skill; see residuals).
     /// </summary>
-    private (string name, string model) PickNameAndModel()
+    private (string name, string model, string skin, int forcedTeam, int color, float aggresSkill, float aimSkill) PickNameAndModel()
     {
         _botRows ??= ParseBotFile();
 
@@ -506,19 +690,26 @@ public sealed class BotPopulation
         string suffix = Cvars.String("bot_suffix");
 
         // prefer rows whose decorated name is unused (QC prio weighting), random among the preferred set.
-        var candidates = new List<(string Name, string Model)>();
-        foreach ((string Name, string Model) row in _botRows)
+        var candidates = new List<BotRow>();
+        foreach (BotRow row in _botRows)
             if (!used.Contains(prefix + row.Name + suffix))
                 candidates.Add(row);
         if (candidates.Count == 0)
             candidates = _botRows;
 
-        string baseName = "Bot", model = "";
+        string baseName = "Bot", model = "", skin = "";
+        int forcedTeam = 0, color = -1;
+        float aggresSkill = 0f, aimSkill = 0f;
         if (candidates.Count > 0)
         {
-            (string Name, string Model) row = candidates[_nameRng.Next(candidates.Count)];
+            BotRow row = candidates[_nameRng.Next(candidates.Count)];
             baseName = row.Name;
             model = row.Model;
+            skin = row.Skin;
+            forcedTeam = row.ForcedTeam;
+            color = row.Color;
+            aggresSkill = row.AggresSkill;
+            aimSkill = row.AimSkill;
         }
 
         string name = prefix + baseName + suffix;
@@ -530,8 +721,14 @@ public sealed class BotPopulation
             name = $"{name}({i})";
         }
 
+        // QC bot_setnameandstuff:249-253: a blank/negative shirt or pants cell randomizes that nibble to 0..14.
+        // The whole-row color is packed 16*shirt+pants; if the row had no color cell at all (color < 0), draw
+        // both nibbles now so every bot still gets a faithful random colormap (matches QC's per-cell default).
+        if (color < 0)
+            color = _nameRng.Next(15) * 16 + _nameRng.Next(15);
+
         string modelPath = string.IsNullOrEmpty(model) ? "" : $"models/player/{model}.iqm"; // QC appends .iqm
-        return (name, modelPath);
+        return (name, modelPath, skin, forcedTeam, color, aggresSkill, aimSkill);
     }
 
     private readonly Random _nameRng = new(12345);
@@ -549,7 +746,7 @@ public sealed class BotPopulation
         _botRows ??= ParseBotFile();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var models = new List<string>();
-        foreach ((string Name, string Model) row in _botRows)
+        foreach (BotRow row in _botRows)
         {
             if (string.IsNullOrEmpty(row.Model)) continue;
             string path = $"models/player/{row.Model}.iqm";   // QC appends .iqm (matches PickNameAndModel)
@@ -559,9 +756,9 @@ public sealed class BotPopulation
     }
 
     /// <summary>Parse bot_config_file (bots.txt) rows via the world's ConfigReader; comments (// #) skipped.</summary>
-    private List<(string Name, string Model)> ParseBotFile()
+    private List<BotRow> ParseBotFile()
     {
-        var rows = new List<(string, string)>();
+        var rows = new List<BotRow>();
         string file = Cvars.String("bot_config_file");
         if (string.IsNullOrEmpty(file)) file = "bots.txt";
         string? text = _world.ConfigReader?.Invoke(file);
@@ -576,15 +773,55 @@ public sealed class BotPopulation
                 string[] f = line.Split('\t');
                 if (f.Length == 0 || string.IsNullOrWhiteSpace(f[0]))
                     continue;
-                rows.Add((f[0].Trim(), f.Length > 1 ? f[1].Trim() : ""));
+                // argv(2) = skin index (QC bot_skin = argv(2), default "0"); a blank cell keeps the default.
+                string skin = f.Length > 2 ? f[2].Trim() : "";
+                // argv(5) = forced-team index (QC bot_forced_team = stof(argv(5))); kept only if 1..4.
+                int forcedTeam = 0;
+                if (f.Length > 5 && int.TryParse(f[5].Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out int t)
+                    && t >= 1 && t <= 4)
+                    forcedTeam = t;
+                // argv(3)/argv(4) = shirt/pants color nibbles (QC bot_setnameandstuff:249-253). A blank or
+                // negative cell → -1 here so PickNameAndModel randomizes that nibble (QC floor(random()*15)).
+                // The packed color is 16*shirt + pants (QC setcolor). Color < 0 = "no cell" (randomize whole row).
+                int shirt = ParseColorNibble(f, 3);
+                int pants = ParseColorNibble(f, 4);
+                int color = (shirt < 0 && pants < 0) ? -1 : System.Math.Max(0, shirt) * 16 + System.Math.Max(0, pants);
+                // The 12 READSKILL columns start at argv(6) (QC prio = 6). Only the two fire-relevant modifiers
+                // are carried: bot_aggresskill = stof(argv(11)) * 1 (prio 11), bot_aimskill = stof(argv(13)) * 2
+                // (prio 13). Blank cells → 0 (the stock READSKILL reward factor for both is 0).
+                float aggresSkill = ReadSkillColumn(f, 11, 1f);
+                float aimSkill = ReadSkillColumn(f, 13, 2f);
+                rows.Add(new BotRow(f[0].Trim(), f.Length > 1 ? f[1].Trim() : "", skin, forcedTeam,
+                    color, aggresSkill, aimSkill));
             }
         }
         if (rows.Count == 0)
         {
             // no bots.txt mounted: the old built-in table (kept so a bare test floor still names its bots).
             foreach (string n in new[] { "Hellfire", "Toxic", "Scorcher", "Discbot", "Nexus", "Eureka", "Sensible", "Mystery" })
-                rows.Add((n, ""));
+                rows.Add(new BotRow(n, "", "", 0, -1, 0f, 0f));
         }
         return rows;
+    }
+
+    /// <summary>QC bot_setnameandstuff:249-253 shirt/pants cell: a present, non-negative color nibble, else -1
+    /// (the caller randomizes a -1 nibble to 0..14, matching QC floor(random()*15)).</summary>
+    private static int ParseColorNibble(string[] f, int idx)
+    {
+        if (idx >= f.Length) return -1;
+        string s = f[idx].Trim();
+        if (s.Length == 0) return -1;
+        return int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out int v) && v >= 0 ? v : -1;
+    }
+
+    /// <summary>QC READSKILL(f, w, r) (bot.qc:266-272) for a present cell: <c>stof(argv(prio)) * w</c>. A blank
+    /// cell returns 0 (the carried columns both have stock reward factor r = 0, so absent → 0; the random
+    /// per-bot variance of the r&gt;0 columns is the documented single-knob skill.modifiers divergence).</summary>
+    private static float ReadSkillColumn(string[] f, int idx, float weight)
+    {
+        if (idx >= f.Length) return 0f;
+        string s = f[idx].Trim();
+        if (s.Length == 0) return 0f;
+        return float.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out float v) ? v * weight : 0f;
     }
 }

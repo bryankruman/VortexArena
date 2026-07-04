@@ -23,8 +23,9 @@ namespace XonoticGodot.Common.Gameplay;
 ///  - PlayerSpawn: replace the player's owned set with <see cref="RandomWeapons"/> of N drawn from it (keeping the
 ///    blaster aside when with_blaster is set, then re-adding it);
 ///  - GiveFragsForKill: identify the culprit weapon (the deathtype's weapon, or the attacker's current weapon),
-///    then — unless it's the kept blaster — pick one new random weapon NOT already owned and NOT the culprit, add
-///    it, drop the culprit, and finally switch the attacker to their best weapon if the held one is gone;
+///    then — unless it's the kept blaster — pick one new random weapon NOT already owned and NOT the culprit
+///    (drawn from the warmup or live arena set per <c>warmup_stage</c>), add it, drop the culprit, and finally
+///    switch the attacker to their best weapon if the held one is gone;
 ///  - <see cref="RandomWeapons"/>: the ported <c>W_RandomWeapons(e, remaining, n)</c> reservoir pick (without
 ///    replacement) over a candidate <see cref="WepSet"/>.
 ///
@@ -137,10 +138,14 @@ public sealed class WeaponArenaRandomMutator : MutatorBase
         // QC: if(with_blaster && culprit == WEP_BLASTER) { /* no exchange */ } else { ... }
         if (!(WithBlaster && blaster is not null && culprit == blaster))
         {
-            // QC builds a scratch set of the arena weapons (start_weapons), removes the attacker's owned set and
-            // the culprit, picks one at random among the remaining, and ORs it into the attacker (dropping the
-            // culprit). start_weapons is the arena set; the port mirrors it from the SetStartItems loadout.
-            WepSet pool = ArenaWepSet();
+            // QC builds a scratch set of the arena weapons, removes the attacker's owned set and the culprit,
+            // picks one at random among the remaining, and ORs it into the attacker (dropping the culprit). QC
+            // chooses the pool by match phase: scratch = warmup_stage ? WARMUP_START_WEAPONS : start_weapons.
+            // Both are the arena weapon set (world.qc:2130 sets warmup_start_weapons = start_weapons, and the
+            // arena setup at world.qc:1948-1979 makes them equal), so the port resolves each to ArenaWepSet();
+            // we still branch on WarmupStage to stay faithful to the QC control flow (and to the allguns warmup
+            // case below, which differs only outside an arena — where this mutator never runs).
+            WepSet pool = NotificationSystem.WarmupStage ? WarmupArenaWepSet() : ArenaWepSet();
             pool = Difference(pool, attacker.OwnedWeaponSet);
             if (culprit is not null) pool.Remove(culprit);
 
@@ -170,6 +175,36 @@ public sealed class WeaponArenaRandomMutator : MutatorBase
         foreach (string n in loadout.Weapons)
             if (Weapons.ByName(n) is { } w) set.Add(w);
         return set;
+    }
+
+    /// <summary>
+    /// QC <c>WARMUP_START_WEAPONS</c> (server/world.qh:101) — the swap pool while <c>warmup_stage</c> is set.
+    /// With a weapon arena in force (the only state this mutator runs in), QC keeps
+    /// <c>warmup_start_weapons = start_weapons</c> (world.qc:2130 + the arena setup world.qc:1948-1979), so the
+    /// warmup pool equals the live arena set: resolve it the same way as <see cref="ArenaWepSet"/>. The
+    /// allguns-DM warmup variant (<c>g_warmup_allguns</c> → all non-hidden weapons) is honoured here for
+    /// completeness, but it only applies outside an arena, where weaponarena_random is inactive.
+    /// </summary>
+    private static WepSet WarmupArenaWepSet()
+    {
+        WepSet arena = ArenaWepSet();
+        if (!arena.IsEmpty) return arena;
+
+        // No arena set (degenerate: only reachable if an arena is configured but expands to nothing). Mirror the
+        // warmup loadout's allguns expansion — every non-hidden, non-mutator-blocked weapon — as QC does for
+        // WARMUP_START_WEAPONS = weapons_all() (world.qc:1953); else fall back to the arena/start set.
+        if (Api.Cvars.GetFloat("g_warmup_allguns") != 0f)
+        {
+            var all = new WepSet();
+            foreach (Weapon w in Weapons.All)
+            {
+                if ((w.SpawnFlags & WeaponFlags.Hidden) != 0) continue;
+                if ((w.SpawnFlags & WeaponFlags.MutatorBlocked) != 0) continue;
+                all.Add(w);
+            }
+            return all;
+        }
+        return arena;
     }
 
     /// <summary>QC <c>a &amp; ~b</c> over weapon sets: the weapons in <paramref name="a"/> not in <paramref name="b"/>.</summary>

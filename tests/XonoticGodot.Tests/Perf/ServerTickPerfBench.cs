@@ -138,6 +138,17 @@ public class ServerTickPerfBench
              $"(vs the empty-world floor {_emptyMsPerTick:F4} ms/tick)");
 
         Line("(numbers are informational — record significant regressions in the baseline comment atop this file)");
+
+        // (P9 2026-07-03) Loose budget gates: catch a 2×+ tick regression (the 2026-07-02 bot-strategy melt
+        // class) before a human feels it, without tripping on machine noise — the thresholds are ~4-5× the
+        // 2026-06-09 Debug baselines documented above. A slower box can opt out with XG_PERF_ASSERT=0.
+        if (Environment.GetEnvironmentVariable("XG_PERF_ASSERT") != "0")
+        {
+            Assert.True(_emptyMsPerTick < 1.0,
+                $"empty-world server tick regressed: {_emptyMsPerTick:F4} ms/tick (budget 1.0, baseline 0.118)");
+            Assert.True(msB < 3.0,
+                $"4-player server tick regressed: {msB:F4} ms/tick (budget 3.0, baseline 0.622)");
+        }
         Assert.True(sb.Length > 0);
     }
 

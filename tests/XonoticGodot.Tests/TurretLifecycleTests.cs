@@ -84,10 +84,8 @@ public class TurretLifecycleTests
         Assert.Equal(4000f, st.AmmoMax);
         Assert.Equal(50f, st.AmmoRecharge);                   // turrets.cfg:43 ammo_recharge 50
         Assert.True(st.Movable);                              // TUR_FLAG_MOVE
-        // FLAGGED (port-vs-cfg drift, reported upward, NOT fixed here per the T31 charter):
-        // turrets.cfg:13 sets g_turrets_unit_ewheel_respawntime 30, but EWheelTurret.Spawn passes
-        // respawnTime: 60 (the generic turret_initparams default). This pins the CURRENT port behavior.
-        Assert.Equal(60f, st.RespawnTime);
+        // turrets.cfg:13 g_turrets_unit_ewheel_respawntime 30 (Wave-2 fixed the prior 60f drift to match the cfg).
+        Assert.Equal(30f, st.RespawnTime);
     }
 
     [Fact]
@@ -166,7 +164,7 @@ public class TurretLifecycleTests
     }
 
     [Fact]
-    public void Damage_EnemyHit_FullDamage_ShovesMovable_AndRetaliates()
+    public void Damage_EnemyHit_FullDamage_ShovesMovable_DoesNotRetaliate()
     {
         Boot();
         Entity e = SpawnEwheel(new Vector3(0, 0, 8));
@@ -179,7 +177,9 @@ public class TurretLifecycleTests
 
         Assert.Equal(50f, taken);
         Assert.Equal(force, e.Velocity);   // TUR_FLAG_MOVE: vforce shoves the mobile chassis
-        Assert.Same(foe, e.Enemy);         // TFL_DMG_RETALIATE: the attacker becomes the target
+        // Base turret_damage (sv_turrets.qc:207-251) never adopts the attacker as an enemy: TFL_DMG_RETALIATE is
+        // set but read by no Base code, so the turret does NOT turn to face whoever shot it.
+        Assert.Null(e.Enemy);
     }
 
     // ---------------------------------------------------------------- turret_die / turret_respawn
@@ -198,10 +198,21 @@ public class TurretLifecycleTests
         Assert.Equal(0f, e.Health);                        // QC SetResourceExplicit(RES_HEALTH, 0)
         Assert.Null(e.Enemy);
         Assert.False(TurretAI.State(e).Active);
-        // not TSL_NO_RESPAWN: a respawn is scheduled after respawntime
+        // not TSL_NO_RESPAWN: the QC two-step (turret_die -> turret_hide -> turret_respawn). Die first schedules
+        // turret_hide at +0.2 (sv_turrets.qc:200), and turret_hide schedules turret_respawn at respawntime - 0.2
+        // (sv_turrets.qc:162) so the total dead interval is exactly respawntime.
         Assert.Equal(DeadFlag.Respawning, e.DeadState);
         Assert.NotNull(e.Think);
-        Assert.Equal(now + TurretAI.State(e).RespawnTime, e.NextThink, 2);
+        float dieDelay = e.NextThink - now;
+        Assert.Equal(0.2f, dieDelay, 2);
+
+        // Run the hide step (the second think). The clock has not advanced in this unit test, so Hide schedules
+        // the respawn at respawntime - 0.2 from "now"; combined with the 0.2 Die already spent, the total dead
+        // interval is exactly respawntime (sv_turrets.qc turret_die:200 + turret_hide:162).
+        TurretAI.Hide(e);
+        float hideDelay = e.NextThink - now;
+        Assert.Equal(TurretAI.State(e).RespawnTime - 0.2f, hideDelay, 2);
+        Assert.Equal(TurretAI.State(e).RespawnTime, dieDelay + hideDelay, 2);
     }
 
     [Fact]
@@ -255,5 +266,73 @@ public class TurretLifecycleTests
         Assert.Equal(Solid.Not, e.Solid);
         Assert.Equal(DamageMode.No, e.TakeDamage);
         Assert.Equal(0f, e.Health);
+    }
+
+    // ---------------------------------------------------------------- ewheel locomotion (Wave-7)
+
+    private static Entity SpawnCheckpoint(string targetName, string target, Vector3 origin)
+    {
+        Entity cp = Api.Entities.Spawn();
+        cp.Origin = origin;
+        Api.Entities.SetOrigin(cp, origin);
+        cp.TargetName = targetName;
+        cp.Target = target;
+        TurretSpawnFuncs.Checkpoint(cp);   // QC spawnfunc(turret_checkpoint): floor-snap + index by targetname
+        return cp;
+    }
+
+    [Fact]
+    public void EwheelMoveEnemy_SelectsTheCorrectDriveFrame()
+    {
+        Boot();
+        Entity e = SpawnEwheel(new Vector3(0, 0, 8));
+        e.Team = 5f;
+
+        // Enemy well beyond the optimal range (900), dead ahead so the body yaw error is ~0 -> fast forward.
+        Entity foe = Attacker(new Vector3(2000, 0, 26), team: 14f);
+        e.Angles = QMath.VecToAngles(QMath.Normalize(foe.Origin - e.Origin));
+        e.Enemy = foe;
+
+        e.Think!(e);   // RunCombat + Drive
+
+        // ewheel_move_enemy: dist > optimal AND aligned -> ewheel_anim_fwd_fast (2), stamped onto Entity.Frame.
+        Assert.Equal(2f, e.Frame);
+
+        // Pull the enemy inside the kite threshold (optimal*0.5 = 450) -> ewheel_anim_bck_slow (3).
+        Api.Entities.SetOrigin(foe, new Vector3(300, 0, 26));
+        e.Enemy = foe;
+        e.Think!(e);
+        Assert.Equal(3f, e.Frame);
+    }
+
+    [Fact]
+    public void EwheelIdleWithPath_FollowsTheCheckpointChainAndDrives()
+    {
+        Boot();
+        // A two-node looped chain: cp1 -> cp2 -> cp1. Both well above the floor brush (z=0).
+        SpawnCheckpoint("cp1", "cp2", new Vector3(500, 0, 40));
+        SpawnCheckpoint("cp2", "cp1", new Vector3(-500, 0, 40));
+
+        // The ewheel targets the entry waypoint cp1 (set BEFORE spawn so ewheel_findtarget resolves it).
+        Entity e = Api.Entities.Spawn();
+        e.Origin = new Vector3(0, 0, 8);
+        Api.Entities.SetOrigin(e, new Vector3(0, 0, 8));
+        e.Target = "cp1";
+        TurretSpawnFuncs.EWheel(e);
+        e.Team = 5f;
+
+        TurretState st = TurretAI.State(e);
+        Assert.NotNull(st.PathCurrent);                         // ewheel_findtarget wired the entry checkpoint
+        Assert.Equal("cp1", st.PathCurrent!.TargetName);
+
+        // Idle (no enemy): ewheel_move_path should roll it toward cp1 (speed_fast), building velocity.
+        e.Enemy = null;
+        e.Think!(e);
+        Assert.NotEqual(Vector3.Zero, e.Velocity);
+
+        // Teleport onto cp1: the next think advances the chain to cp2 (turret_closetotarget within 64u).
+        Api.Entities.SetOrigin(e, st.PathCurrent!.Origin);
+        e.Think!(e);
+        Assert.Equal("cp2", TurretAI.State(e).PathCurrent!.TargetName);
     }
 }

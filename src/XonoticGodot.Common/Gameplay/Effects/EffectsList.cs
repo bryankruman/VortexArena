@@ -55,7 +55,30 @@ public static class EffectsList
         Effects.Register("ARC_OVERHEAT", "arc_overheat");
         Effects.Register("ARC_OVERHEAT_FIRE", "arc_overheat_fire");
         Effects.Register("ARC_SMOKE", "arc_smoke");
-        Effects.Register("ARC_LIGHTNING", "arc_lightning");
+        // ARC_LIGHTNING carries the te_csqc_lightningarc bolt (a from→hit-point line, the port's analogue of
+        // Base's dedicated TE_CSQC_ARC NET_TEMP; EffectEmitter.TeCsqcLightningArc emits it count-0 with the END
+        // point in velocity). Like ARC_BEAM/ARC_BEAM_HEAL it MUST be isTrail so EffectEmitter.Emit doesn't drop
+        // the count-0 emission as an empty point effect (the count-0 point guard) — without this the electro
+        // combo / Tesla turret / Golem zaps never network the arc to remote clients. The client routes the name
+        // to BeamRenderer.Arc (the crackling bolt), so the trail flag only governs networking, not the visual.
+        Effects.Register("ARC_LIGHTNING", "arc_lightning", isTrail: true);
+
+        // The CYLINDRIC arc-weapon beam line (Base Draw_ArcBeam -> Draw_CylindricLine, the cl_arcbeam_simple
+        // default). DISTINCT from the arc_beam/arc_beam_heal PARTICLE trails above (which DP draws too, as
+        // trailparticles ALONGSIDE the cylinder): these two names carry no effectinfo block, so they short-circuit
+        // at the EffectSystem Beam route (drawn via BeamRenderer.Beam between origin and the velocity end-point)
+        // before the effectinfo lookup. Registered isTrail ONLY so the count-0 line emission survives the
+        // EffectEmitter.Emit point-count guard (same trick as ARC_LIGHTNING) — the trail flag governs networking,
+        // not the visual; the explicit Beam-class check in EffectSystem routes them to the drawn line.
+        Effects.Register("ARC_BEAM_LINE", "arc_beam_line", isTrail: true);
+        Effects.Register("ARC_BEAM_LINE_HEAL", "arc_beam_line_heal", isTrail: true);
+        // The BURST arc-beam line (Base ARC_BT_BURST, a fatter cl_arcbeam burst-mode cylinder). Same Beam-route
+        // family as the two lines above — the name contains 'ARC_BEAM_LINE' so EffectSystem.ClassifyUncached's
+        // needle routes it to EffectClass.Beam, short-circuiting before the (absent) effectinfo lookup. The width
+        // difference (burst 14 vs steady 8) is applied downstream in EffectSystem, not here. Carries no effectinfo
+        // block; registered isTrail ONLY so the count-0 line emission survives EffectEmitter.Emit's point-count
+        // guard (same trick as ARC_BEAM_LINE/_HEAL) — the trail flag governs networking, not the visual.
+        Effects.Register("ARC_BEAM_LINE_BURST", "arc_beam_line_burst", isTrail: true);
 
         // ---- Machine Gun ----
         Effects.Register("MACHINEGUN_IMPACT", "machinegun_impact");
@@ -90,6 +113,15 @@ public static class EffectsList
         // ---- Vaporizer (instagib) ----
         Effects.Register("VAPORIZER_BEAM", "TE_TEI_G3", isTrail: true);
         Effects.Register("VAPORIZER_BEAM_HIT", "TE_TEI_G3_HIT", isTrail: true);
+
+        // ---- Brass casings (the QC `casings` NET_TEMP, common/effects/qc/casings.qc) ----
+        // Base networks ejected shells via a dedicated REGISTER_NET_TEMP(casings); this port carries them on
+        // the shared effect channel instead. Registering them as real Effects (rather than null-Effect
+        // EmitByEffectInfoName requests, which ServerNet.WriteEffect drops) gives them a stable RegistryId so
+        // the eject origin+velocity actually network; the client routes the name to EffectSystem.SpawnCasing
+        // (the real bouncing brass entity), not the generic particle burst. casingtype 3 -> bullet, 1 -> shell.
+        Effects.Register("CASING_BULLET", "casing_bullet");
+        Effects.Register("CASING_SHELL", "casing_shell");
 
         // ---- Rifle ----
         Effects.Register("RIFLE_IMPACT", "machinegun_impact");
@@ -236,12 +268,49 @@ public static class EffectsList
         Effects.Register("TR_KNIGHTSPIKE", "TR_KNIGHTSPIKE", isTrail: true);
         Effects.Register("TR_VORESPIKE", "TR_VORESPIKE", isTrail: true);
         Effects.Register("TE_SPARK", "TE_SPARK");
+        // te_knightspike() builtin point-effect (effectinfo.txt: decal + static + 128 reddish-orange sparks).
+        // Distinct from the TR_KNIGHTSPIKE *trail* above — this is the burst the Seeker tag-strike emits.
+        Effects.Register("TE_KNIGHTSPIKE", "TE_KNIGHTSPIKE");
+        // te_smallflash()/te_gunshot() engine builtins resolve their OWN effectinfo blocks (TE_SMALLFLASH /
+        // TE_GUNSHOT), NOT a weapon's named muzzleflash/impact. Registered so the EffectEmitter.TeSmallflash /
+        // TeGunshot wrappers network the correct block by id instead of a divergent substitute.
+        Effects.Register("TE_SMALLFLASH", "TE_SMALLFLASH");
+        Effects.Register("TE_GUNSHOT", "TE_GUNSHOT");
+        // te_tarexplosion() engine builtin (the dark "tar" explosion, distinct from te_explosion). KeyHunt fires
+        // it for a lost/destroyed key (sv_keyhunt.qc kh_Key_AssignTo te_tarexplosion(lostkey.origin)); effectinfo.txt
+        // ships a dedicated TE_TAREXPLOSION block, so map the wrapper to it rather than substituting TE_EXPLOSION.
+        Effects.Register("TE_TAREXPLOSION", "TE_TAREXPLOSION");
 
         // ---- RocketMinsta laser (neutral; per-team variants are commented out in QC) ----
         Effects.Register("ROCKETMINSTA_LASER", "rocketminsta_laser_neutral", isTrail: true);
 
         // ---- generic damage blood puff (te_blood analogue; not in all.inc but used by EffectEmitter.TeBlood) ----
         Effects.Register("BLOOD", "blood");
+
+        // ---- Bumblebee gunner heal/damage rays (port-specific; not in all.inc) ----
+        // Base draws these as a linked entity (bumble_raygun_send/_draw, a Draw_CylindricLine cylinder driven by
+        // the vehicle's own networked state), NOT a Send_Effect particle. The port carries them on the shared
+        // effect channel as beam-class emissions (EffectEmitter.TeBeam/TeHealBeam, the bolt's END point in
+        // velocity and the colormod in the wire color fields). Registering them as real trail Effects (like the
+        // casings precedent above) gives each a stable RegistryId so the beam ACTUALLY networks to remote
+        // clients — a null-Effect EmitByEffectInfoName request is dropped by ServerNet.WriteEffect, so without
+        // this only the listen-server in-process mirror ever rendered them. isTrail so the count-0 emission
+        // survives EffectEmitter.Emit's point-count guard and the velocity (end point) is networked; the client
+        // routes the "*_beam" name to BeamRenderer (a straight cylinder), tinted by the decoded wire color.
+        Effects.Register("HEAL_BEAM", "heal_beam", isTrail: true);
+        Effects.Register("DAMAGE_BEAM", "damage_beam", isTrail: true);
+
+        // ---- Sandbox material-impact bursts (QC g_sandbox Send_Effect_("impact_"+material, ...)) ----
+        // SandboxMutator emits these by effectinfo name (EmitByEffectInfoName, the port's Send_Effect_). The
+        // shipped effectinfo.txt defines impact blocks for exactly these four materials; in Base a Send_Effect_
+        // for any OTHER material falls through to __pointparticles(_particleeffectnum(name)) which returns -1
+        // (no particles), so registering only these four is faithful — an unknown material correctly renders
+        // nothing on both ends. Registered as point Effects so the burst networks by id (a null-Effect by-name
+        // request is dropped by ServerNet.WriteEffect, so it would otherwise render only on the listen server).
+        Effects.Register("IMPACT_METAL", "impact_metal");
+        Effects.Register("IMPACT_STONE", "impact_stone");
+        Effects.Register("IMPACT_WOOD", "impact_wood");
+        Effects.Register("IMPACT_FLESH", "impact_flesh");
 
         // Deterministic CL/SV ordering + ids (mirrors QC Registry sort at boot).
         Effects.Sort();

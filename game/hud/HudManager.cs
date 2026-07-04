@@ -91,6 +91,12 @@ public partial class Hud : CanvasLayer
     /// Driven each frame in <see cref="_Process"/> from the local player's health + the HUD clock.</summary>
     private readonly HudDynamicShake _dynamicShake = new();
 
+    /// <summary>The viewmodel's current <c>calc_followmodel_ofs</c> result (QC <c>cl_followmodel_ofs</c>,
+    /// view-space fwd/right/up), fed each frame by the host from the live <c>ViewModel.LastFollowOffset</c>. Drives
+    /// the <c>hud_dynamic_follow</c> half of <c>Hud_Dynamic_Frame</c> — the HUD shift/scale with the weapon bob.
+    /// Zero (the default) leaves the HUD un-swayed, so the effect is inert until both fed and the cvar is on.</summary>
+    public System.Numerics.Vector3 FollowModelOffset { get; set; }
+
     /// <summary>The HUD clock (QC <c>time</c>) the shake decays against. The full HUD has no slaved sim clock
     /// here, so — as <see cref="HealthArmorPanel"/> does for its timed effects — we accumulate real frame delta.</summary>
     private double _shakeClock;
@@ -113,8 +119,17 @@ public partial class Hud : CanvasLayer
 
     private string _skin = "luma";
 
+    /// <summary>The full-screen HUD dock background (QC HUD_Main dock-draw block). Added first so it composites
+    /// behind every panel; self-blanks unless <c>hud_dock</c> is enabled. Driven each frame from the HUD fade.</summary>
+    public HudDock Dock { get; private set; } = null!;
+
     public override void _Ready()
     {
+        // The HUD dock background draws behind every panel (QC draws it before the panel walk). Add it FIRST so
+        // it's the lowest-z child; it self-blanks while hud_dock is off (the default).
+        Dock = new HudDock { Name = "Dock" };
+        AddChild(Dock);
+
         // Discover + create every panel (QC registered them at load). Reflection runs once (HudRegistry).
         foreach (Type t in HudRegistry.PanelTypes)
             Add(HudRegistry.Create(t));
@@ -192,16 +207,57 @@ public partial class Hud : CanvasLayer
         float fade = Mathf.Clamp(HudFadeAlpha, 0f, 1f);
         float sbFade = Mathf.Clamp(ScoreboardFade, 0f, 1f);
 
+        // Drive the HUD dock background (QC HUD_Main dock block): it draws at hud_dock_alpha * hud_fade_alpha,
+        // tinted by the local team color when hud_dock_color_team + teamplay. Self-blanks while hud_dock is off.
+        if (Dock is not null)
+        {
+            Dock.HudFadeAlpha = fade;
+            Dock.TeamColor = Player is { } dp && XonoticGodot.Common.Gameplay.Scoring.GameScores.Teamplay
+                ? HudDock.TeamRgb((int)dp.Team)
+                : (Color?)null;
+        }
+
+        // Resolve the local player's colormap shirt/pants + team colors once per frame (QC HUD_Panel_GetColor's
+        // "shirt"/"pants"/"team" literals read _cl_color = clientcolors = 16*shirt+pants). Fed to the static so any
+        // panel's hud_panel_<id>_bg_color and the dock's hud_dock_color can tint to the player's own colors. Null
+        // when there is no local player (pre-spawn / pure --connect) — the literals then fall back to inherit.
+        if (Player is { } cp)
+        {
+            int cm = cp.ClientColors;
+            (float r, float g, float b) sh = XonoticGodot.Engine.Simulation.CsqcModelAppearance.ColormapPaletteColor(
+                (cm >> 4) & 0x0F, isPants: false, (float)_shakeClock);
+            (float r, float g, float b) pa = XonoticGodot.Engine.Simulation.CsqcModelAppearance.ColormapPaletteColor(
+                cm & 0x0F, isPants: true, (float)_shakeClock);
+            HudPanel.LocalShirtColor = new Color(sh.r, sh.g, sh.b);
+            HudPanel.LocalPantsColor = new Color(pa.r, pa.g, pa.b);
+            HudPanel.LocalTeamColor = XonoticGodot.Common.Gameplay.Scoring.GameScores.Teamplay
+                ? HudDock.TeamRgb((int)cp.Team) : (Color?)null;
+        }
+        else
+        {
+            HudPanel.LocalShirtColor = HudPanel.LocalPantsColor = HudPanel.LocalTeamColor = null;
+        }
+
         // Damage-keyed whole-HUD shake (QC Hud_Dynamic_Frame): nudge the HUD root by the per-frame shake offset.
         // QC added hud_dynamic_shake_realofs to hud_shift_current, which every panel's draw applied to its origin;
         // here the equivalent is shifting the whole CanvasLayer via its Offset (one move, all panels follow).
         // Read STAT(HEALTH) off the local player (HealthArmorPanel reads the same RES_HEALTH); with no player
         // (pre-spawn/observing) pass 0 — RequestReset() on (re)spawn masks the resulting health jump.
         _shakeClock += delta;
+        // Publish the shared HUD clock (QC `time`) so every panel's NumColor blink/pulse (and any other
+        // wall-clock HUD animation) advances in lockstep with the shake clock.
+        HudPanel.HudClock = (float)_shakeClock;
         float health = Player is { } pl ? pl.GetResource(ResourceType.Health) : 0f;
         System.Numerics.Vector2 shake = _dynamicShake.Update(
             health, (float)_shakeClock, new System.Numerics.Vector2(vp.X, vp.Y), Intermission);
-        Offset = new Vector2(shake.X, shake.Y);
+
+        // hud_dynamic_follow (QC Hud_Dynamic_Frame follow block, hud.qc:595-617): sway/scale the whole HUD with
+        // the viewmodel's followmodel offset. hud_shift_current/hud_scale_current map to the CanvasLayer's
+        // Offset/Scale (one move/scale, all panels follow). Combined with the shake offset above.
+        ComputeDynamicFollow(vp, out Vector2 followShift, out Vector2 followScale);
+
+        Offset = new Vector2(shake.X, shake.Y) + followShift;
+        Scale = followScale;
 
         // hud_panel_<id> show gate (QC HUD_Panel_CheckFlags + each panel's top-of-draw enable test): resolve the
         // live gametype/observer/configure context once, then let each user-toggleable panel decide whether its
@@ -260,6 +316,68 @@ public partial class Hud : CanvasLayer
     // -------------------------------------------------------------------------------------------------
     //  Internals
     // -------------------------------------------------------------------------------------------------
+
+    // hud_dynamic_follow cvar defaults (Base _hud_common.cfg:282-284).
+    private const float DefFollow = 0f;
+    private const float DefFollowScale = 0.01f;
+
+    /// <summary>
+    /// QC <c>Hud_Dynamic_Frame</c> follow block (hud.qc:595-617): turn the viewmodel's <c>cl_followmodel_ofs</c>
+    /// (view-space fwd/right/up, here <see cref="FollowModelOffset"/>) into the HUD's <c>hud_shift_current</c>
+    /// (pixel offset) + <c>hud_scale_current</c>. Returns identity (no shift, unit scale) when
+    /// <c>hud_dynamic_follow</c> is off (the Base default) so the effect is inert until enabled.
+    /// </summary>
+    private void ComputeDynamicFollow(Vector2 viewport, out Vector2 shift, out Vector2 scale)
+    {
+        shift = Vector2.Zero;
+        scale = Vector2.One;
+
+        if (CvarOr("hud_dynamic_follow", DefFollow) == 0f)
+            return;
+
+        float followScale = CvarOr("hud_dynamic_follow_scale", DefFollowScale);
+        System.Numerics.Vector3 scaleXyz = CvarVec3("hud_dynamic_follow_scale_xyz", System.Numerics.Vector3.One);
+
+        // QC: ofs = -cl_followmodel_ofs * scale; then per-axis remap by scale_xyz (z→x, x→y, y→z).
+        System.Numerics.Vector3 src = FollowModelOffset;
+        float ox = -src.X * followScale * scaleXyz.Z;
+        float oy = -src.Y * followScale * scaleXyz.X;
+        float oz = -src.Z * followScale * scaleXyz.Y;
+
+        // QC: snap tiny values to 0, then bound each axis to ±0.1.
+        if (MathF.Abs(ox) < 0.001f) ox = 0f;
+        if (MathF.Abs(oy) < 0.001f) oy = 0f;
+        if (MathF.Abs(oz) < 0.001f) oz = 0f;
+        ox = Mathf.Clamp(ox, -0.1f, 0.1f);
+        oy = Mathf.Clamp(oy, -0.1f, 0.1f);
+        oz = Mathf.Clamp(oz, -0.1f, 0.1f);
+
+        // QC: hud_shift_current.x = ofs.y * conwidth; .y = ofs.z * conheight; .z = ofs.x (the scale term).
+        float shiftZ = ox;
+        shift = new Vector2(oy * viewport.X, oz * viewport.Y);
+        // QC: hud_scale_current.x = hud_scale_current.y = 1 + hud_shift_current.z.
+        float s = 1f + shiftZ;
+        scale = new Vector2(s, s);
+    }
+
+    private static float CvarOr(string name, float def)
+    {
+        string raw = global::XonoticGodot.Game.Menu.MenuState.Cvars.GetString(name);
+        return string.IsNullOrWhiteSpace(raw) ? def : global::XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat(name);
+    }
+
+    private static System.Numerics.Vector3 CvarVec3(string name, System.Numerics.Vector3 def)
+    {
+        string raw = global::XonoticGodot.Game.Menu.MenuState.Cvars.GetString(name);
+        if (string.IsNullOrWhiteSpace(raw)) return def;
+        string[] p = raw.Split(' ', System.StringSplitOptions.RemoveEmptyEntries);
+        if (p.Length < 3) return def;
+        if (!float.TryParse(p[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float x) ||
+            !float.TryParse(p[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float y) ||
+            !float.TryParse(p[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float z))
+            return def;
+        return new System.Numerics.Vector3(x, y, z);
+    }
 
     /// <summary>Apply the <c>hud_skin</c> cvar live: on change, point the skin folder at it + clear the texture
     /// cache so panels reload art, and re-resolve every panel's config.</summary>

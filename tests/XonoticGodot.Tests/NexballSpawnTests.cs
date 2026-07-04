@@ -182,4 +182,30 @@ public sealed class NexballSpawnTests
         Assert.Equal(0, nb.GoalsFor(Teams.Blue));
         Assert.Equal(Teams.None, nb.BallTeam); // reset
     }
+
+    // ---- Wave 6a: ball-spawn presentation/collision (QC SpawnBall EF_LOWPRECISION + playerclip mask) ----
+
+    [Fact]
+    public void BallSpawn_AppliesLowPrecisionAndPlayerclipMask()
+    {
+        // QC SpawnBall: this.effects |= EF_LOWPRECISION; and, when g_nexball_playerclip_collisions (default 1),
+        // dphitcontentsmask = DPCONTENTS_BODY | DPCONTENTS_SOLID | DPCONTENTS_PLAYERCLIP.
+        GameWorld world = BootNexballMap(new[] { Dict("nexball_basketball", new Vector3(0, 0, 0)) });
+        var nb = (Nexball)world.GameType!;
+        Entity ball = nb.BallEntity!;
+
+        const int EfLowPrecision = 4194304; // QC EF_LOWPRECISION
+        const int PlayerclipMask = 0x02000000 | 0x00000001 | 256; // BODY | SOLID | PLAYERCLIP
+        Assert.True((ball.Effects & EfLowPrecision) != 0, "EF_LOWPRECISION must be set on the ball");
+        Assert.Equal(PlayerclipMask, ball.DpHitContentsMask);
+    }
+
+    [Fact]
+    public void CarrierHighspeed_DefaultsTo_0_8()
+    {
+        // QC g_nexball_basketball_carrier_highspeed default 0.8 (gametypes-server.cfg) — the carrier is slowed.
+        GameWorld world = BootNexballMap(new[] { Dict("nexball_basketball", new Vector3(0, 0, 0)) });
+        var nb = (Nexball)world.GameType!;
+        Assert.Equal(0.8f, nb.CarrierHighspeed, 3);
+    }
 }

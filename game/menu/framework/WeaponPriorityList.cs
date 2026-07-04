@@ -65,7 +65,10 @@ public partial class WeaponPriorityList : VBoxContainer
     {
         if (_list is null) return;
         string s = WeaponOrder.NumberWeaponOrder(Cvars.GetString(Cvar));
-        string t = WeaponOrder.FixWeaponOrder(s, complete: true);
+        // menuRegistryView: run the fix-up as Base's MENU program would — its registry has no BallStealer, so
+        // the completion can't append it (and a stray token from an old config is dropped, self-healing the
+        // cvar). Without this, one visit to this dialog permanently archived a port-mutated cl_weaponpriority.
+        string t = WeaponOrder.FixWeaponOrder(s, complete: true, menuRegistryView: true);
         if (t != s)
         {
             _updating = true;

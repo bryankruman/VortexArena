@@ -1,0 +1,381 @@
+unit: turret-ewheel
+category: turret
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 12
+  worst_gaps:
+    - "CSQC ewheel_draw rolling integration (origin += velocity*dt, head angles += avelocity*dt, MOVETYPE_BOUNCE+gravity) not ported — the low-health spark temp-entity IS now emitted server-side"
+    - "Turret head (ewheel-gun1.md3) is CARRIED as identity data (Wave-17 HeadModel) AND its body-relative angles/avelocity are now NETWORKED (Phase-1 NetEntity.TurretHead -> Entity.TurHeadPitch/Yaw/AVelYaw), but the CLIENT STILL does not instantiate or render a separate head bone entity: ClientEntityView decodes the head state onto the proxy with an explicit 'no render work here; feeds the Phase-3 turret-head node' comment, and no such node exists. Head render + tag_head attach + ROAM-flag modeling all still open"
+    - "Two-cannon head-frame alternation (tur_head.frame += 2, wrap > 3 -> 0) still absent — needs the unported head sub-entity (EFFECT_BLASTER_MUZZLEFLASH + PROJECTILE_BLASTER trail are now emitted, Wave-8e)"
+    - "ammo_flags ENERGY|RECHARGE|RECIEVE modeled only as an ammo pool (no energy/recharge/receive bookkeeping); recharge rate itself honored"
+features:
+  - id: turret-ewheel.identity.def
+    name: "Identity, hitbox, models, spawnflags"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/turrets/turret/ewheel.qh:EWheel"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:EWheelTurret"
+    constants:
+      - { name: "mins", base: "'-32 -32 0'", port: "(-32,-32,0)", match: true }
+      - { name: "maxs", base: "'32 32 48'", port: "(32,32,48)", match: true }
+      - { name: "model", base: "models/turrets/ewheel-base2.md3", port: "models/turrets/ewheel-base2.md3", match: true }
+      - { name: "head_model", base: "ewheel-gun1.md3", port: "models/turrets/ewheel-gun1.md3 (carried as identity data; NOT instantiated as a head bone entity / not rendered)", match: false }
+      - { name: "netname", base: "ewheel", port: "ewheel", match: true }
+      - { name: "spawnflags", base: "TUR_FLAG_PLAYER|TUR_FLAG_MOVE|TUR_FLAG_ROAM", port: "movable=true (MOVE); PLAYER select implicit; ROAM not modeled", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Head model (ewheel-gun1.md3) string is CARRIED as identity data (HeadModel field, Wave-17) and its body-relative pitch/yaw/avelocity are now NETWORKED to all clients (Phase-1 NetEntity.TurretHead -> Entity.TurHeadPitch/Yaw/AVelYaw), but it is still NOT instantiated as a separate head bone entity; no tag_head attachment and no client render of the head. ClientEntityView decodes the head state onto the proxy with an explicit comment 'no render work here ... feeds the Phase-3 turret-head node', and that Phase-3 node does not yet exist (no client consumer of TurHeadYaw/Pitch/HeadModel). Its only other consumer (TurretAI.TossDeathGibs head-gib) explicitly skips turret_ewheel. So the head is networked-but-unrendered identity data — presentation stays partial, NOT closed."
+      - "ROAM spawnflag not modeled as an explicit flag (the path-roaming behavior it gates is implemented and live — see turret-ewheel.drive.path)."
+    verification:
+      - { kind: test, ref: "TurretLifecycleTests.EwheelSpawn_PinsHealthAndCoreSetup", result: pass }
+      - { kind: code_read, ref: "ewheel.qh vs EWheelTurret ctor + Spawn — HeadModel='models/turrets/ewheel-gun1.md3'; Phase-1 ServerNet writes HeadAngles to NetEntity.TurretHead and ClientEntityView decodes onto the proxy (decode-only, no render); no game/ client node renders a turret head (grep TurHeadYaw/HeadModel -> only ServerNet producer + ClientEntityView decode)", result: pass }
+    confidence: high
+    notes: "RE-AUDIT (2026-06-28, branch claude/parity-port-waves Phase-1/2): EWheelTurret.cs is byte-identical to the Wave-17 baseline (git diff 2f0bfdb..HEAD empty for the file). The ewheel-relevant Phase-1 change was framework-level: turret head angles/avelocity are now networked (NetEntity.TurretHead) and decoded onto the client proxy — a data-plumbing improvement, but NO client node renders a separate head yet (the 'Phase-3 turret-head node' the decode comment references is unbuilt). Presentation therefore REMAINS partial, not closed. Identity/hitbox/base model faithful; head bone render + ROAM flag still not modeled."
+  - id: turret-ewheel.setup.tr_setup
+    name: "tr_setup: SlideBox/Step creature, select flags, ammo flags, home pose"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/ewheel.qc:185"
+      - "common/turrets/sv_turrets.qc:turret_initialize"
+      - "common/turrets/sv_turrets.qc:turret_respawn"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:Spawn"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init"
+    constants:
+      - { name: "solid", base: "SOLID_SLIDEBOX", port: "Solid.SlideBox", match: true }
+      - { name: "movetype", base: "MOVETYPE_STEP", port: "MoveType.Step", match: true }
+      - { name: "takedamage", base: "DAMAGE_AIM", port: "DamageMode.Aim", match: true }
+      - { name: "select_flags", base: "PLAYERS|RANGELIMITS|TEAMCHECK|LOS", port: "Players|RangeLimits|TeamCheck|Los", match: true }
+      - { name: "ammo_flags", base: "ENERGY|RECHARGE|RECIEVE", port: "not modeled (ammo pool only)", match: false }
+      - { name: "frame/tur_head.frame", base: "1", port: "none", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Initial frame=1 / tur_head.frame=1 not set (no frame handling — covered by turret-ewheel.anim.driveframes)."
+      - "ammo_flags ENERGY|RECHARGE|RECIEVE modeled only as an ammo pool (no energy/recharge/receive bookkeeping); the recharge rate itself is honored."
+    verification:
+      - { kind: test, ref: "TurretLifecycleTests.EwheelSpawn_PinsHealthAndCoreSetup", result: pass }
+      - { kind: code_read, ref: "ewheel.qc tr_setup vs Spawn/Init — Select flags now PLAYERS|RANGELIMITS|TEAMCHECK|LOS exactly (no extra ANGLELIMITS)", result: pass }
+    confidence: high
+    notes: "FIX (Wave-2): the unintended SelectAngleLimits was removed from the select flags — they now match Base exactly. Core creature setup faithful; frame init + ammo-flag bookkeeping still absent."
+  - id: turret-ewheel.spawn.liveness
+    name: "Map spawnfunc wiring + per-frame think (turret_ewheel placed on map)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/ewheel.qc:134"
+      - "common/turrets/sv_turrets.qc:turret_link"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:EWheel"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:215"
+      - "src/XonoticGodot.Common/GameInit.cs:21"
+    constants:
+      - { name: "g_turrets master switch", base: "1 (default on)", port: "MasterSwitchEnabled default-on", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "TurretLifecycleTests.Spawnfunc_RespectsTheGTurretsMasterSwitch", result: pass }
+      - { kind: code_read, ref: "RegisterAll(turret_ewheel) -> EWheel -> Spawn + Think; GameInit calls RegisterAll", result: pass }
+    confidence: high
+    notes: "Confirmed live: spawnfunc registered, RegisterAll runs at boot, Think re-armed each frame. Unchanged by Wave-1/2."
+  - id: turret-ewheel.combat.brain
+    name: "Acquire/aim/fire combat brain (shared turret_think framework)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_think"
+      - "common/turrets/sv_turrets.qc:turret_select_target"
+      - "common/turrets/sv_turrets.qc:turret_firecheck"
+      - "common/turrets/sv_turrets.qc:turret_fire"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:RunCombat"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Fire"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:Think"
+    constants:
+      - { name: "targetscan_mindelay", base: "0.1", port: "0.1 (Cvar fallback)", match: true }
+      - { name: "targetscan_maxdelay", base: "1", port: "1 (Cvar fallback)", match: true }
+      - { name: "aimidle_delay", base: "5", port: "5 (Cvar fallback)", match: true }
+      - { name: "g_turrets_nofire", base: "0 (gate present)", port: "0 (gate present)", match: true }
+      - { name: "aim_firetolerance_dist", base: "150", port: "150 (FireTolerance threaded into ValidTarget/OnTarget)", match: true }
+      - { name: "ammo_recharge", base: "50", port: "50", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "RunCombat vs turret_think/firecheck/fire; targetscan_maxdelay now Cvar-backed default 1, g_turrets_nofire master-fire-disable gate added, aim_firetolerance_dist 150 threaded through ValidTarget+OnTarget", result: pass }
+    confidence: high
+    notes: "FIX (Wave-2): framework targetscan_maxdelay corrected 0.6->1 (now cvar-backed, falls back to Base default when the turret cvars are unseeded), g_turrets_nofire fire-disable gate added, and the 150 fire-tolerance distance is now honored (was a hardcoded 64). Combat flow faithful and live via EWheelTurret.Think -> RunCombat."
+  - id: turret-ewheel.drive.enemy
+    name: "tr_think locomotion: chase/kite/hold toward enemy + body yaw"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/ewheel.qc:140"
+      - "common/turrets/turret/ewheel.qc:59"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:Drive"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretMath.cs:SteerArrive"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretMath.cs:MoveSimple"
+    constants:
+      - { name: "speed_fast", base: "500", port: "500", match: true }
+      - { name: "speed_slow", base: "150", port: "150", match: true }
+      - { name: "speed_slower", base: "50", port: "50", match: true }
+      - { name: "speed_stop", base: "25", port: "25", match: true }
+      - { name: "turnrate (body yaw)", base: "200 (tur_head.aim_speed in tr_think)", port: "200 (TurnRate)", match: true }
+      - { name: "target_range_optimal", base: "900", port: "900", match: true }
+      - { name: "kite_threshold", base: "optimal*0.5 = 450", port: "optimal*0.5 = 450", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "ewheel.qc tr_think + ewheel_move_enemy vs EWheelTurret.Drive — yaw error (spawnshieldtime) computed before the yaw step and used to gate fast(<1)/slow(<2)/slower(else) at dist>optimal; kite at speed_slow when dist<optimal*0.5; brake at speed_stop otherwise", result: pass }
+    confidence: high
+    notes: "FIX (Wave-2): all drive speeds corrected (500/150/50/25), turnrate 200, target_range_optimal 900, kite threshold 450, AND the aim-error speed gating now implemented — the body yaw error is computed (Base tur_head.spawnshieldtime) and gates the chase speed fast/slow/slower, instead of always closing at fast. Logic + values now faithful."
+  - id: turret-ewheel.drive.path
+    name: "Waypoint path following (ewheel_move_path / ewheel_findtarget)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/ewheel.qc:17"
+      - "common/turrets/turret/ewheel.qc:111"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:Drive"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:EWheelFindTarget"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:NextCheckpoint"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:CloseToTarget"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:Checkpoint"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:233"
+    constants:
+      - { name: "path_node_proximity", base: "64", port: "64 (PathNodeProximity, CloseToTarget box overlap)", match: true }
+      - { name: "path move speed", base: "speed_fast 500", port: "500 (MoveSimple(fwd, SpeedFast))", match: true }
+      - { name: "steerlib_attract2 params", base: "0.5, 500, 0.95", port: "SteerAttract2(0.5, 500, 0.95)", match: true }
+      - { name: "chain link", base: "pathcurrent.enemy (non-FANCYPATH; EWHEEL_FANCYPATH commented out)", port: "NextCheckpoint via find(targetname) — matches non-FANCYPATH default", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "EWheelTurret.Drive enemy==null && pathcurrent!=null branch advances the chain at 64u (CloseToTarget) and rolls toward the node at SpeedFast 500 with SteerAttract2(0.5,500,0.95); EWheelFindTarget resolves the entry turret_checkpoint by targetname; turret_checkpoint spawnfunc registered in MapObjectsRegistry (live) and floor-snaps + IndexRegisters the node", result: pass }
+    confidence: high
+    notes: "FIX (post-Wave-2, 2026-06-25): waypoint path roaming is now FULLY ported and LIVE — turret_checkpoint spawnfunc registered + floor-snapped + indexed by targetname; EWheelFindTarget wires the entry node on spawn/respawn; the path branch advances at 64u proximity and rolls at speed_fast 500 via SteerAttract2(0.5,500,0.95). Port deliberately implements the non-FANCYPATH chain (pathcurrent.enemy resolved by targetname), which is exactly Base's default (EWHEEL_FANCYPATH is #commented-out)."
+  - id: turret-ewheel.drive.idle
+    name: "ewheel_move_idle: brake to a stop + idle frame"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/turrets/turret/ewheel.qc:98"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:Drive"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretMath.cs:BrakeSimple"
+    constants:
+      - { name: "speed_stop", base: "25", port: "25", match: true }
+      - { name: "idle frame", base: "0 (with TNSF_ANIM)", port: "0 (SetFrame(AnimStop) → networked Entity.Frame)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "ewheel_move_idle vs Drive enemy==null && pathcurrent==null branch — SetFrame(e, AnimStop) resets frame 0 (networked via NetEntity.Frame), then BrakeSimple(SpeedStop 25)", result: pass }
+    confidence: high
+    notes: "FIX (post-Wave-2, 2026-06-25): the idle-frame reset is now present — Drive's idle branch calls SetFrame(e, AnimStop=0) before braking, and Entity.Frame is network-synced (NetEntity EntityField.Frame), matching Base's frame 0 + TNSF_ANIM. Brake force already SpeedStop 25 (Wave-2)."
+  - id: turret-ewheel.weapon.fire
+    name: "EWheelAttack: fast blaster bolt volley (2 shots, near-hitscan)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/ewheel_weapon.qc:7"
+      - "common/turrets/sv_turrets.qc:turret_projectile"
+      - "common/turrets/sv_turrets.qc:turret_fire"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Projectile"
+    constants:
+      - { name: "shot_dmg", base: "30", port: "30", match: true }
+      - { name: "shot_radius", base: "50", port: "50", match: true }
+      - { name: "shot_speed", base: "9000", port: "9000", match: true }
+      - { name: "shot_force", base: "125", port: "125", match: true }
+      - { name: "shot_spread", base: "0.025", port: "0.025", match: true }
+      - { name: "shot_refire", base: "0.1", port: "0.1", match: true }
+      - { name: "shot_volly", base: "2", port: "2", match: true }
+      - { name: "shot_volly_refire", base: "1", port: "1", match: true }
+      - { name: "missile_flags", base: "MIF_SPLASH", port: "splash via radius damage", match: true }
+      - { name: "deathtype", base: "DEATH_TURRET_EWHEEL", port: "DeathTypes.TurretEwheel", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No two-cannon head-frame alternation (Base ewheel_weapon.qc:32-35: tur_head.frame += 2, wrap > 3 -> 0) — needs the unported head sub-entity (the turret's own Entity.Frame is consumed by the locomotion drive animation); tracked under turret-ewheel.identity.def."
+      - "EFFECT_BLASTER_MUZZLEFLASH is emitted with except: turret, but Base Send_Effect -> Send_Effect_Except(..., NULL) does NOT exclude the firer — minor over-exclusion (cosmetic for a turret, which is not a first-person view source)."
+    verification:
+      - { kind: test, ref: "MonsterTurretVehicleObituaryTests.cs:203 (ewheel projectile deathtype)", result: pass }
+      - { kind: code_read, ref: "ewheel_weapon.qc wr_think + turret_projectile vs Attack/Projectile — shot_spread 0.025; EFFECT_BLASTER_MUZZLEFLASH now emitted (EffectsList registers BLASTER_MUZZLEFLASH=laser_muzzleflash); missile.NetName='blaster' classifies to ProjectileType.Blaster (ProjectileCatalog.Classify:302) -> PROJECTILE_BLASTER trail; lasergun_fire plays on the weapon channel from the turret (matches turret_projectile sound on CH_WEAPON_A)", result: pass }
+    confidence: high
+    notes: "RE-AUDIT (2026-06-28): unchanged this branch; confirmed still — Attack emits EFFECT_BLASTER_MUZZLEFLASH (EffectsList registers BLASTER_MUZZLEFLASH=laser_muzzleflash, EffectsList.cs:40) and stamps missile.NetName='blaster' (TurretSpawn.Projectile applies projType, TurretSpawn.cs:139) so the client renders the PROJECTILE_BLASTER bolt; lasergun_fire on the weapon channel. presentation partial (two-cannon head-frame alternation still absent — needs the still-unrendered head sub-entity), audio faithful. Prior: FIX Wave-8e (muzzleflash+blaster trail+sound); Wave-2 shot_spread 0.0125->0.025."
+  - id: turret-ewheel.damage.lifecycle
+    name: "Damage gating, head-shake, MOVE-shove, death + respawn"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_damage"
+      - "common/turrets/sv_turrets.qc:turret_die"
+      - "common/turrets/sv_turrets.qc:turret_respawn"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:EventDamage"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Damage"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Die"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:Spawn (OnRespawn)"
+    constants:
+      - { name: "respawntime", base: "30", port: "30", match: true }
+      - { name: "MOVE shove (velocity += vforce)", base: "yes (TUR_FLAG_MOVE)", port: "movable=true", match: true }
+      - { name: "inactive/dead take no damage", base: "yes", port: "yes", match: true }
+      - { name: "friendlyfire gate", base: "g_friendlyfire", port: "g_friendlyfire", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: unknown
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Death blast is applied unconditionally in Die (Base turret_die has the RadiusDamage variant commented out) — minor over-fidelity, scaled by leftover ammo; not ewheel-specific (framework-level)."
+    verification:
+      - { kind: test, ref: "TurretLifecycleTests (Damage_Dead/Inactive/SameTeam gates)", result: pass }
+      - { kind: code_read, ref: "turret_damage/die/respawn vs TurretAI.EventDamage(gate+health subtract+Death bus)/Damage/Die + OnRespawn; respawnTime now RespawnTime=30f passed to Init", result: pass }
+    confidence: high
+    notes: "FIX (Wave-2): respawntime corrected 60->30 (matches g_turrets_unit_ewheel_respawntime). Also Wave-1 wired the live damage path: TurretSpawn.Init installs TurretAI.EventDamage as the turret's GtEventDamage, which DamageSystem.EventDamage routes non-player edicts to — running the pre-damage gate + its own RES_HEALTH subtract + firing Combat.Death on lethal (OnAnyDeath -> Die). DeadState No->Dead transition prevents a double-death."
+  - id: turret-ewheel.head.track
+    name: "Head rotation: track type + aim clamps"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_track"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Track"
+    constants:
+      - { name: "aim_speed", base: "90", port: "90", match: true }
+      - { name: "aim_maxrot", base: "20", port: "20", match: true }
+      - { name: "aim_maxpitch", base: "45", port: "45", match: true }
+      - { name: "track_type", base: "1 (STEPMOTOR)", port: "1 (TrackStepMotor)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "turrets.cfg aim_maxrot 20 / aim_maxpitch 45 / track_type 1 vs EWheelTurret consts + TurretParams trackType=TrackStepMotor; Track STEPMOTOR case applies hard per-frame increments clamped to maxpitch/maxrot, ignoring accel/blend (which Base also zeroes for ewheel)", result: pass }
+    confidence: high
+    notes: "FIX (Wave-2): aim_maxrot corrected 360->20, aim_maxpitch 20->45, and track_type FluidInertia(3)->StepMotor(1). Head aim dynamics now match Base (hard per-frame clamp, head yaw limited to +/-20 so the body turns to face)."
+  - id: turret-ewheel.client.draw
+    name: "CSQC rolling draw + low-health sparks (ewheel_draw)"
+    layer: [presentation]
+    base_refs:
+      - "common/turrets/turret/ewheel.qc:220"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:Drive"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:TeSpark"
+    constants:
+      - { name: "spark health threshold", base: "127", port: "127 (SparkHealthThreshold)", match: true }
+      - { name: "spark chance/frame", base: "0.05", port: "0.05 (SparkChance)", match: true }
+      - { name: "spark velocity/count", base: "randomvec()*256 + '0 0 256', 16", port: "Prandom.Vec()*256 + (0,0,256), 16", match: true }
+      - { name: "client movetype roll", base: "MOVETYPE_BOUNCE + gravity 1, origin += velocity*dt", port: "none (client-render, deferred)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "CSQC ewheel_draw rolling integration not ported: the model does not client-side roll (origin += velocity*dt, head angles += avelocity*dt, MOVETYPE_BOUNCE+gravity). The server already networks origin/velocity, so the visible motion follows the netted transform rather than the client integration."
+    verification:
+      - { kind: code_read, ref: "Drive emits EffectEmitter.TeSpark(origin+'0 0 40', Prandom.Vec()*256+'0 0 256', 16) when health<127 at 5%/frame — values match Base ewheel_draw; emitted server-side as a networked temp-entity so all viewers see it. The rolling origin/head integration is intentionally left as client render (NOTE in source)", result: pass }
+    confidence: high
+    notes: "RE-AUDIT (2026-06-28): unchanged this branch; confirmed — low-health spark temp-entity emitted (server-side networked TE_SPARK, <127 hp, 5%/frame, exact Base velocity/count, EWheelTurret.Drive) so logic/values/timing faithful. The pure-client rolling-draw integration (origin += velocity*dt, head angles += avelocity*dt, MOVETYPE_BOUNCE) is still NOT ported; note Phase-1 now networks origin/velocity AND head avelocity (TurHeadAVelYaw), but no client node integrates them, so the model does not client-roll — presentation remains partial."
+  - id: turret-ewheel.anim.driveframes
+    name: "Locomotion drive-frame animation (frames 0..4)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/turrets/turret/ewheel.qc:11"
+      - "common/turrets/turret/ewheel.qc:95"
+      - "common/turrets/sv_turrets.qc:turrets_setframe"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:SetFrame"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:Drive"
+      - "src/XonoticGodot.Net/NetEntity.cs:113"
+    constants:
+      - { name: "anim frames", base: "stop=0,fwd_slow=1,fwd_fast=2,bck_slow=3,bck_fast=4", port: "AnimStop=0,AnimFwdSlow=1,AnimFwdFast=2,AnimBckSlow=3,AnimBckFast=4", match: true }
+      - { name: "frame selection (enemy branch)", base: "fwd_fast@yaw<1, fwd_slow@yaw<2 & else, bck_slow when too close, stop otherwise", port: "identical (fwd_slow reused for both the <2 and else slower branch, exactly as Base)", match: true }
+      - { name: "net sync", base: "SendFlags |= TNSF_ANIM + anim_start_time", port: "Entity.Frame is networked (NetEntity EntityField.Frame, WriteUShort)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "EWheelTurret.SetFrame stamps the locomotion frame (0..4) onto Entity.Frame in the enemy branch (turrets_setframe tail) and the idle branch (frame 0); Entity.Frame is network-synced via NetEntity.Frame (EntityField.Frame, WriteUShort/ReadUShort), so the client model animator plays the correct drive frame. bck_fast(4) defined but unused — exactly as Base (ewheel_anim_bck_fast is also unused in ewheel.qc)", result: pass }
+    confidence: high
+    notes: "FIX (post-Wave-2, 2026-06-25): locomotion drive-frame selection is now ported and LIVE — SetFrame writes the motion-state frame (stop/fwd_slow/fwd_fast/bck_slow) onto the networked Entity.Frame, replacing Base's turrets_setframe + TNSF_ANIM. The enemy-branch frame gating matches Base bit-for-bit (incl. reusing fwd_slow for both off-axis speeds and the unused bck_fast)."

@@ -34,6 +34,13 @@ public static class MenuDialogRegistry
         ["guide"]       = () => new DialogMediaGuide(),             // QC dialog_multiplayer_media_screenshot's guide → the entry guide
         ["quitdialog"]  = () => new QuitDialog(),                   // QC menu_showquitdialog
         ["hudpanels"]   = () => new DialogHudPanels(),              // HUD-panel config host (menu_showhudoptions)
+        // QC dialog_sandboxtools registers .name "SandboxTools"; binds-xonotic.cfg `bind F7 menu_showsandboxtools`
+        // aliases (commands.cfg) to `menu_cmd directmenu SandboxTools`, which flows MenuCommand→OpenDialog→
+        // Shell.OpenMenuDialog→Create(name). Without this entry that path resolved to null ("no dialog named
+        // 'SandboxTools'") and Sandbox Tools was reachable ONLY via the dev `--menu-screen sandbox` flag (Shell's
+        // separate lowercase "sandbox" key). Registering the QC name restores the Base in-match entry point — the
+        // dialog opens regardless (exactly like Base; g_sandbox must be enabled for its buttons to do anything).
+        ["SandboxTools"] = () => new DialogSandboxTools(),          // QC dialog_sandboxtools (menu_showsandboxtools)
         // QC `menu_cmd skinselect`/`languageselect` remap to the skinselector/languageselector dialogs. Those QC
         // dialogs are the skin list / language list; the port folds both into the Settings dialog's User tab
         // (dialog_settings_user.qc — the faithful home of both pickers), so the *select overlay verbs resolve there.

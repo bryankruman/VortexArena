@@ -173,12 +173,42 @@ public static class Sounds
     };
 
     /// <summary>
-    /// Resolve a per-model player sound sample path (QC LoadPlayerSounds: <c>sound/&lt;modeldir&gt;/&lt;id&gt;</c>).
-    /// <paramref name="modelDir"/> is the model's sound directory (e.g. "player/megaerebus.sounds"); when
-    /// empty/null the default pack is used. <paramref name="id"/> is a PlayerSound/VoiceMessage id.
+    /// Host-installed resolver for a player-sound sample. QC's <c>LoadPlayerSounds</c> parses a model's
+    /// <c>.sounds</c> manifest (id → real sample path, e.g. <c>jump → sound/player/espeak/player/jump</c>) and
+    /// the <c>default.sounds</c> fallback. The headless gameplay layer can't read files, so the host (which
+    /// owns the VFS + the <c>ModelSounds</c> parser) installs this delegate at boot. It receives the model's
+    /// <c>.sounds</c> datafile vpath (QC <c>get_model_datafilename(model, skin, "sounds")</c>, may be
+    /// null/empty for the default pack) and the player-sound <paramref name="id"/>, and returns the resolved
+    /// sample path, or null to fall back to <see cref="PlayerSoundSampleRaw"/>. Unset (tests / headless) =&gt;
+    /// the raw default-pack concat (which doesn't resolve on disk, exactly the pre-host behavior).
     /// </summary>
-    public static string PlayerSoundSample(string? modelDir, string id)
+    public static Func<string?, string, string?>? ModelSoundResolver;
+
+    /// <summary>
+    /// Resolve a per-model player sound sample path. Routes through the host-installed
+    /// <see cref="ModelSoundResolver"/> (which parses the model's <c>.sounds</c> manifest, QC
+    /// <c>LoadPlayerSounds</c>) when present; otherwise falls back to <see cref="PlayerSoundSampleRaw"/>.
+    /// <paramref name="modelSoundsFile"/> is the model's <c>.sounds</c> datafile vpath
+    /// (QC <c>get_model_datafilename</c>); null/empty selects the default pack. <paramref name="id"/> is a
+    /// PlayerSound/VoiceMessage id.
+    /// </summary>
+    public static string PlayerSoundSample(string? modelSoundsFile, string id)
+        => ModelSoundResolver?.Invoke(modelSoundsFile, id) ?? PlayerSoundSampleRaw(modelSoundsFile, id);
+
+    /// <summary>
+    /// The pre-manifest string-concat fallback: <c>sound/&lt;modeldir&gt;/&lt;id&gt;</c> (or the default pack
+    /// dir). Used when no <see cref="ModelSoundResolver"/> is installed, or it declines to resolve.
+    /// </summary>
+    public static string PlayerSoundSampleRaw(string? modelDir, string id)
         => string.IsNullOrEmpty(modelDir) ? $"{DefaultPlayerSoundDir}/{id}" : $"sound/{modelDir}/{id}";
+
+    /// <summary>
+    /// QC <c>get_model_datafilename(model, skin, "sounds")</c>: the per-model <c>.sounds</c> manifest vpath,
+    /// e.g. <c>models/player/erebus.iqm</c> + skin 0 =&gt; <c>models/player/erebus.iqm_0.sounds</c>. Returns
+    /// null for an empty model (=&gt; the default pack).
+    /// </summary>
+    public static string? ModelSoundsFile(string? model, int skin)
+        => string.IsNullOrEmpty(model) ? null : $"{model}_{skin}.sounds";
 
     /// <summary>Look up a sound by its <see cref="GameSound.NetName"/> (QC SND_&lt;name&gt;). Null if absent.</summary>
     public static GameSound? ByName(string name) => Registry<GameSound>.ByName(name);
@@ -212,6 +242,7 @@ public static class Sounds
     public static void Reset()
     {
         _done = false;
+        ModelSoundResolver = null;
         Registry<GameSound>.Clear();
     }
 }

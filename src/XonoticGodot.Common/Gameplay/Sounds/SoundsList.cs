@@ -108,6 +108,9 @@ public static class SoundsList
 
         Add("NB_BOUNCE", "nexball/bounce");
         Add("NB_DROP", "nexball/drop");
+        // QC SpawnGoal default goal noise (sv_nexball.qc): this.noise = "ctf/respawn.wav" — the score cue. Faithful
+        // to the QC default sample (NOT kh/capture). fault/out goals override noise with SND(TYPEHIT).
+        Add("NB_GOAL", "ctf/respawn");
         Add("NB_SHOOT1", "nexball/shoot1");
         Add("NB_SHOOT2", "nexball/shoot2");
         Add("NB_STEAL", "nexball/steal");
@@ -127,6 +130,12 @@ public static class SoundsList
         Add("ONS_SPARK1", "onslaught/ons_spark1");
         Add("ONS_SPARK2", "onslaught/ons_spark2");
         Add("ONS_SHOCKWAVE", "onslaught/shockwave");
+
+        // status-effect removal sounds (status_effect/*.qh SOUND() defs). m_sound_rm references these:
+        // burning -> SND_Burning_Remove (the steam-burst hiss), stunned -> SND_Stunned_Remove (the spark snap,
+        // same sample as ONS_SPARK1). Registered under their Base SND_* def names.
+        Add("BURNING_REMOVE", "desertfactory/steam_burst", SoundChannelHint.Item); // SOUND(Burning_Remove, ...)
+        Add("STUNNED_REMOVE", "onslaught/ons_spark1", SoundChannelHint.Item);       // SOUND(Stunned_Remove, ...)
     }
 
     // --- vehicles / turrets / monsters (all.inc) ---

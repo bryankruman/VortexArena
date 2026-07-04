@@ -1,0 +1,1139 @@
+unit: mutator-buffs
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+# Re-audited 2026-06-28 (OPUS waypoint/presentation wave re-verify; branch claude/parity-port-waves). TWO ROWS DRIFTED
+# (both IMPROVEMENTS, 0 regressions): (1) buffs.waypoint went missing->IMPLEMENTED+LIVE — BuffsMutator.SpawnBuffWaypoint
+# (BuffsMutator.cs:584) spawns the registered "Buff" radar/HUD sprite (Waypoints.cs:164 Add("Buff",...,Orange)) tinted
+# by BuffColor with a VisibleForPlayer hide-if-already-held filter; the filter is CONSUMED on the live per-peer send
+# path (ServerNet.WaypointVisible:1297). Pinged + re-tinted on respawn (BuffRespawn:559-561), killed on pickup
+# (BuffTouch:425), re-attached on respawn (ScheduleRespawn:480-482); the WaypointSprites.Spawn overload + Ping/Kill/
+# UpdateTeamRadar all exist and match the call. logic/values/timing/presentation missing->faithful, liveness na->live.
+# (2) buffs.item.spawnfunc per-buff SKIN is now applied — ConfigureBuffEntity:318 e.Skin = buff.Skin (relic.md3 ships
+# one skin per buff so the pickup renders in its own colour); StatusEffectDef.Skin populated for all 13 buffs
+# (StatusEffects.cs:240+). Residual presentation gap on that row is now only the world-item color/glowmod TINT (Color
+# is read only for the waypoint, never networked to the item) + dynamic light + bot pickup value — still presentation:
+# partial, but the skin sub-gap closed and the item now also carries a waypoint. Everything else re-confirmed against
+# the current port code (per-perk hooks, FilterItem, drop, medic regen, ammo clip, swapper, inferno) — unchanged.
+# (Prior 2026-06-27 OPUS re-verify note retained below.)
+# --- 2026-06-27 history ---
+# Re-audited 2026-06-27 (OPUS consolidated re-verify post Waves 16/17; branch claude/parity-port-waves). NO STATUS
+# DRIFT: every row's status/liveness re-confirmed by reading the CURRENT port code, not assumed. Liveness spot-checks
+# this pass (all PASS): map item_buff_* spawnfuncs LIVE (ItemSpawnFuncs.RegisterBuffSpawnFuncs:207 -> SpawnFuncs.Register
+# -> BuffsMutator.SpawnMapBuff:356); FilterItem powerup-replace LIVE (StartItem.cs:119 MutatorHooks.FireFilterItem ->
+# OnFilterItem:906); medic PlayerRegen mods CONSUMED on the live path (XonoticGodot.Server/PlayerFrameLogic.cs:56-62 reads
+# RotMod/RegenMod/MaxMod/LimitMod back from the hook); jump-velocity override is genuinely LIVE+READ (PlayerPhysics.cs:1079-1080
+# mjumpheight = player.JumpVelocityOverride — the historical DEAD gap is closed); disability fire-rate slow LIVE
+# (WeaponFireGate.cs:489 WeaponRateFactor.Call); +use drop LIVE (VehicleBoarding.cs:106 FirePlayerUseKey). StatusEffects
+# catalog (StatusEffects.cs:240-252) registers EXACTLY the 13 QC buffs (buff_ammo..buff_vengeance); 'speed'/'invisibility'
+# are POWERUP defs (no buff_ prefix, :234-235), so the port-extra speed/invisible branches remain inert dead code. NOTE:
+# some verification-ref line numbers below have minor drift vs the current file (e.g. OnDamageCalculate now :627, OnFilterItem
+# :906, OnPlayerUseKey :877, RandomBuff :225, resistance clamp :642) — symbols/behavior unchanged, only offsets moved.
+# (Prior 2026-06-27 drift-check note retained below.)
+# every row re-verified against current Base + port code and the recorded statuses/constants/liveness all still
+# hold. All 13 REGISTER_BUFF types still mapped; all MUTATOR_HOOKFUNCTION(buffs,...) hooks accounted for
+# (PlayerPhysics_UpdateStats/MonsterMove/WeaponSpeedFactor under buffs.disability gaps; MakePlayerObserver/
+# ClientDisconnect under buffs.observer_cleanup). Base cvar defaults unchanged (resistance 0.5, medic rot/max/
+# regen 0.2/1.5/1.7, vampire 0.4, jump 600, vengeance 0.4, bash 2, inferno 0.3, swapper 1500, luck 0.15,
+# disability speed/attack 0.7/1.5, weaponspeed still un-ported). Confirmed-live wiring intact: FilterItem via
+# StartItem.cs:119 FireFilterItem; map spawnfuncs via ItemSpawnFuncs.cs:84 RegisterBuffSpawnFuncs -> SpawnMapBuff;
+# medic PlayerRegen mods consumed in XonoticGodot.Server/PlayerFrameLogic.cs (port_ref path corrected from the
+# stale PlayerFrameLogic.cs:56-89 note — the file lives under XonoticGodot.Server, behavior unchanged). The
+# detailed 2026-06-25 history below is retained as-is.
+# --- 2026-06-25 history ---
+# TWO MAJOR FIXES since the prior write — 0 regressions:
+#   - buffs.replace_powerups (a recorded worst-gap; was missing/empty port_refs): the FilterItem powerup-replace
+#     obtain path is now FULLY IMPLEMENTED and LIVE. BuffsMutator subscribes MutatorHooks.FilterItem (Hook():107)
+#     and OnFilterItem (912-931) mirrors Base: returns false in the g_buffs<0 mode, gated on
+#     g_buffs_replace_powerups, replaces an item.Pickup.IsPowerup item with a fresh random buff via
+#     buff_SpawnReplacement (setorigin/angles/noalign + ConfigureBuffEntity(null)). LIVE: StartItem.cs:119 calls
+#     MutatorHooks.FireFilterItem(item) on the real item-spawn path. So in the g_buffs>0 "replace" mode, map
+#     powerups now become buffs — the SECOND obtain path. logic/values missing->faithful, liveness na->live.
+#   - buffs.medic.regen (was logic/values/timing:partial — ad-hoc MedicTick + OnPlayerRegen returns false +
+#     rot_mod dropped): now QC-faithful. MedicTick is DELETED. OnPlayerRegen (774-781) sets RotMod=g_buffs_medic_rot
+#     (0.2), LimitMod=MaxMod=g_buffs_medic_max (1.5), RegenMod=g_buffs_medic_regen (1.7) — exactly QC's
+#     M_ARGV(1..4) slots. PlayerFrameLogic.Regen (PlayerFrameLogic.cs:56-89) consumes all four on the live path
+#     (rot_mod gates rotFrameTime, max_mod scales the health stable set-points, limit_mod scales the cap). The
+#     g_buffs_medic_rot constant now matches Base. logic/values/timing partial->faithful; verification fail->pass.
+# Both fixes clear baseline worst_gaps #1 (FilterItem) and #4 (medic ad-hoc regen).
+# Unchanged from the prior audit: map buff pickups via item_buff_* spawnfuncs are LIVE (buffs.item.spawnfunc,
+# ItemSpawnFuncs.RegisterBuffSpawnFuncs -> SpawnMapBuff -> ConfigureBuffEntity); the residual presentation gap is
+# that per-buff skin/color/glowmod (buff.m_skin/m_color) is NOT applied to the spawned item (uncolored relic).
+# Still absent: carrier buff_model glow / buff_Effect trail / WP_Buff waypoint / observer-disconnect cleanup;
+# disability projectile-speed (WeaponSpeedFactor) + monster-move (MonsterMove) slows. All other perk rows
+# re-verified live+faithful, unchanged. All 13 Base buff types + all sv_buffs.qc features have rows (no new
+# unmapped Base features).
+summary:
+  feature_count: 38
+  worst_gaps:
+    - "Spawned buff items now render in the per-buff SKIN (relic.md3 skin per type) AND carry a WP_Buff radar/HUD waypoint; residual presentation gaps are the world-item color/glowmod tint (Color is networked only to the waypoint, not the item), the carrier buff_model glow, and the buff_Effect particle trail."
+    - "Disability buff fire-rate slow is LIVE (WeaponRateFactor x1.5), but projectile-speed (WeaponSpeedFactor x0.7) and monster run/walk (MonsterMove x0.7) slows are still absent."
+    - "No observer/disconnect cleanup (buffs.observer_cleanup) — moot only because the carrier buff_model glow it cleans up is itself unimplemented."
+features:
+  - id: buffs.core.enable
+    name: "Buffs mutator enable (g_buffs)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/sv_buffs.qh:REGISTER_MUTATOR(buffs, autocvar_g_buffs)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:IsEnabled"
+    constants:
+      - { name: "g_buffs", base: "-1", port: "-1 (any != 0 enables)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "BuffsMutator.cs:39 IsEnabled = g_buffs != 0; MutatorActivation.Apply() Add()s the [Mutator]-registered BuffsMutator when enabled", result: pass }
+    confidence: high
+    notes: "Unchanged. Hook() reached when g_buffs != 0. QC g_buffs is tri-state: <0 = on but no FilterItem replace, =0 off, >0 = on AND replace powerups. Port collapses to on/off for the FilterItem-replace behavior (see buffs.replace_powerups), but the BuildMutatorsString report (g_buffs>0) is now honored."
+
+  - id: buffs.item.spawnfunc
+    name: "Map buff pickup item (item_buff_<type> spawnfunc + compat classnames)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/sv_buffs.qc:buff_Init"
+      - "common/mutators/mutator/buffs/buffs.qh:BUFF_SPAWNFUNCS / BUFF_SPAWNFUNC_Q3COMPAT"
+      - "common/mutators/mutator/buffs/buffs.qc:Buff_CompatName"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:SpawnMapBuff"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:ConfigureBuffEntity"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemSpawnFuncs.cs:RegisterBuffSpawnFuncs"
+    constants:
+      - { name: "model MDL_BUFF", base: "models/relics/relic.md3 (buff)", port: "models/relics/relic.md3 (MdlBuff fallback; asset present)", match: true }
+      - { name: "box ITEM_D_MINS..ITEM_L_MAXS", base: "'-30 -30 0'..'30 30 70'", port: "ItemBoxes.DefaultMins..LargeMaxs", match: true }
+      - { name: "per-buff skin (m_skin)", base: "set per buff (relic.md3 skin)", port: "e.Skin = buff.Skin (ConfigureBuffEntity:318)", match: true }
+      - { name: "per-buff color/glowmod (m_color)", base: "set per buff (item tint)", port: "not networked to the item (Color used only for the waypoint tint)", match: false }
+      - { name: "bot_pickupbasevalue", base: "1000", port: "none", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "FIXED this wave: the per-buff SKIN is now applied — ConfigureBuffEntity:318 sets e.Skin = buff.Skin (relic.md3 ships one skin per buff type, so the pickup renders in its own colour). Residual presentation gap is the per-buff COLOR/glowmod world-item tint (StatusEffectDef.Color is read only to tint the waypoint via BuffColor, never networked onto the item itself)."
+      - "Minor lifecycle omissions vs buff_Init: PFLAGS_FULLDYNAMIC dynamic light + buff_Customize light pulse and bot_pickupbasevalue 1000 (bots don't weight buff items) are not ported. The buff_Waypoint_Spawn waypoint is now ported + live (see buffs.waypoint)."
+    verification:
+      - { kind: code, ref: "ItemSpawnFuncs.RegisterBuffSpawnFuncs registers item_buff_random + item_buff_<13 types> + _team1.._team4 + 11 Q3/WOP compat classnames -> BuffsMutator.SpawnMapBuff -> ConfigureBuffEntity (model/box/movetype/effects/activate-cooldown/touch/think). LIVE: GameInit->MapObjectsRegistry.RegisterAll->ItemSpawnFuncs.Register; SpawnFuncs.TrySpawn at GameWorld.cs:3582 dispatches the BSP lump classnames", result: pass }
+    confidence: high
+    notes: "Map buff pickups fully implemented AND live — item_buff_* + per-team + Q3/QL/WOP compat classnames all spawn real buff items via SpawnMapBuff/ConfigureBuffEntity (buff_Init), routed through the live SpawnFuncs map-spawn dispatch. Compat classname set matches Base BUFF_SPAWNFUNC_Q3COMPAT. UPDATED 2026-06-28: the per-buff SKIN sub-gap is now closed (e.Skin = buff.Skin at :318) and the item carries a WP_Buff waypoint (buffs.waypoint). Residual presentation: per-buff color/glowmod item tint (not networked to the item) + dynamic light + bot pickup value — presentation stays partial."
+
+  - id: buffs.item.auto_spawn
+    name: "Auto-spawn buffs when none exist (g_buffs_spawn_count)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/sv_buffs.qc:buffs_Initialize / buffs_DelayedInit"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:SpawnInitialBuffs"
+    constants:
+      - { name: "g_buffs_spawn_count", base: "0", port: "0", match: true }
+      - { name: "spawn velocity", base: "randomvec() * 250", port: "Prandom.Vec() * 250", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: partial
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Default count is 0 so this never runs unless explicitly configured (matches Base default) — this stays liveness:partial. (The map item_buff_* spawnfuncs are now the primary obtain path; see buffs.item.spawnfunc.)"
+      - "QC defers via InitializeEntity(buffs_DelayedInit, INITPRIO_FINDTARGET) and sets spawnflags|=64 (always randomize/relocate) on each seed; port sets BuffAlwaysRelocate=true on each auto-seed (SpawnInitialBuffs), then routes through ConfigureBuffEntity (which now sets the relic model + box + cooldown + think + touch, same as the map spawn). Still spawns immediately at Hook() (not via the INITPRIO_FINDTARGET defer). Residual presentation gap: per-buff skin/color/glowmod still not applied, and no waypoint."
+    verification:
+      - { kind: code, ref: "SpawnInitialBuffs gated on g_buffs>0 && g_buffs_spawn_count>0 (default 0); each seed sets BuffAlwaysRelocate + Velocity then ConfigureBuffEntity(model/box/cooldown/touch/think) (BuffsMutator.cs:252-270)", result: pass }
+    confidence: high
+    notes: "UPDATED 2026-06-25: presentation missing->partial — auto-seeds now route through ConfigureBuffEntity so the relic model + STRENGTH_RESPAWN/ITEM_RESPAWN are present (per-buff color still missing). liveness stays partial (its own g_buffs_spawn_count>0 default-0 gate). No longer the only obtain path — the live map spawnfuncs are."
+
+  - id: buffs.item.touch_pickup
+    name: "Buff pickup + autoreplace on touch"
+    layer: [authority, shared]
+    base_refs:
+      - "common/mutators/mutator/buffs/sv_buffs.qc:buff_Touch"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:BuffTouch"
+    constants:
+      - { name: "cl_buffs_autoreplace", base: "1 (REPLICATE'd; replace only if set)", port: "1 (CvarBool default-true; honored)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "EFFECT_ITEM_PICKUP particle is still not spawned (no effect-spawn service); only the pickup sound + notifications play."
+      - "cl_buffs_autoreplace is read as the server-side value (no per-client REPLICATE store), so it can't differ per client; functionally equivalent on a server-wide setting."
+    verification:
+      - { kind: code, ref: "BuffTouch:284-336: team_forced/vehicle/buff_shield/dead guards; held buff replaced only when autoreplace && held!=thebuff (CvarBool cl_buffs_autoreplace, BuffsMutator.cs:309); INFO_ITEM_BUFF_LOST on replace; ITEM_BUFF_GOT center + INFO_ITEM_BUFF + shield_respawn on pickup", result: pass }
+    confidence: high
+    notes: "Logic/values/timing/audio faithful (cl_buffs_autoreplace honored, team_forced + vehicle + lifetime-zero-on-pickup, replace/pickup notifications). UPDATED 2026-06-25: liveness partial->live — buff items now spawn on maps via the item_buff_* spawnfuncs (buffs.item.spawnfunc), so pickup-on-touch is reachable on the real map path, not just the auto-seed. Residual gap is the missing EFFECT_ITEM_PICKUP particle (presentation)."
+
+  - id: buffs.item.needkill_respawn
+    name: "Buff item lava/needkill respawn on touch (ITEM_TOUCH_NEEDKILL)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/sv_buffs.qc:buff_Touch (ITEM_TOUCH_NEEDKILL -> buff_Respawn)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:BuffInNeedKill"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:BuffTouch"
+    constants:
+      - { name: "DPCONTENTS_NODROP (lava/slime)", base: "0x80000000", port: "0x80000000", match: true }
+      - { name: "Q3SURFACEFLAG_SKY", base: "0x4", port: "0x4", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC's ITEM_TOUCH_NEEDKILL is the engine's NODROP/sky contents test; port re-derives it with a zero-length trace at the item and checks DpHitContents&NODROP | DpHitQ3SurfaceFlags&SKY. Equivalent in practice; QC's mask also covers DPCONTENTS_SLIME/LAVA/SKY/BODY/DONOTENTER but NODROP is what lava/slime brushes carry."
+    verification:
+      - { kind: code, ref: "BuffTouch:289-293 calls BuffRespawn when BuffInNeedKill(item) true; BuffInNeedKill (276-281) zero-length trace, NoDropContents 0x80000000 + Q3SurfaceFlagSky 0x4", result: pass }
+    confidence: high
+    notes: "UPDATED 2026-06-25: liveness partial->live — buff items now spawn on maps via item_buff_* spawnfuncs, so the NEEDKILL relocation branch is reachable on the live path. The branch relocates a buff item that settles in lava/slime/void/sky via buff_Respawn (KA_RESPAWN sound included)."
+
+  - id: buffs.item.respawn_cooldown
+    name: "Buff item cooldown / respawn cycle (buff_Think + buff_SetCooldown)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/sv_buffs.qc:buff_Think"
+      - "common/mutators/mutator/buffs/sv_buffs.qc:buff_SetCooldown"
+      - "common/mutators/mutator/buffs/sv_buffs.qc:buff_Reset"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:ScheduleRespawn"
+    constants:
+      - { name: "g_buffs_cooldown_activate", base: "5", port: "5 (Cvar fallback)", match: true }
+      - { name: "g_buffs_cooldown_respawn", base: "3", port: "3 (Cvar fallback)", match: true }
+      - { name: "g_buffs_pickup_anyway", base: "0", port: "none", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: partial
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port respawn is still a single Think after cooldown_respawn (clears Owner and runs MaybeRandomize/MaybeRelocate); no buff_activetime countdown, no activate-cooldown arming on round start (Base buff_Reset uses g_buffs_cooldown_activate; port only models cooldown_respawn), no buff_active/buff_activetime state machine, no buff_Customize light pulse."
+      - "SND_STRENGTH_RESPAWN + EFFECT_ITEM_RESPAWN ARE now emitted on (re)activation (ActivateBuff:336-337, ScheduleRespawn:462-463). Still missing: the waypoint build-finished timer and g_buffs_pickup_anyway instant-respawn."
+      - "Owner-gone / dead / frozen / wrong-buff respawn conditions (QC buff_Think) are still collapsed: the port unconditionally clears the owner and re-arms after the respawn cooldown."
+    verification:
+      - { kind: code, ref: "ScheduleRespawn:444-466 sets Owner=null, Think after cooldown_respawn runs MaybeRandomize/MaybeRelocate + re-activates + STRENGTH_RESPAWN + ITEM_RESPAWN effect + arms BuffThink; ActivateBuff:332-343 same on the activate-cooldown elapse; vs buff_Think state machine", result: pass }
+    confidence: medium
+    notes: "UPDATED 2026-06-25: liveness partial->live (buff items now spawn on maps via spawnfuncs). audio partial->faithful + presentation missing->partial — SND_STRENGTH_RESPAWN + EFFECT_ITEM_RESPAWN are now emitted on (re)activation. Logic still partial: no buff_activetime/buff_active countdown, no activate-cooldown-on-round-start, owner-condition checks collapsed. cooldown VALUES match Base."
+
+  - id: buffs.item.random_location
+    name: "Random location / lifetime / randomize-on-reset (buff_Respawn / buff_Reset)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/sv_buffs.qc:buff_Respawn"
+      - "common/mutators/mutator/buffs/sv_buffs.qc:buff_Reset"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:BuffRespawn"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:MaybeRandomize"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:MaybeRelocate"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:BuffThink"
+    constants:
+      - { name: "g_buffs_random_location", base: "0", port: "0 (read in MaybeRelocate)", match: true }
+      - { name: "g_buffs_random_lifetime", base: "30", port: "read; arms BuffLifetime", match: true }
+      - { name: "g_buffs_randomize", base: "0", port: "0 (& (teamplay?2:1) gate honored)", match: true }
+      - { name: "g_buffs_random_location_attempts", base: "10", port: "not read (folded into RandomMapLocation)", match: false }
+      - { name: "relocate launch velocity", base: "'0 0 200' (+ randomvec*100 on fallback)", port: "Prandom.Vec()*100 + (0,0,200)", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: missing
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "MoveToRandomMapLocation relocation IS done (BallEntity.RandomMapLocation, which folds in the SelectSpawnPoint fallback), with the '0 0 200' launch + a mins*1.5/maxs*1.5 tracebox unstick + g_buffs_random_lifetime arming + SND_KA_RESPAWN on relocation. The g_buffs_randomize teamplay gate (& (teamplay?2:1)) and g_buffs_random_location/spawnflag-64 relocate gate are honored."
+      - "Still missing: g_buffs_random_location_attempts is not read (RandomMapLocation uses its own fixed sampling rather than the attempts/256/1024 box-content rejection of MoveToRandomMapLocation), so the relocation's content-validity check differs from QC. No EFFECT_ELECTRO_COMBO x2 visual at the relocation, no WaypointSprite_Ping."
+    verification:
+      - { kind: code, ref: "BuffRespawn:407-431 (RandomMapLocation + '0 0 200' + tracebox unstick + lifetime + KA_RESPAWN); MaybeRandomize:383-390 (g_buffs_randomize & (teamplay?2:1)); MaybeRelocate:395-401 (g_buffs_random_location || alwaysRelocate); reached from BuffThink lifetime + ScheduleRespawn + needkill", result: pass }
+    confidence: high
+    notes: "UPDATED 2026-06-25: liveness partial->live — buff items now spawn on maps via spawnfuncs, so random-location relocation + lifetime cycle + KA_RESPAWN run on the live path; gated by g_buffs_randomize. Residual: attempts-based content-rejection sampling, electro-combo VFX, waypoint ping."
+
+  - id: buffs.item.new_type_weighting
+    name: "Weighted random buff selection (buff_NewType / seencount)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/sv_buffs.qc:buff_NewType"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:RandomBuff"
+    constants:
+      - { name: "weight", base: "max(0.2, 1/seencount)", port: "uniform", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "RandomBuff (BuffsMutator.cs:225-249) now does QC's RandomSelection weighted pick: per-buff weight max(0.2, 1/seencount) over a _buffSeenCount map keyed by RegistryId, cumulative-weight uniform draw, then ++seencount on the chosen buff. Reached from ConfigureBuffEntity (map spawn) + MaybeRandomize (respawn re-roll, gated by g_buffs_randomize)", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-25: RandomBuff now implements the seencount-weighted RandomSelection (weight max(0.2,1/seencount) + ++seencount), matching buff_NewType — no longer a flat uniform pick. logic/values partial->faithful, the intended-divergence uniform-pick rationale is removed, and liveness partial->live (now reachable via the live map spawnfunc path). buff_Available exclusions faithful — see buffs.item.available."
+
+  - id: buffs.item.available
+    name: "buff_Available (per-buff enable + exclusions)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/sv_buffs.qc:buff_Available"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:BuffAvailable"
+    constants:
+      - { name: "g_melee_only excludes ammo", base: "yes", port: "yes", match: true }
+      - { name: "g_vampire excludes vampire", base: "yes", port: "yes", match: true }
+      - { name: "start_items & IT_UNLIMITED_AMMO excludes ammo", base: "yes", port: "yes (via g_use_ammunition 0 -> StartItemsHasUnlimitedAmmo)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port derives the start_items IT_UNLIMITED_AMMO state from g_use_ammunition (the dominant source of that start flag) rather than the literal start_items bitmask, so an unusual start_items source for unlimited ammo would be missed — but the common case (g_use_ammunition 0) is covered."
+    verification:
+      - { kind: code, ref: "BuffAvailable:199-208: g_buffs_<n> cvar + melee(ammo) + g_vampire(vampire) + StartItemsHasUnlimitedAmmo()(ammo); StartItemsHasUnlimitedAmmo = !g_use_ammunition (BuffsMutator.cs:1016)", result: pass }
+    confidence: high
+    notes: "logic/values faithful (start_items IT_UNLIMITED_AMMO exclusion modelled via g_use_ammunition). UPDATED 2026-06-25: liveness partial->live — BuffAvailable now runs on the live map spawn path (RandomBuff/ConfigureBuffEntity via the item_buff_* spawnfuncs), not just the dead auto-seed."
+
+  - id: buffs.resistance
+    name: "Resistance buff — damage reduction"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/buff/resistance.qc:buff_Resistance_CalculateDamage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnDamageCalculate"
+    constants:
+      - { name: "g_buffs_resistance_blockpercent", base: "0.5", port: "0.5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Damage_Calculate hook live; bound(0, dmg*(1-block), dmg) at BuffsMutator.cs:527", result: pass }
+    confidence: high
+    notes: "Unchanged. Perk logic faithful; reachable once a buff is applied. Affects self-damage too (matches QC)."
+
+  - id: buffs.medic.survive
+    name: "Medic buff — survive a fatal hit"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/buff/medic.qc:buff_Medic_CalculateSurviveDamage"
+      - "common/mutators/mutator/buffs/sv_buffs.qc:Damage_Calculate (medic branch, !ITEM_DAMAGE_NEEDKILL guard)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnDamageCalculate"
+    constants:
+      - { name: "g_buffs_medic_survive_chance", base: "0.6", port: "0.6", match: true }
+      - { name: "g_buffs_medic_survive_health", base: "5", port: "5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnDamageCalculate:531-536: medic branch guarded by `!needKill` (IsNeedKill covers void/slime/lava/swamp — matches Base !ITEM_DAMAGE_NEEDKILL); survive clamp max(5, health-5), chance 0.6", result: pass }
+    confidence: high
+    notes: "Unchanged. The !ITEM_DAMAGE_NEEDKILL guard is present, so a fatal lava/slime/swamp/void hit is not wrongly survived. Survive clamp + chance match Base."
+
+  - id: buffs.medic.regen
+    name: "Medic buff — boosted regen / raised max / reduced rot"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/buff/medic.qc:MUTATOR_HOOKFUNCTION(buffs, PlayerRegen)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnPlayerRegen"
+    constants:
+      - { name: "g_buffs_medic_regen", base: "1.7", port: "1.7", match: true }
+      - { name: "g_buffs_medic_max", base: "1.5", port: "1.5", match: true }
+      - { name: "g_buffs_medic_rot", base: "0.2", port: "0.2 (RotMod = g_buffs_medic_rot)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnPlayerRegen (BuffsMutator.cs:774-781) sets RotMod=g_buffs_medic_rot (0.2), LimitMod=MaxMod=g_buffs_medic_max (1.5), RegenMod=g_buffs_medic_regen (1.7) — QC M_ARGV(1..4) slots; XonoticGodot.Server/PlayerFrameLogic.cs Regen consumes all four on the live path (rot_mod gates rotFrameTime, max_mod scales health stable set-points, limit_mod scales the cap)", result: pass }
+    confidence: high
+    notes: "FIXED since the prior 2026-06-25 baseline: the ad-hoc MedicTick is DELETED; OnPlayerRegen now scales the shared regen/limit(max)/rot factors exactly like QC PlayerRegen (rot_mod=0.2 slower above-stable rot, limit_mod=max_mod=1.5 raised ceiling, regen_mod=1.7 faster heal). The live regen loop reads them. logic/values/timing partial->faithful; g_buffs_medic_rot now applied (was dropped); verification fail->pass."
+
+  - id: buffs.vampire
+    name: "Vampire buff — heal on damage dealt"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/buff/vampire.qc:MUTATOR_HOOKFUNCTION(buffs, PlayerDamage_SplitHealthArmor)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnSplitHealthArmor"
+    constants:
+      - { name: "g_buffs_vampire_damage_steal", base: "0.4", port: "0.4", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "PlayerDamageSplitHealthArmor hook live; spawnshield/self/dead/frozen guards present; heal = 0.4 * bound(0, take, health) (BuffsMutator.cs:633-646)", result: pass }
+    confidence: high
+    notes: "Unchanged. All QC guards (self/dead/frozen + IsPlayer) present; health_take clamp matches."
+
+  - id: buffs.jump.velocity
+    name: "Jump buff — increased jump height"
+    layer: [authority, shared]
+    base_refs:
+      - "common/mutators/mutator/buffs/buff/jump.qc:MUTATOR_HOOKFUNCTION(buffs, PlayerPhysics)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnPlayerPhysics"
+    constants:
+      - { name: "g_buffs_jump_velocity", base: "600", port: "600", match: true }
+      - { name: "g_buffs_jump", base: "0 (off)", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnPlayerPhysics (BuffsMutator.cs:666/671) writes player.JumpVelocityOverride (reset 0 each frame, =_jumpVelocity when jump buff held) inside the PlayerPhysics hook; PlayerJump consumes it as the jump impulse, REPLACING the cvar-built jump height, matching QC's STAT(MOVEVARS_JUMPVELOCITY) overwrite", result: pass }
+    confidence: high
+    notes: "Unchanged. 600 matches Base g_buffs_jump_velocity; crouch jump also overridden, matching the QC stat overwrite."
+
+  - id: buffs.jump.fall_immunity
+    name: "Jump buff — fall-damage immunity"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/buff/jump.qc:buff_Jump_ChangeDamage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnDamageCalculate"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnDamageCalculate:539-540 zeroes damage on DeathTypes.Fall", result: pass }
+    confidence: high
+    notes: "Unchanged."
+
+  - id: buffs.bash
+    name: "Bash buff — knockback scaling + immunity"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/buff/bash.qc:buff_Bash_TargetCalculateForce"
+      - "common/mutators/mutator/buffs/buff/bash.qc:buff_Bash_AttackerCalculateForce"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnDamageCalculate"
+    constants:
+      - { name: "g_buffs_bash_force", base: "2", port: "2", match: true }
+      - { name: "g_buffs_bash_force_self", base: "1.2", port: "1.2", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnDamageCalculate:551-554: target force zero when attacker!=target; attacker force *= self/other (guarded force!=0)", result: pass }
+    confidence: high
+    notes: "Unchanged. Target-immunity and attacker scaling both match QC."
+
+  - id: buffs.disability
+    name: "Disability buff — stun on hit (slow movement/attack/monsters)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/buff/disability.qc:buff_Disability_ApplyStunned"
+      - "common/mutators/mutator/buffs/buff/disability.qc:MUTATOR_HOOKFUNCTION(buffs, PlayerPhysics_UpdateStats)"
+      - "common/mutators/mutator/buffs/buff/disability.qc:MUTATOR_HOOKFUNCTION(buffs, WeaponRateFactor)"
+      - "common/mutators/mutator/buffs/buff/disability.qc:MUTATOR_HOOKFUNCTION(buffs, WeaponSpeedFactor)"
+      - "common/mutators/mutator/buffs/buff/disability.qc:MUTATOR_HOOKFUNCTION(buffs, MonsterMove)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnDamageCalculate"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnPlayerPhysics"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnWeaponRateFactor"
+    constants:
+      - { name: "g_buffs_disability_slowtime", base: "3", port: "3", match: true }
+      - { name: "g_buffs_disability_speed", base: "0.7", port: "0.7", match: true }
+      - { name: "g_buffs_disability_attack_time_multiplier", base: "1.5", port: "1.5", match: true }
+      - { name: "g_buffs_disability_weaponspeed", base: "0.7", port: "none", match: false }
+      - { name: "g_buffs_disability", base: "0 (off)", port: "0", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Movement-speed slow (Stunned x0.7 via SpeedMultiplier, OnPlayerPhysics:678-680) is LIVE."
+      - "Weapon fire-time slow (WeaponRateFactor x1.5) is LIVE: OnWeaponRateFactor (691-697) multiplies args.Factor by 1.5 for a stunned player; WeaponRateFactor.Call has a live site (WeaponFireGate)."
+      - "STILL MISSING: weapon projectile-speed slow (WeaponSpeedFactor x0.7) and monster run/walk slow (MonsterMove x0.7) — BuffsMutator subscribes neither hook (no WeaponSpeedFactor mutator-hook chain exists; MonsterMove is unsubscribed)."
+    verification:
+      - { kind: code, ref: "Stunned apply in OnDamageCalculate:557-562; OnPlayerPhysics:678-680 SpeedMultiplier *=0.7; OnWeaponRateFactor:691-697 *=1.5 (live); no WeaponSpeedFactor/MonsterMove handlers", result: pass }
+    confidence: high
+    notes: "Unchanged. The weapon fire-rate slow (WeaponRateFactor x1.5) is wired and live. Projectile-speed + monster-move slows remain absent."
+
+  - id: buffs.vengeance
+    name: "Vengeance buff — reflect damage to attacker"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/buff/vengeance.qc:buff_Vengeance_DelayedDamage"
+      - "common/mutators/mutator/buffs/buff/vengeance.qc:buff_Vengeance_CalculateDamage"
+      - "common/mutators/mutator/buffs/sv_buffs.qc:Damage_Calculate (vengeance branch, !ITEM_DAMAGE_NEEDKILL guard)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnDamageCalculate"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:ScheduleVengeance"
+    constants:
+      - { name: "g_buffs_vengeance_damage_multiplier", base: "0.4", port: "0.4", match: true }
+      - { name: "delay", base: "0.1s", port: "0.1s", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnDamageCalculate:544-548: vengeance branch guarded by `!needKill`; recurrence guard for DeathTypes.BuffVengeance at line 521; ScheduleVengeance 0.1s delay (615-627)", result: pass }
+    confidence: high
+    notes: "Unchanged. The !ITEM_DAMAGE_NEEDKILL guard is present, so a lava/slime/void kill no longer reflects. 0.4 mult + 0.1s delay match; recurrence guarded."
+
+  - id: buffs.luck
+    name: "Luck buff — chance of a critical hit"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/buff/luck.qc:buff_Luck_CalculateDamage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnDamageCalculate"
+    constants:
+      - { name: "g_buffs_luck_chance", base: "0.15", port: "0.15", match: true }
+      - { name: "g_buffs_luck_damagemultiplier", base: "2 (mutators.cfg)", port: "2", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnDamageCalculate:574-578: luck branch (attacker!=target, mult>0 guard, chance 0.15, x2)", result: pass }
+    confidence: high
+    notes: "Unchanged."
+
+  - id: buffs.ammo
+    name: "Ammo buff — unlimited ammo + no reload"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/buff/ammo.qc:AmmoBuff.m_apply"
+      - "common/mutators/mutator/buffs/buff/ammo.qc:AmmoBuff.m_tick"
+      - "common/mutators/mutator/buffs/buff/ammo.qc:AmmoBuff.m_remove"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:ApplyBuff"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:AmmoTick"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:RemoveAllBuffs"
+    constants:
+      - { name: "IT_UNLIMITED_AMMO", base: "BIT(0)", port: "1<<0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port fills each slot's clip via WeaponState.ClipSize/ClipLoad + SetWeaponLoad (FillSlotClip) on apply AND each tick, and restores the saved pre-buff clip loads on remove (RestoreAmmoClips) — matching QC's clip_load = weapon_load[switchweapon] = clip_size with buff_ammo_prev_clipload save/restore. Reachability of the clip path depends on the WeaponState clip fields being populated for the live weapon set."
+    verification:
+      - { kind: code, ref: "ApplyBuff:443-453 sets ItUnlimitedAmmo (remembers prev) + FillSlotClip per slot (saving BuffAmmoPrevClipLoad); AmmoTick:855-860 FillSlotClip per slot; RemoveAllBuffs:474-477 restores items flag + RestoreAmmoClips", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22: the clip_load / weapon_load handling is now present (FillSlotClip / RestoreAmmoClips on apply/tick/remove, with prev-clip save/restore), closing the reload-weapon (rifle / OK machinegun) gap. Unlimited-ammo flag set/restored correctly."
+
+  - id: buffs.magnet
+    name: "Magnet buff — auto-collect nearby items"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/buff/magnet.qc:MagnetBuff.m_tick"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:MagnetTick"
+    constants:
+      - { name: "g_buffs_magnet_range_item", base: "250", port: "250", match: true }
+      - { name: "g_buffs_magnet_range_buff", base: "100", port: "100", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC selects buff-vs-item range by it.buffdef; port selects by classname == 'item_buff' (equivalent in practice; item_buff items now spawn on maps, so the buff-range branch is reachable)."
+    verification:
+      - { kind: code, ref: "MagnetTick:827-837 FindInRadius(broad) then per-item BoxesOverlapExpanded (QC boxesoverlap(absmin-r,absmax+r,...)) box test, falls back to origin distance when bounds degenerate; touch invoked", result: pass }
+    confidence: medium
+    notes: "Updated 2026-06-25: the reach test now uses an expanded box-overlap (BoxesOverlapExpanded) matching QC's boxesoverlap rather than a center-distance test (with an origin-distance fallback only when AbsMin/AbsMax are degenerate). Geometry now matches Base where bounds are populated; logic upgraded to faithful."
+
+  - id: buffs.flight
+    name: "Flight buff — crouch-in-air gravity flip"
+    layer: [authority, shared]
+    base_refs:
+      - "common/mutators/mutator/buffs/buff/flight.qc:FlightBuff.m_apply"
+      - "common/mutators/mutator/buffs/buff/flight.qc:FlightBuff.m_remove"
+      - "common/mutators/mutator/buffs/sv_buffs.qc:MUTATOR_HOOKFUNCTION(buffs, PlayerPreThink)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnPlayerPreThink"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:ApplyBuff"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:RemoveAllBuffs"
+    constants:
+      - { name: "g_buffs_flight", base: "0 (off)", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "On removal QC restores gravity from trigger_gravity_check.enemy.gravity when standing in a gravity zone, else the saved old gravity; port mirrors this (actor.GravityCheck?.Enemy.Gravity, else BuffFlightOldGravity), so the gravity-trigger interaction is preserved where GravityCheck is populated."
+    verification:
+      - { kind: code, ref: "OnPlayerPreThink:785-794 crouch flips gravity once per press; apply remembers gravity(default 1 if 0); remove restores GravityCheck.Enemy.Gravity or saved (BuffsMutator.cs:479-487)", result: pass }
+    confidence: high
+    notes: "Updated 2026-06-25: the gravity-trigger restore (trigger_gravity_check.enemy.gravity) is now modelled on removal via actor.GravityCheck?.Enemy, no longer always-saved-gravity. Core flip faithful and live; logic upgraded to faithful."
+
+  - id: buffs.inferno
+    name: "Inferno buff — burn-on-hit + fire/lava resistance"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/buff/inferno.qc:buff_Inferno_CalculateTime"
+      - "common/mutators/mutator/buffs/buff/inferno.qc:buff_Inferno_CalculateDamage"
+      - "common/mutators/mutator/buffs/sv_buffs.qc:Damage_Calculate (inferno target fire/lava + attacker Fire_AddDamage)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnDamageCalculate"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:InfernoBurnTime"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterFramework.cs:AddFireDamage"
+    constants:
+      - { name: "g_buffs_inferno_damagemultiplier", base: "0.3", port: "0.3", match: true }
+      - { name: "g_buffs_inferno_burntime_min_time", base: "0.5", port: "0.5", match: true }
+      - { name: "g_buffs_inferno_burntime_target_damage", base: "150", port: "150", match: true }
+      - { name: "g_buffs_inferno_burntime_target_time", base: "5", port: "5", match: true }
+      - { name: "g_buffs_inferno_burntime_factor", base: "2", port: "2", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Carrier-as-target fire-immunity (DEATH_FIRE -> 0) + half-lava (DEATH_LAVA x0.5) present and match Base. The 0.5 lava factor is QC's hardcoded `0.5` (QC has a `TODO cvarize` so this is faithful)."
+      - "Burn-on-hit via MonsterFramework.AddFireDamage applies the shared Burning status effect rather than QC's .fire_* accumulator; the integrated total over the burn window approximates QC. Minor numeric divergence in the per-tick distribution, not the total or the curve."
+      - "Presentation: no EF_FLAME flame visual is networked specifically for inferno's burn."
+    verification:
+      - { kind: code, ref: "OnDamageCalculate:565-586: target fire/lava + attacker AddFireDamage(dmg*0.3, InfernoBurnTime, DEATH_BUFF_INFERNO); recurrence guard line 521; InfernoBurnTime(596-608) formula bit-identical to buff_Inferno_CalculateTime", result: pass }
+    confidence: high
+    notes: "Unchanged. Inferno is implemented and LIVE — burn-on-hit (0.3x over a log-curve time), DEATH_FIRE immunity, DEATH_LAVA half, DEATH_BUFF_INFERNO death type, recurrence guard. Residual: per-tick distribution + dedicated fire VFX/SFX (presentation partial)."
+
+  - id: buffs.swapper
+    name: "Swapper buff — swap places with nearest enemy"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/buff/swapper.qc:MUTATOR_HOOKFUNCTION(buffs, ForbidThrowCurrentWeapon)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnForbidThrowCurrentWeapon"
+    constants:
+      - { name: "g_buffs_swapper_range", base: "1500", port: "1500", match: true }
+      - { name: "g_buffs_swapper", base: "0 (off)", port: "0", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Core swap is implemented and LIVE: nearest enemy within range (DIFF_TEAM/dead/frozen/vehicle filtered), origin/velocity/angles + oldorigin exchanged, SND_KA_RESPAWN at both ends, buff_RemoveAll consumes the buff. The ForbidThrowCurrentWeapon hook has live Call sites (WeaponThrowing.cs:149/185)."
+      - "Divergences from QC: uses center-distance + Api.Entities.FindInRadius instead of WarpZone_FindRadius (no warpzone traversal); omits Drop_Special_Items(closest) (flag/key carriers keep their objective on swap); omits MUTATOR_CALLHOOK(PortalTeleport, player); omits the EFFECT_ELECTRO_COMBO x2 visual at both endpoints."
+    verification:
+      - { kind: code, ref: "OnForbidThrowCurrentWeapon:706-746: Active(swapper) -> FindInRadius(1500) nearest DIFF_TEAM enemy, swap org/vel/ang, KA_RESPAWN x2, RemoveAllBuffs, return true. ForbidThrowCurrentWeapon.Call live at WeaponThrowing.cs:149/185", result: pass }
+    confidence: high
+    notes: "Unchanged. Swapper is implemented and LIVE. Remaining gaps are the warpzone-aware radius, Drop_Special_Items, PortalTeleport hook, and the electro-combo effect."
+
+  - id: buffs.carrier_model
+    name: "Carrier buff_model glow"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/buffs/sv_buffs.qc:buffs_BuffModel_Spawn"
+      - "common/mutators/mutator/buffs/sv_buffs.qc:buffs_BuffModel_Think"
+      - "common/mutators/mutator/buffs/sv_buffs.qc:buffs_BuffModel_Customize"
+      - "common/mutators/mutator/buffs/sv_buffs.qc:buffs_BuffModel_Update (PlayerPreThink)"
+    port_refs: []
+    constants:
+      - { name: "buff_model scale", base: "0.7", port: "none", match: false }
+      - { name: "light_lev", base: "200", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "A player holding a buff still has no colored MDL_BUFF glow model attached: no buffs_BuffModel_Spawn/Update/Think/Customize, no removal on observer/disconnect. EF_NOSHADOW IS set on the player while held (ApplyBuff:461), but the glow model itself is absent."
+    verification:
+      - { kind: code, ref: "no buff_model spawn/think/customize in port; OnPlayerPreThink has no buffs_BuffModel_Update", result: fail }
+    confidence: high
+    notes: "Unchanged. Pure presentation; the QC TODO already flags moving this to CSQC."
+
+  - id: buffs.buff_effect
+    name: "Carrier buff particle trail (buff_Effect / g_buffs_effects)"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/buffs/sv_buffs.qc:buff_Effect"
+    port_refs: []
+    constants:
+      - { name: "g_buffs_effects", base: "1 (on)", port: "none", match: false }
+      - { name: "buff_effect_delay throttle", base: "0.05s", port: "field exists, unused", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No per-carrier Send_Effect particle emission throttled by buff_effect_delay; g_buffs_effects (default ON) is never read. EntityMutatorState declares a buff_effect_delay field but nothing emits the effect."
+    verification:
+      - { kind: code, ref: "grep g_buffs_effects/buff_Effect in src: only the unused buff_effect_delay field", result: fail }
+    confidence: high
+    notes: "Unchanged. Distinct from carrier_model: this is the per-buff colored particle trail; default-on in Base."
+
+  - id: buffs.waypoint
+    name: "Buff item waypoint sprite (WP_Buff radar/HUD)"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/buffs/sv_buffs.qc:buff_Waypoint_Spawn"
+      - "common/mutators/mutator/buffs/sv_buffs.qc:buff_Waypoint_visible_for_player"
+      - "common/mutators/mutator/buffs/cl_buffs.qc"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:SpawnBuffWaypoint"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:BuffColor"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:WaypointSprites.Spawn"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:WaypointSprite.VisibleForPlayer"
+    constants:
+      - { name: "g_buffs_waypoint_distance", base: "1024", port: "1024 (read; maxDistance on Spawn)", match: true }
+      - { name: "WP_Buff sprite", base: "RADARICON_Buff", port: 'Add("Buff",...,Orange) registered (Waypoints.cs:164), radarIcon 1', match: true }
+      - { name: "head offset", base: "'0 0 64'", port: "(0,0,64)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Per-viewer hide-if-already-held is modelled: SpawnBuffWaypoint sets wp.VisibleForPlayer = viewer => !Active(viewer, buff) (BuffsMutator.cs:607), consumed on the live per-peer send path (ServerNet.WaypointVisible:1297). The waypoint is killed on pickup (BuffTouch:425), re-attached + re-tinted on respawn (ScheduleRespawn:480-482), and pinged + colour-resynced on relocation (BuffRespawn:559-561)."
+      - "Residual: the waypoint colour is the per-buff Color triple via BuffColor, but the 'build-finished' arming is collapsed (the marker is spawned at activation, not on a separate WP build timer); minor vs Base's buff_Waypoint build-finished sequence."
+    verification:
+      - { kind: code, ref: "SpawnBuffWaypoint:584-611 spawns the registered 'Buff' sprite (lifetime 0, maxDistance g_buffs_waypoint_distance 1024, reference=item, offset 0 0 64, colour BuffColor, radarIcon 1, hideable) with a VisibleForPlayer hide-if-held filter; consumed by ServerNet.WaypointVisible:1297 on the per-peer send. Killed/re-attached/pinged across pickup/respawn/relocate", result: pass }
+    confidence: high
+    notes: "FIXED this wave (2026-06-28): was the registry's standing presentation worst-gap — port_refs empty, all dimensions missing, liveness na. The WP_Buff radar/HUD waypoint is now implemented AND live: it spawns on the live map buff items (the 'Buff' sprite type is registered in WaypointSprites), tints to the buff colour, hides from players already holding that buff (VisibleForPlayer, honored on the live per-peer net send), and is correctly killed/re-attached/pinged across the pickup/respawn/relocate lifecycle. logic/values/timing/presentation missing->faithful, liveness na->live."
+
+  - id: buffs.drop
+    name: "Drop held buff (PlayerUseKey / g_buffs_drop)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/sv_buffs.qc:MUTATOR_HOOKFUNCTION(buffs, PlayerUseKey, CBC_ORDER_FIRST)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnPlayerUseKey"
+    constants:
+      - { name: "g_buffs_drop", base: "0 (off)", port: "0 (read via Api.Cvars)", match: true }
+      - { name: "g_buffs_pickup_delay", base: "0.7", port: "0.7 (BuffShield = time + delay)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port omits the IS_INDEPENDENT_PLAYER guard on the INFO_ITEM_BUFF_LOST broadcast (sends AllExcept unconditionally); independent-player modes (e.g. some duel/race variants) are an edge case not modelled."
+    verification:
+      - { kind: code, ref: "OnPlayerUseKey:755-772 gated on g_buffs_drop; emits ITEM_BUFF_DROP (center) + INFO_ITEM_BUFF_LOST, RemoveAllBuffs, BuffShield = time + pickup_delay, SND_BUFF_LOST, return true. LIVE via MutatorHooks.FirePlayerUseKey at VehicleBoarding.cs:106 (the real +use seam)", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22: a PlayerUseKey drop handler now exists and is LIVE on the +use path. Gated on g_buffs_drop, mirrors Base (notifications, pickup-shield delay, SND_BUFF_LOST). Only residual divergence is the IS_INDEPENDENT_PLAYER broadcast guard."
+
+  - id: buffs.replace_powerups
+    name: "Replace map powerups with buffs (FilterItem)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/sv_buffs.qc:MUTATOR_HOOKFUNCTION(buffs, FilterItem)"
+      - "common/mutators/mutator/buffs/sv_buffs.qc:buff_SpawnReplacement"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnFilterItem"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:ConfigureBuffEntity"
+    constants:
+      - { name: "g_buffs_replace_powerups", base: "0", port: "0 (read via Api.Cvars)", match: true }
+      - { name: "g_buffs < 0 disables replace", base: "yes (return false)", port: "yes (return false when g_buffs<0)", match: true }
+      - { name: "g_buffs_replace_available", base: "1", port: "read in ConfigureBuffEntity (re-roll unavailable type)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Replacement buff item inherits the spawnfunc presentation gap (buffs.item.spawnfunc): per-buff skin/color/glowmod is not applied, so the replaced powerup renders as the uncolored relic. No carrier glow/waypoint either."
+    verification:
+      - { kind: code, ref: "OnFilterItem (BuffsMutator.cs:912-931): returns false when g_buffs<0; gated on g_buffs_replace_powerups; item.Pickup.IsPowerup check; buff_SpawnReplacement (setorigin/angles/noalign + ConfigureBuffEntity(null random)); returns true to delete the powerup. Subscribes MutatorHooks.FilterItem (Hook():107). LIVE: StartItem.cs:119 calls MutatorHooks.FireFilterItem(item) on the item-spawn path", result: pass }
+    confidence: high
+    notes: "FIXED since the prior 2026-06-25 baseline (was missing, empty port_refs — a recorded worst-gap): the FilterItem powerup-replace obtain path is now fully implemented and LIVE. In the g_buffs>0 'replace' mode, map powerups are swapped for random buffs (buff_SpawnReplacement), matching Base; the g_buffs<0 'no auto-replace' mode is honored. logic/values missing->faithful, liveness na->live. Residual presentation gap is shared with buffs.item.spawnfunc (uncolored relic)."
+
+  - id: buffs.mutator_string
+    name: "Report as active mutator (BuildMutatorsString / PrettyString)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/sv_buffs.qc:MUTATOR_HOOKFUNCTION(buffs, BuildMutatorsString)"
+      - "common/mutators/mutator/buffs/sv_buffs.qc:MUTATOR_HOOKFUNCTION(buffs, BuildMutatorsPrettyString)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:BuildMutatorsString"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:BuildMutatorsPrettyString"
+    constants:
+      - { name: "report token", base: "':Buffs' / ', Buffs' when g_buffs > 0", port: "':Buffs' / ', Buffs' when g_buffs > 0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "BuildMutatorsString/PrettyString:140-144 append ':Buffs'/', Buffs' only when g_buffs>0; live via MutatorActivation.BuildMutatorsString (GameWorld.cs:876, gamelog init)", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22: the BuildMutatorsString / BuildMutatorsPrettyString overrides are now present (gated on g_buffs>0, matching Base exactly) and live on the gamelog mutator-list path. Buffs now appears in the server mutator string when enabled in replace mode."
+
+  - id: buffs.notifications
+    name: "Buff pickup/loss/drop notifications + sounds"
+    layer: [authority, presentation, shared]
+    base_refs:
+      - "common/mutators/mutator/buffs/sv_buffs.qc:buff_Touch (ITEM_BUFF_GOT / INFO_ITEM_BUFF / INFO_ITEM_BUFF_LOST)"
+      - "common/mutators/mutator/buffs/sv_buffs.qc:PlayerUseKey (ITEM_BUFF_DROP / INFO_ITEM_BUFF_LOST / SND_BUFF_LOST)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:BuffTouch"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnPlayerUseKey"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Pickup: ITEM_BUFF_GOT center (picker) + INFO_ITEM_BUFF (others) + misc/shield_respawn sound all fire (BuffTouch). Replace: INFO_ITEM_BUFF_LOST (others) fires. Drop: ITEM_BUFF_DROP center + INFO_ITEM_BUFF_LOST + SND_BUFF_LOST all fire (OnPlayerUseKey). Tokens ITEM_BUFF/ITEM_BUFF_GOT/ITEM_BUFF_LOST/ITEM_BUFF_DROP all defined in NotificationsList.cs."
+      - "SND_STRENGTH_RESPAWN on item (re)activation IS now emitted (ActivateBuff:336 + ScheduleRespawn:462 SoundSystem.PlayOn(item,\"STRENGTH_RESPAWN\")). SND_BUFF_LOST on a *replace* (autoreplace path) is commented out in QC too, so omitting it is faithful. SND_KA_RESPAWN is wired for swapper + item relocation."
+    verification:
+      - { kind: code, ref: "BuffTouch:313-332 Center(ITEM_BUFF_GOT) + INFO_ITEM_BUFF + INFO_ITEM_BUFF_LOST(replace) + shield_respawn; OnPlayerUseKey:875-883 Center(ITEM_BUFF_DROP) + INFO_ITEM_BUFF_LOST + SND_BUFF_LOST; ActivateBuff/ScheduleRespawn emit STRENGTH_RESPAWN; tokens defined NotificationsList.cs:455/457/490/491/726/727", result: pass }
+    confidence: high
+    notes: "UPDATED 2026-06-25: liveness partial->live (the pickup notifications are now reachable on the live map spawnfunc path, not just the held/drop branch). audio partial->faithful — SND_STRENGTH_RESPAWN on item (re)activation is now emitted in ActivateBuff/ScheduleRespawn, closing the last audio gap. All buff pickup/loss/drop notifications + sounds present."
+
+  - id: buffs.observer_cleanup
+    name: "Strip buff visuals on observer / disconnect"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/sv_buffs.qc:MUTATOR_HOOKFUNCTION(buffs, MakePlayerObserver)"
+      - "common/mutators/mutator/buffs/sv_buffs.qc:MUTATOR_HOOKFUNCTION(buffs, ClientDisconnect)"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Still no MakePlayerObserver / ClientDisconnect handler to run buffs_RemovePlayer (delete the carrier buff_model). Moot only because the buff_model glow itself is unimplemented (buffs.carrier_model)."
+    verification:
+      - { kind: code, ref: "BuffsMutator subscribes neither MakePlayerObserver nor ClientDisconnect", result: fail }
+    confidence: high
+    notes: "Unchanged. Cleanup tied to the missing carrier glow."
+
+  - id: buffs.port_extra_speed_invisible
+    name: "Port-only speed/invisible buff branches (not in QC buff set)"
+    layer: [authority]
+    base_refs: []
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnPlayerPhysics (speed)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:OnPlayerPreThink (invisible)"
+    constants:
+      - { name: "g_buffs_speed / g_buffs_invisible", base: "do not exist (speed/invisibility are POWERUPS)", port: "_speedSpeed 1.5 / _invisibleAlpha 0.5 fields", match: false }
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: true
+    divergence_rationale: "BuffsMutator still carries speed/invisible handler branches and fields, but the catalog registers NO buff_speed/buff_invisible def (only the 13 QC buffs are registered as buffs; 'speed'/'invisibility' are POWERUP defs, not buffs). QC speed/invisibility are PowerupsMutator powerups. So Active(player,\"speed\"/\"invisible\") resolves buff_speed/buff_invisible which are unregistered -> Has() false; the branches are inert dead code that can never fire. Harmless, but should be removed for clarity."
+    gaps:
+      - "Inert: no buff_speed/buff_invisible StatusEffectDef exists, so OnPlayerPhysics:674 (speed) and OnPlayerPreThink:797 (invisible) are unreachable."
+    verification:
+      - { kind: code, ref: "StatusEffects buff set is the 13 QC buffs only; 'speed'/'invisibility' are powerup defs; Buff(\"speed\")->'buff_speed' unregistered, Active() returns false", result: pass }
+    confidence: high
+    notes: "Unchanged. Recorded as an intended-but-dead port quirk so it isn't re-flagged as a perk gap."
+
+  - id: buffs.networking
+    name: "Buff held-state networking (ENT_CLIENT_STATUSEFFECTS)"
+    layer: [shared]
+    base_refs:
+      - "common/mutators/mutator/status_effects/status_effects.qh:StatusEffects_Write / NET_HANDLE"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:Write"
+      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:Read"
+    constants:
+      - { name: "StatusEffects_groups_minor", base: "8", port: "8", match: true }
+      - { name: "StatusEffects_groups_major", base: "4", port: "4", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: unknown
+      presentation: na
+      audio: na
+      liveness: unknown
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Write/Read round-trip mirrors the QC major/minor bitmap + float time + byte flags, but whether the host net loop actually Flush()es buff state to clients each tick was not traced here (status_effects unit owns that)."
+    verification:
+      - { kind: code, ref: "StatusEffects.Write/Read layout matches QC; major/minor group constants unchanged; live Flush wiring not traced in this unit", result: pass }
+    confidence: low
+    notes: "Unchanged. Defer the live-send confirmation to the status_effects parity unit."
+
+  - id: buffs.defs.registration
+    name: "Per-buff class definitions (REGISTER_BUFF: netname + m_skin + m_color for all 13 buffs)"
+    layer: [shared]
+    base_refs:
+      - "common/mutators/mutator/buffs/buff/ammo.qh:REGISTER_BUFF(AMMO) / AmmoBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/bash.qh:REGISTER_BUFF(BASH) / BashBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/disability.qh:REGISTER_BUFF(DISABILITY) / DisabilityBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/flight.qh:REGISTER_BUFF(FLIGHT) / FlightBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/inferno.qh:REGISTER_BUFF(INFERNO) / InfernoBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/jump.qh:REGISTER_BUFF(JUMP) / JumpBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/luck.qh:REGISTER_BUFF(LUCK) / LuckBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/magnet.qh:REGISTER_BUFF(MAGNET) / MagnetBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/medic.qh:REGISTER_BUFF(MEDIC) / MedicBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/resistance.qh:REGISTER_BUFF(RESISTANCE) / ResistanceBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/swapper.qh:REGISTER_BUFF(SWAPPER) / SwapperBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/vampire.qh:REGISTER_BUFF(VAMPIRE) / VampireBuff ATTRIBs"
+      - "common/mutators/mutator/buffs/buff/vengeance.qh:REGISTER_BUFF(VENGEANCE) / VengeanceBuff ATTRIBs"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:RegisterAll (buff defs, 240-252)"
+      - "src/XonoticGodot.Common/GameInit.cs:26 (RegisterAll call)"
+    constants:
+      - { name: "m_skin per buff (13)", base: "ammo 3 / bash 5 / disability 7 / flight 11 / inferno 16 / jump 10 / luck 19 / magnet 18 / medic 1 / resistance 0 / swapper 17 / vampire 2 / vengeance 15", port: "Skin = identical 13 values (StatusEffects.cs:240-252)", match: true }
+      - { name: "m_color per buff (13)", base: "e.g. bash '1 0.39 0', medic '1 0.12 0', luck '0.17 0.85 0.12'", port: "Color = identical 13 triples (StatusEffects.cs:240-252)", match: true }
+      - { name: "netname set", base: "ammo bash disability flight inferno jump luck magnet medic resistance swapper vampire vengeance", port: "buff_<netname> x13, IsBuff=true; no extras registered as buffs", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "each .qh REGISTER_BUFF + m_skin/m_color read from Base and compared field-by-field against StatusEffects.cs:240-252 — all 13 skins + all 13 color triples exact; RegisterAll called at boot (GameInit.cs:26)", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). The data contract of the 13 buff/*.qh headers: registry membership + per-buff skin/color. All values bit-exact in the port catalog; consumption of skin (item), color (waypoint tint vs missing item tint) is tracked in buffs.item.spawnfunc / buffs.waypoint. m_name/m_icon consumption is buffs.defs.hud_identity; the .qh SVQC autocvars are recorded on each perk row (+ buffs.defs.qh_autocvar_fallbacks for the code-fallback outliers)."
+
+  - id: buffs.defs.compat_mapping
+    name: "Q3/QL/WOP compat classname -> buff type mapping (BUFF_SPAWNFUNC_Q3COMPAT per .qh)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/buff/ammo.qh:BUFF_SPAWNFUNC_Q3COMPAT(item_ammoregen, BUFF_AMMO)"
+      - "common/mutators/mutator/buffs/buff/bash.qh:BUFF_SPAWNFUNC_Q3COMPAT(item_scout, BUFF_BASH)"
+      - "common/mutators/mutator/buffs/buff/flight.qh:BUFF_SPAWNFUNC_Q3COMPAT(item_flight, BUFF_FLIGHT)"
+      - "common/mutators/mutator/buffs/buff/inferno.qh:BUFF_SPAWNFUNC_Q3COMPAT(item_doubler, BUFF_INFERNO)"
+      - "common/mutators/mutator/buffs/buff/jump.qh:BUFF_SPAWNFUNC_Q3COMPAT(item_jumper, BUFF_JUMP)"
+      - "common/mutators/mutator/buffs/buff/medic.qh:BUFF_SPAWNFUNC_Q3COMPAT(item_regen + item_revival, BUFF_MEDIC)"
+      - "common/mutators/mutator/buffs/buff/resistance.qh:BUFF_SPAWNFUNC_Q3COMPAT(item_guard, BUFF_RESISTANCE)"
+      - "common/mutators/mutator/buffs/buff/swapper.qh:BUFF_SPAWNFUNC_Q3COMPAT(holdable_teleporter, BUFF_SWAPPER)"
+      - "common/mutators/mutator/buffs/buff/vampire.qh:BUFF_SPAWNFUNC_Q3COMPAT(holdable_invulnerability, BUFF_VAMPIRE)"
+      - "common/mutators/mutator/buffs/buff/vengeance.qh:BUFF_SPAWNFUNC_Q3COMPAT(holdable_kamikaze, BUFF_VENGEANCE)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemSpawnFuncs.cs:BuffCompatClassnames (189-202)"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemSpawnFuncs.cs:RegisterBuffSpawnFuncs (223-227)"
+    constants:
+      - { name: "compat map (11 classnames)", base: "ammoregen->ammo scout->bash flight->flight doubler->inferno jumper->jump regen/revival->medic guard->resistance teleporter->swapper invulnerability->vampire kamikaze->vengeance", port: "identical 11-entry table", match: true }
+      - { name: "buffs with NO compat classname", base: "disability, luck, magnet (no Q3COMPAT line)", port: "absent from the table (correct)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "each .qh Q3COMPAT line compared against ItemSpawnFuncs.BuffCompatClassnames — all 11 classname->type pairs exact, no extras/omissions; registered via RegisterBuffSpawnFuncs -> SpawnFuncs.Register -> BuffsMutator.SpawnMapBuff on the live map-spawn dispatch (same path verified live in buffs.item.spawnfunc)", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). buffs.item.spawnfunc records that the compat SET matches; this row pins the per-.qh classname->buff-type PAIRING, which is where a silent mis-map would hide (e.g. item_doubler must be inferno, not bash). All 11 verified exact."
+
+  - id: buffs.defs.hud_identity
+    name: "Per-buff HUD identity (m_name label + m_icon + m_color on the held-buff powerups-panel entry)"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/buffs/cl_buffs.qh (client include pulling the buff registry into CSQC)"
+      - "common/mutators/mutator/buffs/buff/bash.qh:ATTRIB m_name _(\"Bash\") / m_icon \"buff_bash\" (pattern identical across all 13 .qh)"
+    port_refs:
+      - "game/hud/PowerupsPanel.cs:BuffLabel (277-281)"
+      - "game/hud/PowerupsPanel.cs:227-239 (buff branch: label/icon/color)"
+    constants:
+      - { name: "m_icon", base: "\"buff_<netname>\" x13", port: "icon = def.Name (\"buff_<netname>\") — identical string", match: true }
+      - { name: "m_name", base: "_(\"Ammo\")..._(\"Vengeance\") — netname capitalized for all 13", port: "BuffLabel strips buff_ + capitalizes — identical for all 13", match: true }
+      - { name: "entry tint", base: "per-buff m_color", port: "generic (0.4, 1, 0.6) for every buff", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: unknown
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The held-buff HUD entry is tinted a single generic green (0.4,1,0.6) instead of the per-buff m_color; the code comment 'no per-buff color in the C# def' is STALE — StatusEffectDef.Color IS populated for all 13 buffs (StatusEffects.cs:240-252), the panel just doesn't read it."
+      - "Liveness not claimed: the panel (registered live, HudManager.cs:141) iterates the local player's Entity.StatusEffects, but whether the client-side entity's buff effects are populated over the net was not traced here (buffs.networking has the same unknown; powerups display via the same list was fixed to work per the file's port note)."
+    verification:
+      - { kind: code, ref: "PowerupsPanel buff branch: label=BuffLabel(def.Name) (capitalized netname, matches all 13 QC m_name strings), icon=def.Name (matches QC m_icon buff_<netname>), color=generic — vs each .qh's ATTRIBs; panel live via HudManager.cs:141", result: pass }
+    confidence: medium
+    notes: "added 2026-07-02 (coverage fold). Covers the m_name/m_icon halves of the .qh contract (skins/colors on the item are buffs.defs.registration + buffs.item.spawnfunc). cl_buffs.qh itself is a 3-line include-only header — its observable effect is exactly this client-side availability of the buff registry (icons/labels/waypoint colors)."
+
+  - id: buffs.defs.qh_autocvar_fallbacks
+    name: "Code-level autocvar fallback defaults (luck.qh =0.15/=3, magnet.qh range_buff =100)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/buff/luck.qh:autocvar_g_buffs_luck_chance = 0.15 / autocvar_g_buffs_luck_damagemultiplier = 3"
+      - "common/mutators/mutator/buffs/buff/magnet.qh:autocvar_g_buffs_magnet_range_buff = 100"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:56-59 (field defaults 0.15/2/250/100)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:122-125 (cvar refresh)"
+    constants:
+      - { name: "g_buffs_luck_chance", base: ".qh fallback 0.15 == mutators.cfg 0.15", port: "0.15", match: true }
+      - { name: "g_buffs_luck_damagemultiplier (effective)", base: "mutators.cfg 2 (the .qh fallback 3 is shadowed on any stock install)", port: "2", match: true }
+      - { name: "g_buffs_luck_damagemultiplier (code fallback, cfg absent)", base: "3 (luck.qh)", port: "2 (field default)", match: false }
+      - { name: "g_buffs_magnet_range_buff", base: ".qh fallback 100 == mutators.cfg 100", port: "100", match: true }
+    status:
+      logic: na
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Only divergence is unreachable on a stock install: if mutators.cfg were NOT executed, Base luck would crit at x3 (the .qh autocvar fallback) while the port falls back to x2. With the shipped cfg both are 2 — effective behavior identical."
+    verification:
+      - { kind: code, ref: "luck.qc:6-8 reads autocvar_g_buffs_luck_damagemultiplier (fallback 3 in luck.qh); mutators.cfg:407-410 sets 2/0.15; BuffsMutator fields default 0.15/2 + refreshed from cvars (122-125) and consumed on the live damage path (OnDamageCalculate:763-766)", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). CORRECTS the spec's 2026-06-22 claim that 'buff/luck.qc reads the cvar directly with no AUTOCVAR default' — luck.qh DOES declare = 3 on this rev; luck.qc reads the autocvar. The effective default is still 2 because mutators.cfg always executes on stock installs, so the existing buffs.luck constants stay correct. The other .qh SVQC declarations (fields buff_flight_oldgravity/crouchheld, buff_ammo_prev_infitems/prev_clipload; un-defaulted autocvars) are already covered by the per-perk rows."

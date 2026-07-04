@@ -1,0 +1,587 @@
+unit: overkill-weapons
+category: weapon
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 17
+  worst_gaps:
+    - "2026-06-28 re-audit (OkWeapons.cs FIRE2-anim edit, Common build green): ONE FIX, NO regressions. shared.secondary_blaster_jump: the animdecide_setaction(ANIMACTION_SHOOT,true) torso overlay is now driven on the refire_type==1 jump path (OkWeapons.FireSecondaryBlasterJump:89-93 -> AnimDecide.SetAction, the same overlay PrepareAttack latches for primary fire, networked ServerNet.cs:2052/2121 + rendered PlayerModel.cs:486). presentation missing->faithful, logic partial->faithful — the lone residual is the non-default refire_type==0 secondary-button gate nuance. This closes the last presentation gap on that row; third-person observers now see a fire pose on the blaster jump."
+    - "2026-06-27 Wave-16/17 re-audit (commit b3a9c06, build green): FOUR FIXES vs the prior baseline, NO regressions. (1+2) oknex.primary_rail: the networked CSQC rail beam (EFFECT_VORTEX_BEAM/_OLD, the SAME Vortex.EmitBeam treatment, routed through the live ServerNet EffectNetSink + ClientWorld RenderSink) AND the Yoda/Impressive announcements (OkNex.Announce -> NotificationSystem.Announce) are now wired — presentation partial->faithful. (3+4) okrpc.primary_chainsaw_missile: the missile now sets BotDodge+BotDodgeRating (consumed LIVE by BotBrain.HavocbotDodge SUPERBOT scan) and DamagedByContents (consumed LIVE by GameWorld.CreatureFrameAll's per-tick contents sweep) — two of the three okrpc STILL-OPEN items closed."
+    - "The other 13 rows are UNCHANGED — all balance constants still verified against bal-wep-xonotic.cfg:792-922; the Wave-8b FX/casing/recoil/tracer/muzzle/impact seams + Wave-13 bot_ai + okhmg_nadesupport all remain wired LIVE."
+    - "okrpc shoot-down remains LIVE+faithful: OkRpc.Attack:179 calls Projectiles.MakeShootable(missile, exception:-1); correctly inert under stock g_projectiles_damage=-2, exactly like Base."
+    - "STILL OPEN (okrpc, narrowed to ONE networking item): missile not CSQC-networked as a projectile body (no visible flying chainsaw, CSQCProjectile(PROJECTILE_RPC) omitted) + accuracy stat bookkeeping. Bot-dodge + damagedbycontents are now CLOSED."
+    - "oknex charge subsystem still inert+deferred (charge default 0): velocity-charge GetPressedKeys hook, chargepool, wr_glow charge glow, SND_OK_NEX_CHARGE overcharge sound all unported (intended_divergence — matches the shipped Vortex-without-charge balance). NOTE: the CSQC beam + Yoda/Impressive are NO LONGER in this list (Wave-16 closed them)."
+    - "STILL OPEN (niche): standalone g_overkill_weapons activation path (un-block the 5 OK weapons without full g_overkill) has no reader in src/; oknex ATCK2-zoom non-default branch (secondary==0) unmodeled. Both dormant at stock balance."
+    - "Overkill mode has no menu toggle (reachable only via ruleset/cvar) — but this MATCHES Base, so it is faithful, not a regression."
+features:
+  - id: overkill-weapons.okmachinegun.primary_auto
+    name: "OK MachineGun primary — auto bullet with accumulating spread"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/okmachinegun.qc:W_OverkillMachineGun_Attack_Auto"
+      - "common/mutators/mutator/overkill/okmachinegun.qc:wr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkMachinegun.cs:AttackAuto"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkMachinegun.cs:WrThink"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:FireBullet (falloff+tracer overload)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:EjectCasing/BulletImpactFx"
+    constants:
+      - { name: "primary_ammo", base: "1", port: "1", match: true }
+      - { name: "primary_damage", base: "25", port: "25", match: true }
+      - { name: "primary_force", base: "5", port: "5", match: true }
+      - { name: "primary_refire", base: "0.1", port: "0.1", match: true }
+      - { name: "primary_solidpenetration", base: "100", port: "100", match: true }
+      - { name: "primary_spread_add", base: "0.012", port: "0.012", match: true }
+      - { name: "primary_spread_max", base: "0.05", port: "0.05", match: true }
+      - { name: "primary_spread_min", base: "0", port: "0", match: true }
+      - { name: "damagefalloff_halflife", base: "0", port: "0", match: true }
+      - { name: "damagefalloff_mindist", base: "0", port: "0", match: true }
+      - { name: "damagefalloff_maxdist", base: "0", port: "0", match: true }
+      - { name: "damagefalloff_forcehalflife", base: "0", port: "0", match: true }
+      - { name: "reload_ammo", base: "30", port: "30", match: true }
+      - { name: "reload_time", base: "1.5", port: "1.5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "FIXED (Wave-8b, this pass): W_MuzzleFlash (AttackAuto:153 EffectEmitter.Emit MACHINEGUN_MUZZLEFLASH — matches okmachinegun.qh m_muzzleeffect) and wr_impacteffect (AttackAuto:144-148 traces the surface, EFFECT_MACHINEGUN_IMPACT puff + throttled SND_RIC_RANDOM via BulletImpactFx) are now BOTH wired LIVE — closing the two STILL-OPEN items the baseline recorded."
+    verification:
+      - { kind: value-diff, ref: "bal-wep-xonotic.cfg:815-831 + damagefalloff_* (all 0)", result: pass }
+      - { kind: code-read, ref: "AttackAuto:128-155 FireBullet(...,tracerEffect:RIFLE) + recoil PunchAngle (Prandom, EntFlags.Client && !g_norecoil) + BulletImpactFx(MACHINEGUN_IMPACT) + MACHINEGUN_MUZZLEFLASH + EjectCasing(Bullet); reached LIVE via WrThink; QC okmachinegun.qc:5-62 line-by-line", result: pass }
+    confidence: high
+    notes: "Now a full match for the auto-bullet incl. presentation+audio. Casing via EmitByEffectInfoName(casing_bullet); tracer RIFLE; muzzle MACHINEGUN_MUZZLEFLASH (registered uzi_muzzleflash, EffectsList.cs:62); impact MACHINEGUN_IMPACT (EffectsList.cs:61) + SND_RIC_RANDOM (SoundSystem.PlayRic). misc_bulletcounter drives accumulating spread, reset each trigger pull."
+
+  - id: overkill-weapons.okhmg.primary_auto
+    name: "OK Heavy MachineGun primary — superweapon auto bullet"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/okhmg.qc:W_OverkillHeavyMachineGun_Attack_Auto"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkHmg.cs:AttackAuto"
+    constants:
+      - { name: "primary_ammo", base: "1", port: "1", match: true }
+      - { name: "primary_damage", base: "30", port: "30", match: true }
+      - { name: "primary_force", base: "10", port: "10", match: true }
+      - { name: "primary_refire", base: "0.05", port: "0.05", match: true }
+      - { name: "primary_solidpenetration", base: "127", port: "127", match: true }
+      - { name: "primary_spread_add", base: "0.005", port: "0.005", match: true }
+      - { name: "primary_spread_max", base: "0.06", port: "0.06", match: true }
+      - { name: "primary_spread_min", base: "0.01", port: "0.01", match: true }
+      - { name: "reload_ammo", base: "120", port: "120", match: true }
+      - { name: "reload_time", base: "1", port: "1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "FIXED (Wave-8b, this pass — the baseline's central regression is now closed): OkHmg.AttackAuto now does recoil PRNG (:154), EFFECT_RIFLE tracer (:162-163), W_MuzzleFlash MACHINEGUN_MUZZLEFLASH (:175), casing type3 g_casings>=2 (:177 EjectCasing(Bullet)), and wr_impacteffect MACHINEGUN_IMPACT + SND_RIC_RANDOM (:166-170). OkHmg.cs is NO LONGER byte-identical to main — migrated in commit 31aa799."
+    verification:
+      - { kind: value-diff, ref: "bal-wep-xonotic.cfg:792-808", result: pass }
+      - { kind: code-read, ref: "OkHmg.AttackAuto:147-177 plain FireBullet (no falloff) + RIFLE tracer + recoil + MACHINEGUN_MUZZLEFLASH + EjectCasing + BulletImpactFx; matches okhmg.qc:30-59 + wr_impacteffect okhmg.qc:150-156", result: pass }
+    confidence: high
+    notes: "Same shape as okmachinegun but plain fireBullet (no falloff), matching Base okhmg. Gated by superweapon status (see okhmg.superweapon_gate). The Wave-8b FX seam (EjectCasing/tracer/recoil/muzzle/impact) is now applied to okhmg too."
+
+  - id: overkill-weapons.okhmg.superweapon_gate
+    name: "OK HMG superweapon gate — fires only while Superweapon active"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/okhmg.qc:22-28"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkHmg.cs:SuperweaponGate"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "OkHmg.SuperweaponGate checks StatusEffect Superweapon / IT_UNLIMITED_SUPERWEAPONS, else SwitchToOtherWeapon; called at WrThink entry AND AttackAuto entry", result: pass }
+    confidence: high
+    notes: "Gate lives in the attack path (not wr_checkammo1) because Overkill grants IT_UNLIMITED_AMMO which short-circuits the shared ammo gate, matching QC. Unchanged."
+
+  - id: overkill-weapons.oknex.primary_rail
+    name: "OK Nex primary — instant rail beam"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/oknex.qc:W_OverkillNex_Attack"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkNex.cs:Attack"
+    constants:
+      - { name: "primary_ammo", base: "10", port: "10", match: true }
+      - { name: "primary_animtime", base: "0.65", port: "0.65", match: true }
+      - { name: "primary_damage", base: "100", port: "100", match: true }
+      - { name: "primary_force", base: "500", port: "500", match: true }
+      - { name: "primary_refire", base: "1", port: "1", match: true }
+      - { name: "reload_ammo", base: "50", port: "50", match: true }
+      - { name: "reload_time", base: "2", port: "2", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "FIXED (Wave-16, commit b3a9c06): CSQC rail beam now wired — OkNex.Attack:214-221 emits the actual muzzle->impact beam (EFFECT_VORTEX_BEAM, or VORTEX_BEAM_OLD under cl_particles_oldvortexbeam) as a count-0 trail, the SAME path Vortex.EmitBeam uses; the beam networks by registered id through the live effect sink (ServerNet EffectNetSink + ClientWorld RenderSink). Closes the baseline 'no SendCSQCVortexBeamParticle' gap."
+      - "FIXED (Wave-16, commit b3a9c06): Yoda + Impressive announcements now fire — OkNex.Attack:199 -> Announce() derives the impressive/yoda condition from the rail's first pierced victim (cross-team, damageable, the every-other-hit toggle via a per-actor weak side-table) and the shooter's pre-trace airborne status, calling NotificationSystem.Announce(ACHIEVEMENT_IMPRESSIVE/_YODA). Mirrors vortex.qc:141-162. Closes the baseline 'yoda/impressive never fire' gap."
+      - "FIXED earlier (Wave-8b): wr_impacteffect (Attack:204-212 EFFECT_VORTEX_IMPACT puff + SND_OK_NEX_IMPACT neximpact, silent on sky/miss) + VORTEX_MUZZLEFLASH."
+      - "wr_glow charge glow not present (covered by oknex.charge, default-off) — inert at stock balance."
+    verification:
+      - { kind: value-diff, ref: "bal-wep-xonotic.cfg:846-871", result: pass }
+      - { kind: code-read, ref: "OkNex.Attack:188-221 FireRailgunBullet(headshotNotify false) + Announce(yoda/impressive) + VORTEX_IMPACT/neximpact + VORTEX_MUZZLEFLASH + VORTEX_BEAM(_OLD) trail; matches oknex.qc:84-106 + wr_impacteffect oknex.qc:315-322 + SendCSQCVortexBeamParticle.", result: pass }
+      - { kind: code-read, ref: "VORTEX_BEAM registered EffectsList.cs:101-102 (isTrail); EffectEmitter routes via live ServerNet.cs:303 EffectNetSink + ClientWorld.cs:393 RenderSink. NotificationSystem.Announce:200 -> Send(MsgType.Annce). Build green.", result: pass }
+    confidence: medium
+    notes: "charge=1 at stock balance (charge off). Wave-16 closed the two prior STILL-OPEN gaps: the networked rail beam (now identical to Vortex's beam treatment) and the yoda/impressive announces. presentation upgraded partial->faithful via the same beam seam the Vortex registry already treats as faithful. confidence medium (not faithful->high) because the beam's on-screen appearance in a live OK match is not runtime-captured — same caveat the Vortex beam carries; mechanism verified by code-read + build."
+
+  - id: overkill-weapons.oknex.charge
+    name: "OK Nex charge / chargepool / velocity-charge / wr_glow"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/overkill/oknex.qc:wr_glow"
+      - "common/mutators/mutator/overkill/oknex.qc:GetPressedKeys (oknex_charge)"
+      - "common/mutators/mutator/overkill/oknex.qc:wr_think charge regen"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkNex.cs:WrThink (charge regen)"
+    constants:
+      - { name: "charge", base: "0 (off)", port: "0 (off)", match: true }
+      - { name: "charge_animlimit", base: "0.5", port: "0.5", match: true }
+      - { name: "charge_mindmg", base: "40", port: "40", match: true }
+      - { name: "charge_shot_multiplier", base: "0", port: "0", match: true }
+      - { name: "charge_start", base: "0.5", port: "0.5", match: true }
+      - { name: "charge_rate", base: "0.6", port: "0.6", match: true }
+      - { name: "charge_velocity_rate", base: "0", port: "none", match: false }
+      - { name: "chargepool_regen", base: "0.15", port: "none", match: false }
+    status:
+      logic: stub
+      values: partial
+      timing: partial
+      presentation: missing
+      audio: missing
+      liveness: dead
+    intended_divergence: true
+    divergence_rationale: >
+      g_balance_oknex_charge defaults 0, so the shipped weapon is Vortex-without-charge and the entire
+      charge subsystem is inert. The velocity-charge GetPressedKeys hook, chargepool, wr_glow charge
+      glow, overcharge sound, and the frametime/W_TICSPERFRAME regen cadence are deliberately deferred
+      until the cvar is set (documented in OkNex.cs).
+    gaps:
+      - "charge_velocity_rate (move-to-charge) GetPressedKeys hook not ported."
+      - "chargepool (secondary) regen/depletion not ported."
+      - "wr_glow charge glow and overcharge SND_OK_NEX_CHARGE sound not ported."
+      - "Charge regen uses frametime, not QC frametime/W_TICSPERFRAME (only matters if charge enabled)."
+    verification:
+      - { kind: code-read, ref: "OkNex.cs:88-89,113-116,127-132 charge math behind Cvars.Charge guard (default false); unchanged", result: pass }
+    confidence: medium
+    notes: "Non-default feature; flagged intended_divergence but the charge math that IS present diverges (timing/velocity) if a server enables it."
+
+  - id: overkill-weapons.okshotgun.primary_pellets
+    name: "OK Shotgun primary — pellet fan"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/okshotgun.qc:wr_think (W_Shotgun_Attack)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkShotgun.cs:Attack"
+    constants:
+      - { name: "primary_ammo", base: "3", port: "3", match: true }
+      - { name: "primary_animtime", base: "0.65", port: "0.65", match: true }
+      - { name: "primary_bullets", base: "10", port: "10", match: true }
+      - { name: "primary_damage", base: "17", port: "17", match: true }
+      - { name: "primary_force", base: "80", port: "80", match: true }
+      - { name: "primary_refire", base: "0.75", port: "0.75", match: true }
+      - { name: "primary_solidpenetration", base: "3.8", port: "3.8", match: true }
+      - { name: "primary_spread", base: "0.07", port: "0.07", match: true }
+      - { name: "spread_pattern", base: "0 (random)", port: "0 (random)", match: true }
+      - { name: "reload_ammo", base: "24", port: "24", match: true }
+      - { name: "reload_time", base: "2", port: "2", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "spread_pattern>0 deterministic pattern path not handled (default 0 = random, matches QC)."
+      - "FIXED (Wave-8b): muzzle flash (Attack:126 EFFECT_SHOTGUN_MUZZLEFLASH), shotgun-shell casing (Attack:128 EjectCasing(Shell), g_casings>=1), and wr_impacteffect (per-pellet EFFECT_SHOTGUN_IMPACT puff + the 5%/0.25s-throttled SND_RIC_RANDOM, the seam owns the throttle so a 10-pellet blast yields at most one ric) are now all wired LIVE. Closes the baseline 'no muzzle/casing/impact/ric' gap."
+    verification:
+      - { kind: value-diff, ref: "bal-wep-xonotic.cfg:898-922", result: pass }
+      - { kind: code-read, ref: "OkShotgun.Attack:110-128 inline pellet loop + per-pellet BulletImpactFx(SHOTGUN_IMPACT) + SHOTGUN_MUZZLEFLASH + EjectCasing(Shell); matches okshotgun.qc:43-58 (W_Shotgun_Attack EFFECT_RIFLE_WEAK) + wr_impacteffect okshotgun.qc:103-113", result: pass }
+    confidence: high
+    notes: "Port inlines the pellet loop rather than calling shared W_Shotgun_Attack; per-pellet random spread matches QC at spread_pattern 0. The Wave-8b casing/impact/muzzle seam is now applied here (presentation+audio upgraded missing/partial -> faithful)."
+
+  - id: overkill-weapons.okrpc.primary_chainsaw_missile
+    name: "OK RPC primary — accelerating chainsaw missile (pass-through + explosion)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/okrpc.qc:W_OverkillRocketPropelledChainsaw_Attack"
+      - "common/mutators/mutator/overkill/okrpc.qc:W_OverkillRocketPropelledChainsaw_Think"
+      - "common/mutators/mutator/overkill/okrpc.qc:W_OverkillRocketPropelledChainsaw_Explode"
+      - "common/mutators/mutator/overkill/okrpc.qc:W_OverkillRocketPropelledChainsaw_Damage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkRpc.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkRpc.cs:OnThink"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkRpc.cs:Explode"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Projectiles.cs:MakeShootable/ShootDown/CheckProjectileDamage"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:280,331 (EventDamage non-player GtEventDamage dispatch)"
+    constants:
+      - { name: "primary_ammo", base: "10", port: "10", match: true }
+      - { name: "primary_animtime", base: "1", port: "1", match: true }
+      - { name: "primary_damage", base: "150", port: "150", match: true }
+      - { name: "primary_damage2", base: "500", port: "500", match: true }
+      - { name: "primary_damageforcescale", base: "2", port: "2", match: true }
+      - { name: "primary_edgedamage", base: "50", port: "50", match: true }
+      - { name: "primary_force", base: "400", port: "400", match: true }
+      - { name: "primary_health", base: "25", port: "25", match: true }
+      - { name: "primary_lifetime", base: "30", port: "30", match: true }
+      - { name: "primary_radius", base: "300", port: "300", match: true }
+      - { name: "primary_speed", base: "2500", port: "2500", match: true }
+      - { name: "primary_speedaccel", base: "5000", port: "5000", match: true }
+      - { name: "reload_ammo", base: "10", port: "10", match: true }
+      - { name: "reload_time", base: "1", port: "1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "FIXED (Wave-8b): W_MuzzleFlash (Attack:184 EFFECT_ROCKET_MUZZLEFLASH — matches okrpc.qh m_muzzleeffect) and wr_impacteffect (Explode:243-244 EFFECT_ROCKET_EXPLODE puff + SND_ROCKET_IMPACT at the blast point) are now wired LIVE — closing the baseline 'no wr_impacteffect / no W_MuzzleFlash' gap."
+      - "Shoot-down LIVE+faithful (unchanged): OkRpc.Attack:179 Projectiles.MakeShootable(missile, exception:-1) installs the GtEventDamage shim DamageSystem dispatches; ShootDown runs W_CheckProjectileDamage(-1) + RES_HEALTH subtract → Explode at hp<=0. Correctly INERT under stock g_projectiles_damage=-2, exactly like Base."
+      - "FIXED (Wave-16, commit b3a9c06): missile now registered for bot dodge — OkRpc.Attack:147-148 sets missile.BotDodge=true + BotDodgeRating=damage*2 (QC bot_dodge / bot_dodgerating). Consumed LIVE by the SUPERBOT-gated dodge scan BotBrain.HavocbotDodge:698-735 (iterates Api.Entities.All for the BotDodge flag, skips own shots). SUPERBOT gate matches QC (only high-skill bots specifically dodge bolts). Closes the baseline 'not registered for bot dodge' gap."
+      - "FIXED (Wave-16, commit b3a9c06): missile now sets missile.DamagedByContents=true (QC IL_PUSH g_damagedbycontents). Consumed LIVE by the per-frame contents sweep GameWorld.CreatureFrameAll:2194-2204 (scans Api.Entities.All for the flag, skips noclip) -> PlayerFrameLogic.ProjectileContentsDamage, so a chainsaw resting in lava/slime now takes contents damage and detonates via its shoot-down shim. Correctly NOT gated by g_projectiles_damage (contents use g_balance_contents_projectiledamage), matching Base. Closes the baseline 'damagedbycontents missing' gap."
+      - "STILL OPEN: missile not networked as a CSQC projectile (no visible flying chainsaw on clients) — CSQCProjectile(PROJECTILE_RPC) omitted. The muzzle flash + explosion FX network, but the in-flight chainsaw body does not."
+      - "Accuracy bookkeeping (first-hit fired/hit add, explode 'add fired back') omitted (stat-only)."
+      - "Pass-through victim filter is `(Flags & Client) && TakeDamage!=No` vs QC IS_PLAYER(trace_ent): could catch a spectator client edict carrying the Client flag. Minor; corpses filtered by TakeDamage."
+    verification:
+      - { kind: value-diff, ref: "bal-wep-xonotic.cfg:874-895 — all 14 okrpc cvars match", result: pass }
+      - { kind: code-read, ref: "OkRpc.Attack:147-155 BotDodge/BotDodgeRating + DamagedByContents set; :179 MakeShootable(exception:-1) + :184 ROCKET_MUZZLEFLASH; OkRpc.Explode:239-244 RadiusDamage + SND_ROCKET_IMPACT + ROCKET_EXPLODE; matches okrpc.qc:7-31/100-142 + wr_impacteffect okrpc.qc:232-238", result: pass }
+      - { kind: code-read, ref: "consumers LIVE: BotBrain.HavocbotDodge:698-735 reads Entity.BotDodge (SUPERBOT-gated); GameWorld.CreatureFrameAll:2200 reads Entity.DamagedByContents each tick. Build green.", result: pass }
+      - { kind: value-diff, ref: "Projectiles.CheckProjectileDamage at g_projectiles_damage=-2 (balance-xonotic.cfg:202) returns false → okrpc shoot-down inert at stock balance, identical to Base", result: pass }
+    confidence: high
+    notes: "Flight/pass-through/contact-explosion/shoot-down faithful and live. Wave-16 wired the bot-dodge danger registration AND the damagedbycontents sweep to LIVE consumers (BotBrain.HavocbotDodge / GameWorld.CreatureFrameAll). presentation stays partial: the ONLY residual is the missing CSQC flying-chainsaw projectile networking (no visible in-flight body); muzzle/explosion FX network. The remaining open items are CSQC body networking + accuracy stats."
+
+  - id: overkill-weapons.shared.secondary_blaster_jump
+    name: "Shared secondary — Overkill blaster jump (own jump_interval timer)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/okmachinegun.qc:wr_think (refire_type 1 branch)"
+      - "common/mutators/mutator/overkill/okshotgun.qc:wr_think"
+      - "common/mutators/mutator/overkill/oknex.qc:wr_think"
+      - "common/mutators/mutator/overkill/okhmg.qc:wr_think"
+      - "common/mutators/mutator/overkill/okrpc.qc:wr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkWeapons.cs:FireSecondaryBlasterJump"
+    constants:
+      - { name: "secondary_refire_type", base: "1 (own jump_interval timer)", port: "1", match: true }
+      - { name: "blaster_refire (jump_interval step)", base: "g_balance_blaster_primary_refire 0.7", port: "0.7 fallback", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "FIXED (this wave, OkWeapons.cs:89-93): the animdecide_setaction(actor, ANIMACTION_SHOOT, true) on the refire_type==1 jump path is now driven — FireSecondaryBlasterJump latches AnimDecide.AnimUpperAction.Shoot (restart:true == QC restartanim) on actor.AnimUpperAction/AnimActionStart, the SAME overlay+call PrepareAttack uses for primary fire (WeaponFireGate.cs:166). Networked via ServerNet.cs:2052/2121 and rendered by PlayerModel.cs:486 (Shoot->shoot/attack/fire frame group), so third-person observers now see a fire pose on the blaster-jump. Closes the baseline 'no third-person fire-2 pose' gap. refire_type==0 path latches the same overlay via PrepareAttack."
+      - "refire_type==0 secondary path: only the non-default secondary-button GATE nuance differs (QC oknex also requires WEP_CVAR secondary==2 on that branch). refire_type default is 1 for all five OK weapons, so no observable gap at stock balance."
+    verification:
+      - { kind: code-read, ref: "OkWeapons.FireSecondaryBlasterJump:82-93 → Blaster.FirePrimaryDirect on actor.JumpInterval + AnimDecide.SetAction(Shoot, restart:true); AnimDecide.SetAction (AnimDecide.cs:115) == QC animdecide_setaction; same call as primary PrepareAttack (WeaponFireGate.cs:166)", result: pass }
+      - { kind: code-read, ref: "liveness of the overlay: networked ServerNet.cs:2052/2121 (AnimUpperAction/AnimActionStart), consumed by PlayerModel.cs:486 (AnimUpperAction.Shoot -> shoot/attack/fire FrameGroup). Build green (Common csproj).", result: pass }
+    confidence: high
+    notes: "Blaster damage/force are nullified by OverkillMutator.Damage_Calculate (separate unit). Jump_interval is per-player, scaled by W_WeaponRateFactor — faithful. This wave closed the FIRE2 third-person fire-pose gap by driving the SHOOT torso overlay on the jump path (was the lone presentation gap on this row). presentation missing->faithful, logic partial->faithful (the only residual is the non-default refire_type==0 button-gate nuance, captured as a sub-note not a presentation/logic defect)."
+
+  - id: overkill-weapons.shared.forced_reload
+    name: "Forced reload when clip below a primary shot"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/okmachinegun.qc:wr_think (reload_ammo branch)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkMachinegun.cs:WrThink (forced reload)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:WrReload/WReload"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "each OK WrThink: if (ReloadAmmo!=0 && ClipLoad<Ammo) WrReload; shared W_Reload pipeline", result: pass }
+    confidence: high
+    notes: "Clip-aware DecreaseAmmo drains the magazine so the clip_load<ammo branch engages; reload sound plays. Unchanged."
+
+  - id: overkill-weapons.shared.checkammo
+    name: "Per-weapon ammo checks (wr_checkammo1/2) dispatched to live gate"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/okmachinegun.qc:wr_checkammo1/2"
+      - "common/mutators/mutator/overkill/okhmg.qc:wr_checkammo1/2"
+      - "common/mutators/mutator/overkill/oknex.qc:wr_checkammo1/2"
+      - "common/mutators/mutator/overkill/okrpc.qc:wr_checkammo1/2"
+      - "common/mutators/mutator/overkill/okshotgun.qc:wr_checkammo1/2"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:WeaponAmmo.Check (Ok* cases)"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "OK weapons grant IT_UNLIMITED_AMMO via the mutator, so the ammo gate short-circuits true in normal play; the per-weapon checks matter only for clip/reload accounting."
+    verification:
+      - { kind: code-read, ref: "WeaponAmmo.Check explicit OkMachinegun/OkShotgun/OkNex/OkHmg/OkRpc cases", result: pass }
+    confidence: high
+    notes: "Without these cases the OK weapons fell through to the default 'true' and wr_checkammo never ran — wired. Unchanged."
+
+  - id: overkill-weapons.okhmg.nadesupport
+    name: "OK HMG nade self-damage scaled to 10% (okhmg_nadesupport)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/okhmg.qc:5-12 (Nade_Damage hook)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:OnNadeDamage (496-507)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:142 (MutatorHooks.NadeDamage.Add registration)"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeProjectile.cs:208 (FireNadeDamage dispatch, hook fires first)"
+    constants:
+      - { name: "nade_damage", base: "max_health * 0.1", port: "Nade.MaxHealth * 0.1f", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "OverkillMutator.OnNadeDamage: if (args.Weapon != \"okhmg\") return false; else args.Damage = args.Nade.MaxHealth * 0.1f; return true — matches okhmg.qc:7-12 (M_ARGV(1)!=WEP_OVERKILL_HMG guard + damage = max_health*0.1). Registered MutatorHooks.NadeDamage.Add(_onNadeDamage) OverkillMutator.cs:142", result: pass }
+      - { kind: code-read, ref: "NadeProjectile.NadeDamage:207-213 calls MutatorHooks.FireNadeDamage FIRST; on true it adopts the hook's damage/force and SKIPS the per-weapon default chain — matches QC sv_nades.qc:259 (Nade_Damage hook heads the if/else-if)", result: pass }
+    confidence: high
+    notes: "FIX (2026-06-27 drift audit, Wave-13): previously logic/values=missing, liveness=na (NadeProjectile deferred the hook). The okhmg_nadesupport Nade_Damage hook is now ported (OverkillMutator.OnNadeDamage), registered on the live mutator-hook list, and dispatched before the per-weapon defaults — HMG nade self-damage is now reduced to 10% of max health, faithful to Base."
+
+  - id: overkill-weapons.identity.attributes
+    name: "Weapon identity (ammo type, impulse, flags, color, models, netname)"
+    layer: [shared]
+    base_refs:
+      - "common/mutators/mutator/overkill/okhmg.qh"
+      - "common/mutators/mutator/overkill/okmachinegun.qh"
+      - "common/mutators/mutator/overkill/oknex.qh"
+      - "common/mutators/mutator/overkill/okrpc.qh"
+      - "common/mutators/mutator/overkill/okshotgun.qh"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkHmg.cs:OkHmg()"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkMachinegun.cs:OkMachinegun()"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkNex.cs:OkNex()"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkRpc.cs:OkRpc()"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkShotgun.cs:OkShotgun()"
+    constants:
+      - { name: "okhmg impulse/ammo", base: "3 / RES_BULLETS", port: "3 / Bullets", match: true }
+      - { name: "okmachinegun impulse/ammo", base: "3 / RES_BULLETS", port: "3 / Bullets", match: true }
+      - { name: "oknex impulse/ammo", base: "7 / RES_CELLS", port: "7 / Cells", match: true }
+      - { name: "okrpc impulse/ammo", base: "9 / RES_ROCKETS", port: "9 / Rockets", match: true }
+      - { name: "okshotgun impulse/ammo", base: "2 / RES_SHELLS", port: "2 / Shells", match: true }
+      - { name: "okhmg flags", base: "MUTATORBLOCKED|HIDDEN|RELOADABLE|HITSCAN|SUPERWEAPON|PENETRATEWALLS", port: "same", match: true }
+      - { name: "okrpc flags", base: "MUTATORBLOCKED|HIDDEN|CANCLIMB|RELOADABLE|SPLASH|SUPERWEAPON", port: "same", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Deprecated netnames 'hmg'/'rpc' (kill-message routing) noted but registry uses canonical 'okhmg'/'okrpc'."
+    verification:
+      - { kind: code-read, ref: "field-by-field diff of ctor vs .qh CLASS block (incl. m_muzzleeffect: okmg/okhmg MACHINEGUN_MUZZLEFLASH, okrpc ROCKET_MUZZLEFLASH)", result: pass }
+    confidence: high
+    notes: "Colors, models (h_/v_/g_), and m_color vectors all match the .qh exactly. Unchanged."
+
+  - id: overkill-weapons.mode.enablement
+    name: "Overkill mode enablement (g_overkill → loadout + mutator + weapons live)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/sv_weapons.qc:REGISTER_MUTATOR(ok_weapons)"
+      - "common/mutators/mutator/overkill/sv_overkill.qc:SetStartItems"
+      - "ruleset-overkill.cfg"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:IsEnabled"
+      - "src/XonoticGodot.Server/GameWorld.cs:511 (MutatorActivation.Apply)"
+      - "game/net/NetGame.cs:1708 (loadout set when g_overkill)"
+      - "assets/data/xonotic-data.pk3dir/ruleset-overkill.cfg:11 (g_overkill 1)"
+    constants:
+      - { name: "g_overkill", base: "set by ruleset-overkill.cfg", port: "set by ruleset-overkill.cfg", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Mode reachable only by exec'ing ruleset-overkill.cfg / setting g_overkill via console — no in-menu arena radio. VERIFIED this MATCHES Base (Base dialog_multiplayer_create_mutators.qc also exposes only g_instagib + g_nix radios). So this is faithful to Base, NOT a port-side regression."
+    verification:
+      - { kind: code-read, ref: "MutatorActivation.Apply at GameWorld.cs:511; OverkillMutator.IsEnabled = g_overkill!=0; NetGame.cs:1708 loadout union; ruleset-overkill.cfg:11 g_overkill 1", result: pass }
+      - { kind: code-read, ref: "DialogMutators.cs (port) arena radio group: only g_instagib/g_nix; Base same (no g_overkill radio)", result: pass }
+    confidence: high
+    notes: "Weapons are LIVE on the server tick path when g_overkill is set (WeaponFireDriver dispatches WrThink generically; loadout given via OverkillMutator.OnPlayerSpawn/SetStartItems). liveness=partial reflects no shipped gametype auto-execs the ruleset and there is no menu toggle — but that gating matches Base exactly, so it is faithful."
+
+  - id: overkill-weapons.presentation.fx
+    name: "Fire/impact presentation — muzzle flash, casings, recoil, impact effects"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/overkill/okhmg.qc:W_MuzzleFlash + casing + punchangle"
+      - "common/mutators/mutator/overkill/okhmg.qc:wr_impacteffect (CSQC)"
+      - "common/mutators/mutator/overkill/okmachinegun.qc:W_MuzzleFlash + casing + punchangle + wr_impacteffect"
+      - "common/mutators/mutator/overkill/oknex.qc:wr_impacteffect"
+      - "common/mutators/mutator/overkill/okrpc.qc:wr_impacteffect"
+      - "common/mutators/mutator/overkill/okshotgun.qc:wr_impacteffect"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkMachinegun.cs:AttackAuto (recoil + EjectCasing + RIFLE tracer + muzzle + impact)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkHmg.cs:AttackAuto (recoil + EjectCasing + RIFLE tracer + muzzle + impact)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkShotgun.cs:Attack (EjectCasing(Shell) + muzzle + per-pellet impact)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkNex.cs:Attack (VORTEX_IMPACT + neximpact + muzzle)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkRpc.cs:Attack/Explode (ROCKET_MUZZLEFLASH + ROCKET_EXPLODE + rocket_impact)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:EjectCasing/BulletImpactFx (shared seam)"
+    constants: []
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "FIXED (Wave-8b, commit 31aa799): ALL FIVE OK weapons now emit W_MuzzleFlash (registered EFFECT names), wr_impacteffect impact puff + impact/ric sound, and the three bullet weapons (okmg/okhmg/okshotgun) eject casings (per-type g_casings gate) + recoil PRNG + EFFECT_RIFLE/RIFLE_WEAK tracer. This CLOSES the baseline's central regression (it recorded okhmg/okshotgun/oknex/okrpc + okmachinegun's muzzle/impact as all missing)."
+      - "Residual presentation gaps live in their per-weapon rows, NOT here. UPDATED (Wave-16, b3a9c06): the oknex networked CSQC rail beam (SendCSQCVortexBeamParticle) is now WIRED (oknex.primary_rail closed it) — the only per-weapon networked-visual gap left is okrpc's missing CSQC flying-chainsaw projectile body. Both bullet weapons + FIRE2 still lack the third-person fire-2 weapon-frame anim. The muzzle/casing/impact/ric/tracer/beam seam itself is fully wired."
+    verification:
+      - { kind: code-read, ref: "OkMachinegun/OkHmg/OkShotgun/OkNex/OkRpc all call EffectEmitter.Emit(<muzzle>) + BulletImpactFx/ImpactSound + (bullet weapons) EjectCasing/recoil; effect names registered in EffectsList.cs (SHOTGUN/MACHINEGUN/VORTEX/ROCKET _MUZZLEFLASH+_IMPACT/_EXPLODE); seam BulletImpactFx/EjectCasing live in WeaponFiring.cs:578-641", result: pass }
+    confidence: high
+    notes: "Drift: this row was 'partial/partial/partial' in the 2026-06-25 baseline (only okmachinegun's casing/tracer/recoil migrated). Wave-8b (31aa799) wired the muzzle flash + impact FX + ric across all five weapons and back-filled the casing/tracer/recoil onto okhmg+okshotgun. Fire sounds (uzi_fire/nexfire/rocket_fire/shotgun_fire) play server-side as before."
+
+  - id: overkill-weapons.shared.bot_ai
+    name: "Bot AI fire-button selection (wr_aim) for the five OK weapons"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/okmachinegun.qc:wr_aim (range gate 3000-skill*200)"
+      - "common/mutators/mutator/overkill/okhmg.qc:wr_aim (range gate 3000-skill*200)"
+      - "common/mutators/mutator/overkill/oknex.qc:wr_aim (always primary; ATCK2 only if charge)"
+      - "common/mutators/mutator/overkill/okrpc.qc:wr_aim (bot_aim with speed+lifetime lead)"
+      - "common/mutators/mutator/overkill/okshotgun.qc:wr_aim (>bot_range 512 -> ATCK2 blaster poke, else ATCK1)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkMachinegun.cs:BotForbidsFire (range gate)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkHmg.cs:BotForbidsFire (range gate)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkShotgun.cs:BotWantsSecondary (>bot_range)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/OkRpc.cs:BotAimShotSpeed (lead by speed)"
+      - "src/XonoticGodot.Common/Gameplay/GameplayBases.cs:145,166,180 (Weapon.BotWantsSecondary/BotForbidsFire/BotAimShotSpeed seams)"
+    constants:
+      - { name: "okshotgun bot_range", base: "512", port: "512 (Cvars.BotRange)", match: true }
+      - { name: "okmg/okhmg bot range gate", base: "3000 - bound(0,skill,10)*200", port: "3000 - clamp(skill,0,10)*200", match: true }
+      - { name: "okrpc bot lead speed", base: "WEP_CVAR_PRI(speed)=2500", port: "Cvars.Speed=2500", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "okrpc bot lead: QC bot_aim also passes the projectile LIFETIME (30) as the lead-prediction-window arg; the port override only sets the lead SPEED (2500). The brain caps the lead by speed (the dominant term), so the practical aim matches, but the lifetime widening of the prediction window is not modeled. Minor."
+      - "oknex has no bot override (relies on the generic always-primary fallback). This MATCHES QC at stock balance: oknex.qc:113-122 always presses ATCK1 and only presses ATCK2 when charge is enabled (default off). Faithful, not a gap, at stock."
+    verification:
+      - { kind: code-read, ref: "OkMachinegun.cs:182-183 + OkHmg.cs:197-198 BotForbidsFire >= 3000-clamp(skill,0,10)*200 == Base okmachinegun.qc:66 / okhmg.qc:67; OkShotgun.cs:139-140 BotWantsSecondary > BotRange == okshotgun.qc:6; OkRpc.cs:241 BotAimShotSpeed => Cvars.Speed == okrpc.qc:146 speed arg", result: pass }
+      - { kind: code-read, ref: "seams are live virtuals on Weapon (GameplayBases.cs:145/166/180) consumed by the bot brain; other ported weapons (Arc/Crylink/Mortar/etc.) use the same overrides", result: pass }
+    confidence: high
+    notes: "FIX (2026-06-27 drift audit, Wave-13 commit 5427e74): previously logic/values=missing, liveness=na (NO OK weapon overrode the bot seam). Now 4/5 OK weapons override matching QC wr_aim, and oknex's generic fallback matches QC at stock. Bot-only; humans unaffected."
+
+  - id: overkill-weapons.oknex.zoom
+    name: "OK Nex sniper zoom (wr_zoom / wr_zoomdir)"
+    layer: [presentation, authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/oknex.qc:307-310 (SVQC wr_zoom)"
+      - "common/mutators/mutator/overkill/oknex.qc:330-341 (CSQC wr_zoom + wr_zoomdir)"
+    port_refs: []
+    constants:
+      - { name: "secondary (zoom-on-ATCK2 gate)", base: "2 (blaster) -> ATCK2 does NOT zoom at stock", port: "n/a", match: true }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "oknex wr_zoom/wr_zoomdir not ported as an OK-Nex-specific override. At stock balance (secondary==2 = blaster), the QC gate `!WEP_CVAR(secondary)` is false, so ATCK2 does NOT trigger zoom — the OK Nex only zooms via the dedicated zoom button (button_zoom/zoomscript), i.e. the generic per-weapon zoom path. So at stock balance the observable behavior is the generic zoom button only; no OK-Nex-specific divergence is visible."
+      - "If a server sets g_balance_oknex_secondary 0, QC would zoom on ATCK2 (and forgo the blaster secondary) — that non-default branch is unmodeled."
+    verification:
+      - { kind: code-read, ref: "Base oknex.qc:307-341; no wr_zoom/WrZoom override in OkNex.cs. Stock secondary=2 (bal-wep-xonotic.cfg:857) means ATCK2-zoom is OFF by default.", result: pass }
+    confidence: medium
+    notes: "NEW row (2026-06-27 drift audit) — previously unmapped. At stock balance the OK Nex zoom is effectively the generic zoom-button behavior (likely covered by the shared client zoom path); the OK-Nex-specific ATCK2-zoom branch is dormant (secondary==2). Listed for registry completeness; severity low at stock balance."
+
+  - id: overkill-weapons.mode.weapons_activation
+    name: "Standalone ok_weapons activation via g_overkill_weapons (independent of g_overkill)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/overkill/sv_weapons.qc:3 REGISTER_MUTATOR(ok_weapons, expr_evaluate(autocvar_g_overkill_weapons) || MUTATOR_IS_ENABLED(ok))"
+    port_refs: []
+    constants:
+      - { name: "g_overkill_weapons", base: "string cvar; unblocks the 5 OK weapons standalone", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base has a SECOND activation path: the ok_weapons mutator un-blocks (clears WEP_FLAG_MUTATORBLOCKED on) the five OK weapons whenever g_overkill_weapons evaluates true, EVEN WITHOUT full Overkill mode (g_overkill). This lets a server add the OK weapons to an otherwise-normal game. The port couples OK-weapon availability to OverkillMutator (g_overkill) only (OverkillMutator.IsEnabled = g_overkill!=0); there is no g_overkill_weapons reader anywhere in src/."
+    verification:
+      - { kind: code-read, ref: "grep g_overkill_weapons in src/ returns nothing; Base sv_weapons.qc:1-22 REGISTER_MUTATOR(ok_weapons,...) ONADD/ONREMOVE toggles MUTATORBLOCKED", result: pass }
+    confidence: high
+    notes: "NEW row (2026-06-27 drift audit) — previously the mode.enablement row only covered the g_overkill path. Niche server-config feature (a string cvar listing OK weapons to allow standalone); not on any shipped gametype path. Severity low."

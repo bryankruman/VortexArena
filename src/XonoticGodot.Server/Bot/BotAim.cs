@@ -20,20 +20,41 @@ namespace XonoticGodot.Server.Bot;
 /// </summary>
 public sealed class BotAim
 {
-    // ---- tuning constants (QC autocvar_bot_ai_aimskill_*, defaults from xonotic-server.cfg) ----
-    private const float OffsetCvar = 1.8f;      // bot_ai_aimskill_offset — magnitude of injected aim error
-    private const float ThinkCvar = 1f;         // bot_ai_aimskill_think — aiming velocity (<1 = slower)
-    private const float MouseCvar = 1f;         // bot_ai_aimskill_mouse — how much of the filters apply
-    private const float FixedRate = 15f;        // bot_ai_aimskill_fixedrate — distance-scaled turn rate
-    private const float BlendRate = 2f;         // bot_ai_aimskill_blendrate — floor turn rate
+    // ---- tuning defaults (QC autocvar_bot_ai_aimskill_*, defaults from xonotic-server.cfg) ----
+    // These are the FALLBACKS only; the live values are read each AimAt frame from the
+    // bot_ai_aimskill_* cvars (QC reads autocvar_* every frame), so server-side aim retuning
+    // via those cvars takes effect. Defaults below match stock xonotic-server.cfg.
+    private const float OffsetDefault = 1.8f;      // bot_ai_aimskill_offset — magnitude of injected aim error
+    private const float ThinkDefault = 1f;         // bot_ai_aimskill_think — aiming velocity (<1 = slower)
+    private const float MouseDefault = 1f;         // bot_ai_aimskill_mouse — how much of the filters apply
+    private const float FixedRateDefault = 15f;    // bot_ai_aimskill_fixedrate — distance-scaled turn rate
+    private const float BlendRateDefault = 2f;     // bot_ai_aimskill_blendrate — floor turn rate
+    private const float Mix1Default = 0.01f, Mix2Default = 0.075f, Mix3Default = 0.01f, Mix4Default = 0.0375f, Mix5Default = 0.01f;
+    private const float Filt1Default = 0.2f, Filt2Default = 0.2f, Filt3Default = 0.1f, Filt4Default = 0.2f, Filt5Default = 0.25f;
 
-    /// <summary>QC bot_ai_aimskill_firetolerance: gate fire on the deviation cone (vs a flat 0.2s timer).</summary>
+    /// <summary>
+    /// QC bot_ai_aimskill_firetolerance: gate fire on the deviation cone (vs a flat 0.2s timer).
+    /// Live value is read from the bot_ai_aimskill_firetolerance cvar each frame (default on = true);
+    /// set this field to force a value when running headless without the cvar service.
+    /// </summary>
     public bool FireTolerance = true;
-    private const float Mix1 = 0.01f, Mix2 = 0.075f, Mix3 = 0.01f, Mix4 = 0.0375f, Mix5 = 0.01f;
-    private const float Filt1 = 0.2f, Filt2 = 0.2f, Filt3 = 0.1f, Filt4 = 0.2f, Filt5 = 0.25f;
 
     /// <summary>QC SUPERBOT (skill &gt; 100): perfect, instant, error-free aim.</summary>
     public const float SuperbotSkill = 100f;
+
+    /// <summary>
+    /// QC <c>.bot_aggresskill</c> (server/bot/default/bot.qc:282): the per-bot aggression modifier the brain
+    /// stamps each think. Added to <c>skill</c> in the fire decision (aim.qc:325-328) so an aggressive bot fires
+    /// more eagerly at long range and recovers faster between shots. Default 0 (stock READSKILL reward 0).
+    /// </summary>
+    public float AggresSkill;
+
+    /// <summary>
+    /// QC <c>.bot_aimskill</c> (server/bot/default/bot.qc:285): the per-bot aiming modifier the brain stamps
+    /// each think. Added to <c>skill</c> in the max-fire-deviation formula (aim.qc:372) so a higher-aim bot
+    /// requires a tighter aim before shooting. Default 0 (stock READSKILL reward 0).
+    /// </summary>
+    public float AimSkill;
 
     /// <summary>
     /// Current view angles in degrees (pitch X, yaw Y, roll Z) — QC <c>.v_angle</c>. The brain copies this
@@ -156,6 +177,24 @@ public sealed class BotAim
 
         if (dir == Vector3.Zero) return; // invalid (bot overlaps target)
 
+        // Live aim-skill tuning (QC reads autocvar_bot_ai_aimskill_* every frame). Falls back to the
+        // stock defaults when the cvar service is absent (headless tests), so behaviour is unchanged.
+        float offsetCvar = Cvars.FloatOr("bot_ai_aimskill_offset", OffsetDefault);
+        float thinkCvar = Cvars.FloatOr("bot_ai_aimskill_think", ThinkDefault);
+        float mouseCvar = Cvars.FloatOr("bot_ai_aimskill_mouse", MouseDefault);
+        float fixedRate = Cvars.FloatOr("bot_ai_aimskill_fixedrate", FixedRateDefault);
+        float blendRate = Cvars.FloatOr("bot_ai_aimskill_blendrate", BlendRateDefault);
+        float mix1 = Cvars.FloatOr("bot_ai_aimskill_order_mix_1st", Mix1Default);
+        float mix2 = Cvars.FloatOr("bot_ai_aimskill_order_mix_2nd", Mix2Default);
+        float mix3 = Cvars.FloatOr("bot_ai_aimskill_order_mix_3th", Mix3Default);
+        float mix4 = Cvars.FloatOr("bot_ai_aimskill_order_mix_4th", Mix4Default);
+        float mix5 = Cvars.FloatOr("bot_ai_aimskill_order_mix_5th", Mix5Default);
+        float filt1 = Cvars.FloatOr("bot_ai_aimskill_order_filter_1st", Filt1Default);
+        float filt2 = Cvars.FloatOr("bot_ai_aimskill_order_filter_2nd", Filt2Default);
+        float filt3 = Cvars.FloatOr("bot_ai_aimskill_order_filter_3th", Filt3Default);
+        float filt4 = Cvars.FloatOr("bot_ai_aimskill_order_filter_4th", Filt4Default);
+        float filt5 = Cvars.FloatOr("bot_ai_aimskill_order_filter_5th", Filt5Default);
+
         // walking (no enemy) gets a gentler minimum skill so turns look natural
         float effSkill = hasEnemy ? skill : MathF.Max(4f, skill);
 
@@ -164,7 +203,7 @@ public sealed class BotAim
         {
             _badAimTime = MathF.Max(_badAimTime + 0.2f + 0.3f * Random01(), now);
             float f = QMath.Clamp(1f - 0.1f * effSkill, 0f, 1f);
-            _badAimOffset = RandomVec() * f * OffsetCvar;
+            _badAimOffset = RandomVec() * f * offsetCvar;
             _badAimOffset.X *= 0.7f; // less vertical error
         }
         float enemyFactor = hasEnemy ? 5f : 2f;
@@ -180,14 +219,14 @@ public sealed class BotAim
 
         float deltaT = MathF.Max(1e-4f, now - _prevAimTime);
         _prevAimTime = now;
-        _f1 += (diffang * (1f / deltaT) - _f1) * QMath.Clamp(Filt1, 0f, 1f);
-        _f2 += (_f1 - _f2) * QMath.Clamp(Filt2, 0f, 1f);
-        _f3 += (_f2 - _f3) * QMath.Clamp(Filt3, 0f, 1f);
-        _f4 += (_f3 - _f4) * QMath.Clamp(Filt4, 0f, 1f);
-        _f5 += (_f4 - _f5) * QMath.Clamp(Filt5, 0f, 1f);
+        _f1 += (diffang * (1f / deltaT) - _f1) * QMath.Clamp(filt1, 0f, 1f);
+        _f2 += (_f1 - _f2) * QMath.Clamp(filt2, 0f, 1f);
+        _f3 += (_f2 - _f3) * QMath.Clamp(filt3, 0f, 1f);
+        _f4 += (_f3 - _f4) * QMath.Clamp(filt4, 0f, 1f);
+        _f5 += (_f4 - _f5) * QMath.Clamp(filt5, 0f, 1f);
 
         float blend = QMath.Clamp(effSkill, 0f, 10f) * 0.1f;
-        desiredang += blend * (_f1 * Mix1 + _f2 * Mix2 + _f3 * Mix3 + _f4 * Mix4 + _f5 * Mix5);
+        desiredang += blend * (_f1 * mix1 + _f2 * mix2 + _f3 * mix3 + _f4 * mix4 + _f5 * mix5);
         desiredang.X = QMath.Clamp(desiredang.X, -90f, 90f);
 
         // mouse-think: jitter the intermediate aim target on a slower clock
@@ -199,16 +238,16 @@ public sealed class BotAim
         }
 
         diffang = WrapPitchYaw(_mouseaim - desiredang);
-        desiredang += diffang * QMath.Clamp(ThinkCvar, 0f, 1f);
+        desiredang += diffang * QMath.Clamp(thinkCvar, 0f, 1f);
 
         // final turn toward desiredang, rate-limited by skill
         diffang = WrapPitchYaw(desiredang - ViewAngles);
         float dist = diffang.Length();
 
-        float fixedrate = FixedRate / QMath.Bound(1f, dist, 1000f);
-        float r = MathF.Max(fixedrate, BlendRate);
+        float fixedrate = fixedRate / QMath.Bound(1f, dist, 1000f);
+        float r = MathF.Max(fixedrate, blendRate);
         r = QMath.Bound(deltaT, r * deltaT * (2f + MathF.Pow(effSkill, 3f) * 0.005f - Random01()), 1f);
-        ViewAngles += diffang * (r + (1f - r) * QMath.Clamp(1f - MouseCvar, 0f, 1f));
+        ViewAngles += diffang * (r + (1f - r) * QMath.Clamp(1f - mouseCvar, 0f, 1f));
         ViewAngles.Z = 0f;
         ViewAngles.Y -= MathF.Floor(ViewAngles.Y / 360f) * 360f;
 
@@ -217,7 +256,12 @@ public sealed class BotAim
 
         UpdateShotVectors(origin);
 
-        if (!FireTolerance)
+        // QC: !autocvar_bot_ai_aimskill_firetolerance → flat 0.2s fire timer (no deviation cone).
+        // Read the live cvar (default 1/on); fall back to the FireTolerance field when headless.
+        bool fireTolerance = Api.Services is not null
+            ? Cvars.Bool("bot_ai_aimskill_firetolerance")
+            : FireTolerance;
+        if (!fireTolerance)
         {
             _fireTimer = now + 0.2f;
             return;
@@ -227,17 +271,19 @@ public sealed class BotAim
         var deviation = WrapPitchYaw(QMath.VecToAngles(dir) - QMath.VecToAngles(ShotDir));
         if (MathF.Abs(deviation.X) < maxFireDeviation && MathF.Abs(deviation.Y) < maxFireDeviation)
         {
-            // QC bot_aim fire gate, including the aggression term: always fire when the impact point is near
-            // (close-range fast path, the range scaling with skill), otherwise the long-range fire chance
-            // rises with skill — a low-skill bot hesitates at distance (the Random01*Random01 vs skill term
-            // is the C# essence of QC's bot_aggresskill / random fire-delay at long range).
+            // QC bot_aim fire gate (aim.qc:325-328), including the aggression term: always fire when the impact
+            // point is near (close-range fast path, the range band scaling with skill+aggresskill), otherwise
+            // the long-range fire chance rises with skill+aggresskill — a low-skill/timid bot hesitates at
+            // distance (the Random01*Random01 vs the bound term is QC's random fire-delay at long range). The
+            // fire-timer cooldown also shortens with skill+aggresskill.
+            float aggr = skill + AggresSkill; // QC (skill + this.bot_aggresskill)
             var tr = Api.Trace.Trace(ShotOrigin, Vector3.Zero, Vector3.Zero,
                 ShotOrigin + ShotDir * 1000f, MoveFilter.Normal, null);
             float hitDist = (tr.EndPos - ShotOrigin).Length();
-            if (hitDist < 500f + 500f * QMath.Bound(0f, skill, 10f)
-                || Random01() * Random01() > QMath.Bound(0f, skill * 0.05f, 1f))
+            if (hitDist < 500f + 500f * QMath.Bound(0f, aggr, 10f)
+                || Random01() * Random01() > QMath.Bound(0f, aggr * 0.05f, 1f))
             {
-                _fireTimer = now + QMath.Bound(0.1f, 0.5f - skill * 0.05f, 0.5f);
+                _fireTimer = now + QMath.Bound(0.1f, 0.5f - aggr * 0.05f, 0.5f);
             }
         }
     }
@@ -251,7 +297,9 @@ public sealed class BotAim
         float dist = MathF.Max(10f, (leadPoint - ShotOrigin).Length());
         float dev = 1000f / (dist - 9f) - 0.35f;
         float f = accurate ? 1f : 1.6f;
-        f += QMath.Bound(0f, (10f - skill) * 0.3f, 3f);
+        // QC aim.qc:372: f += bound(0, (10 - (skill + this.bot_aimskill)) * 0.3, 3) — a higher aim skill
+        // narrows the fire cone (tighter aim required before the bot will shoot).
+        f += QMath.Bound(0f, (10f - (skill + AimSkill)) * 0.3f, 3f);
         return MathF.Min(90f, dev * f);
     }
 

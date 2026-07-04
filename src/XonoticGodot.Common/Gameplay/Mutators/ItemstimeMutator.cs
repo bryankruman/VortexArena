@@ -23,9 +23,22 @@ namespace XonoticGodot.Common.Gameplay;
 /// Ported faithfully: the timed-item set (Item_ItemsTime_Allow: powerups + mega/big health+armor + the
 /// superweapons aggregate), the absolute-respawn-time table, and the NEGATIVE "available now" encoding from
 /// <c>Item_ItemsTime_UpdateTime</c> (when one copy of an item is already up, the time is sent as <c>-t</c> so
-/// the panel shows "ready" while another copy is still on cooldown). The per-player visibility tiers
-/// (sv_itemstime 1 vs 2: spectators-only vs also-alive-players) reduce to the client panel's own
-/// <c>hud_panel_itemstime</c> gate in this single-view port — documented as a simplification.
+/// the panel shows "ready" while another copy is still on cooldown).
+///
+/// KNOWN CROSS-FILE GAPS (not closable in this server-backend file — tracked in
+/// planning/parity/registry/mutator-itemstime.yaml):
+/// <list type="bullet">
+/// <item>The per-player visibility TIERS (QC Item_ItemsTime_SetTimesForAllPlayers: sv_itemstime 1 = spectators
+///   /warmup only, 2 = also alive players) require per-client networked itemstime state + the
+///   MakePlayerObserver/PlayerSpawn/ClientConnect/reset_map_global sync hooks, none of which exist in the
+///   single-view port. The producer here (the it_times table) is identical regardless of tier; the tier is a
+///   pure send-gate, so the table is computed unconditionally and the gate is a presentation/net concern.</item>
+/// <item>There is no <c>itemstime</c> CSQC net message (IT_Write / NET_HANDLE) nor a <c>STAT(ITEMSTIME)</c>
+///   client stat; the host feeds <see cref="CurrentTimes"/> straight into <c>ItemsTimePanel</c> on the listen
+///   server, so a pure remote client receives nothing. The panel's spectator/warmup/STAT(ITEMSTIME) enable
+///   gate and the spectator respawn waypoint sprites are likewise unported. All of these live in the Net /
+///   HUD / waypoints subsystems, not in this mutator.</item>
+/// </list>
 /// </summary>
 [Mutator]
 public sealed class ItemstimeMutator : MutatorBase
@@ -36,6 +49,14 @@ public sealed class ItemstimeMutator : MutatorBase
     // IsEnabled on the cvar is equivalent (the only behavior is publishing the times, which sv_itemstime gates).
     public override bool IsEnabled =>
         Api.Services is not null && Api.Cvars.GetFloat("sv_itemstime") != 0f;
+
+    /// <summary>
+    /// The live <c>sv_itemstime</c> tier (QC <c>STAT(ITEMSTIME)</c> = <c>autocvar_sv_itemstime</c>; stats.qh:138):
+    /// 0 = off, 1 = spectators/warmup only, 2 = also alive players. The client HUD enable gate
+    /// (<see cref="XonoticGodot.Game.Hud.ItemsTimePanel.ShouldDraw"/>) reads this — modeled here on the host since
+    /// there is no networked STAT(ITEMSTIME) (the single-listen-server feed).
+    /// </summary>
+    public int Tier => Api.Services is null ? 0 : (int)Api.Cvars.GetFloat("sv_itemstime");
 
     /// <summary>
     /// The published respawn-time table (QC it_times), keyed by the HUD panel's item names
@@ -85,6 +106,17 @@ public sealed class ItemstimeMutator : MutatorBase
         ["item_shield"]      = "shield",
         ["item_invincible"]  = "shield",       // alias
     };
+
+    /// <summary>
+    /// QC <c>Item_ItemsTime_SpectatorOnly</c> (itemstime.qc:58): the subset of timed items that get a
+    /// SPECTATOR-only respawn-countdown waypoint sprite — Mega/Big Health and Mega/Big Armor. (SVQC compiles
+    /// <c>hud_panel_itemstime_hidebig=false</c>, so Big items are always included.) Powerups + superweapons are
+    /// in the Allow set but are NOT SpectatorOnly. Classified by world-item classname, matching the
+    /// <see cref="TimedItemClasses"/> producer keys.
+    /// </summary>
+    public static bool IsSpectatorOnlyItem(string className) =>
+        TimedItemClasses.TryGetValue(className, out string? key)
+        && (key == "health_mega" || key == "health_big" || key == "armor_mega" || key == "armor_big");
 
     // Recompute scratch state, persistent across ticks: this runs EVERY server frame (OnStartFrame), so a
     // fresh accumulator dictionary + a capturing local function + per-superweapon "weapon_"+name concats +

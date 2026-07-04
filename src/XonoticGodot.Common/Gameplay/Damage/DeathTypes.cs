@@ -104,6 +104,15 @@ public static class DeathTypes
     /// <summary>QC DEATH_GENERIC — unattributed damage.</summary>
     public const string Generic = "generic";
 
+    /// <summary>QC DEATH_CHEAT (deathtypes/all.inc:5) — the r00t cheat's radius nuke (server/cheats.qc CHIMPULSE_R00T).
+    /// Registered with DEATH_SELF_CHEAT / DEATH_MURDER_CHEAT and an empty .message (a plain murder, no special
+    /// category); the obituary uses the generic cheat murder line.</summary>
+    public const string Cheat = "cheat";
+
+    /// <summary>QC DEATH_CAMP — campcheck mutator anti-camp damage. Self-only (no murder line); the obituary
+    /// is the camp-specific DEATH_SELF_CAMP ("thought they found a nice camping ground" / "Die camper!").</summary>
+    public const string Camp = "camp";
+
     /// <summary>QC DEATH_MIRRORDAMAGE — teamdamage reflected back at the attacker.</summary>
     public const string MirrorDamage = "mirrordamage";
 
@@ -118,6 +127,38 @@ public static class DeathTypes
 
     /// <summary>QC DEATH_BUFF_VENGEANCE — vengeance-buff reflected damage (excluded from hit-sound credit).</summary>
     public const string BuffVengeance = "buff_vengeance";
+
+    /// <summary>QC DEATH_TOUCHEXPLODE — the touch-explode mutator blast ("died in an accident"). Registered with
+    /// DEATH_SELF_TOUCHEXPLODE / DEATH_MURDER_TOUCHEXPLODE and empty .message (all.inc:35). Also used by the
+    /// nade spawn/translocate booms (NadeSpawnBoom / NadeTranslocateBoom) which tag their blast the same way.</summary>
+    public const string TouchExplode = "touchexplode";
+
+    // --- nade-family deaths (QC DEATH_NADE*; all.inc:23-27). The live nade booms emit these via
+    // Combat.Damage when g_nades is enabled; mirrored here (== NadeDeathTypes.*) so DeathMessages can map them
+    // without depending on the Nades subsystem. Each registers BOTH a self and a murder notification line.
+    /// <summary>QC DEATH_NADE — a normal nade explosion / held-nade throw.</summary>
+    public const string Nade = "nade";
+    /// <summary>QC DEATH_NADE_NAPALM — napalm-nade fire damage.</summary>
+    public const string NadeNapalm = "nade_napalm";
+    /// <summary>QC DEATH_NADE_ICE — ice-nade explode / ice-field damage.</summary>
+    public const string NadeIce = "nade_ice";
+    /// <summary>QC DEATH_NADE_HEAL — heal-nade harm-to-foe damage.</summary>
+    public const string NadeHeal = "nade_heal";
+    /// <summary>QC DEATH_NADE_DARKNESS — darkness-nade explode.</summary>
+    public const string NadeDarkness = "nade_darkness";
+
+    /// <summary>QC DEATH_ROT (all.inc:29) — the regen/rot "health rotted away" tick death. Self-only
+    /// (DEATH_SELF_ROT; NULL murder line → generic frag fallback).</summary>
+    public const string Rot = "rot";
+
+    /// <summary>QC DEATH_SHOOTING_STAR (all.inc:30) — the "shooting star" launch death (e.g. a jumppad/launch
+    /// mutator). Registered with DEATH_SELF_SHOOTING_STAR / DEATH_MURDER_SHOOTING_STAR.</summary>
+    public const string ShootingStar = "shooting_star";
+
+    /// <summary>QC DEATH_CUSTOM (all.inc:6) — a mapper-supplied custom death message (server/damage.qc ACCIDENT
+    /// branch formats <c>deathmessage</c> into DEATH_SELF_CUSTOM, "You were %s"). Self-only (NULL murder).
+    /// The inflictor/trigger carries the mapper string; see Scores.EmitObituary's CUSTOM handling.</summary>
+    public const string Custom = "custom";
 
     /// <summary>Prefix marking a deathtype string that names a weapon (vs. a special death).</summary>
     public const string WeaponPrefix = "weapon/";
@@ -214,6 +255,18 @@ public static class DeathTypes
         return b == Fire || b == BuffInferno || b == BuffVengeance;
     }
 
+    /// <summary>
+    /// QC <c>ITEM_DAMAGE_NEEDKILL(dt)</c> (server/items/items.qh:123): the environmental-kill deathtypes a
+    /// dropped objective (CTF flag / Keepaway ball / KeyHunt key) must respawn on — DEATH_HURTTRIGGER
+    /// (= the port's <see cref="Void"/>), DEATH_SLIME, DEATH_LAVA, DEATH_SWAMP. Used by ka_DamageEvent to
+    /// teleport a ball out of a hurt/lava/slime/swamp volume it fell into.
+    /// </summary>
+    public static bool ItemDamageNeedKill(string? deathType)
+    {
+        string b = BaseOf(deathType);
+        return b == Void || b == Slime || b == Lava || b == Swamp;
+    }
+
     /// <summary>QC: DEATH_KILL / DEATH_TEAMCHANGE / DEATH_AUTOTEAMCHANGE — the unconditionally-lethal deaths.</summary>
     public static bool IsAlwaysLethal(string? deathType)
     {
@@ -227,6 +280,10 @@ public static class DeathTypes
         string b = BaseOf(deathType);
         return b == TeamChange || b == AutoTeamChange;
     }
+
+    /// <summary>QC: DEATH_AUTOTEAMCHANGE only — the auto-balance team move (server/damage.qc:304 special-cases it:
+    /// the suicide frag is NOT negated when the player was auto-switched, unlike a manual DEATH_TEAMCHANGE).</summary>
+    public static bool IsAutoTeamChange(string? deathType) => BaseOf(deathType) == AutoTeamChange;
 
     // ============================================================================================
     //  Special deathtype registry + .message category (QC deathtypes/all.qh DEATH_ISMONSTER/
@@ -338,6 +395,10 @@ public static class DeathTypes
         // rather than guessing from the tag.
         void Reg(string name, DeathCategory cat, string? self, string? murder)
             => d[name] = new DeathTypeDef(name, cat, self, murder);
+
+        // QC all.inc: special deaths that register both self and murder notification (or one of them).
+        // camp (all.inc:4): DEATH_SELF_CAMP self-only (NULL murder -> FRAG below), the campcheck anti-camping mutator.
+        Reg(Camp, DeathCategory.None, "DEATH_SELF_CAMP", null);
 
         // QC all.inc monster rows (message == "monster"): each monster has its OWN DEATH_SELF_MON_* self line;
         // ALL monsters share DEATH_MURDER_MONSTER for the murder line.

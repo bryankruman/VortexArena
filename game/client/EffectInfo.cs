@@ -263,9 +263,24 @@ public sealed class EffectInfo
                 info.StainAlphaMax = F(argv, 2);
                 break;
 
+            // `stainless` DISABLES the stain (DP cl_particles.c:468): it stamps staintex[0]=staintex[1]=-2 and
+            // resets staincolor/stainalpha/stainsize back to the baseline, so a block can suppress a stain. The -2
+            // sentinel (like -1) reads as "no stain" everywhere downstream (HasStain stays false; the faithful sim
+            // gates on staintex>=0), the difference from -1 being intent: -2 = explicitly stainless, -1 = none
+            // declared. 0 occurrences in the shipped effectinfo.txt today, but we mirror DP so the keyword is faithful.
+            case "stainless":
+                info.StainTex0 = -2;
+                info.StainTex1 = -2;
+                info.StainColor0 = 0xFFFFFFFF;
+                info.StainColor1 = 0xFFFFFFFF;
+                info.StainAlphaMin = 1f;
+                info.StainAlphaMax = 1f;
+                info.StainSizeMin = 2f;
+                info.StainSizeMax = 2f;
+                break;
+
             // Recognised-but-unmodelled keywords (coronas, cubemaps, shadows, nearest): accepted so they don't
             // trip the "unknown command" path, but they have no visual analogue in the Godot port.
-            case "stainless":
             case "lightshadow":
             case "lightcubemapnum":
             case "lightcorona":

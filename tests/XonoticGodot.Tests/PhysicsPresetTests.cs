@@ -1,3 +1,4 @@
+using System;
 using XonoticGodot.Common.Services;
 using XonoticGodot.Common.Physics;
 using XonoticGodot.Engine.Simulation;
@@ -253,6 +254,169 @@ public class PhysicsPresetTests
         Assert.Equal(1f, bryan.StepUpSpeedScale); // scale stays global (1), only the cap is preset-driven
         MovementParameters cpma = MovementParameters.FromValues(MoveVarsBlock.CaptureResolved(c, "cpma", globals, c.Has));
         Assert.Equal(-1f, cpma.StepUpSpeedMax);
+    }
+
+    /// <summary>The full set of warsowbunny + air rows the <c>warsow</c> preset block defines (physics.cfg) — the
+    /// ONLY stock preset whose <c>warsowbunny_turnaccel</c> is non-zero (9), which is what selects the
+    /// <c>PM_AirAccelerate</c> branch (player.qc:360). Seeded onto a clientselect store so a warsow resolution
+    /// drives the genuine Warsow-bunny path, not the QW path.</summary>
+    private static CvarService NewWarsowStore()
+    {
+        var c = new CvarService();
+        c.Set("g_physics_clientselect", "1");
+        c.Set("g_physics_clientselect_options", "xonotic warsow");
+        c.Set("g_physics_warsow_maxspeed", "320");
+        c.Set("g_physics_warsow_maxairspeed", "320");
+        c.Set("g_physics_warsow_warsowbunny_turnaccel", "9");        // != 0 → selects PM_AirAccelerate
+        c.Set("g_physics_warsow_warsowbunny_airforwardaccel", "1.00001");
+        c.Set("g_physics_warsow_warsowbunny_topspeed", "925");
+        c.Set("g_physics_warsow_warsowbunny_accel", "0.1593");
+        c.Set("g_physics_warsow_warsowbunny_backtosideratio", "0.8");
+        c.Set("g_physics_warsow_airaccelerate", "1");
+        c.Set("sv_maxspeed", "360");
+        return c;
+    }
+
+    /// <summary>
+    /// LIVENESS: the Warsow-bunny air-accel (PM_AirAccelerate, player.qc:343-375) is dead at the stock Xonotic
+    /// preset (warsowbunny_turnaccel 0) and only goes live when a non-default preset sets turnaccel != 0. Drive
+    /// the FULL live path — a <c>warsow</c>-resolved <see cref="MovementParameters"/> parked on
+    /// <see cref="MovementParameters.PredictionOverride"/> (the predicted leg of <c>Resolve</c>) through
+    /// <see cref="PlayerPhysics.Move"/> for an airborne strafing tick — and assert the Warsow-bunny branch
+    /// actually ran by matching a hand-computed PM_AirAccelerate step (a value the stock QW air-accel cannot
+    /// produce). Proves the AirBranch dispatch (PlayerPhysics.cs:563) reaches PMAccelerate.AirAccelerate.
+    /// </summary>
+    [Fact]
+    public void WarsowPreset_DrivesPM_AirAccelerate_ThroughTheLiveMove()
+    {
+        CvarService store = NewWarsowStore();
+        MovementParameters warsow =
+            MovementParameters.FromValues(MoveVarsBlock.CaptureResolved(store, "warsow", MoveVarsBlock.Capture(store), store.Has));
+        Assert.Equal(9f, warsow.WarsowBunnyTurnAccel); // sanity: the resolved block selects the Warsow path
+
+        // Isolate the AirAccelerate leg: the warsow preset sets aircontrol 0 (no CPM redirect after the bunny
+        // accel), so zero it here. (FromValues decodes aircontrol via the magnitude-fallback helper, which turns a
+        // genuine 0 into the 100 default — a separate air-strafe-blends concern; pinning it here keeps THIS test
+        // about the warsowbunny dispatch, with velocity.x unperturbed by a trailing Aircontrol pass.)
+        warsow.AirControl = 0f;
+
+        // No collision world needed: a strafing tick high in the air clears its full step.
+        var world = new AnalyticWorld();
+        var clock = new MutableClock();
+        IEngineServices? saved = Api.Services;
+        XonoticGodot.Common.Gameplay.MutatorHooks.PlayerJump.Clear();
+        XonoticGodot.Common.Gameplay.MutatorHooks.PlayerCanCrouch.Clear();
+        XonoticGodot.Common.Gameplay.MutatorHooks.PlayerPhysics.Clear();
+        try
+        {
+            Api.Services = new MovementTestServices(world, clock);
+            MovementParameters.PredictionOverride = warsow; // predicted leg reads this instead of the cvars
+
+            // Airborne, moving forward-only (move.y == 0, move.x != 0 — the AirBranch warsow guard), facing +X.
+            var player = new XonoticGodot.Common.Framework.Entity
+            {
+                Origin = new System.Numerics.Vector3(0f, 0f, 1024f),
+                Velocity = new System.Numerics.Vector3(400f, 0f, 0f),
+                Angles = System.Numerics.Vector3.Zero,
+                Mins = new System.Numerics.Vector3(-16f, -16f, -24f),
+                Maxs = new System.Numerics.Vector3(16f, 16f, 45f),
+                Gravity = 1f,
+            };
+            System.Numerics.Vector3 velBefore = player.Velocity;
+
+            const float dt = 1f / 60f;
+            var input = new MovementInput
+            {
+                ViewAngles = System.Numerics.Vector3.Zero,
+                MoveValues = new System.Numerics.Vector3(warsow.MaxSpeed, 0f, 0f), // forward = maxspeed, side = 0
+                FrameTime = dt,
+                Predicted = true,
+            };
+            new PlayerPhysics().Move(player, input);
+
+            // Recompute PM_AirAccelerate (player.qc:343-375) for the same inputs: wishdir = +X, wishspeed clamps
+            // to maxairspeed (320). curspeed 400 > wishspeed → the "below 1.01×curspeed" branch.
+            System.Numerics.Vector3 wishdir = new(1f, 0f, 0f);
+            float wishspeed = warsow.MaxAirSpeed; // wishspeed bound to maxairspeed before the branch (AirBranch)
+            float curspeed = 400f;
+            float f = MathF.Max(0f, (warsow.WarsowBunnyTopSpeed - curspeed) / (warsow.WarsowBunnyTopSpeed - warsow.MaxSpeed));
+            float ws = MathF.Max(curspeed, warsow.MaxSpeed) + warsow.WarsowBunnyAccel * f * warsow.MaxSpeed * dt;
+            System.Numerics.Vector3 acceldir = System.Numerics.Vector3.Normalize(wishdir * ws - new System.Numerics.Vector3(curspeed, 0f, 0f));
+            float addspeed = (wishdir * ws - new System.Numerics.Vector3(curspeed, 0f, 0f)).Length();
+            float accelspeed = MathF.Min(addspeed, warsow.WarsowBunnyTurnAccel * warsow.MaxSpeed * dt);
+            float expectedVx = curspeed + accelspeed * acceldir.X; // pure +X here (backtoside branch is collinear)
+
+            // The Warsow path nudges velocity.x forward toward warsow topspeed; assert the live Move reproduced it.
+            Assert.True(player.Velocity.X > velBefore.X,
+                $"Warsow-bunny accel should push velocity.x up; before {velBefore.X}, after {player.Velocity.X}");
+            Assert.Equal(expectedVx, player.Velocity.X, 2); // 2-dp: the live Move folds the identical AirAccelerate step
+        }
+        finally
+        {
+            MovementParameters.PredictionOverride = null;
+            XonoticGodot.Common.Gameplay.MutatorHooks.PlayerJump.Clear();
+            XonoticGodot.Common.Gameplay.MutatorHooks.PlayerCanCrouch.Clear();
+            XonoticGodot.Common.Gameplay.MutatorHooks.PlayerPhysics.Clear();
+            Api.Services = saved!;
+        }
+    }
+
+    /// <summary>
+    /// Pins <see cref="PMAccelerate.AirAccelerate"/> byte-for-byte against the Base <c>PM_AirAccelerate</c>
+    /// formula (player.qc:343-375), independent of the Move harness — both the "accelerate toward topspeed"
+    /// branch and the back-to-side redirect. Guards the warsowbunny math itself, the leaf the live path calls.
+    /// </summary>
+    [Fact]
+    public void AirAccelerate_MatchesBaseFormula_BothBranches()
+    {
+        MovementParameters mp = MovementParameters.Defaults;
+        mp.MaxSpeed = 320f; mp.MaxAirSpeed = 320f;
+        mp.WarsowBunnyTurnAccel = 9f; mp.WarsowBunnyAccel = 0.1593f;
+        mp.WarsowBunnyTopSpeed = 925f; mp.WarsowBunnyAirForwardAccel = 1.00001f;
+        mp.WarsowBunnyBackToSideRatio = 0.8f;
+        const float dt = 1f / 60f;
+
+        // CASE A — curspeed (300) below the topspeed ramp, wishdir +X, side velocity present (back-to-side fires).
+        var a = new XonoticGodot.Common.Framework.Entity { Velocity = new System.Numerics.Vector3(300f, 40f, 0f) };
+        System.Numerics.Vector3 expectedA = BaseAirAccel(a.Velocity, new System.Numerics.Vector3(1f, 0f, 0f), 320f, mp, dt);
+        PMAccelerate.AirAccelerate(a, mp, dt, new System.Numerics.Vector3(1f, 0f, 0f), 320f);
+        Assert.Equal(expectedA.X, a.Velocity.X, 3);
+        Assert.Equal(expectedA.Y, a.Velocity.Y, 3);
+
+        // CASE B — wishspeed (200) ABOVE curspeed*1.01 (curspeed 100): the airforwardaccel clamp branch.
+        var b = new XonoticGodot.Common.Framework.Entity { Velocity = new System.Numerics.Vector3(100f, 0f, 0f) };
+        System.Numerics.Vector3 expectedB = BaseAirAccel(b.Velocity, new System.Numerics.Vector3(1f, 0f, 0f), 200f, mp, dt);
+        PMAccelerate.AirAccelerate(b, mp, dt, new System.Numerics.Vector3(1f, 0f, 0f), 200f);
+        Assert.Equal(expectedB.X, b.Velocity.X, 3);
+        Assert.Equal(expectedB.Y, b.Velocity.Y, 3);
+    }
+
+    /// <summary>Independent re-transcription of Base PM_AirAccelerate (player.qc:343-375) for the assertions above.</summary>
+    private static System.Numerics.Vector3 BaseAirAccel(
+        System.Numerics.Vector3 vel, System.Numerics.Vector3 wishdir, float wishspeed, in MovementParameters mp, float dt)
+    {
+        if (wishspeed == 0f) return vel;
+        System.Numerics.Vector3 curvel = vel; curvel.Z = 0f;
+        float curspeed = curvel.Length();
+        if (wishspeed > curspeed * 1.01f)
+            wishspeed = MathF.Min(wishspeed, curspeed + mp.WarsowBunnyAirForwardAccel * mp.MaxSpeed * dt);
+        else
+        {
+            float f = MathF.Max(0f, (mp.WarsowBunnyTopSpeed - curspeed) / (mp.WarsowBunnyTopSpeed - mp.MaxSpeed));
+            wishspeed = MathF.Max(curspeed, mp.MaxSpeed) + mp.WarsowBunnyAccel * f * mp.MaxSpeed * dt;
+        }
+        System.Numerics.Vector3 wishvel = wishdir * wishspeed;
+        System.Numerics.Vector3 acceldir = wishvel - curvel;
+        float addspeed = acceldir.Length();
+        acceldir = acceldir.Length() == 0f ? System.Numerics.Vector3.Zero : System.Numerics.Vector3.Normalize(acceldir);
+        float accelspeed = MathF.Min(addspeed, mp.WarsowBunnyTurnAccel * mp.MaxSpeed * dt);
+        if (mp.WarsowBunnyBackToSideRatio < 1f)
+        {
+            System.Numerics.Vector3 curdir = curvel.Length() == 0f ? System.Numerics.Vector3.Zero : System.Numerics.Vector3.Normalize(curvel);
+            float dot = System.Numerics.Vector3.Dot(acceldir, curdir);
+            if (dot < 0f) acceldir -= (1f - mp.WarsowBunnyBackToSideRatio) * dot * curdir;
+        }
+        return vel + accelspeed * acceldir;
     }
 
     /// <summary>Minimal services whose only live member is a real cvar store — FromCvars touches nothing else.</summary>

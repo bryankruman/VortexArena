@@ -68,12 +68,36 @@ public static class WeaponAccuracyEvents
     public static void ScoreFrameDamageTaken(Entity victim, float realDamage)
         => DamageTakenScored?.Invoke(victim, realDamage);
 
+    /// <summary>
+    /// Port of QC's <c>AccuracyTargetValid</c> mutator-hook return enum (server/mutators/events.qh): a gametype
+    /// can override whether a given attacker→target hit counts toward weapon-accuracy stats. The default (no
+    /// provider) is <see cref="Valid"/>, i.e. the normal "both sides must be clients" rule.
+    /// </summary>
+    public enum AccuracyTarget
+    {
+        /// <summary>MUT_ACCADD_VALID: continue if the target is a client (the default rule).</summary>
+        Valid = 0,
+        /// <summary>MUT_ACCADD_INVALID: always count the hit (used by Invasion so monster hits count).</summary>
+        Invalid = 1,
+        /// <summary>MUT_ACCADD_INDIFFERENT: never count the hit.</summary>
+        Indifferent = 2,
+    }
+
+    /// <summary>
+    /// QC <c>MUTATOR_CALLHOOK(AccuracyTargetValid, attacker, targ)</c>: a gametype-installed classifier consulted
+    /// by <see cref="IsGoodDamage"/>. Null = no hook installed (= MUT_ACCADD_VALID, the default client-vs-client
+    /// rule). Invasion installs one that returns <see cref="AccuracyTarget.Invalid"/> for monster targets so hits
+    /// on monsters DO count toward accuracy (without it, a non-client monster would fail the IS_CLIENT gate).
+    /// </summary>
+    public static System.Func<Entity, Entity, AccuracyTarget>? TargetValidProvider;
+
     /// <summary>Drop every subscriber (test isolation — the bus is process-global).</summary>
     public static void Reset()
     {
         Added = null;
         DamageDealtScored = null;
         DamageTakenScored = null;
+        TargetValidProvider = null;
     }
 
     // =================================================================================================
@@ -92,15 +116,23 @@ public static class WeaponAccuracyEvents
     /// alive, so the simple "not dead" test below is behaviourally identical. Any future credit site that
     /// evaluates AFTER damage must add the death-frame rule first.</para>
     ///
-    /// <para>No AccuracyTargetValid mutator chain exists in the port yet — the default
-    /// (MUT_ACCADD_VALID) path is taken, i.e. fall through to the IS_CLIENT checks.</para>
+    /// <para>The <see cref="TargetValidProvider"/> seam is the port of the AccuracyTargetValid mutator chain:
+    /// a null provider is MUT_ACCADD_VALID (the default IS_CLIENT path); Invasion installs one returning
+    /// MUT_ACCADD_INVALID for monster targets so monster hits count.</para>
     /// </summary>
     public static bool IsGoodDamage(Entity? attacker, Entity? targ)
     {
         if (attacker is null || targ is null) return false;
+
+        // QC accuracy_isgooddamage: int mutator_check = MUTATOR_CALLHOOK(AccuracyTargetValid, attacker, targ);
+        AccuracyTarget mutatorCheck = TargetValidProvider?.Invoke(attacker, targ) ?? AccuracyTarget.Valid;
+
         if (NotificationSystem.WarmupStage || GameScores.GameStopped) return false;
         if (targ.DeadState != DeadFlag.No || targ.IsCorpse) return false; // pre-damage call-site invariant
         if (SameTeam(attacker, targ)) return false;
+
+        if (mutatorCheck == AccuracyTarget.Invalid) return true;          // QC: always count
+        if (mutatorCheck != AccuracyTarget.Valid) return false;           // QC: MUT_ACCADD_INDIFFERENT → never count
         if ((targ.Flags & EntFlags.Client) == 0 || (attacker.Flags & EntFlags.Client) == 0) return false;
         return true;
     }

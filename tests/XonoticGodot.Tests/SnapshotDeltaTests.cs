@@ -16,7 +16,175 @@ public class SnapshotDeltaTests
     private static NetEntityState Player(int id, Vector3 origin, int health) => new()
     {
         EntNum = id, Kind = NetEntityKind.Player, ModelIndex = 7, Origin = origin, Health = health,
+        // [W14a] match the producer + the Empty baseline so the wepent group bit stays clear for a plain player.
+        SwitchWeapon = -1, SwitchingWeapon = -1,
     };
+
+    [Fact]
+    public void EntityCodec_RoundTrips_AnimAction_And_Wepent()
+    {
+        // [W14a] the new upper-body action overlay + exterior-weapon block round-trip through the delta codec.
+        var baseline = Player(10, new Vector3(0, 0, 0), 100);
+        var cur = baseline;
+        cur.UpperAction = 3;            // some SHOOT/PAIN action id
+        cur.AnimActionTime = 12.5f;     // raw float start time (death_time-class divergence)
+        cur.SwitchWeapon = 5;
+        cur.SwitchingWeapon = 4;
+        cur.WepPhase = 2;               // WS_DROP
+        cur.ViewmodelSkin = 1;
+        cur.WepAlpha = 128;             // mid fade
+        cur.GunAlign = 3;
+
+        var w = new BitWriter();
+        EntityField mask = EntityStateCodec.WriteDelta(w, baseline, cur);
+        Assert.Equal(EntityField.AnimAction | EntityField.Wepent, mask);
+
+        var r = new BitReader(w.WrittenSpan);
+        NetEntityState got = EntityStateCodec.ReadDelta(ref r, baseline);
+        Assert.False(r.BadRead);
+        Assert.Equal((byte)3, got.UpperAction);
+        Assert.Equal(12.5f, got.AnimActionTime);
+        Assert.Equal(5, got.SwitchWeapon);
+        Assert.Equal(4, got.SwitchingWeapon);
+        Assert.Equal((byte)2, got.WepPhase);
+        Assert.Equal((byte)1, got.ViewmodelSkin);
+        Assert.Equal((byte)128, got.WepAlpha);
+        Assert.Equal((byte)3, got.GunAlign);
+    }
+
+    [Fact]
+    public void EntityCodec_Plain_Player_Leaves_Wepent_And_AnimAction_Clear()
+    {
+        // [W14a] a plain player (no action, switch ids at the -1 sentinel) must NOT set the new group bits — they
+        // cost nothing on the wire until a producer changes them.
+        var w = new BitWriter();
+        EntityField mask = EntityStateCodec.WriteDelta(w, NetEntityState.Empty(10), Player(10, Vector3.Zero, 100));
+        Assert.Equal(EntityField.None, mask & (EntityField.AnimAction | EntityField.Wepent));
+    }
+
+    [Fact]
+    public void Diff_AnimAction_Bit_Set_Iff_UpperAction_Or_AnimActionTime_Differs()
+    {
+        // [W14a] the AnimAction bit (1<<18) must track UpperAction OR AnimActionTime, and NOTHING else.
+        var baseline = Player(10, Vector3.Zero, 100);
+
+        // identical → clear
+        Assert.Equal(EntityField.None, NetEntityState.Diff(baseline, baseline) & EntityField.AnimAction);
+
+        // only UpperAction differs → set
+        var a = baseline; a.UpperAction = 4;
+        Assert.Equal(EntityField.AnimAction, NetEntityState.Diff(baseline, a) & EntityField.AnimAction);
+
+        // only AnimActionTime differs → set
+        var b = baseline; b.AnimActionTime = 7.25f;
+        Assert.Equal(EntityField.AnimAction, NetEntityState.Diff(baseline, b) & EntityField.AnimAction);
+
+        // a wepent-only change must NOT spuriously set the AnimAction bit
+        var c = baseline; c.WepPhase = 1;
+        Assert.Equal(EntityField.None, NetEntityState.Diff(baseline, c) & EntityField.AnimAction);
+    }
+
+    [Fact]
+    public void Diff_Wepent_Bit_Set_Iff_Any_Wepent_Field_Differs()
+    {
+        // [W14a] the Wepent bit (1<<19) must track ANY of the six exterior-weapon fields, and nothing outside them.
+        var baseline = Player(10, Vector3.Zero, 100);
+
+        Assert.Equal(EntityField.None, NetEntityState.Diff(baseline, baseline) & EntityField.Wepent);
+
+        void AssertField(System.Func<NetEntityState, NetEntityState> mutate)
+        {
+            var cur = mutate(baseline);
+            Assert.Equal(EntityField.Wepent, NetEntityState.Diff(baseline, cur) & EntityField.Wepent);
+        }
+
+        AssertField(s => { s.SwitchWeapon = 2; return s; });       // -1 → 2
+        AssertField(s => { s.SwitchingWeapon = 3; return s; });     // -1 → 3
+        AssertField(s => { s.WepPhase = 1; return s; });
+        AssertField(s => { s.ViewmodelSkin = 2; return s; });
+        AssertField(s => { s.WepAlpha = 64; return s; });
+        AssertField(s => { s.GunAlign = 4; return s; });
+
+        // an anim-only change must NOT spuriously set the Wepent bit
+        var anim = baseline; anim.UpperAction = 5;
+        Assert.Equal(EntityField.None, NetEntityState.Diff(baseline, anim) & EntityField.Wepent);
+    }
+
+    [Fact]
+    public void EntityCodec_UnchangedField_LeavesItsMaskBitClear_AcrossTheNewGroups()
+    {
+        // [W14a] change ONLY UpperAction: AnimAction rides the wire, Wepent must stay clear (and round-trip the
+        // untouched wepent fields from the baseline). The mirror case — change only a wepent field — is below.
+        var baseline = Player(10, Vector3.Zero, 100);
+        baseline.WepAlpha = 200; baseline.GunAlign = 1; // a non-default baseline so "carried from baseline" is meaningful
+
+        var animOnly = baseline; animOnly.UpperAction = 6;
+        var w = new BitWriter();
+        EntityField mask = EntityStateCodec.WriteDelta(w, baseline, animOnly);
+        Assert.Equal(EntityField.AnimAction, mask & (EntityField.AnimAction | EntityField.Wepent));
+
+        var r = new BitReader(w.WrittenSpan);
+        NetEntityState got = EntityStateCodec.ReadDelta(ref r, baseline);
+        Assert.False(r.BadRead);
+        Assert.Equal((byte)6, got.UpperAction);
+        Assert.Equal((byte)200, got.WepAlpha);  // carried from baseline — bit was clear
+        Assert.Equal((byte)1, got.GunAlign);    // carried from baseline — bit was clear
+
+        // mirror: change only a wepent field → Wepent set, AnimAction clear.
+        var wepOnly = baseline; wepOnly.WepPhase = 2;
+        var w2 = new BitWriter();
+        EntityField mask2 = EntityStateCodec.WriteDelta(w2, baseline, wepOnly);
+        Assert.Equal(EntityField.Wepent, mask2 & (EntityField.AnimAction | EntityField.Wepent));
+
+        var r2 = new BitReader(w2.WrittenSpan);
+        NetEntityState got2 = EntityStateCodec.ReadDelta(ref r2, baseline);
+        Assert.False(r2.BadRead);
+        Assert.Equal((byte)2, got2.WepPhase);
+        Assert.Equal((byte)0, got2.UpperAction); // carried from baseline (idle) — AnimAction bit was clear
+    }
+
+    [Fact]
+    public void EntityCodec_WepAlpha_OpaqueSentinel_And_SwitchWeapon_None_RoundTrip()
+    {
+        // [W14a] the WepAlpha opaque sentinel (0, same convention as the body Alpha — opaque, "not networked")
+        // and SwitchWeapon = -1 ("none") must survive the wire when SOMETHING else in the wepent group changed.
+        // Here the gun goes from a faded baseline back to fully opaque (WepAlpha → 0) while the switch id stays -1.
+        var baseline = Player(10, Vector3.Zero, 100);
+        baseline.WepAlpha = 128;           // mid-fade baseline
+        baseline.SwitchWeapon = -1;        // none
+        baseline.SwitchingWeapon = -1;     // none
+
+        var cur = baseline;
+        cur.WepAlpha = 0;                  // restored to opaque (the sentinel value)
+        // SwitchWeapon / SwitchingWeapon stay at the -1 "none" sentinel.
+
+        var w = new BitWriter();
+        EntityField mask = EntityStateCodec.WriteDelta(w, baseline, cur);
+        Assert.Equal(EntityField.Wepent, mask & EntityField.Wepent); // WepAlpha changed → group rides
+
+        var r = new BitReader(w.WrittenSpan);
+        NetEntityState got = EntityStateCodec.ReadDelta(ref r, baseline);
+        Assert.False(r.BadRead);
+        Assert.Equal((byte)0, got.WepAlpha);     // opaque sentinel round-trips
+        Assert.Equal(-1, got.SwitchWeapon);      // -1 "none" round-trips through the signed short
+        Assert.Equal(-1, got.SwitchingWeapon);
+    }
+
+    [Fact]
+    public void EntityCodec_WepAlpha_HiddenSentinel_RoundTrips()
+    {
+        // [W14a] the 255 = QC -1 "don't render" hidden sentinel (Running Guns hides the player but keeps the gun;
+        // here the gun's own alpha is the hidden marker) is DISTINCT from 0 = opaque and must survive intact.
+        var baseline = Player(10, Vector3.Zero, 100);
+        var cur = baseline; cur.WepAlpha = 255;
+
+        var w = new BitWriter();
+        EntityStateCodec.WriteDelta(w, baseline, cur);
+        var r = new BitReader(w.WrittenSpan);
+        NetEntityState got = EntityStateCodec.ReadDelta(ref r, baseline);
+        Assert.False(r.BadRead);
+        Assert.Equal((byte)255, got.WepAlpha);
+    }
 
     [Fact]
     public void EntityCodec_RoundTrips_A_Spawn_From_Empty()

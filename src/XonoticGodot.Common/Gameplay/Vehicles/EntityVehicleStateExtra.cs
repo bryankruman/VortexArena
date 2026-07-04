@@ -75,6 +75,9 @@ namespace XonoticGodot.Common.Framework
         /// <summary>QC <c>.sounds</c> — which looping engine sound is currently playing (idle vs move).</summary>
         public int VehSoundState = -1;
 
+        /// <summary>QC raptor <c>.bomb1.cnt</c> — once/sec gate for the incoming-guided-missile alarm (separate from the engine-sound gate).</summary>
+        public float VehAlarmNextTime;
+
         /// <summary>QC <c>.frame</c> — the model animation frame the SV side drives (takeoff %, walk pose, rocket belt).</summary>
         public float VehAnimFrame;
 
@@ -130,6 +133,30 @@ namespace XonoticGodot.Common.Framework
         /// <summary>QC slot/turret <c>.phase</c> — re-entry delay after a gunner leaves a slot.</summary>
         public float VehPhase;
 
+        /// <summary>
+        /// QC <c>.vehicle_reload1</c> mirrored onto a seated gunner (bumblebee_gunner_enter copies vehic.vehicle_reload1).
+        /// Drives the gunner aux-crosshair reload color (red when reloading, green when ready).
+        /// </summary>
+        public float VehicleReload1;
+
+        // ---- Bumblebee gunner auxiliary crosshair feed (bumblebee_gunner_frame UpdateAuxiliaryXhair) ----
+        // The gunner draws TWO aux crosshairs: a magenta '1 0 1' LEAD marker at the predicted impact point
+        // (aux slot 1) and a reload-colored READY marker at the cannon's straight-line hit (aux slot 0). Each
+        // is mirrored onto the PILOT (aux slot 1 for gun1, 2 for gun2) so the pilot sees both gunners' aim.
+        // The per-frame controller publishes the WORLD POINTS here; the client HUD feeder projects them.
+
+        /// <summary>Gunner lead-aim world point (QC <c>UpdateAuxiliaryXhair(this, ad, '1 0 1', 1)</c>); valid only this tick.</summary>
+        public Vector3 VehGunnerLeadPoint;
+
+        /// <summary>True the tick the gunner has a lead point to draw (an enemy is locked + led).</summary>
+        public bool VehGunnerLeadValid;
+
+        /// <summary>Gunner straight-fire hit world point (QC <c>UpdateAuxiliaryXhair(this, trace_endpos, reloadColor, 0)</c>).</summary>
+        public Vector3 VehGunnerHitPoint;
+
+        /// <summary>True the tick the gunner has a straight-fire hit point to draw.</summary>
+        public bool VehGunnerHitValid;
+
         // =====================================================================================
         // Projectile-guidance scratch (vehicle homing rockets) — the fields the per-rocket think reads.
         // =====================================================================================
@@ -148,5 +175,34 @@ namespace XonoticGodot.Common.Framework
 
         /// <summary>The guidance mode this projectile flies under (homing/groundhug/guided/artillery), -1 = dumb.</summary>
         public int VehGuideMode = -1;
+
+        // =====================================================================================
+        // Racer water/air timers — port of the racer-specific .racer_watertime / .racer_air_finished
+        // edict fields (racer.qc). racer_watertime is stamped to `time` while in a liquid and gates the 3s
+        // post-water heavy-downforce ramp; racer_air_finished is the 5s submerged air meter (time + water_time)
+        // that, with crouch, swaps the align4point up-push 200->30.
+        // =====================================================================================
+
+        /// <summary>QC racer <c>.racer_watertime</c> — last sim time the racer was in a liquid (drives the 3s post-water downforce).</summary>
+        public float VehWaterTime;
+
+        /// <summary>QC racer <c>.racer_air_finished</c> — submerged air-meter expiry (time + water_time); 0 when out of water.</summary>
+        public float VehAirFinished;
+
+        /// <summary>QC racer <c>.strength_finished</c> (reused) — boost-sound replay gate (~10.92s loop length), 0 when not boosting.</summary>
+        public float VehBoostSoundTime;
+
+        /// <summary>QC racer <c>.invincible_finished</c> (reused) — afterburn under-craft smoke-trail gate (next emit at time + 0.1 + rand*0.1).</summary>
+        public float VehSmokeTime;
+
+        // NOTE: the racer's secondary-weapon HUD mirror (QC player .vehicle_ammo2 / .vehicle_reload2) is written
+        // onto the seated pilot's VehicleAmmo2 / VehicleReload2 (the networked stats the on-foot vehicle HUD reads
+        // via NetGame -> VehicleHud), exactly like the Raptor/Bumblebee — NOT to a racer-private scratch field.
+
+        // NOTE: QC vehicle <c>.mass</c> (spiderbot 5000 / racer 900 / raptor 1) is already promoted on the
+        // Entity partial by Gameplay/Damage/DamageEntityState.cs (`public float Mass;`), where the damage
+        // push pipeline reads it (DamageSystem.cs:785). It is intentionally NOT redeclared here — a second
+        // declaration on the same partial would be a CS0102 duplicate-member compile error. Spiderbot.Spawn's
+        // `vehicle.Mass = 5000f` binds to that existing field.
     }
 }

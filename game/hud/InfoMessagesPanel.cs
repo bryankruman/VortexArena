@@ -141,6 +141,21 @@ public partial class InfoMessagesPanel : HudPanel
     public string ReadyHint { get; set; } = "ready";
 
     /// <summary>
+    /// QC <c>observe_blocked</c>: the server forbids switching from chase-cam to free-fly observe
+    /// (<c>sv_spectate</c> off / observe blocked). When true the chasing-player hint (group0 case 1) drops the
+    /// "Press secondary fire to observe" half and only offers the drop-weapon camera-mode toggle, matching the
+    /// QC. Fed by the net layer; default false. Only affects the chasing (spectatee_status &gt; 0) hint.
+    /// </summary>
+    public bool ObserveBlocked { get; set; }
+
+    /// <summary>
+    /// QC MUTATOR_HOOKFUNCTION(cl_lms, DrawInfoMessages): the local LMS player is eliminated (has an LMS rank,
+    /// <c>scores(ps_primary) &gt; 0</c>), so the "^1You have no more lives left" line is shown on this panel. Fed
+    /// each frame by the net layer from the local scoreboard row's LMS_RANK column. False for every other gametype.
+    /// </summary>
+    public bool LmsNoLives { get; set; }
+
+    /// <summary>
     /// True while the HUD editor is open (QC <c>autocvar__hud_configure</c>). When set the panel draws the QC
     /// editor help text instead of live state, so the panel is visible/positionable in the editor. Default false.
     /// </summary>
@@ -283,7 +298,7 @@ public partial class InfoMessagesPanel : HudPanel
             if (CvarBool("group0"))
             {
                 int sel = ((ImgSelect(now, ResolveFrameTime()) % 3) + 3) % 3;
-                lines.Add(Line.Of(SpectateHint(specStatus, sel), _imgFade));
+                lines.Add(Line.Of(SpectateHint(specStatus, sel, ObserveBlocked), _imgFade));
             }
 
             // QC: if not already queued, "^1Press ^3jump^1 to join".
@@ -321,6 +336,11 @@ public partial class InfoMessagesPanel : HudPanel
                 }
             }
         }
+
+        // QC MUTATOR_HOOKFUNCTION(cl_lms, DrawInfoMessages): a locally-eliminated LMS player (has an LMS rank) is
+        // told they're out for the match.
+        if (LmsNoLives)
+            lines.Add(Line.Of("^1You have no more lives left, you have to wait until the next game"));
 
         // QC: if (time < GAMESTARTTIME) "^1Game starts in ^3%d^1 seconds".
         if (CountdownSeconds > 0f)
@@ -538,8 +558,10 @@ public partial class InfoMessagesPanel : HudPanel
     //  Hint / line builders (QC sprintf strings with keybind substitution where applicable)
     // -------------------------------------------------------------------------------------------------
 
-    /// <summary>The rotating spectator hint (QC group0 switch, 3 variants), observer vs chasing.</summary>
-    private static string SpectateHint(int specStatus, int sel)
+    /// <summary>The rotating spectator hint (QC group0 switch, 3 variants), observer vs chasing. When chasing a
+    /// player and <paramref name="observeBlocked"/> is set (QC <c>observe_blocked</c>), the case-1 hint drops the
+    /// "secondary fire to observe" half (the server forbids switching to free-fly), matching the QC.</summary>
+    private static string SpectateHint(int specStatus, int sel, bool observeBlocked)
     {
         bool observing = specStatus == -1;
         return sel switch
@@ -549,7 +571,9 @@ public partial class InfoMessagesPanel : HudPanel
                 : "^1Press ^3next weapon^1 or ^3previous weapon^1 for next or previous player",
             1 => observing
                 ? "^1Use ^3next weapon^1 or ^3previous weapon^1 to change the speed"
-                : "^1Press ^3secondary fire^1 to observe, ^3drop weapon^1 to change camera mode",
+                : observeBlocked
+                    ? "^1Press ^3drop weapon^1 to change camera mode"
+                    : "^1Press ^3secondary fire^1 to observe, ^3drop weapon^1 to change camera mode",
             _ => "^1Press ^3server info^1 for gametype info",
         };
     }

@@ -78,6 +78,15 @@ public partial class EntityNode : Node3D, IEntityPresence
             yawDeg += yawSpinDeg;
         }
 
+        // QC MF_ROTATE (csqcmodel_hooks.qc:617-623, the pickup-key model flag): a steady yaw spin of
+        // '0 100 0' * fmod(time, 3.6) added on top of the entity's base angles (100°/s, wrapping every 3.6 s =
+        // a full 360°). Keys-only in all of Base; carried as a render-only bool on the shared edict.
+        if (Entity.ModelSpinRotate)
+        {
+            float time = Api.Services is not null ? Api.Clock.Time : 0f;
+            yawDeg += 100f * (time % 3.6f);
+        }
+
         Position = position;
 
         // [T48] Pitched/rolled entities (misc_gamemodel props on courtfun/space-elevator etc.) need the FULL

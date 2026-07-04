@@ -14,9 +14,11 @@ namespace XonoticGodot.Game.Menu;
 /// <see cref="Widgets.CommandButton"/>; the QC notes "* is the object you are facing".
 ///
 /// FAITHFUL UI NOW: the cvar bindings are real (they write the shared <see cref="MenuState.Cvars"/> store the
-/// game reads), but every action button drives the server-side <c>sandbox …</c> object-editing backend XonoticGodot
-/// does not have yet, so they route through <see cref="MenuCommand"/> and are logged inert until that backend
-/// exists. The two QC <c>makeXonoticColorpickerString</c> widgets have no toolkit factory, so they are built
+/// game reads), and the action buttons drive the live SandboxMutator backend: each <c>sandbox …</c> string is
+/// expanded by <see cref="MenuCommand"/> (the cfg alias <c>sandbox "cmd g_sandbox …"</c>) and routed to the
+/// match (Commands.CmdSandbox → SandboxMutator.HandleCommand) when <c>g_sandbox</c> is enabled. (Object
+/// duplicate COPY remains inert — the port has no svc_stufftext channel to set the clipboard cvar on a remote
+/// client.) The two QC <c>makeXonoticColorpickerString</c> widgets have no toolkit factory, so they are built
 /// as <see cref="DialogSandboxToolsColorButton"/> (a Godot <see cref="ColorPickerButton"/> bound to the same
 /// "R G B" string cvar). The QC "OK" button just closed the dialog (<c>Dialog_Close</c>); here that is Back.
 /// </summary>

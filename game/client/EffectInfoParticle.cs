@@ -84,8 +84,14 @@ public sealed class EffectInfoEmitter
     // that hits the world leaves a tex_blooddecal mark tinted by staincolor (cl_particles.c:3020-3041);
     // explosion/impact blocks declare these so the splat reuses the dedicated blood/scorch decal sprites.
     public int StainTex0 = -1, StainTex1 = -1;     // < 0 => no stain declared
-    public uint StainColor0 = 0xFFFFFF, StainColor1 = 0xFFFFFF;
-    public float StainSizeMin = 1f, StainSizeMax = 1f;
+    // DP baseline staincolor = {(unsigned int)-1, (unsigned int)-1} (cl_particles.c:271). staincolor is a
+    // MODDING FACTOR on the particle's own colour (0x808080 = neutral), NOT an absolute tint; the sim casts
+    // these to int and the -1 (== 0xFFFFFFFF) default takes the "stain = particle colour" shorthand branch
+    // (cl_particles.c:740-764). Defaulting 0xFFFFFF (a positive int) would wrongly enter the modding branch.
+    public uint StainColor0 = 0xFFFFFFFF, StainColor1 = 0xFFFFFFFF;
+    // DP baseline stainsize = {2, 2} (cl_particles.c:274). 22 of the 30 staintex blocks in the shipped
+    // effectinfo.txt omit stainsize and inherit this baseline; defaulting 1 would halve their splat size.
+    public float StainSizeMin = 2f, StainSizeMax = 2f;
     public float StainAlphaMin = 1f, StainAlphaMax = 1f; // DP stainalpha is 0..1 (already normalized)
 
     /// <summary>True if this emitter declares a stain texture range (staintex tex0 tex1, tex1 exclusive).</summary>
@@ -162,13 +168,26 @@ public sealed class EffectInfoEmitter
     /// <summary>Representative initial opacity 0..1 (alpha midpoint / 256, clamped).</summary>
     public float MidAlpha01() => Math.Clamp((AlphaMin + AlphaMax) * 0.5f / 256f, 0f, 1f);
 
-    /// <summary>Midpoint of the stain color range as 0..1 RGB (the tint for the splat decal).</summary>
+    /// <summary>
+    /// The staincolor MODDING FACTOR (not an absolute tint) for the splat decal — DP staincolor scales the
+    /// particle's own colour: <c>stain = staincolor * particlecolor / 0x8000</c> with the random lerp factor
+    /// <c>l1+l2 = 256</c>, so a component byte <c>s</c> contributes <c>s/128</c> (0x80 = neutral 1.0). The
+    /// <c>(unsigned int)-1</c> default (and any negative staincolor) is the "stain = particle colour" shorthand
+    /// (cl_particles.c:740-764), i.e. a neutral factor of 1.0. The caller multiplies the particle colour by
+    /// this, matching the live faithful sim's per-particle formula.
+    /// </summary>
     public (float R, float G, float B) StainMidColor()
     {
-        (float r0, float g0, float b0) = Unpack(StainColor0);
-        (float r1, float g1, float b1) = Unpack(StainColor1);
+        if ((int)StainColor0 < 0 || (int)StainColor1 < 0)
+            return (1f, 1f, 1f); // -1 shorthand: stain = particle colour (no modding)
+        (float r0, float g0, float b0) = ModFactor(StainColor0);
+        (float r1, float g1, float b1) = ModFactor(StainColor1);
         return ((r0 + r1) * 0.5f, (g0 + g1) * 0.5f, (b0 + b1) * 0.5f);
     }
+
+    // staincolor byte -> modding factor (0x80 -> 1.0). Mirrors DP's /0x8000 with the 256 lerp weight.
+    private static (float, float, float) ModFactor(uint hex)
+        => (((hex >> 16) & 0xFF) / 128f, ((hex >> 8) & 0xFF) / 128f, (hex & 0xFF) / 128f);
 
     /// <summary>Representative stain decal half-size (size midpoint) and opacity (0..1).</summary>
     public float StainMidSize() => MathF.Max(0.5f, (StainSizeMin + StainSizeMax) * 0.5f);

@@ -46,6 +46,14 @@ public sealed class ClientManager
         /// <summary>Edge tracker for the observer's +attack2 (drop to free-fly) press.</summary>
         public bool SpecFreeflyReleased { get; internal set; } = true;
 
+        /// <summary>
+        /// QC <c>CS(this).version_nagtime</c> (server/client.qc:1151, 2925): timer for version-mismatch
+        /// notifications. Set to 10-20 seconds after client connect; when the timer fires, a notification is
+        /// sent if the client's <c>g_xonoticversion</c> differs from the server's. The timer is then zeroed
+        /// to fire only once. 0 = timer has fired or not yet armed.
+        /// </summary>
+        public float VersionNagTime { get; internal set; } = 0f;
+
         public ClientInfo(Player player, bool isBot)
         {
             Player = player;
@@ -53,6 +61,15 @@ public sealed class ClientManager
             player.IsBot = isBot;
         }
     }
+
+    /// <summary>
+    /// QC <c>CS_CVAR(this).cvar_cl_clippedspectating</c> (server/client.qc:2589): a free-fly spectator's per-client
+    /// "pass through walls?" preference. <c>false</c> (the default, <c>cl_clippedspectating 0</c>) = <see
+    /// cref="MoveType.Noclip"/> (free flight, no collision); <c>true</c> = <see cref="MoveType.FlyWorldOnly"/>
+    /// (collide with the world). Wired by <c>Commands(GameWorld)</c> to the replicated-cvar store; null/unwired →
+    /// the Base default (noclip), preserving the previous no-net-state behaviour for tests/headless paths.
+    /// </summary>
+    public static System.Func<Player, bool>? ClippedSpectatingProvider { get; set; }
 
     private readonly List<ClientInfo> _clients = new();
     private readonly List<Player> _players = new();          // dense Player view (matches SimulationLoop.Clients)
@@ -127,8 +144,27 @@ public sealed class ClientManager
     /// <summary>Fired after a successful (re)spawn (QC PutPlayerInServer tail) — alivetime start, view reset.</summary>
     public Action<Player>? OnClientSpawn { get; set; }
 
+    /// <summary>
+    /// Fired at the head of <see cref="Spawn"/>, BEFORE spawnpoint selection (QC the spawn_evalfunc / forced-spot
+    /// setup that runs ahead of SelectSpawnPoint). Lets the active gametype set a one-shot forced spawn
+    /// (<see cref="Player.SpawnPointTarg"/>) — e.g. Race returning a respawning racer to their last checkpoint.
+    /// </summary>
+    public Action<Player>? OnPreSpawn { get; set; }
+
     /// <summary>Fired before a client is removed (QC ClientDisconnect head) — finalize stats, <c>:part:</c>, cleanup.</summary>
     public Action<Player>? OnClientDisconnect { get; set; }
+
+    /// <summary>Fired AFTER a client is fully removed from the roster (QC the tail of ClientDisconnect, e.g.
+    /// <c>TeamBalance_RemoveExcessPlayers(this)</c> at client.qc:3057) — the leaver is already out of the roster.</summary>
+    public Action? OnAfterClientDisconnect { get; set; }
+
+    /// <summary>
+    /// QC <c>anticheat_spectatecopy</c> (the last line of server/client.qc <c>SpectateCopy</c>, client.qc:1837):
+    /// after the regular spectate mirror, a following observer's body angle inherits the spectatee's
+    /// evade-tracked view angle (<c>anticheat_div0_evade_v_angle</c>) instead of the raw angle. Wired by
+    /// <see cref="GameWorld"/> to <c>AntiCheat.SpectateCopy</c>; null = no override (raw angle stands).
+    /// </summary>
+    public Action<Player, Player>? SpectateAngleCopy { get; set; }
 
     /// <summary>
     /// [T39] Fired after a BOT client has connected and auto-joined (QC bot_clientconnect + havocbot_setupbot:
@@ -176,11 +212,21 @@ public sealed class ClientManager
         // player's team. Idempotent — runs the first time the gametype is known.
         EnsureTeamSpawnsRequested();
 
+        // QC ClientConnect: Player_DetermineForcedTeam(this) (server/client.qc:1162) — runs for EVERY connecting
+        // client, before the team balance. In campaign it pins a real client to g_campaign_forceteam (1..4);
+        // otherwise it matches the player's id/IP against the g_forced_team_* lists. AssignBestTeam honors the
+        // stored forced team (Player_HasRealForcedTeam). Without this call the _forcedTeam table is never
+        // populated, so g_campaign_forceteam / the forced-team lists had no effect.
+        _teamplay.DetermineForcedTeam(p, isCampaign: Api.Cvars.GetFloat("g_campaign") != 0f);
+
         // team assignment for a team game (QC TeamBalance_JoinBestTeam); FFA leaves Team = None.
         if (_teamplay.IsTeamGame)
             _teamplay.AssignBestTeam(p, _players);
 
         info.JoinTime = Now;
+        // QC ClientConnect (server/client.qc:1151): arm the version-nagging timer 10-20 seconds after connect,
+        // so the version check fires once during the player's session (PlayerPreThink @ 2925-2943).
+        info.VersionNagTime = Now + 10f + (float)new System.Random().NextDouble() * 10f;
 
         // QC ClientConnect ends by TRANSMUTE(Observer, this) (server/client.qc:1164): a connecting client is an
         // OBSERVER, not yet a live player — it only enters the match via Join() (on +jump/+attack, a delayed
@@ -214,7 +260,10 @@ public sealed class ClientManager
         if (isBot)
         {
             p.AutoJoinChecked = 1; // QC CS(this).autojoin_checked = 1
-            Join(p);
+            // QC: a forced-spectate client (g_forced_team_otherwise "spectate") stays an observer even when it's a
+            // bot — don't auto-join it into the match.
+            if (!(_teamplay.IsTeamGame && _teamplay.GetForcedTeam(p) == Teamplay.TeamForceSpectator))
+                Join(p);
             OnBotConnected?.Invoke(p); // [T39] QC bot_clientconnect: hand the new bot its AI brain
         }
 
@@ -237,21 +286,52 @@ public sealed class ClientManager
         p.WantsJoin = 0;          // QC this.wants_join = 0
         p.JoinJumpReleased = true;
 
+        // QC PutClientInServer (server/client.qc:776-780): when a player was a spectator (killcount ==
+        // FRAGS_SPECTATOR) PlayerScore_Clear is called on the (re)join — gated by g_score_resetonjoin (default
+        // 0 = no-op; 1 = always clear; -1 = clear unless PreferPlayerScore_Clear hook vetoes). This is the live
+        // arm of the resetonjoin feature: at the default (0) it is a no-op, so joiners keep their score; only
+        // diverges when an admin explicitly sets 1 or -1.
+        XonoticGodot.Common.Gameplay.Scoring.GameScores.ClearPlayerOnJoin(p);
+
+        // QC the gametype PutClientInServer / lms_AddPlayer seed: register the joiner with the gametype (LMS seeds
+        // its lives column + clamps a late joiner to the lowest life count) BEFORE the spawn loadout is applied.
+        GametypeOnJoin?.Invoke(p);
+
         bool spawned = Spawn(p); // QC PutClientInServer
         if (!spawned)
+        {
             // no spawnpoint yet (Spawn armed a retry); fall back to the observer phase so the player isn't a
             // half-live actor with no placement. The retry path will re-Join via the respawn driver.
             p.IsObserver = true;
-        return spawned;
+            return false;
+        }
+
+        // QC Join tail (server/client.qc:2135-2149): once the client is a live player, announce the join. FFA
+        // broadcasts INFO_JOIN_PLAY ("<name> is now playing"); a team game centerprints CENTER_JOIN_PLAY_TEAM_<col>
+        // to the joiner. The queue-conflict (CENTER_JOIN_PLAY_TEAM_QUEUECONFLICT) + queued-player ANNCE_BEGIN paths
+        // depend on the unmodeled join-queue (wants_join / player_with_dibs) and stay deferred.
+        if (!_teamplay.IsTeamGame)
+            NotificationSystem.Info("JOIN_PLAY", p.NetName);
+        else
+            NotificationSystem.Center(p, $"JOIN_PLAY_TEAM_{TeamSuffix((int)p.Team)}");
+
+        return true;
     }
+
+    /// <summary>QC <c>APP_TEAM_NUM</c> team-name suffix (common/teams.qh) used by the join/scoring notifications
+    /// (JOIN_PLAY_TEAM_RED, …). Falls back to RED for an unteamed/neutral value so the lookup always resolves.</summary>
+    private static string TeamSuffix(int team) => team switch
+    {
+        Teams.Red => "RED", Teams.Blue => "BLUE", Teams.Yellow => "YELLOW", Teams.Pink => "PINK", _ => "RED",
+    };
 
     /// <summary>QC <c>MIN_SPEC_TIME</c> (server/client.qh:403): the minimum observer dwell before a join is allowed.</summary>
     public const float MinSpecTime = 1f;
 
     /// <summary>
     /// QC <c>joinAllowed</c> (server/client.qc:2258), reduced core: a client may join once it has observed for at
-    /// least <see cref="MinSpecTime"/> and teams aren't admin-locked. The version-mismatch / forced-spectator /
-    /// playban / g_maxping / queue-balance gates are deferred (those subsystems aren't modeled on this path).
+    /// least <see cref="MinSpecTime"/>, teams aren't admin-locked, and it is not play-banned (forced-spectate).
+    /// The version-mismatch / g_maxping / queue-balance gates are deferred (those subsystems aren't modeled here).
     /// </summary>
     public bool JoinAllowed(Player p, float now)
     {
@@ -261,11 +341,59 @@ public sealed class ClientManager
             return false;
         if (_teamplay.IsTeamGame && TeamsLocked) // QC: teamplay && lockteams
             return false;
+        // QC Player_DetermineForcedTeam -> TEAM_FORCE_SPECTATOR (g_forced_team_otherwise "spectate"): an
+        // unlisted client whose forced-team resolved to the spectator sentinel is pinned as an observer and may
+        // never join the match (server/client.qc joinAllowed reads team_forced). The campaign / id-list real-team
+        // branch is honored separately by AssignBestTeam; this is the spectate-routing half.
+        if (_teamplay.IsTeamGame && _teamplay.GetForcedTeam(p) == Teamplay.TeamForceSpectator)
+            return false;
+        // QC Join_Try: a play-banned (forced-spectate) client may not join (CENTER_JOIN_PLAYBAN). Wired by the
+        // host to Bans.IsPlayBanned; null until wired (e.g. headless test harness) so the gate is a no-op there.
+        if (ForcedSpectate is not null && ForcedSpectate(p))
+            return false;
+        // QC the gametype ForbidSpawn gate (LMS lms_AddPlayer lockout): refuse the late join when the gametype
+        // denies it (e.g. LMS once the match is locked to new joiners). No-op when unwired.
+        if (GametypeJoinGate is not null && !GametypeJoinGate(p))
+        {
+            // QC MUTATOR_HOOKFUNCTION(ca, PutClientInServer): mark the refused mid-round joiner
+            // INGAME_STATUS_JOINING and send INFO_CA_JOIN_LATE so they know to wait for next round.
+            GametypeOnJoinRefused?.Invoke(p);
+            return false;
+        }
         return true;
     }
 
     /// <summary>QC <c>lockteams</c>: admin team-lock; mirrored from <see cref="GameWorld.TeamsLocked"/> by the host.</summary>
     public bool TeamsLocked { get; set; }
+
+    /// <summary>QC the play-ban (forced-spectate) join gate: is this client on <c>g_playban_list</c>? Injected by
+    /// the host (Bans.IsPlayBanned, which lives in the Server ban layer); when set, <see cref="JoinAllowed"/>
+    /// refuses the join so a play-banned offender can't press fire / autojoin back into the match.</summary>
+    public Func<Player, bool>? ForcedSpectate { get; set; }
+
+    /// <summary>
+    /// QC the gametype's <c>ForbidSpawn</c> / late-join gate (e.g. LMS lms_AddPlayer): may this observer become a
+    /// live player right now? Injected by the host; when set and it returns false the <see cref="Join"/> is refused
+    /// (the client stays an observer). LMS uses this for its mid-match lives lockout. Null ⇒ no gametype gate.
+    /// </summary>
+    public Func<Player, bool>? GametypeJoinGate { get; set; }
+
+    /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ca, PutClientInServer)</c> side-channel: called when the gametype gate
+    /// (<see cref="GametypeJoinGate"/>) specifically refuses a join attempt, so the gametype can mark the
+    /// would-be joiner as INGAME_STATUS_JOINING and send the "you'll play next round" notice. Injected by
+    /// the host for round-based gametypes (CA) that need to know about refused mid-round joins; null elsewhere.
+    /// Unlike <see cref="GametypeOnJoin"/> (which fires on a SUCCESSFUL join), this fires on the path where
+    /// the gametype gate returned false.
+    /// </summary>
+    public Action<Player>? GametypeOnJoinRefused { get; set; }
+
+    /// <summary>
+    /// QC the gametype's <c>PutClientInServer</c> / lms_AddPlayer seed: called when an observer successfully joins
+    /// as a live player, BEFORE the spawn, so the gametype can register the joiner (e.g. seed LMS lives on the
+    /// scoreboard / clamp a late joiner to the lowest life count). Injected by the host. Null ⇒ no seed.
+    /// </summary>
+    public Action<Player>? GametypeOnJoin { get; set; }
 
     /// <summary>
     /// QC <c>ObserverOrSpectatorThink</c> + the delayed-autojoin slice of <c>PlayerPreThink</c>
@@ -318,7 +446,17 @@ public sealed class ClientManager
         {
             if (info.SpecNextReleased)
             {
-                if (attackHeld) { info.SpecNextReleased = false; SpectateNext(p); }
+                if (attackHeld)
+                {
+                    info.SpecNextReleased = false;
+                    // QC ObserverOrSpectatorThink (client.qc:2544-2545): sv_spectate 2 forbids following a SPECIFIC
+                    // player (free-fly is still allowed) outside warmup — show CENTER_SPECTATE_SPEC_NOTALLOWED
+                    // instead of cycling. vote_master (an admin override) isn't modeled, so this applies to all.
+                    if (Api.Cvars.GetFloat("sv_spectate") == 2f && !(IsWarmup?.Invoke() ?? false))
+                        NotificationSystem.Center(p, "SPECTATE_SPEC_NOTALLOWED");
+                    else
+                        SpectateNext(p);
+                }
             }
             else if (!attackHeld) { info.SpecNextReleased = true; }
 
@@ -338,6 +476,18 @@ public sealed class ClientManager
                 StopSpectating(p);
             else
                 SpectateCopy(p, spec);
+        }
+
+        // QC PlayerPreThink free-fly branch (server/client.qc:2588-2593): a NOT-following (free-fly) spectator's
+        // movetype is recomputed each tick from its per-client cl_clippedspectating preference —
+        // `wouldclip ? MOVETYPE_FLY_WORLDONLY : MOVETYPE_NOCLIP`. The Base default (cl_clippedspectating 0) is
+        // NOCLIP (pass through walls); the port previously hardcoded FLY_WORLDONLY (always clipped), the opposite.
+        // Honor the replicated cvar here so a spectator who sets it gets the right collision behaviour. (The QC
+        // momentary +use toggle is a transient cosmetic override and is not modelled; the persistent preference is.)
+        if (p.Spectatee is null && p.MoveType is MoveType.Noclip or MoveType.FlyWorldOnly)
+        {
+            bool wouldClip = ClippedSpectatingProvider?.Invoke(p) ?? false;
+            p.MoveType = wouldClip ? MoveType.FlyWorldOnly : MoveType.Noclip;
         }
 
         // QC PlayerPreThink delayed autojoin (server/client.qc:2708): a REAL client that hasn't joined autojoins
@@ -371,6 +521,20 @@ public sealed class ClientManager
     }
 
     /// <summary>
+    /// QC <c>MUTATOR_HOOKFUNCTION(ca, ClientCommand_Spectate)</c> (sv_clanarena.qc): intercept the <c>spectate</c>
+    /// command for an in-game CA player. CA force-spectates them (MUT_SPECCMD_FORCE) and sends INFO_CA_LEAVE; the
+    /// gametype records the leave so they re-enter next round. Returns true if CA consumed the command (so the
+    /// generic spectate path doesn't also run its default notice). No-op (returns false) for non-CA gametypes or a
+    /// client that is already spectating. Call from the spectate-command handler BEFORE the generic force-observe.
+    /// </summary>
+    public bool GametypeSpectateCommand(Player p)
+    {
+        if (_match.GameType is ClanArena ca)
+            return ca.OnSpectateCommand(p);
+        return false;
+    }
+
+    /// <summary>
     /// QC <c>PutObserverInServer</c> (server/client.qc:261): turn a live player (or a connecting client) into a
     /// free-fly OBSERVER — hide its model, strip its weapons, make it non-solid + non-damageable, give it the
     /// free-fly movetype (so <c>PlayerPhysics.SpectatorControl</c> flies it), and mark it a spectator on the
@@ -379,10 +543,53 @@ public sealed class ClientManager
     /// </summary>
     public void PutObserverInServer(Player p)
     {
+        // QC PutObserverInServer (server/client.qc:268-273): if it WAS a live player with health, puff a despawn
+        // EFFECT_SPAWN at its body before stripping it. Snapshot the prior state before we flip IsObserver below.
+        // (VoteCount/ReadyCount recount on demote stays deferred — owned by the vote/ready subsystem.)
+        if (!p.IsObserver && p.GetResource(ResourceType.Health) >= 1f)
+            EffectEmitter.Emit("SPAWN", p.Origin, Vector3.Zero, 1);
+
+        // QC status_effects MakePlayerObserver hook (sv_status_effects.qc:94-112): drop the demoted player's
+        // own status effects (NORMAL removal for the removal sounds) then CLEAR the leftover state. The port has
+        // no separate statuseffects_store entity for spectators, so the SpectateCopy effect-aliasing is N/A.
+        StatusEffectsCatalog.RemoveAll(p, StatusEffectRemoval.Normal);
+        StatusEffectsCatalog.ClearAll(p);
+
         p.IsObserver = true;
+
+        // QC MUTATOR_HOOKFUNCTION(<mode>, MakePlayerObserver) (e.g. ctf_RemovePlayer): a player demoted to
+        // observer relinquishes any objective they hold — a CTF carrier drops the flag where they stand and any
+        // flag back-referencing them (pass sender/target, dropper) is cleared — so the objective can never stay
+        // stuck on a now-spectating player. Default is a no-op for non-objective modes.
+        _match.GameType?.OnPlayerRemoved(p);
+
+        // QC MUTATOR_CALLHOOK(MakePlayerObserver, player) (the same dispatch CTF/KeyHunt/Keepaway etc. ride):
+        // notify the mutators a live player was demoted to observer so they can drop per-player state. Dodging
+        // (sv_dodging.qc:328 dodging_ResetPlayer) clears its dodging_* fields here so a player who spectates
+        // mid-dodge doesn't keep stale state into a re-join.
+        //
+        // QC PutObserverInServer (server/client.qc): .frags = FRAGS_SPECTATOR is assigned BEFORE the
+        // MUTATOR_CALLHOOK(MakePlayerObserver) fires, so a mode's MakePlayerObserver hook can OVERRIDE the
+        // default sentinel — CTS/Race set FRAGS_PLAYER_OUT_OF_GAME for an observer who already holds a ranked
+        // time (Cts.OnMakePlayerObserver, sv_cts.qc:194). The default must therefore precede the hook call;
+        // otherwise the later assignment clobbers the hook's override and the ranked-observer flag is dead.
+        p.FragsStatus = Player.FragsSpectator;   // QC RES_HEALTH/.frags = FRAGS_SPECTATOR (scoreboard sentinel)
+
+        var observerArgs = new MutatorHooks.MakePlayerObserverArgs(p);
+        MutatorHooks.MakePlayerObserver.Call(ref observerArgs);
+
+        // QC PutObserverInServer (server/client.qc:322-323): RemoveGrapplingHooks(this); Portal_ClearAll(this).
+        // A player demoted to observer must drop any latched grappling-hook chain (which would otherwise stay
+        // attached through the relocation and reel the free-fly camera) and tear down any portals they placed
+        // (a spectator owning live portals is a stuck-objective hazard). Hook removal is a Common.Gameplay
+        // function; Portal_ClearAll is a host hook (null on a bare/test host → a no-op, exactly like death).
+        Hook.RemoveGrapplingHooks(p);
+        Porto.PortalClearAll?.Invoke(p);
+
         p.Spectatee = null;
         p.SpectateeStatus = 0;
-        p.FragsStatus = Player.FragsSpectator;   // QC RES_HEALTH/.frags = FRAGS_SPECTATOR (scoreboard sentinel)
+        // (FragsStatus default is now set BEFORE the MakePlayerObserver hook above so a mode's hook — CTS's
+        //  FRAGS_PLAYER_OUT_OF_GAME for a ranked observer — can override it; QC PutObserverInServer order.)
 
         // QC: solid=SOLID_NOT, takedamage=DAMAGE_NO, MOVETYPE_FLY_WORLDONLY (free-fly), FL_CLIENT|FL_NOTARGET.
         p.DeadState = DeadFlag.No;
@@ -395,9 +602,11 @@ public sealed class ClientManager
         p.AVelocity = Vector3.Zero;
         p.PunchAngle = Vector3.Zero;
 
-        // QC: an observer has no health/armor (FRAGS_SPECTATOR sentinel) and no weapons.
+        // QC: an observer has no health (FRAGS_SPECTATOR sentinel) and no weapons. QC PutObserverInServer sets
+        // RES_ARMOR to g_balance_armor_start (server/client.qc:366 "was 666?!"), not 0 — cosmetic for the
+        // spectator scoreboard/HUD but kept faithful (stock g_balance_armor_start is 0, so usually a no-op).
         p.SetResourceExplicit(ResourceType.Health, 0f);
-        p.SetResourceExplicit(ResourceType.Armor, 0f);
+        p.SetResourceExplicit(ResourceType.Armor, Cvars.FloatOr("g_balance_armor_start", 0f));
         p.OwnedWeapons.Clear();
         p.OwnedWeaponSet.Clear();
         p.ActiveWeaponId = -1;
@@ -469,7 +678,7 @@ public sealed class ClientManager
     /// following observer so the observer's own owner-state snapshot — which the client renders the camera + HUD
     /// from — tracks the watched player.
     /// </summary>
-    private static void SpectateCopy(Player spectator, Player target)
+    private void SpectateCopy(Player spectator, Player target)
     {
         spectator.Origin = target.Origin;
         spectator.Velocity = target.Velocity;
@@ -479,6 +688,21 @@ public sealed class ClientManager
         spectator.SetResourceExplicit(ResourceType.Health, target.GetResource(ResourceType.Health));
         spectator.SetResourceExplicit(ResourceType.Armor, target.GetResource(ResourceType.Armor));
         spectator.ActiveWeaponId = target.ActiveWeaponId;
+
+        // QC SpectateCopy (server/client.qc:1820): STAT(PRESSED_KEYS, this) = STAT(PRESSED_KEYS, spectatee) — a
+        // following observer inherits the watched player's held-key bitset so the pressed-keys / strafe HUD shows
+        // the spectatee's keys. GetPressedKeys keeps target.PressedKeys current each server frame.
+        spectator.PressedKeys = target.PressedKeys;
+
+        // QC MUTATOR_HOOKFUNCTION(nades, SpectateCopy) (sv_nades.qc:937): a following observer mirrors the
+        // spectatee's nade HUD/bonus stats (NADE_TIMER charge ring + NADE_BONUS_TYPE/pokenade_type/NADE_BONUS/
+        // NADE_BONUS_SCORE) so the nade readouts track the watched player. No-op when g_nades is off.
+        XonoticGodot.Common.Gameplay.Nades.NadesMutator.OnSpectateCopy(spectator, target);
+
+        // QC SpectateCopy tail (server/client.qc:1837): anticheat_spectatecopy(this, spectatee) overrides the
+        // observer's body angle with the spectatee's evade-tracked view angle. Runs last so it wins over the
+        // raw .Angles copy above; no-op until the host wires it.
+        SpectateAngleCopy?.Invoke(spectator, target);
     }
 
     /// <summary>
@@ -512,12 +736,26 @@ public sealed class ClientManager
         // which applies the ACTIVE_ACTIVE spawnpoint gate — so pass targetCheck:true here (inert on stock maps where
         // every spot is active; needed once Onslaught control-point deactivation toggles spot.active).
         EnsureTeamSpawnsRequested();
+        // QC: the gametype's spawn_evalfunc / forced-spot setup runs before SelectSpawnPoint. Race uses this to
+        // redirect a respawning racer back to their last passed checkpoint (race_respawn_spotref).
+        OnPreSpawn?.Invoke(p);
         SpawnPoint? sp = SpawnSystem.SelectSpawnPoint(p, LivePlayers(), targetCheck: true);
         if (sp is null)
         {
             p.RespawnTime = Now + 1f; // QC: no spawnpoint yet, retry next second
             return false;
         }
+
+        // QC status_effects PutClientInServer hook (sv_status_effects.qc:133-147): a (re)spawning player starts
+        // with a clean status-effect store — StatusEffects_clearall so no burning/stunned/superweapon timer
+        // bleeds across a respawn (and the cleared state networks via the dirty-mark).
+        StatusEffectsCatalog.ClearAll(p);
+
+        // QC MUTATOR_HOOKFUNCTION(nades, PutClientInServer) (sv_nades.qc:470): nades_RemoveBonus(player) — a
+        // (re)spawning player's banked bonus + accrual is wiped so a bonus banked in a previous life doesn't
+        // carry into the new one. No-op when g_nades is off. Runs before the PlayerSpawn nades hook (which then
+        // re-assigns the offhand + nade_refire), matching the QC PutClientInServer→PlayerSpawn order.
+        XonoticGodot.Common.Gameplay.Nades.NadesMutator.OnPutClientInServer(p);
 
         SpawnSystem.PutPlayerInServer(p, sp.Value, warmup: IsWarmup?.Invoke() ?? false);
 
@@ -537,9 +775,29 @@ public sealed class ClientManager
         // reset the server-only per-player timers (QC PutPlayerInServer clears air/regen/contents state).
         PlayerStates?.Of(p).OnSpawn();
 
+        // [sv-handicap.init.defaults_to_one] QC Handicap_Initialize(this) (server/handicap.qc:16-23), called from
+        // PutClientInServer (server/client.qc:1240): reset the FORCED handicaps to 1 (no handicap) every (re)spawn
+        // so a stale forced handicap from a previous round/match doesn't bleed across, and refresh handicap_level.
+        // Runs BEFORE the PlayerSpawn mutator hook so the dynamic_handicap recompute (below) immediately overwrites
+        // the reset with the freshly-computed value, matching Base's PutClientInServer → dynamic_handicap order.
+        XonoticGodot.Common.Gameplay.Handicap.Initialize(p);
+
         // QC: MUTATOR_CALLHOOK(PlayerSpawn, spot, this) — fired after the shared spawn setup.
         var args = new MutatorHooks.PlayerSpawnArgs(p, sp.Value.Source);
         MutatorHooks.PlayerSpawn.Call(ref args);
+
+        // QC PutPlayerInServer (client.qc:815-821): fire the spawnpoint's .target on spawn — a map can wire a
+        // target_relay/trigger off the spot the player materialized on (lights, doors, scoring triggers). The
+        // assault/race hack temporarily nulls spot.target so those modes (whose spawnpoints chain checkpoints via
+        // .target) don't re-trigger the chain on every respawn. CTS is a Race variant (QC g_race covers it).
+        if (sp.Value.Source is { } spot)
+        {
+            bool suppressTarget = _match.GameType is Assault or Race or Cts;
+            string savedTarget = spot.Target;
+            if (suppressTarget) spot.Target = "";
+            MapMover.UseTargets(spot, p, null);
+            if (suppressTarget) spot.Target = savedTarget;
+        }
 
         p.Winning = false;          // QC: a fresh spawn clears the end-of-match winner latch
         OnClientSpawn?.Invoke(p);   // §5 spawn hooks (alivetime start, anticheat view reset)
@@ -560,7 +818,38 @@ public sealed class ClientManager
         ClientInfo info = _clients[idx];
         info.IsConnected = false;
 
+        // QC status_effects ClientDisconnect hook (sv_status_effects.qc:80-92): clear the leaving player's
+        // status effects (NORMAL removal — fires the removal sounds, "just to get rid of the pickup sound")
+        // so a stale burning/superweapon timer doesn't survive on a recycled player object.
+        StatusEffectsCatalog.RemoveAll(p, StatusEffectRemoval.Normal);
+        StatusEffectsCatalog.ClearAll(p);
+
+        // QC ClientDisconnect (client.qc:1305): if (this.vehicle) vehicles_exit(this.vehicle, VHEF_RELEASE) — a
+        // disconnecting pilot is ejected so the vehicle is freed for others (and the leaving player's object
+        // isn't left coupled to a live vehicle). VehicleBoarding.Exit is the same VHEF_RELEASE used by the
+        // rot-death path; a no-op when not in a vehicle.
+        if (p.Vehicle is not null)
+            VehicleBoarding.Exit(p);
+
+        // QC ClientDisconnect (client.qc:1335): player_powerups_remove_all(this, IS_PLAYER(this)) — strip the
+        // superweapon / unlimited item bits and play the power-off sound only if the leaver was a live player
+        // (an observer carries no powerups). Mirrors the death-time strip so a recycled player object is clean.
+        PlayerFrameLogic.PlayerPowerupsRemoveAll(p, !p.IsObserver);
+
+        // QC ClientDisconnect (client.qc:1318-1319): RemoveGrapplingHooks(this); Portal_ClearAll(this). A leaving
+        // player must drop any in-flight grappling-hook chain and tear down every portal they placed so neither
+        // outlives the owner (a dangling hook entity / an ownerless live portal). Hook removal lives in
+        // Common.Gameplay; Portal_ClearAll is a host hook (null on a bare/test host → no-op).
+        Hook.RemoveGrapplingHooks(p);
+        Porto.PortalClearAll?.Invoke(p);
+
         OnClientDisconnect?.Invoke(p); // §5 disconnect hooks (finalize stats, :part:, voter/timeout cleanup)
+
+        // QC MUTATOR_HOOKFUNCTION(<mode>, ClientDisconnect) (e.g. ctf_RemovePlayer): let the active gametype
+        // relinquish any objective this leaving player holds — a CTF carrier drops the flag where they stand and
+        // every flag back-referencing them (pass sender/target, dropper) is cleared — BEFORE the roster removal
+        // below, so the drop can still see the player. Default is a no-op for non-objective modes.
+        _match.GameType?.OnPlayerRemoved(p);
 
         _clients.RemoveAt(idx);
         _players.Remove(p);
@@ -574,6 +863,15 @@ public sealed class ClientManager
         p.CanPickupItems = false;    // [T35] QC drops FL_PICKUPITEMS with FL_CLIENT — a gone client can't pick up
         if (Api.Services is not null)
             Api.Entities.Remove(p);
+
+        // QC MUTATOR_CALLHOOK(ClientDisconnect, this): generic mutator roster hook. dynamic_handicap recomputes
+        // its score mean here (the departed client is already out of the roster, so the mean excludes them).
+        var disconnectArgs = new MutatorHooks.ClientDisconnectArgs(p);
+        MutatorHooks.ClientDisconnect.Call(ref disconnectArgs);
+
+        // QC ClientDisconnect tail (client.qc:3057): TeamBalance_RemoveExcessPlayers(this) — re-check 2-team
+        // balance now that this player has left (the leaver is already out of the roster above, so no ignore arg).
+        OnAfterClientDisconnect?.Invoke();
         return true;
     }
 

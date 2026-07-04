@@ -56,13 +56,25 @@ public static class WeaponFireDriver
 
         bool buttonAtck = input?.ButtonAttack1 ?? false;
         bool buttonAtck2 = input?.ButtonAttack2 ?? false;
+        // PHYS_INPUT_BUTTON_ZOOM | PHYS_INPUT_BUTTON_ZOOMSCRIPT (rifle.qc:16): the rifle re-aims from the eye
+        // while scoped. Mirrored onto the slot below alongside the fire buttons so the fire path can read it.
+        bool buttonZoom = input?.ButtonZoom ?? false;
+
+        // QC W_WeaponFrame (weaponsystem.qc:608-618): publish the +hook / offhand-fire button onto the player so
+        // the offhand-weapon think runs this tick — the grapple hook, the offhand blaster, and the nade
+        // prime/throw all read Entity.OffhandFirePressed from their PlayerPreThink hook (the headless analogue of
+        // the engine offhand_think dispatch). QC gates the key on `!actor.vehicle` and weaponUseForbidden; the
+        // forbidden gate below zeroes it alongside the fire buttons. The caller (WeaponThink) already returns while
+        // seated, but honor the `!actor.vehicle` gate explicitly here too so this PostThink write can never leave a
+        // stale un-gated press for a future seated consumer (matching the authoritative publish in OnClientMove).
+        player.OffhandFirePressed = player.Vehicle is null && (input?.ButtonHook ?? false);
 
         // QC W_WeaponFrame: weaponUseForbidden(actor) zeroes the fire buttons (round active-but-not-started OR
         // the ForbidWeaponUse mutator hook) but still allows weapon switching. The round_handler / Forbid
         // WeaponUse state isn't reachable from this driver, but honor the contract: a forbidden frame must not
         // fire while the switch machine below keeps running.
         if (WeaponUseForbidden(player))
-            buttonAtck = buttonAtck2 = false;
+            buttonAtck = buttonAtck2 = player.OffhandFirePressed = false;
 
         // QC W_WeaponFrame: if weaponLocked(actor) && state != WS_CLEAR -> run ONLY w_ready (become ready, no
         // fire, no switch) and return. weaponLocked covers game_stopped / player_blocked / Frozen / LockWeapon;
@@ -123,7 +135,7 @@ public static class WeaponFireDriver
             // thinks re-arm an attack from inside it (Electro W_Electro_CheckAttack streams orbs while ATCK2 is
             // held; MachineGun W_MachineGun_Attack_Burst spaces rounds; the auto re-think keeps firing). Those
             // re-fire paths read st.ButtonAttack(2) via PrepareAttack, so the buttons must be live here.
-            SetButtons(st, buttonAtck, buttonAtck2);
+            SetButtons(st, buttonAtck, buttonAtck2, buttonZoom);
 
             // ---- the scheduled weapon think (QC: fire the .weapon_think when weapon_nextthink elapses) ----
             // This drives the animtime timer: a fired weapon scheduled "become READY" after its animtime; a
@@ -162,16 +174,18 @@ public static class WeaponFireDriver
     // --- per-(actor,slot) held-button context, so Weapon.PrepareAttack can check the fire button is down ---
     // (QC reads PHYS_INPUT_BUTTON_ATCK directly; the headless weapons get it via the active slot state set by
     // the driver around each WrThink call.)
-    private static void SetButtons(WeaponSlotState st, bool atck, bool atck2)
+    private static void SetButtons(WeaponSlotState st, bool atck, bool atck2, bool zoom = false)
     {
         st.ButtonAttack = atck;
         st.ButtonAttack2 = atck2;
+        st.ButtonZoom = zoom;
     }
 
     private static void ClearButtons(WeaponSlotState st)
     {
         st.ButtonAttack = false;
         st.ButtonAttack2 = false;
+        st.ButtonZoom = false;
     }
 
     /// <summary>
@@ -237,6 +251,9 @@ public static class WeaponFireDriver
                 // the new weapon can raise once the drop animation has played.
                 st.SwitchingWeaponId = targetId;
                 Weapon? oldwep = CurrentWeaponOf(st);
+                // QC wr_gonethink: the weapon we're leaving should fire/release any state held (e.g. Hagar's loaded rockets).
+                if (oldwep is not null)
+                    oldwep.WrGoneThink(player, slot);
                 float dropDelay = oldwep?.SwitchDelayDrop() ?? 0f;
                 st.State = WeaponFireState.Drop;
                 // Switching cancels any in-progress reload: scheduling the drop think here overwrites the pending
@@ -273,6 +290,22 @@ public static class WeaponFireDriver
         newwep.WrSetup(player, slot); // QC newwep.wr_setup(...)
         st.State = WeaponFireState.Raise;
 
+        // [W14b Stage 4] animdecide DRAW set-site. The WS_RAISE transition (this is the port's WS_CLEAR→WS_RAISE
+        // "end switching" branch, weaponsystem.qc:539-561) is the weapon-raise moment; latch the DRAW upper-body
+        // action so a remote player visibly raises the new weapon (window = ANIM_VEC(draw, 1, 3) -> 0.333s). Base
+        // reserves ANIMACTION_DRAW in the getupperanim switch but never fires it; the design (LI3) wires it at this
+        // raise transition. restart = true (a re-equip should restart the draw). A dead player's death overlay still
+        // wins — GetUpperAnim gives DIE1/DIE2 absolute priority over any latched ACTIVE action — so a late raise can't
+        // stomp death; only the slot-0 raise drives the (single) per-player upper action.
+        if (slot.Index == 0)
+        {
+            float drawNow = Api.Services is not null ? Api.Clock.Time : 0f;
+            var (act, start) = AnimDecide.SetAction(
+                player.AnimUpperAction, player.AnimActionStart, AnimDecide.AnimUpperAction.Draw, drawNow, restart: true);
+            player.AnimUpperAction = act;
+            player.AnimActionStart = start;
+        }
+
         // Seed our clip load to the load of the weapon we switched to, if it's reloadable (QC weaponsystem.qc:
         // 552-559): clip_load = weapon_load[newwep.id]; clip_size = reloading_ammo. Else clip_load = clip_size = 0.
         if ((newwep.SpawnFlags & WeaponFlags.Reloadable) != 0 && newwep.ReloadingAmmo() != 0f)
@@ -307,13 +340,17 @@ public static class WeaponFireDriver
     }
 
     /// <summary>
-    /// QC <c>weaponUseForbidden</c> (weaponsystem.qc): the round is active but not yet started, or the
-    /// <c>ForbidWeaponUse</c> mutator hook says no — fire buttons are zeroed but switching stays allowed.
-    /// Neither the round_handler nor the ForbidWeaponUse hook is reachable from this headless driver, so this
-    /// is a faithful stub that always returns false today; it is the clean seam for that state when round
-    /// modes land. (The dead/game-stopped gating the original concern is already done by the caller.)
+    /// QC <c>weaponUseForbidden</c> (weaponsystem.qc:426): <c>round_handler_IsActive() &amp;&amp;
+    /// !round_handler_IsRoundStarted()</c> — a round-based mode is in its pre-round grace window (warmup /
+    /// countdown / end-delay), so the fire buttons are zeroed while switching stays allowed. The active
+    /// round handler lives in the server <see cref="GameWorld"/>, out of reach of this headless Common
+    /// driver, so the host wires it via <see cref="RoundFireForbidden"/>. (The <c>ForbidWeaponUse</c>
+    /// mutator hook half is not modeled — no port mutator forbids weapon use; the dead/game-stopped gating
+    /// is already done by the caller via <see cref="WeaponLocked"/>.)
     /// </summary>
-    private static bool WeaponUseForbidden(Entity player) => false;
+    public static Func<Entity, bool>? RoundFireForbidden { get; set; }
+
+    private static bool WeaponUseForbidden(Entity player) => RoundFireForbidden?.Invoke(player) ?? false;
 
     /// <summary>
     /// QC <c>weaponLocked</c> (weaponsystem.qc): the player can't fire at all — when locked the weapon system

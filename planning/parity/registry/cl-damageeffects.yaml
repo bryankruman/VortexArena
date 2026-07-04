@@ -1,0 +1,298 @@
+unit: cl-damageeffects
+category: effect
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-07-02"
+summary:
+  feature_count: 9
+  worst_gaps:
+    - "Attached damage effects (cl_damageeffect: flames/bleeding particles stuck to damaged players/objects, bone-nearest attach, lifetime scaled by damage) are entirely missing; the menu 'Damage effects' slider writes a cvar nothing reads."
+    - "Turret projectile impact FX + sounds (the whole DEATH_TURRET_* switch: plasma/electro impact, flac hagar-explode, mlrs/hk/hellion rocket-explode, machinegun ric, walker melee spark, tesla smallflash) are missing — turret shots explode invisibly and silently in the port."
+    - "Vehicle weapon impact FX + sounds (DEATH_VH_* switch) are missing except the raptor bomb-spread shellfrag burst — RACER_IMPACT / SPIDERBOT_MINIGUN_IMPACT / RAPTOR_CANNON_IMPACT etc. are registered in EffectsList but have zero emit sites."
+    - "The client-side blast application (per-entity falloff, damageforcescale push + event_damage on CLIENT-only entities — gibs, casings) is missing: explosions never shove existing gibs/casings around."
+    - "Hitscan impact gates diverge: a sky hit still emits the impact puff (Base suppresses ALL impact FX on Q3SURFACEFLAG_SKY; port at best mutes the ricochet, shotgun not even that), a shot that stopped in a player still paints the wall impact behind them (Base's !hitplayer gate), and impact particles are never tinted by the shooter's team color (particles_colormin/max)."
+features:
+  - id: cl-damageeffects.net.sv_broadcast
+    name: "Server DamageInfo broadcast entity (ENT_CLIENT_DAMAGEINFO encode: deathtype/org/dmg/radius/edge/force/species/colormap/silent)"
+    layer: [authority]
+    base_refs:
+      - "common/effects/qc/damageeffects.qc:Damage_DamageInfo (35)"
+      - "common/effects/qc/damageeffects.qc:Damage_DamageInfo_SendEntity (7)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:DamageInfoNetwork (1082, named no-op)"
+    constants:
+      - { name: "silent flag", base: "deathtype |= 0x8000 when !sound_allowed(MSG_BROADCAST, dmgowner)", port: "no wire bit; SoundSystem.SoundAllowedGate gates bot_sound_monopoly at server emission instead", match: false }
+      - { name: "force encoding", base: "dir 3x WriteChar rint(v*127) + length byte dmg_force/4 (max 1020)", port: "n/a (no wire entity; full-precision vectors on the EFF_NET channel)", match: false }
+      - { name: "dmg/radius/edge bytes", base: "bound(1,dmg,255) / bound(0,rad,255) / bound(1,edge,255)", port: "n/a", match: false }
+      - { name: "species bits", base: "bloodtype & BITS(4), BIT(7) = negative radius", port: "n/a", match: false }
+      - { name: "colormap", base: "teamplay ? dmgowner.team : dmgowner.clientcolors", port: "n/a", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: true
+    divergence_rationale: >-
+      Deliberate architecture swap: the port keeps gameplay headless and networks effects
+      server-side over the EFF_NET effect channel (EffectEmitter -> ServerNet.EffectNetSink, see
+      fx-effectinfo.emit.send_effect) instead of sending one compact DamageInfo entity for the
+      client to expand. DamageInfoNetwork exists as a named no-op with ZERO call sites (not even
+      wired into WeaponSplash.RadiusDamage — the doc comment's 'call site can be wired later' is
+      aspirational). The FEATURES the Base entity enabled (attached damage effects, client radius push,
+      species blood, team tint, vehicle/turret impact switches) are scored in their own rows —
+      this row only covers the wire mechanism itself.
+    gaps:
+      - "No compact per-blast event exists client-side, so every downstream consumer (rows below) that keyed off ENT_CLIENT_DAMAGEINFO had to be re-sourced server-side or is missing."
+      - "Bandwidth/precision profile differs (Base: ~16 bytes quantized per blast; port: one EFF_NET message per effect emission with float32 vectors)."
+    verification:
+      - { kind: code, ref: "DamageSystem.cs:1082-1086 body is empty ('intentionally empty (host renders the blast effect)'); repo-wide grep: DamageInfoNetwork has zero callers; no other encoder of ENT_CLIENT_DAMAGEINFO exists in src/ or game/", result: pass }
+    confidence: high
+    notes: "damage-pipeline.radius.splash already notes this no-op; this row is the canonical owner. The mutator hook MUTATOR_CALLHOOK(DamageInfo, ...) (damageeffects.qc:436, consumed by client nades) also has no port dispatch site."
+
+  - id: cl-damageeffects.net.cl_radius_apply
+    name: "Client-side blast application: radius falloff, damageforcescale push + event_damage on client entities (gibs/casings/ragdolls)"
+    layer: [presentation]
+    base_refs:
+      - "common/effects/qc/damageeffects.qc:NET_HANDLE(ENT_CLIENT_DAMAGEINFO) radius loop (259-305)"
+      - "common/effects/qc/damageeffects.qh:MIN_DAMAGEEXTRARADIUS/MAX_DAMAGEEXTRARADIUS/event_damage (22-26)"
+    port_refs: []
+    constants:
+      - { name: "MIN_DAMAGEEXTRARADIUS", base: "2", port: "none", match: false }
+      - { name: "MAX_DAMAGEEXTRARADIUS", base: "16", port: "16 exists server-side (WeaponSplash.cs:26) but that is damage-pipeline's row", match: false }
+      - { name: "falloff", base: "thisdmg = dmg + (edge-dmg) * (dist-extraradius)/rad; nearest-point-on-box distance", port: "none client-side", match: false }
+      - { name: "push", base: "velocity += damage_explosion_calcpush(damageforcescale*force, vel, damagepush_speedfactor); UNSET_ONGROUND", port: "none client-side", match: false }
+      - { name: "negative-radius forcemul", base: "BIT(7) of species -> forcemul -1 (attractive blast)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Client-only entities (gibs, brass casings) are never shoved by nearby explosions: ModelGibs has no event_damage/blast-push path, so a rocket landing next to a gib pile leaves it inert (Base scatters it)."
+      - "The it.silent flag and per-entity DamageEffect() call driven by this loop are likewise unreachable (see fx.attached_damage)."
+    verification:
+      - { kind: code, ref: "grep event_damage/push over game/client/ModelGibs.cs and EffectSystem.cs: no blast-reaction path; server-side RadiusDamage (damage-pipeline.radius.splash) only pushes SERVER entities", result: fail }
+    confidence: high
+    notes: "The authoritative knockback for networked entities is faithful in damage-pipeline (server RadiusDamage applies calcpush and the client sees velocity via snapshots) — what is missing is strictly the Base CLIENT-side sweep over non-networked cosmetic entities. Casings do exist in the port (EffectSystem.SpawnCasing) so the gap is observable."
+
+  - id: cl-damageeffects.impact.weapon_dispatch
+    name: "Per-weapon impact FX dispatch (wr_impacteffect at the blast point: backoff traceline, sky gate, hitscan-hit-player gate)"
+    layer: [presentation]
+    base_refs:
+      - "common/effects/qc/damageeffects.qc:NET_HANDLE weapon-impact tail (439-461)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:BulletImpactFx (606)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Machinegun.cs:FireOne (398-408)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Mortar.cs:343-344 (ImpactSound + GRENADE_EXPLODE emit)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:ImpactSound/ImpactSoundAt (282-297)"
+    constants:
+      - { name: "impact FX origin", base: "org2 = w_org + w_backoff * 2", port: "impactPos + backoff * 2 (BulletImpactFx:611)", match: true }
+      - { name: "particle velocity", base: "w_backoff * 1000", port: "backoff * 1000 (BulletImpactFx:611)", match: true }
+      - { name: "backoff source", base: "traceline(w_org - dir*16, w_org + dir*16, MOVE_NOMONSTERS); startsolid retry from -dir*40; else -force_dir", port: "per-weapon impact trace PlaneNormal, fallback -shot.Dir (Machinegun.cs:403); no startsolid retry needed (trace starts at gun)", match: false }
+      - { name: "sky gate", base: "Q3SURFACEFLAG_SKY suppresses the WHOLE wr_impacteffect (particles+sound+decal)", port: "machinegun/rifle/ok* only mute the ricochet on sky (Machinegun.cs:407-408, Rifle.cs:354); Shotgun.cs:246 passes NO silent flag (even the ric plays on sky); only Vaporizer.cs:259 gates the full impact FX on sky+noimpact", match: false }
+      - { name: "hitscan player gate", base: "!hitplayer || rad — no ground impact when a hitscan shot hit a player", port: "not implemented: WorldOnly impact trace paints the wall behind the victim", match: false }
+      - { name: "impact sound channel", base: "CH_SHOTS, VOL_BASE, ATTEN_NORM (per-weapon wr_impacteffect)", port: "SoundChannel.ShotsAuto, VolBase, AttenNorm (WeaponSplash.ImpactSound)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: partial
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: >-
+      Architecture: Base runs each weapon's wr_impacteffect CLIENT-side, keyed off the DamageInfo
+      deathtype; the port emits the same named effect + impact sound SERVER-side at the
+      explosion/impact call site and networks it over the effect channel. Equivalent visible
+      result when the gates agree; the gate mismatches below are unintended gaps, not part of
+      the divergence.
+    gaps:
+      - "Sky-surface hits still show the impact particle puff (Base suppresses all impact FX on Q3SURFACEFLAG_SKY; port machinegun-family weapons only silence the ric, and Shotgun.cs:246 passes no silent flag at all so even the ric can play on sky)."
+      - "A hitscan shot that stopped in a player still emits the wall impact behind them — Base's `if(!hitplayer || rad)` suppression is absent (port traces WorldOnly past the victim)."
+      - "The Weapon_ImpactEffect mutator hook (damageeffects.qc:458) has no port dispatch seam."
+      - "w_issilent per-recipient muting: Base flags the whole broadcast silent when sound_allowed fails; the port gates at SoundSystem emission (bot_sound_monopoly) — same audible outcome for the only Base trigger, different mechanism."
+    verification:
+      - { kind: code, ref: "Machinegun.cs FireOne emits MACHINEGUN_IMPACT via BulletImpactFx on every live shot; Mortar explode plays grenade_impact.wav + GRENADE_EXPLODE; live sink = ServerNet.EffectNetSink (verified live in fx-effectinfo.emit.send_effect)", result: pass }
+      - { kind: code, ref: "Machinegun.cs:407 — silent only feeds the ric branch of BulletImpactFx; Emit at 611 is unconditional -> sky/hitplayer gaps confirmed", result: fail }
+    confidence: high
+    notes: "The per-weapon effect NAMES and sound cues themselves are owned by the weapon-* units; this row owns the shared dispatch + gates. w_random is reproduced via Prandom in BulletImpactFx's 5%/0.25s ric throttle (that throttle is shotgun.qc behavior applied to all bullet weapons — flagged in weapon rows)."
+
+  - id: cl-damageeffects.impact.team_tint
+    name: "Team/player-color tinted impact particles (particles_colormin/max from the DamageInfo colormap byte)"
+    layer: [presentation]
+    base_refs:
+      - "common/effects/qc/damageeffects.qc:NET_HANDLE tcolor block (243-257)"
+    port_refs: []
+    constants:
+      - { name: "teamplay tcolor", base: "(dmg_colors - 1) * 0x11, else 0x00; | BIT(10) RENDER_COLORMAPPED", port: "none", match: false }
+      - { name: "palette", base: "particles_colormin = colormapPaletteColor(floor(tcolor/16), false); colormax = colormapPaletteColor(tcolor%16, true)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Impact effects that consume particles_colormin/max (crylink & team-colored weapon impacts) always render the effectinfo default color; the shooter's team/player color never reaches the particle system for impacts."
+    verification:
+      - { kind: code, ref: "EffectRequest carries ColorMin/ColorMax on the wire (EffectEmitter.cs) but no weapon-impact emit site passes shooter colors; grep colormapPaletteColor/particles_colormin over src/ + game/: no impact-path hits", result: fail }
+    confidence: medium
+    notes: "The wire capability exists (EFF_NET_COLOR_MIN/MAX, used by beams) so the fix is plumbing the shooter's team palette into the impact Emit calls. Whether the port's faithful particle backend even consumes per-emission tint for these blocks was not verified — hence medium."
+
+  - id: cl-damageeffects.fx.attached_damage
+    name: "Attached damage effects on hit entities (cl_damageeffect: flames/bleed particles stuck to the victim, bone-nearest attach)"
+    layer: [presentation]
+    base_refs:
+      - "common/effects/qc/damageeffects.qc:DamageEffect (131-203)"
+      - "common/effects/qc/damageeffects.qh:autocvar_cl_damageeffect* (10-16)"
+    port_refs:
+      - "game/menu/dialogs/DialogSettingsEffects.cs:127 (menu slider writes the cvar; nothing reads it)"
+    constants:
+      - { name: "cl_damageeffect", base: "1 (0=off, 1=skeletal only, 2=all models)", port: "menu slider only — dead cvar", match: false }
+      - { name: "cl_damageeffect_bones", base: "5 (max concurrent damages on a rigged mesh; non-skeletal limited to 1)", port: "none", match: false }
+      - { name: "lifetime", base: "bound(cl_damageeffect_lifetime_min=3, dmg * cl_damageeffect_lifetime=0.1, cl_damageeffect_lifetime_max=6) s", port: "none", match: false }
+      - { name: "bone blacklist", base: "master, knee_L, knee_R, leg_L, leg_R", port: "none", match: false }
+      - { name: "effect name", base: "damage_<wep.netname> (or wr_damageeffect_getname override)", port: "none", match: false }
+      - { name: "gentle gates", base: "skip when !cl_damageeffect || cl_gentle || cl_gentle_damage", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Victims shot with rockets/fire weapons never show the lingering damage_<weapon> particle effect attached to the nearest bone — a clearly visible Base combat cue (burning players)."
+      - "The Effects settings dialog exposes 'Damage effects: Disabled/Skeletal/All' but the cvar has zero consumers in game/client — a dead setting."
+    verification:
+      - { kind: code, ref: "grep cl_damageeffect over src/ game/ tests/: only DialogSettingsEffects.cs (writer), CVARS.md, and the 2026-06-14 graphics audit (which already flagged it dead)", result: fail }
+    confidence: high
+    notes: "Depends on a per-hit damage event reaching the client with deathtype + hit origin (row net.sv_broadcast) or an equivalent server-side emission at the victim. The damage_* effectinfo blocks themselves are catalog content owned by fx-effectinfo."
+
+  - id: cl-damageeffects.fx.attached_lifecycle
+    name: "Attached damage-effect lifecycle (DamageEffect_Think: ticrate, distribute, gib/respawn cleanup, first-person self-hide)"
+    layer: [presentation]
+    base_refs:
+      - "common/effects/qc/damageeffects.qc:DamageEffect_Think (84-114)"
+    port_refs: []
+    constants:
+      - { name: "cl_damageeffect_ticrate", base: "0.1 s between particle spawns", port: "none", match: false }
+      - { name: "cl_damageeffect_distribute", base: "1 — nextthink scaled by owner.total_damages", port: "none", match: false }
+      - { name: "cleanup", base: "expire at cnt; owner gibbed/disconnected (!modelindex || !drawmask); dead->alive edge (csqcmodel_isdead) clears effects so a respawn doesn't inherit corpse flames", port: "none", match: false }
+      - { name: "self-hide", base: "ISPLAYER_LOCAL && !chase_active -> skip particle spawn (still ticks)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Entire lifecycle absent (no attached effects exist to manage — see fx.attached_damage)."
+    verification:
+      - { kind: code, ref: "no attached damage-effect entity exists in game/client (EffectSystem has attached muzzleflashes only)", result: fail }
+    confidence: high
+    notes: "Split from fx.attached_damage because the think-side rules (distribute throttling, respawn-copy cleanup, first-person hiding) are independent behaviors a port must also get right, not just the spawn."
+
+  - id: cl-damageeffects.fx.species_bleed
+    name: "Species blood-type prefix + WEP_FLAG_BLEED gate (alien_/robot_/animal_ blood; objects don't bleed)"
+    layer: [presentation]
+    base_refs:
+      - "common/effects/qc/damageeffects.qc:species_prefix (116-129)"
+      - "common/effects/qc/damageeffects.qc:DamageEffect bleed branch (179-188)"
+    port_refs: []
+    constants:
+      - { name: "prefix map", base: "HUMAN '' / ALIEN alien_ / ROBOT_* robot_ / ANIMAL animal_ / RESERVED reserved_", port: "none", match: false }
+      - { name: "bleed gate", base: "WEP_FLAG_BLEED weapons: players get <species>damage_<wep>; non-player models return (objects don't bleed)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "All blood in the port is the single generic BLOOD effect (DamageSystem.cs:536 EffectEmitter.TeBlood) — alien (yellow-green) and robot (oil) player models bleed human red; the species byte has no wire path."
+    verification:
+      - { kind: code, ref: "grep species/alien_/robot_ over game/ and src Gameplay: no hits outside model asset names", result: fail }
+    confidence: high
+    notes: "Base sources species from the victim's playermodel (sv_model fields) into Damage_DamageInfo's bloodtype arg. The on-hit blood SPLASH itself (Violence_GibSplash) belongs to the gibs unit; this row owns only the species prefix + bleed-gate logic that lives in damageeffects.qc."
+
+  - id: cl-damageeffects.impact.vehicle_fx
+    name: "Vehicle weapon impact FX switch (DEATH_VH_*: per-weapon impact sounds + particles, raptor shellfrag toss)"
+    layer: [presentation]
+    base_refs:
+      - "common/effects/qc/damageeffects.qc:NET_HANDLE DEATH_ISVEHICLE switch (307-378)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs:640 (RAPTOR_BOMB_SPREAD emit at bomb burst)"
+      - "game/client/EffectSystem.cs:474-478 (RAPTOR_BOMB_SPREAD -> SpawnRaptorShellfrags)"
+      - "game/client/ModelGibs.cs:TossShellfrags (111)"
+    constants:
+      - { name: "raptor fragment burst", base: "3x RaptorCBShellfragToss at 120° yaw steps, vel = normalize + randomvec()*128; + RAPTOR_BOMB_SPREAD + SND_ROCKET_IMPACT", port: "shellfrags + spread ported (client reacts to the emission); the rocket-impact crack sound is NOT played", match: false }
+      - { name: "spiderbot minigun", base: "SND_RIC_RANDOM + EFFECT_SPIDERBOT_MINIGUN_IMPACT", port: "none", match: false }
+      - { name: "racer gun / rocket", base: "SND_LASERIMPACT + RACER_IMPACT / SND_ROCKET_IMPACT + RACER_ROCKET_EXPLODE", port: "none", match: false }
+      - { name: "raptor cannon / bomb", base: "SND_LASERIMPACT + RAPTOR_CANNON_IMPACT / SND_ROCKET_IMPACT + RAPTOR_BOMB_IMPACT", port: "none", match: false }
+      - { name: "bumblebee gun", base: "SND_VEH_BUMBLEBEE_IMPACT + BIGPLASMA_IMPACT", port: "none", match: false }
+      - { name: "vehicle death FX", base: "DEATH_VH_*_DEATH: SND_ROCKET_IMPACT ATTEN_LOW + EXPLOSION_BIG", port: "vehicles emit EXPLOSION_MEDIUM/BIG at death server-side (VehicleCommon/Racer/Raptor/Bumblebee) — owned by vehicle-* units", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: partial
+      audio: missing
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Vehicle weapon projectile/hitscan impacts show NO particles and play NO sound (racer gun+rocket, spiderbot minigun+rocket, raptor cannon+bomb, bumblebee gun): the impact effects are registered in EffectsList.cs:160-185 but have zero emit sites."
+      - "Raptor bomb burst is missing its SND_ROCKET_IMPACT crack (particles + shellfrags are live)."
+    verification:
+      - { kind: code, ref: "grep '\"RACER_IMPACT\"|\"SPIDERBOT_MINIGUN_IMPACT\"|\"RAPTOR_CANNON_IMPACT\"|\"RAPTOR_BOMB_IMPACT\"|\"BIGPLASMA_IMPACT\"' over src/+game/: only the EffectsList registrations; vehicle weapon fire paths emit muzzleflashes only", result: fail }
+      - { kind: test, ref: "tests/XonoticGodot.Tests/VehicleRuntimeTests.cs:410 Raptor_BombBurst_EmitsShellfragSpreadEffect", result: pass }
+    confidence: high
+    notes: "Vehicle-* units own the firing/damage logic; this row owns the impact-point presentation Base dispatches from the DamageInfo handler. The shellfrag client consumer is a faithful port of RaptorCBShellfragToss/Draw per ModelGibs.cs comments (gravity 0.15, avelocity jitter 15)."
+
+  - id: cl-damageeffects.impact.turret_fx
+    name: "Turret weapon impact FX switch (DEATH_TURRET_*: per-turret impact sounds + particles)"
+    layer: [presentation]
+    base_refs:
+      - "common/effects/qc/damageeffects.qc:NET_HANDLE DEATH_ISTURRET switch (381-434)"
+    port_refs: []
+    constants:
+      - { name: "ewheel", base: "SND_LASERIMPACT ATTEN_LOW + EFFECT_BLASTER_IMPACT", port: "none", match: false }
+      - { name: "flac", base: "EFFECT_HAGAR_EXPLODE + SND_FLACEXP_RANDOM", port: "none", match: false }
+      - { name: "mlrs/hk/walker-rocket/hellion", base: "SND_ROCKET_IMPACT ATTEN_LOW + EFFECT_ROCKET_EXPLODE", port: "none", match: false }
+      - { name: "machinegun/walker-gun", base: "SND_RIC_RANDOM + EFFECT_MACHINEGUN_IMPACT", port: "none", match: false }
+      - { name: "plasma", base: "SND_TUR_PLASMA_IMPACT ATTEN_LOW + EFFECT_ELECTRO_IMPACT", port: "none", match: false }
+      - { name: "walker melee", base: "SND_RIC_RANDOM ATTEN_LOW + EFFECT_TE_SPARK", port: "none", match: false }
+      - { name: "tesla", base: "te_smallflash", port: "none", match: false }
+      - { name: "phaser / crush", base: "no FX (empty cases)", port: "n/a", match: true }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: missing
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Every turret projectile/hitscan impact is invisible and silent: FlacTurret.cs:144/267, GuidedProjectile.cs:100 and TurretSpawn.cs:165 call WeaponSplash.RadiusDamage with no EffectEmitter.Emit / ImpactSound at the blast point (turrets only emit muzzleflashes and death FX)."
+    verification:
+      - { kind: code, ref: "grep EffectEmitter.Emit|ImpactSound over src/.../Turrets/: only muzzleflashes (BLASTER/MACHINEGUN/VORTEX_MUZZLEFLASH), the plasma beam, and turret-death ROCKET_EXPLODE/SMOKE — no impact-point emission", result: fail }
+    confidence: high
+    notes: "Straightforward fix pattern already proven by the player weapons: add Emit + ImpactSound at each turret projectile explode site. Turret-* units own damage/AI; the impact presentation constants live here."

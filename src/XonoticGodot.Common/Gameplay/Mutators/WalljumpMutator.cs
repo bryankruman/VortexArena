@@ -12,8 +12,8 @@ namespace XonoticGodot.Common.Gameplay;
 ///
 /// Ported: the nearby-wall trace (PlayerTouchWall, skipping NOIMPACT surfaces), the delay gate, the
 /// airborne / alive / unfrozen guards, the off-wall velocity impulse with the crouch-held downward slam,
-/// and the jump grant via the PlayerJump multijump out-flag plus the jump sound. The smoke-ring particle
-/// is emitted at the contact point once the effect/particle service is wired.
+/// and the jump grant via the PlayerJump multijump out-flag, the per-model jump voice, and the smoke-ring
+/// particle emitted at the wall contact point.
 /// </summary>
 [Mutator]
 public sealed class WalljumpMutator : MutatorBase
@@ -36,6 +36,13 @@ public sealed class WalljumpMutator : MutatorBase
     public override bool IsEnabled =>
         Api.Services is not null && Api.Cvars.GetFloat("g_walljump") != 0f;
 
+    // QC: MENUQC describe() — the per-mutator guide page text (common/mutators/mutator/walljump/walljump.qc:77-85).
+    // Two paragraphs; the %s fills resolve to COLORED_NAME(this) = "Wall jump" and strcat("^3", _("jump"), "^7") = "jump".
+    public override string? GuideDescription =>
+        "Wall jump is a mutator that enables jumping off walls for added mobility. " +
+        "To do a wall jump, tap jump when against a wall.\n\n" +
+        "This mutator adds a bit of versatility, allowing for more dynamic and unpredictable movement.";
+
     private HookHandler<MutatorHooks.PlayerJumpArgs>? _onJump;
 
     public override void Hook()
@@ -45,10 +52,17 @@ public sealed class WalljumpMutator : MutatorBase
 
         if (Api.Services is not null)
         {
-            float f = Api.Cvars.GetFloat("g_walljump_force");                  if (f != 0f) WallForce = f;
-            float xy = Api.Cvars.GetFloat("g_walljump_velocity_xy_factor");    if (xy != 0f) XyFactor = xy;
-            float z = Api.Cvars.GetFloat("g_walljump_velocity_z_factor");      if (z != 0f) ZFactor = z;
-            float d = Api.Cvars.GetFloat("g_walljump_delay");                  if (d != 0f) Delay = d;
+            // QC STATs read the autocvar unconditionally — 0 is a legal, meaningful value
+            // (e.g. g_walljump_velocity_z_factor 0 for a pure-horizontal wall jump), so honor an
+            // explicitly-set cvar even when it is 0 rather than masking it with the C# default.
+            // A registered/shipped cvar (mutators.cfg ships all four) returns a non-empty string;
+            // only fall back to the C# field default when the cvar is absent/unregistered.
+            if (IsSet("g_walljump_force")) WallForce = Api.Cvars.GetFloat("g_walljump_force");
+            if (IsSet("g_walljump_velocity_xy_factor")) XyFactor = Api.Cvars.GetFloat("g_walljump_velocity_xy_factor");
+            if (IsSet("g_walljump_velocity_z_factor")) ZFactor = Api.Cvars.GetFloat("g_walljump_velocity_z_factor");
+            if (IsSet("g_walljump_delay")) Delay = Api.Cvars.GetFloat("g_walljump_delay");
+
+            static bool IsSet(string name) => !string.IsNullOrEmpty(Api.Cvars.GetString(name));
         }
     }
 
@@ -90,12 +104,36 @@ public sealed class WalljumpMutator : MutatorBase
         if (player.ButtonCrouch) v.Z *= -1f;
         player.Velocity = v;
 
-        player.LastWallJumpTime = now;
-        player.OldOrigin = player.Origin; // QC also stashes oldvelocity; origin keeps the anti-stick reference
+        // QC #ifdef SVQC (walljump.qc:62-68): the stamps, the smoke ring, the jump voice and the anim
+        // action all run SERVER-SIDE ONLY. Base registers walljump on CSQC too (so the velocity impulse
+        // above predicts), but the block below is #ifdef SVQC and never runs in client prediction.
+        // The port shares one static PlayerJump chain across both processes, so guard on !Predicted:
+        // on the predicting client we apply only the (shared) impulse and let the server network the
+        // effect/sound — emitting them here too would DOUBLE the server's networked smoke ring + voice
+        // (a client-process EffectEmitter.Emit / SoundSystem call renders/plays locally via the client's
+        // RenderSink and sound backend).
+        if (!args.Predicted)
+        {
+            player.LastWallJumpTime = now;
+            // QC: player.oldvelocity = player.velocity — the POST-impulse velocity, an anti-stick reference.
+            // (Earlier the port wrote OldOrigin = Origin, which is the WRONG field: OldOrigin is the engine's
+            // render-interpolation anchor, so stamping it cancelled interpolation on every wall jump. The shared
+            // Entity.OldVelocity field — declared on the vehicles partial (Vehicles/VehicleCommon.cs) — carries the
+            // faithful QC .oldvelocity value.)
+            player.OldVelocity = player.Velocity;
 
-        // QC presentation: a smoke ring at the contact point, the jump voice, and the jump animation.
-        Api.Sound.Play(player, SoundChannel.Body, "player/jump.wav");
-        _ = hitPos; // smoke-ring effect spawns here once the effect/particle service lands
+            // QC: Send_Effect(EFFECT_SMOKE_RING, trace_endpos, plane_normal, 5) — smoke ring at the wall
+            // contact point, oriented along the plane normal.
+            EffectEmitter.Emit("SMOKE_RING", hitPos, planeNormal, 5);
+
+            // QC: PlayerSound(player, playersound_jump, CH_PLAYER, VOL_BASE, VOICETYPE_PLAYERSOUND, 1) — the
+            // per-model jump voice. "jump" resolves through the player's model .sounds manifest
+            // (QC LoadPlayerSounds: jump -> sound/player/<pack>/player/jump), falling back to the default pack.
+            // Passing the model's .sounds datafile (NOT null) is what makes the cue resolve to a shipped asset.
+            SoundSystem.PlayPlayerSound(player, "jump", Sounds.ModelSoundsFile(player.Model, (int)player.Skin),
+                SoundLevels.VolBase, SoundLevels.AttenNorm);
+            // QC also: animdecide_setaction(player, ANIMACTION_JUMP, true) — no anim-action seam in the port yet (see todos).
+        }
 
         args.Multijump = true; // QC: M_ARGV(2, bool) = true
         return false;

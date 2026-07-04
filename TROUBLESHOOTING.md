@@ -2,7 +2,8 @@
 
 Practical guide to the client-side movement-prediction + netcode knobs, the defensive behaviours behind them, and
 how to diagnose a regression. For the live pipeline tracer (`net_input_trace`) and its failure signatures, see
-**NET-DEBUGGING.md**. Deep design notes live in the `camera-drift-render-smoothing` project memory.
+**NET-DEBUGGING.md**. For frame hitches / FPS problems (the frame profiler, hitch classes, capture + report
+tooling), see **PERF-DEBUGGING.md**. Deep design notes live in the `camera-drift-render-smoothing` project memory.
 
 ## The model in one paragraph
 

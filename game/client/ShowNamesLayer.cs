@@ -66,9 +66,32 @@ public partial class ShowNamesLayer : Control
     /// own-name tag only draws in chase, exactly like <c>Draw_ShowNames</c>'s self branch.</summary>
     public bool ChaseActive { get; set; }
 
-    /// <summary>The local client's net id (QC <c>current_player + 1</c> / <c>player_localentnum</c>). Used to
-    /// pick out the local player's own tag (drawn only in chase, gated by <c>hud_shownames_self</c>).</summary>
+    /// <summary>The local client's net id (QC <c>player_localentnum</c>). Used to pick out the local player's own
+    /// tag (drawn only in chase, gated by <c>hud_shownames_self</c>) and to apply the QC enemy/self model-alpha
+    /// factor (the <c>this.sv_entnum == player_localentnum</c> arm of the entcs_GetAlpha branch).</summary>
     public int LocalNetId { get; set; }
+
+    /// <summary>The net id of the player the local client is currently VIEWING (QC <c>current_player + 1</c>): the
+    /// followed spectatee when spectating, else the local player. When this id is a remote in
+    /// <see cref="ClientNet.RemoteIds"/> (the spectatee case), its tag takes the QC self/spectatee branch — drawn
+    /// only with <c>hud_shownames_self</c> on, OR inside the 1-second spectatee-switch grace window.</summary>
+    public int CurrentViewedNetId { get; set; }
+
+    /// <summary>QC <c>spectatee_status</c> (0 = playing, &gt;0 = following a player). Together with
+    /// <see cref="SpectateeStatusChangedTime"/> it drives the 1-second grace window in which a freshly-followed
+    /// player's own tag stays visible even with <c>hud_shownames_self</c> off (<c>Draw_ShowNames</c>:48).</summary>
+    public int SpectateeStatus { get; set; }
+
+    /// <summary>QC <c>spectatee_status_changed_time</c>: the client time at which <see cref="SpectateeStatus"/> last
+    /// changed (drives the 1s grace window).</summary>
+    public float SpectateeStatusChangedTime { get; set; }
+
+    /// <summary>Whether the local client is NOT a live in-game player — observing (free-fly) or following a
+    /// spectatee (QC <c>spectatee_status != 0</c> ⇔ <c>!(IS_PLAYER(to) || INGAME(to))</c>). The server gives such a
+    /// recipient EVERY player's private entcs slice (<c>_entcs_send</c>: the
+    /// <c>!(IS_PLAYER(to) || INGAME(to))</c> arm), so on the client this forces <c>m_entcs_private</c> true for all
+    /// players — free spectating sees everyone's team-membership + health/armor.</summary>
+    public bool LocalIsSpectating { get; set; }
 
     /// <summary>Resolve a player's display name from its net id — the port's faithful <c>entcs_GetName</c>
     /// stand-in (the scoreboard name slice; the port has no separate entcs name stream). Returns "" when unknown;
@@ -106,6 +129,7 @@ public partial class ShowNamesLayer : Control
         public bool DrawDecolor;     // strip the name's own colors (decolorize rule)
         public int Health;           // entcs HEALTH slice (for the status bar)
         public int Armor;            // entcs ARMOR slice (for the status bar)
+        public int TeamId;           // entcs team (s.Colormap & 0xFF) — drives the QC playername() team tint
     }
 
     private readonly Dictionary<int, TagState> _tags = new();
@@ -153,25 +177,42 @@ public partial class ShowNamesLayer : Control
                 continue;
 
             bool isSelf = netId == LocalNetId;
-            // QC self branch (Draw_ShowNames: `if (this.sv_entnum == current_player + 1)`): the own tag draws only
-            // in chase, gated by hud_shownames_self. NOTE: the local player is predicted, not interpolated, so it is
-            // never in ClientNet.RemoteIds (HandleSnapshot skips netId == LocalNetId) — so on this path the self
-            // branch is effectively never reached. The gate is kept verbatim for parity (and so a future
-            // self-as-remote feed during chase/spectate slots in here unchanged); the chase own-tag is a deferral.
-            if (isSelf)
+            // QC self branch (Draw_ShowNames:42 `if (this.sv_entnum == current_player + 1)` — "self or spectatee"):
+            // the tag of the player you are VIEWING. When following a spectatee, current_player is that followed
+            // player, who IS a remote in ClientNet.RemoteIds — so this branch genuinely runs for the spectatee tag.
+            // (The truly-local predicted player is never in RemoteIds, so the chase own-tag still can't draw here;
+            // that case is a deferral, but the spectatee arm below is live.)
+            bool isViewed = netId == CurrentViewedNetId;
+            if (isViewed)
             {
                 if (!ChaseActive)
                     continue;
-                if (!CvarBool("hud_shownames_self"))
+                // QC:47-51 — suppress unless hud_shownames_self, OR we're inside the 1s spectatee-switch grace
+                // window (spectatee_status > 0 && time <= spectatee_status_changed_time + 1).
+                bool graceWindow = SpectateeStatus > 0 && now <= SpectateeStatusChangedTime + 1f;
+                if (!CvarBool("hud_shownames_self") && !graceWindow)
                     continue;
             }
 
-            // sameteam: same non-zero team as the local client (QC entcs.m_entcs_private → it.sameteam).
-            bool sameteam = teamplay && (s.Colormap & 0xFF) == LocalTeam && !isSelf;
+            // QC entcs.m_entcs_private → it.sameteam (Draw_ShowNames_All:237-248). m_entcs_private is set on the
+            // client iff the server sent this player's PRIVATE entcs slice (ent_cs.qc ReadEntcs:359 — the ENTNUM
+            // sentinel bit), and the server (`_entcs_send`) sends it iff `radar_showenemies || SAME_TEAM(to,player)
+            // || !(IS_PLAYER(to) || INGAME(to))`. Reproduce that exact gate here so the authority matches QC (the
+            // old (Colormap&0xFF)==LocalTeam compare ignored radar_showenemies and the observer arm): a teammate by
+            // colormap, OR radar_showenemies is set, OR the local client is observing/spectating (not a live
+            // in-game player → gets everyone's private slice). Self never takes the sameteam arm in QC (the self
+            // branch is handled above; the private slice for self is the !sameteam||self entcs_GetAlpha case).
+            bool sameTeamColor = teamplay && LocalTeam != Teams.None && (s.Colormap & 0xFF) == LocalTeam;
+            bool radarShowEnemies = CvarBool("radar_showenemies");
+            bool entcsPrivate = !isSelf && (sameTeamColor || radarShowEnemies || LocalIsSpectating);
+            // QC `it.sameteam = entcs.m_entcs_private` — same flag drives the team/enemy gate AND the status bar.
+            bool sameteam = entcsPrivate;
             bool dead = (s.Flags & NetEntityFlags.Dead) != 0;
 
-            // QC: `if (!this.sameteam && !autocvar_hud_shownames_enemies) return;`
-            if (!sameteam && !isSelf && !CvarBool("hud_shownames_enemies"))
+            // QC: `if (!this.sameteam && !autocvar_hud_shownames_enemies) return;`. The viewed player (self in chase
+            // / the followed spectatee) already passed the self-branch above — in QC it carries the private entcs
+            // slice (so sameteam) and is never enemy-gated here; exempt it the same way.
+            if (!sameteam && !isViewed && !CvarBool("hud_shownames_enemies"))
                 continue;
 
             TagState tag = GetTag(netId);
@@ -264,9 +305,20 @@ public partial class ShowNamesLayer : Control
                 tag.Alpha = MathF.Min(1f, tag.Alpha + SHOWNAMES_FADESPEED * frametime);
             }
 
-            // QC: a = autocvar_hud_shownames_alpha * this.alpha (entcs_GetAlpha factor is the remote model alpha,
-            // which the port doesn't expose per-remote — left at 1, the QC `if (f == 0) f = 1` no-op outcome).
+            // QC:131-138 — a = autocvar_hud_shownames_alpha * this.alpha, then for enemies OR the local player the
+            // tag alpha is scaled by entcs_GetAlpha(): the remote player's CSQC model render alpha, so a fading model
+            // (spawn shield / invisibility / Cloaked / respawn fade) fades its tag with it. The port's per-entity
+            // render alpha is NetEntityState.Alpha (0 = the default "opaque", networked as 1..254 = alpha/255).
             float a = CvarF("hud_shownames_alpha", 0.7f) * tag.Alpha;
+            if (!sameteam || netId == LocalNetId)
+            {
+                // QC entcs_GetAlpha: model alpha; `if (f == 0) f = 1; if (f < 0) f = 0;`. NetEntityState.Alpha 0
+                // means opaque (never networked) → f = 1; otherwise f = Alpha/255 (clamped 0..1).
+                float f = s.Alpha == 0 ? 1f : s.Alpha / 255f;
+                if (f < 0f) f = 0f;
+                if (f > 1f) f = 1f;
+                a *= f;
+            }
             if (a < AlphaMinVisible)
             {
                 tag.BoxValid = false;
@@ -341,11 +393,26 @@ public partial class ShowNamesLayer : Control
             tag.Resize = resize;
             tag.DrawStatus = drawStatus;
             tag.DrawDecolor = (decolorize == 1 && teamplay) || decolorize == 2;
-            tag.Health = s.Health;
-            tag.Armor = s.Armor;
+            // QC Draw_ShowNames_All:237-248 — healthvalue / RES_ARMOR are copied from the entcs ONLY under
+            // m_entcs_private; an enemy slice zeroes them. The server already withholds enemy health/armor
+            // (ServerNet.RelevantEntitiesFor zeroes them for enemy recipients), so this is the matching client-side
+            // gate: read the slice only when private, mirroring QC's enemy zeroing even if a future stream leaks it.
+            tag.Health = entcsPrivate ? s.Health : 0;
+            tag.Armor = entcsPrivate ? s.Armor : 0;
+            // QC entcs_GetTeam: the team id (clientColors & 15 == Colormap & 0xFF) drives the QC playername()
+            // team-tint applied to decolorized teammate names (Team_ColorCode(teamid) prepended after strdecolorize).
+            tag.TeamId = s.Colormap & 0xFF;
 
             _drawIds.Add(netId);
         }
+
+        // ---- synthetic self-tag (QC Draw_ShowNames:42 self/spectatee branch for the local predicted player) ----
+        // The local predicted player is never in ClientNet.RemoteIds (HandleSnapshot skips LocalNetId), so the
+        // foreach above can't reach the own tag. When chase_active is on and hud_shownames_self is set (or the
+        // 1s spectatee-switch grace window is active), synthesise the local player's tag from the predicted
+        // origin and live Health/Armor stats, mirroring QC's self entry with `sameteam = true` (the server
+        // always gives the local player its own private entcs slice).
+        TryDrawSelfTag(ids, now, frametime, offset, vp, teamplay, viewOrigin);
 
         // ---- pass 2: draw (QC the per-tag drawing after the alpha math) — reads the pass-1 draw params ----
         Font font = HudPanel.HudFont ?? ThemeDB.FallbackFont;
@@ -390,7 +457,8 @@ public partial class ShowNamesLayer : Control
             string name = NameResolver?.Invoke(netId) ?? "";
             if (string.IsNullOrEmpty(name))
                 continue;
-            DrawName(font, o, name, fontsizeCv * resize, a, tag.DrawDecolor);
+            // QC namewidth = mySize.x: the (resized) tag box width; textShortenToWidth clamps the name to it.
+            DrawName(font, o, name, fontsizeCv * resize, a, tag.DrawDecolor, mySize.X, tag.TeamId);
         }
 
         PruneStaleTags();
@@ -400,26 +468,33 @@ public partial class ShowNamesLayer : Control
     //  Drawing helpers
     // =====================================================================================================
 
-    /// <summary>Draw the centered, optionally-decolorized color-coded name (QC drawcolorcodedstring). The name is
-    /// centered on the projected anchor X like QC (myPos.x = o.x - width/2).</summary>
-    private void DrawName(Font font, Vector2 o, string name, float fontPx, float alpha, bool decolor)
+    /// <summary>Draw the centered, optionally-decolorized color-coded name (QC <c>drawcolorcodedstring</c>). The name
+    /// is centered on the projected anchor X like QC (<c>myPos.x = o.x - width/2</c>) and clamped to the tag box
+    /// width <paramref name="maxWidth"/> via the QC <c>textShortenToWidth</c> rule (truncate + append "…" when it
+    /// overflows). QC's <c>drawcolorcodedstring</c> has no drop-shadow, so neither does this.
+    /// When <paramref name="decolor"/> is true the name's own <c>^</c>-codes are stripped and the team color CODE
+    /// (<c>Team_ColorCode(teamid)</c>) is prepended, exactly as QC's <c>playername(s, team, true)</c> does
+    /// (<c>strcat(Team_ColorCode(teamid), strdecolorize(name))</c>); the rebuilt string flows through the same
+    /// color-coded path, so the tint is the engine palette colour of that code. <paramref name="teamId"/> = team.</summary>
+    private void DrawName(Font font, Vector2 o, string name, float fontPx, float alpha, bool decolor, float maxWidth, int teamId)
     {
         int size = Mathf.Max(6, Mathf.RoundToInt(fontPx));
         if (decolor)
         {
-            // QC playername(s, team, true) strips the name's own ^codes (the team tint is applied by color);
-            // we render the stripped text in the local-readable white so a teammate's name is uniform.
-            string plain = HudText.Strip(name);
-            float w = font.GetStringSize(plain, HorizontalAlignment.Left, -1f, size).X;
-            var at = new Vector2(o.X - w * 0.5f, o.Y - size);
-            var col = new Color(1f, 1f, 1f, alpha);
-            DrawString(font, at + new Vector2(1f, 1f), plain, HorizontalAlignment.Left, -1f, size, new Color(0f, 0f, 0f, alpha * 0.7f));
-            DrawString(font, at, plain, HorizontalAlignment.Left, -1f, size, col);
-            return;
+            // QC playername(s, team, true) (util.qc:2178): strcat(Team_ColorCode(teamid), strdecolorize(thename)).
+            // It strips the name's own ^codes then PREPENDS the team's color CODE (^1/^4/^3/^6 per teams.qh:26-29 /
+            // Team_ColorCode), and the result is rendered by drawcolorcodedstring — so the tint is the ENGINE
+            // palette colour of that code, not the Team_ColorRGB minimap table. Reproduce exactly by rebuilding the
+            // string and routing it through the normal color-coded path (which uses the same engine palette).
+            name = TeamColorCode(teamId) + HudText.Strip(name);
+            // decolor falls through to the color-coded layout below (a single team-coloured run).
         }
 
-        // Color-coded: lay out the runs left-to-right, centered on o.X.
+        // Color-coded: lay out the runs left-to-right, centered on o.X. The color codes carry no width (QC
+        // stringwidth_colors), so the width clamp counts only the printable glyphs — done on the joined text and
+        // re-applied to the runs so the same characters are dropped from the end.
         var runs = HudText.Parse(name, new Color(1f, 1f, 1f, alpha));
+        runs = ShortenRunsToWidth(font, runs, size, maxWidth);
         float total = 0f;
         foreach (HudText.Run run in runs)
             total += font.GetStringSize(run.Text, HorizontalAlignment.Left, -1f, size).X;
@@ -428,25 +503,213 @@ public partial class ShowNamesLayer : Control
         foreach (HudText.Run run in runs)
         {
             var rc = new Color(run.Color.R, run.Color.G, run.Color.B, alpha);
-            DrawString(font, new Vector2(x + 1f, y + 1f), run.Text, HorizontalAlignment.Left, -1f, size, new Color(0f, 0f, 0f, alpha * 0.7f));
             DrawString(font, new Vector2(x, y), run.Text, HorizontalAlignment.Left, -1f, size, rc);
             x += font.GetStringSize(run.Text, HorizontalAlignment.Left, -1f, size).X;
         }
     }
 
-    /// <summary>Draw one status sub-bar (QC HUD_Panel_DrawProgressBar, horizontal). <paramref name="rightAlign"/>
-    /// mirrors baralign 1 (health, fills from the right edge) vs 0 (armor, fills from the left).</summary>
+    /// <summary>QC <c>textShortenToWidth</c> with <c>stringwidth_colors</c> (color codes are zero-width) applied to a
+    /// parsed run list: only the printable glyphs count toward the width, so the clamp is computed on the joined
+    /// visible text and the same number of trailing characters is dropped from the runs (the "…" lands in the last
+    /// surviving run's color). Returns the input unchanged when it already fits.</summary>
+    private static List<HudText.Run> ShortenRunsToWidth(Font font, List<HudText.Run> runs, int size, float maxWidth)
+    {
+        if (maxWidth <= 0f || runs.Count == 0)
+            return runs;
+        float total = 0f;
+        foreach (HudText.Run r in runs)
+            total += font.GetStringSize(r.Text, HorizontalAlignment.Left, -1f, size).X;
+        if (total <= maxWidth)
+            return runs;
+
+        const string ellipsis = "...";
+        float budget = maxWidth - font.GetStringSize(ellipsis, HorizontalAlignment.Left, -1f, size).X;
+        var result = new List<HudText.Run>(runs.Count);
+        float used = 0f;
+        Color lastColor = runs[runs.Count - 1].Color;
+        foreach (HudText.Run run in runs)
+        {
+            // Take as many leading characters of this run as the remaining budget allows.
+            int take = run.Text.Length;
+            while (take > 0)
+            {
+                float w = font.GetStringSize(run.Text.Substring(0, take), HorizontalAlignment.Left, -1f, size).X;
+                if (used + w <= budget) break;
+                take--;
+            }
+            if (take > 0)
+            {
+                result.Add(new HudText.Run(run.Text.Substring(0, take), run.Color));
+                used += font.GetStringSize(run.Text.Substring(0, take), HorizontalAlignment.Left, -1f, size).X;
+                lastColor = run.Color;
+            }
+            if (take < run.Text.Length)
+                break; // budget exhausted mid-run; stop and append the ellipsis
+        }
+        result.Add(new HudText.Run(ellipsis, lastColor));
+        return result;
+    }
+
+    /// <summary>Draw one status sub-bar (QC <c>HUD_Panel_DrawProgressBar</c> with the <c>"nametag_statusbar"</c> skin
+    /// image, horizontal). <paramref name="rightAlign"/> mirrors baralign 1 (health, fills from the right edge) vs 0
+    /// (armor, fills from the left). The backing (a dark rect drawn BEFORE calling this, matching QC's explicit
+    /// <c>drawfill(… '0.7 0.7 0.7' …)</c> highlight) is not drawn here — it is drawn by the caller.
+    /// Uses the <c>nametag_statusbar</c> texture from the active HUD skin (gfx/hud/&lt;skin&gt;/ with default
+    /// fall-through), falling back to a flat colored rect when the art is missing — the same priority QC's
+    /// <c>HUD_Panel_DrawProgressBar</c> has (precache_pic fall-through to "gfx/hud/default/progressbar").</summary>
     private void DrawStatusBar(Rect2 area, float fraction, Color fill, bool rightAlign)
     {
         if (fraction <= 0f || fill.A <= 0f) return;
         if (fraction > 1f) fraction = 1f;
-        // backing
-        DrawRect(area, new Color(0f, 0f, 0f, fill.A * 0.5f));
         float w = area.Size.X * fraction;
         Vector2 pos = rightAlign
             ? new Vector2(area.Position.X + (area.Size.X - w), area.Position.Y)
             : area.Position;
-        DrawRect(new Rect2(pos, new Vector2(w, area.Size.Y)), fill);
+        var fillRect = new Rect2(pos, new Vector2(w, area.Size.Y));
+        // QC HUD_Panel_DrawProgressBar("nametag_statusbar"): try the skin image first, then the generic
+        // progressbar skin, then a flat rect — matching QC's precache_pic fall-through order.
+        Texture2D? tex = TextureCache.GetFirst(
+            $"gfx/hud/{HudSkin.SkinName}/nametag_statusbar",
+            "gfx/hud/default/nametag_statusbar",
+            $"gfx/hud/{HudSkin.SkinName}/progressbar",
+            "gfx/hud/default/progressbar");
+        if (tex is not null)
+            DrawTextureRect(tex, fillRect, false, fill);
+        else
+            DrawRect(fillRect, fill);
+    }
+
+    // =====================================================================================================
+    //  Team-color + self-tag helpers
+    // =====================================================================================================
+
+    /// <summary>QC <c>Team_ColorCode</c> (common/teams.qh:63-74) — the per-team color CODE prepended by
+    /// <c>playername(s, team, true)</c> to a decolorized name (then rendered by <c>drawcolorcodedstring</c>, so the
+    /// visible tint is the engine palette colour of this code). The codes are <c>COL_TEAM_*</c> (teams.qh:26-29):
+    /// red <c>^1</c>, blue <c>^4</c>, yellow <c>^3</c>, pink <c>^6</c>; fallback <c>^7</c> (white) for no team / FFA.
+    /// Team ids are the colormap-derived NUM_TEAM values (Teams.Red=4 / Blue=13 / Yellow=12 / Pink=9).</summary>
+    private static string TeamColorCode(int teamId) => teamId switch
+    {
+        Teams.Red    => "^1", // COL_TEAM_1
+        Teams.Blue   => "^4", // COL_TEAM_2
+        Teams.Yellow => "^3", // COL_TEAM_3
+        Teams.Pink   => "^6", // COL_TEAM_4
+        _            => "^7", // no team / FFA
+    };
+
+    /// <summary>Synthesise the local predicted player's own tag when <c>chase_active</c> is on and
+    /// <c>hud_shownames_self</c> is set (or the 1s spectatee-switch grace window is active). The local player
+    /// is never in <see cref="ClientNet.RemoteIds"/> (HandleSnapshot skips <see cref="LocalNetId"/>), so this
+    /// pass injects it using <see cref="ClientNet.PredictedOrigin"/> and live <c>Health</c>/<c>Armor</c>, matching
+    /// QC's <c>Draw_ShowNames</c>:42 self entry with <c>sameteam = true</c> (the server always gives the local
+    /// player its own private entcs slice). Modifies <see cref="_drawIds"/> + <see cref="_tags"/> in place.</summary>
+    private void TryDrawSelfTag(int[] remoteIds, float now, float frametime, float offset,
+                                Vector2 vp, bool teamplay, NVec3 viewOrigin)
+    {
+        if (!ChaseActive || LocalNetId == 0 || Net is null)
+            return;
+        // QC self branch fires only for the VIEWED player (`this.sv_entnum == current_player + 1`). The local
+        // player is the viewed one only when NOT following a remote spectatee (CurrentViewedNetId == LocalNetId);
+        // while spectating someone else, the spectatee's tag is the one handled by the main loop, and the local
+        // observer's own slot must NOT get a synthesised tag (QC never draws it).
+        if (CurrentViewedNetId != LocalNetId)
+            return;
+        // Skip if the local net id is already in RemoteIds (shouldn't happen, but guard it).
+        foreach (int rid in remoteIds) if (rid == LocalNetId) return;
+
+        bool selfGrace = SpectateeStatus > 0 && now <= SpectateeStatusChangedTime + 1f;
+        if (!CvarBool("hud_shownames_self") && !selfGrace)
+            return;
+
+        NVec3 selfOrigin = Net.PredictedOrigin;
+        if (!float.IsFinite(selfOrigin.X) || !float.IsFinite(selfOrigin.Y) || !float.IsFinite(selfOrigin.Z))
+            return;
+
+        // QC Draw_ShowNames_All: `dead = entcs_IsDead(i) || entcs_IsSpectating(i)`. Prefer the networked Dead flag
+        // from the captured local entcs slice (csqcmodel_isdead), falling back to the owner Health<=0 stat; OR in the
+        // observer case (free-fly: SpectateeStatus == LocalNetId) which entcs_IsSpectating would also mark dead.
+        bool selfDead = (Net.LocalState is { } ls && (ls.Flags & NetEntityFlags.Dead) != 0)
+                        || Net.Health <= 0
+                        || (SpectateeStatus != 0 && SpectateeStatus == LocalNetId);
+        TagState selfTag = GetTag(LocalNetId);
+        selfTag.Touched = _generation;
+        selfTag.Origin = selfOrigin;
+
+        // Projection
+        NVec3 selfTagWorld = selfOrigin + new NVec3(0f, 0f, offset);
+        bool selfOnScreen = Project(selfTagWorld, out Vector2 selfO, out bool selfBehind);
+        bool selfOffScreen = selfBehind || !selfOnScreen
+                             || selfO.X < 0f || selfO.Y < 0f || selfO.X > vp.X || selfO.Y > vp.Y;
+
+        // Fade ramp — self uses the sameteam branch (always private slice) with dead slow-fade and offscreen fade.
+        if (!selfTag.HadFadeDelay) { selfTag.FadeDelay = now + SHOWNAMES_FADEDELAY; selfTag.HadFadeDelay = true; }
+        if (selfDead)
+            selfTag.Alpha = MathF.Max(0f, selfTag.Alpha - SHOWNAMES_FADESPEED * 0.25f * frametime);
+        else if (selfOffScreen)
+            selfTag.Alpha = MathF.Max(0f, selfTag.Alpha - SHOWNAMES_FADESPEED * frametime);
+        else
+            selfTag.Alpha = MathF.Min(1f, selfTag.Alpha + SHOWNAMES_FADESPEED * frametime);
+
+        // QC `a = alpha * this.alpha`; for the self case entcs_GetAlpha is also applied (the
+        // `this.sv_entnum == player_localentnum` arm), but the local player's model alpha is 1 (no networked
+        // fade for the predicted self), so it is a no-op here.
+        float selfA = CvarF("hud_shownames_alpha", 0.7f) * selfTag.Alpha;
+        if (selfA < AlphaMinVisible) { selfTag.BoxValid = false; return; }
+
+        float selfDist = Vlen(selfOrigin - viewOrigin);
+        float selfMaxDistCv = CvarF("hud_shownames_maxdistance", 5000f);
+        float selfMinDist = CvarF("hud_shownames_mindistance", 1000f);
+        if (selfMaxDistCv != 0f)
+        {
+            float selfMaxDist = MathF.Min(selfMaxDistCv, MaxShotDistance);
+            if (selfDist >= selfMaxDist) { selfTag.BoxValid = false; return; }
+            if (selfDist >= selfMinDist)
+            {
+                float selfF = selfMaxDistCv - selfMinDist;
+                if (selfF > 0f) selfA *= (selfF - MathF.Max(0f, selfDist - selfMinDist)) / selfF;
+            }
+        }
+        else if (selfDist >= MaxShotDistance) { selfTag.BoxValid = false; return; }
+        if (selfA <= 0f || selfBehind || !selfOnScreen) { selfTag.BoxValid = false; return; }
+
+        float selfResize = 1f;
+        if (CvarBool("hud_shownames_resize") && selfDist >= selfMinDist)
+        {
+            float selfF = selfMaxDistCv - selfMinDist;
+            if (selfF > 0f) selfResize = 0.5f + 0.5f * (selfF - MathF.Max(0f, selfDist - selfMinDist)) / selfF;
+        }
+
+        float selfFontsize = CvarF("hud_shownames_fontsize", 12f);
+        float selfAspect = CvarF("hud_shownames_aspect", 8f);
+        Vector2 selfMySize = new(selfAspect * selfFontsize, selfFontsize);
+        Vector2 selfMyPos = new(selfO.X - 0.5f * selfMySize.X, selfO.Y - selfMySize.Y);
+        selfMySize.X *= selfResize; selfMySize.Y *= selfResize;
+        selfMyPos.X += 0.5f * (selfMySize.X / selfResize - selfMySize.X);
+        selfMyPos.Y += (selfMySize.Y / selfResize - selfMySize.Y);
+        selfTag.BoxOrg = selfMyPos + selfMySize / 2f;
+        selfTag.BoxOfs = selfMySize / 2f;
+
+        bool selfDrawStatus = CvarBool("hud_shownames_status") && !selfDead;
+        float selfBarH = CvarF("hud_shownames_statusbar_height", 4f);
+        if (selfDrawStatus)
+        {
+            Vector2 sz = new(0.5f * selfMySize.X, selfResize * selfBarH);
+            selfTag.BoxOfs.X = MathF.Max(selfMySize.X / 2f, sz.X);
+            selfTag.BoxOfs.Y += sz.Y / 2f;
+            selfTag.BoxOrg.Y = selfMyPos.Y + (selfMySize.Y + sz.Y) / 2f;
+        }
+        selfTag.BoxValid = true;
+
+        int selfDecolorize = (int)CvarF("hud_shownames_decolorize", 1f);
+        selfTag.ScreenAnchor = selfO;
+        selfTag.DrawAlpha = selfA;
+        selfTag.Resize = selfResize;
+        selfTag.DrawStatus = selfDrawStatus;
+        selfTag.DrawDecolor = (selfDecolorize == 1 && teamplay) || selfDecolorize == 2;
+        selfTag.Health = Net.Health;
+        selfTag.Armor = Net.Armor;
+        selfTag.TeamId = LocalTeam;
+        _drawIds.Add(LocalNetId);
     }
 
     // =====================================================================================================

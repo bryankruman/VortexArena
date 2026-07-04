@@ -60,7 +60,7 @@ namespace XonoticGodot.Common.Framework
         public float RespawnTimeMover;// QC .respawntime — breakable/counter re-enable delay
 
         // --- targeting (QC .target/.target2/.target3/.target4 .targetname .killtarget .delay) ---
-        public string Target2 = "";   // QC .target2
+        // Target2 is the shared field on Entity.cs; Target3/Target4 are mapobject-only extras:
         public string Target3 = "";   // QC .target3
         public string Target4 = "";   // QC .target4
         public string KillTarget = "";// QC .killtarget
@@ -75,6 +75,17 @@ namespace XonoticGodot.Common.Framework
         public string Noise2 = "";    // QC .noise2 — start/move sound
         public float Volume;          // QC .volume — sound volume (0-1, default set by spawnfunc)
         public float Atten;           // QC .atten — sound attenuation (0 = global, higher = tighter radius)
+
+        // --- legacy plat sound overrides (QC .sound1 .sound2 — backwards-compat for old maps, plat.qc) ---
+        // QC plat_spawn: `if (this.sound1) this.noise = this.sound1; if (this.sound2) this.noise1 = this.sound2;`
+        // ("backwards compatibility because people don't use already existing fields"). The `sounds` selector
+        // itself reuses the existing Entity.Sounds (EntityMapObjectStateExtra.cs).
+        public string Sound1 = "";    // QC .sound1 — legacy plat move-sound override
+        public string Sound2 = "";    // QC .sound2 — legacy plat stop-sound override
+
+        // --- per-corner / per-mover ease curve string (QC .platmovetype — "start end [force]") ---
+        // Parsed by SUB_SetPlatMoveType into PlatMoveStart/PlatMoveEnd (path_corner, func_train, func_plat).
+        public string Platmovetype = ""; // QC .platmovetype — raw spawn-key string ("" = default linear)
 
         // NOTE: QC .pushltime (jumppad/teleport effect debounce) is promoted on the partial Entity by the
         // damage pipeline (Damage/DamageEntityState.cs PushLTime) — it is the SAME QC field reused for the
@@ -106,8 +117,16 @@ namespace XonoticGodot.Common.Framework
         public Vector3 FinalDestCtl;       // QC controller .finaldest — overshoot target
         public float AnimStartTime;        // QC .animstate_starttime — bezier start (controller only)
         public float AnimEndTime;          // QC .animstate_endtime — bezier end (controller only)
-        public int PlatMoveStart = 1;      // QC .platmovetype_start — ease-in curve id (1 = linear)
-        public int PlatMoveEnd = 1;        // QC .platmovetype_end — ease-out curve id (1 = linear)
+        // QC .platmovetype_start / .platmovetype_end are uninitialized floats — default 0. With 0/0 the
+        // (start==1 && end==1) linear shortcut in SUB_CalcMove FAILS, so a long (>=0.15s) mover runs the
+        // bezier branch with cubic_speedfunc(0,0,t) = -2t^3+3t^2 (smoothstep ease-in-out). An explicit
+        // "platmovetype" key (set_platmovetype) or "1 1" selects the linear branch. Matching Base's default
+        // here is what makes every stock door/plat/train S-curve eased rather than constant-velocity linear.
+        // QC .float platmovetype_start/_end — fractional ease factors ARE valid (cubic_speedfunc_is_sane
+        // documents (0.5, [0..3.8]), (1.5, [0..3.9]) etc.), so these must be float, not int — stof() in
+        // set_platmovetype yields the raw float and feeds cubic_speedfunc directly.
+        public float PlatMoveStart;        // QC .platmovetype_start — ease curve factor (0 = smoothstep default)
+        public float PlatMoveEnd;          // QC .platmovetype_end   — ease curve factor (0 = smoothstep default)
     }
 }
 
@@ -150,6 +169,15 @@ namespace XonoticGodot.Common.Gameplay
         public enum SpeedType { Start, End, Linear, Time }
 
         /// <summary>
+        /// QC threads a third <c>trigger</c> argument to every <c>.use</c> (<c>t.use(t, actor, this)</c> in
+        /// SUB_UseTargets) — the entity that fired the target. The port's <see cref="Framework.EntityUse"/>
+        /// delegate is 2-arg, so to keep the 78 .use sites unchanged we stash the firing trigger here for the
+        /// duration of the dispatch. Only <c>door_use</c> reads it (the BIDIR rotating-door reverse path); every
+        /// other path leaves it null, matching QC's <c>NULL</c> trigger on touch/damage/blocked opens.
+        /// </summary>
+        public static Framework.Entity? CurrentUseTrigger;
+
+        /// <summary>
         /// QC <c>iscreature</c>: players and monsters (but never vehicles/turrets). In QC <c>.iscreature</c>
         /// is set true on the player and monster spawn paths and left false on everything else, including the
         /// vehicle/turret entities — which in this entity model carry neither <see cref="EntFlags.Client"/>
@@ -168,6 +196,11 @@ namespace XonoticGodot.Common.Gameplay
         /// </summary>
         public static bool IsPushable(Entity e)
         {
+            // QC isPushable (triggers.qc:5): `if (e.pushable) return true;` is checked FIRST, before the
+            // IS_VEHICLE exclusion — so an entity that opts in (the spiderbot's vr_setup sets pushable=true)
+            // rides jumppads/conveyors despite being a vehicle.
+            if (e.PushableFlag)
+                return true;
             // QC IS_VEHICLE(e) -> false. Vehicles carry neither Client nor Monster here.
             if (e.ClassName is "vehicle" || e.ClassName.StartsWith("vehicle_", System.StringComparison.Ordinal))
                 return false;
@@ -307,6 +340,23 @@ namespace XonoticGodot.Common.Gameplay
         private static readonly string[] NonMapTargetableClassNames = { "player", "info_notnull" };
 
         /// <summary>
+        /// QC <c>FOREACH_ENTITY_STRING(target, name, …)</c> restricted to teleporter classnames: every
+        /// <c>trigger_teleport</c> / <c>target_teleporter</c> whose <c>.target</c> equals <paramref name="name"/>.
+        /// Used by <c>target_teleporter_checktarget</c> to decide whether a target-less target_teleporter is in
+        /// fact a teleport destination (something teleports TO it). Scans only the two teleporter classes — the
+        /// only classnames the disambiguation inspects — since the facade has no global entity enumerator.
+        /// </summary>
+        public static IEnumerable<Entity> FindEntitiesTargeting(string? name)
+        {
+            if (string.IsNullOrEmpty(name) || Api.Services is null)
+                yield break;
+            foreach (string cls in new[] { "trigger_teleport", "target_teleporter" })
+                foreach (Entity e in Api.Entities.FindByClass(cls))
+                    if (!e.IsFreed && e.Target == name)
+                        yield return e;
+        }
+
+        /// <summary>
         /// Every spawned entity of <paramref name="className"/> (QC <c>find(world, classname, s)</c>). Used by
         /// LinkDoors to walk the door set. Goes through the facade; freed entities are skipped.
         /// </summary>
@@ -357,18 +407,21 @@ namespace XonoticGodot.Common.Gameplay
                 t.Target2 = (skipTargets & SkipTarget2) == 0 ? self.Target2 : "";
                 t.Target3 = (skipTargets & SkipTarget3) == 0 ? self.Target3 : "";
                 t.Target4 = (skipTargets & SkipTarget4) == 0 ? self.Target4 : "";
+                t.AntiwallFlag = self.AntiwallFlag; // relay the func_clientwall toggle through the delay (triggers.qc:266)
                 t.Think = DelayThink;
                 IndexRegister(t);
                 return;
             }
 
             // --- message: QC centerprints to a real client + plays the talk sound when no custom noise ---
-            // The centerprint TEXT is rendered client-side (CSQC); headless we faithfully play the audible
-            // half — play2(actor, SND(TALK)) — and leave the text to the presentation layer.
+            // (triggers.qc SUB_UseTargets: centerprint(activator, this.message); if (this.noise == "")
+            // play2(activator, SND(TALK))). The centerprint TEXT is routed to the activator via the raw-centerprint
+            // notification channel (→ CenterPrintPanel.Add); the audible half plays play2(actor, SND(TALK)).
             if (actor is not null && (actor.Flags & EntFlags.Client) != 0 && !string.IsNullOrEmpty(self.Message))
             {
+                MapMover.Centerprint(actor, self.Message);
                 if (string.IsNullOrEmpty(self.Noise))
-                    Sound(actor, SoundChannel.Voice, "misc/talk.wav");
+                    Play2(actor, "misc/talk.wav"); // QC triggers.qc:282 play2(actor, SND(TALK)) — 2D VOL_BASE/ATTEN_NONE
             }
 
             // --- killtargets: delete everything they name (QC) ---
@@ -408,7 +461,12 @@ namespace XonoticGodot.Common.Gameplay
                     }
                     else
                     {
-                        t.Use(t, actor ?? self);
+                        // QC: t.use(t, actor, this) — `this` (self) is the firing trigger. Stash it so a
+                        // BIDIR rotating door can read .trigger_reverse off it (door_use), then restore.
+                        Entity? savedTrigger = MapMover.CurrentUseTrigger;
+                        MapMover.CurrentUseTrigger = self;
+                        try { t.Use(t, actor ?? self); }
+                        finally { MapMover.CurrentUseTrigger = savedTrigger; }
                         if (preventReuse)
                             t.SubTargetUsed = now;
                     }
@@ -417,7 +475,10 @@ namespace XonoticGodot.Common.Gameplay
 
             if (self.TargetRandom && chosen is not null)
             {
-                chosen.Use!(chosen, actor ?? self);
+                Entity? savedTrigger = MapMover.CurrentUseTrigger;
+                MapMover.CurrentUseTrigger = self;
+                try { chosen.Use!(chosen, actor ?? self); }
+                finally { MapMover.CurrentUseTrigger = savedTrigger; }
                 if (preventReuse)
                     chosen.SubTargetUsed = now;
             }
@@ -615,6 +676,28 @@ namespace XonoticGodot.Common.Gameplay
         /// the sampled point next physics frame. When the move completes it hands the parent its real think
         /// back, frees itself, and runs that think.
         /// </summary>
+        /// <summary>
+        /// Port of <c>SUB_CalcMovePause</c> (subs.qc): when an EASED (bezier-controller) mover is blocked but is
+        /// NOT going to reverse (a wait&lt;0 / TOGGLE door blocked mid-swing), QC slides the controller's
+        /// animstate start/end times forward by the elapsed-since-last-controller-think so the cubic_speedfunc
+        /// phase stays put — the mover "pauses" on its easing curve instead of advancing while wedged, then
+        /// resumes smoothly when the blocker clears. A linear (no-controller) mover, or one that reverses (which
+        /// spawns a fresh controller via <see cref="CalcMoveBezier"/>), doesn't need this and is a no-op here.
+        /// </summary>
+        public static void CalcMovePause(Entity e)
+        {
+            Entity? ctl = e.MoveController;
+            if (ctl is null || !ReferenceEquals(ctl.Owner, e))
+                return; // linear mover (no controller) — nothing to pause
+
+            // QC: animstate_starttime/endtime += time - move_controller.nextthink + sys_frametime. ctl.NextThink
+            // is when the controller WOULD next sample; the gap (now - nextthink + frametime) is the paused span,
+            // shifting both endpoints keeps phasePos = (nexttick - start)/(end - start) unchanged on resume.
+            float pausedSpan = Now() - ctl.NextThink + FrameTime();
+            ctl.AnimStartTime += pausedSpan;
+            ctl.AnimEndTime += pausedSpan;
+        }
+
         public static void CalcMoveControllerThink(Entity ctl)
         {
             Entity own = ctl.Owner!;
@@ -748,6 +831,252 @@ namespace XonoticGodot.Common.Gameplay
         {
             if (Api.Services is not null && !string.IsNullOrEmpty(sample))
                 Api.Sound.Play(e, ch, sample);
+        }
+
+        /// <summary>
+        /// Faithful QC <c>play2(recipient, sample)</c> (common/sounds/all.qc:116-120) for the toucher-recipient
+        /// map-object cues (keylock / keys "unlocked"/"need key" beeps). QC <c>play2</c> is a per-recipient 2D send
+        /// at <b>CH_INFO / VOL_BASE 0.7 / ATTEN_NONE 0</b> — a UI-style cue heard at full volume regardless of
+        /// distance — NOT a positional emit. The generic <see cref="Sound"/> helper above plays at the facade
+        /// default vol=1 / atten=1 (ATTEN_LARGE), so it spatializes the beep; this routes through
+        /// <see cref="SoundSystem.Play2Raw"/> so the volume/attenuation match Base byte-for-byte.
+        /// (Per-recipient MSG_ONE targeting is still the documented broadcast approximation; this only fixes the mix.)
+        /// </summary>
+        public static void Play2(Entity recipient, string? sample)
+        {
+            if (Api.Services is not null && !string.IsNullOrEmpty(sample))
+                SoundSystem.Play2Raw(recipient, sample);
+        }
+
+        // VOL_BASE / ATTEN_IDLE (common/sounds/sound.qh:32,36) — the looping-ambient volume + attenuation the
+        // func_bobbing/pendulum/fourier/vectormamamam soundto(MSG_INIT) ambients use.
+        public const float VolBase = 0.7f;
+        public const float AttenIdle = 2f;
+
+        /// <summary>
+        /// Port of the func_* looping ambient <c>soundto(MSG_INIT, this, CH_TRIGGER_SINGLE, .noise, VOL_BASE,
+        /// ATTEN_IDLE, 0)</c> (bobbing/pendulum/fourier; vectormamamam's per-player resend): start a PERSISTENT
+        /// loop keyed by <c>(entity, CH_TRIGGER_SINGLE)</c> on the mover. Because the facade keeps the loop as part
+        /// of the entity's sound state (idempotent re-emit, replayed to clients via entity state), a late-joining
+        /// player still hears an already-running mover's ambient — the headless analogue of QC's MSG_INIT /
+        /// <c>init_for_player</c> per-player resend (no separate client roster needed at this layer).
+        /// </summary>
+        public static void LoopAmbient(Entity e, string? sample)
+            => LoopAmbient(e, sample, SoundChannel.Item); // CH_TRIGGER_SINGLE = 3 = SoundChannel.Item.
+
+        /// <summary>
+        /// Channel-explicit overload of <see cref="LoopAmbient(Entity,string)"/>: func_rotating's looping ambient
+        /// rides <c>CH_AMBIENT_SINGLE</c> (channel 9 = <see cref="SoundChannel.AmbientSingle"/>) rather than
+        /// CH_TRIGGER_SINGLE (rotating.qc: <c>_sound(this, CH_AMBIENT_SINGLE, ...)</c>).
+        /// </summary>
+        public static void LoopAmbient(Entity e, string? sample, SoundChannel channel)
+        {
+            if (Api.Services is not null && !string.IsNullOrEmpty(sample))
+                Api.Sound.Play(e, channel, sample, VolBase, AttenIdle, loop: true);
+        }
+
+        /// <summary>Stop the looping ambient started by <see cref="LoopAmbient(Entity,string)"/> (QC <c>stopsound(this,
+        /// CH_TRIGGER_SINGLE)</c>) — used by func_vectormamamam's setactive when it goes inactive.</summary>
+        public static void StopAmbient(Entity e) => StopAmbient(e, SoundChannel.Item);
+
+        /// <summary>Channel-explicit overload (func_rotating stops its loop on <c>CH_AMBIENT_SINGLE</c>).</summary>
+        public static void StopAmbient(Entity e, SoundChannel channel)
+        {
+            if (Api.Services is not null)
+                Api.Sound.Stop(e, channel);
+        }
+
+        // ====================================================================
+        //  Centerprint seam (QC centerprint(client, s) builtin #73)
+        // ====================================================================
+
+        /// <summary>
+        /// OPTIONAL extra host hook for map-object free-text centerprints (door <c>.message</c>,
+        /// jumppad/secret/trigger <c>.message</c>, target_items, keylock "Unlocked!"). The actual delivery is
+        /// already done inside <see cref="Centerprint"/> by pushing the text down the <see cref="MsgType.CenterRaw"/>
+        /// notification channel (→ CenterPrintPanel.Add) — the same path chat /tell uses — so the player sees the
+        /// message on the live path with no host wiring required. This delegate is fired in addition, for any host
+        /// that wants to observe or augment those centerprints (e.g. logging/tests); leave it null otherwise.
+        /// </summary>
+        public static System.Action<Entity /*client*/, string /*message*/>? CenterprintHandler;
+
+        /// <summary>
+        /// Port of the QC <c>centerprint(actor, this.message)</c> map-object call: middle-print
+        /// <paramref name="message"/> on <paramref name="actor"/> when it is a real client and the message is
+        /// non-empty. Routes through the host-wired <see cref="CenterprintHandler"/> (the centerprint
+        /// networking seam); a no-op when no client / no message / no handler. Every func_/trigger_/target_
+        /// map object that QC centerprints a free-text <c>.message</c> calls this one method.
+        /// </summary>
+        public static void Centerprint(Entity? actor, string? message)
+        {
+            if (actor is null || string.IsNullOrEmpty(message))
+                return;
+            if ((actor.Flags & EntFlags.Client) == 0)
+                return;
+            // Route the free-text centerprint to that client via the raw-centerprint notification channel
+            // (→ CenterPrintPanel.Add). NOTIF_ONE_ONLY targets exactly the activator, matching the engine
+            // centerprint(client, s) builtin. The optional host handler still fires for any extra wiring/tests.
+            NotificationSystem.SendCenterRaw(NotifBroadcast.OneOnly, actor, message);
+            CenterprintHandler?.Invoke(actor, message);
+        }
+
+        // ====================================================================
+        //  Event-damage seam (QC .event_damage — per-entity damage callback)
+        // ====================================================================
+
+        // The mechanism (Entity.GtEventDamage, dispatched by DamageSystem.EventDamage for non-player edicts)
+        // already exists; these are the shared install/clear helpers so every shootable map object
+        // (func_button shootable, func_breakable, func_door_secret, multi_eventdamage, …) wires it uniformly
+        // — keeping Wave-2 unit code one line and the field name out of each call site.
+
+        /// <summary>QC <c>.event_damage</c> callback shape: (self, inflictor, attacker, deathType, damage, hitloc, force).</summary>
+        public delegate void EventDamageHandler(
+            Entity self, Entity? inflictor, Entity? attacker, string deathType, float damage, Vector3 hitLoc, Vector3 force);
+
+        /// <summary>
+        /// Install a per-entity event-damage handler (QC <c>this.event_damage = …</c>). The damage pipeline
+        /// (<c>DamageSystem.EventDamage</c>) invokes it for any non-player target that has one set, so a
+        /// shootable brush (button/breakable/secret door) reacts to being hit without going through the player
+        /// kill path. Pass <see cref="MarkDamageable"/> first if the entity must also be <c>SOLID</c> + take
+        /// damage to receive hits.
+        /// </summary>
+        public static void InstallEventDamage(Entity e, EventDamageHandler handler)
+            => e.GtEventDamage = (self, infl, atk, dt, dmg, loc, frc) => handler(self, infl, atk, dt, dmg, loc, frc);
+
+        /// <summary>Remove an entity's event-damage handler (QC clears <c>.event_damage</c> on death/disable).</summary>
+        public static void ClearEventDamage(Entity e) => e.GtEventDamage = null;
+
+        /// <summary>
+        /// QC's shootable-brush damage setup: a high <c>.health</c> and <c>.takedamage = DAMAGE_AIM</c> so the
+        /// brush is hittable (its event_damage decides what a hit does). <paramref name="health"/> defaults to
+        /// the QC convention 10000 (effectively unkillable — the brush opens/fires on any hit instead of dying).
+        /// </summary>
+        public static void MarkDamageable(Entity e, float health = 10000f)
+        {
+            e.Health = health;
+            e.MaxHealthMover = health;
+            e.TakeDamage = DamageMode.Aim;
+        }
+
+        // ====================================================================
+        //  sounds-key soundpack selection (QC .sounds / .sound1 / .sound2)
+        // ====================================================================
+
+        /// <summary>
+        /// Port of the func_door soundpack selection (door.qc:693): <c>sounds &gt; 0</c> (or a Q3-imported door,
+        /// which always has sounds) selects the medieval/metal medplat pack onto <c>.noise2</c> (move) and
+        /// <c>.noise1</c> (stop). With <c>sounds == 0</c> the caller's defaults (the spawnfunc's own
+        /// noise1/noise2) are left untouched. CPMA/QL <c>sound_start/sound_end</c> overrides are map-pack file
+        /// probes the headless layer can't do and are skipped (documented gap).
+        /// </summary>
+        public static void ApplyDoorSounds(Entity e, bool q3compat = false)
+        {
+            if (e.Sounds > 0 || q3compat)
+            {
+                e.Noise2 = "plats/medplat1.wav";
+                e.Noise1 = "plats/medplat2.wav";
+            }
+        }
+
+        /// <summary>
+        /// Port of the func_plat soundpack selection (plat.qc:80-97): <c>sounds == 1</c> -&gt; plat1/plat2,
+        /// <c>sounds == 2</c> (or Q3-imported) -&gt; medplat1/medplat2, onto <c>.noise</c> (move) + <c>.noise1</c>
+        /// (stop); then the legacy <c>.sound1</c>/<c>.sound2</c> overrides win if present. The spawnfunc's own
+        /// plat1/plat2 default stands when <c>sounds == 0</c> and no override.
+        /// </summary>
+        public static void ApplyPlatSounds(Entity e, bool q3compat = false)
+        {
+            if (e.Sounds == 1)
+            {
+                e.Noise = "plats/plat1.wav";
+                e.Noise1 = "plats/plat2.wav";
+            }
+            if (e.Sounds == 2 || q3compat)
+            {
+                e.Noise = "plats/medplat1.wav";
+                e.Noise1 = "plats/medplat2.wav";
+            }
+            // QC backwards-compat: explicit legacy overrides take precedence over the pack.
+            if (!string.IsNullOrEmpty(e.Sound1))
+                e.Noise = e.Sound1;
+            if (!string.IsNullOrEmpty(e.Sound2))
+                e.Noise1 = e.Sound2;
+        }
+
+        /// <summary>
+        /// Port of the func_door_secret soundpack selection (door_secret.qc): <c>sounds &gt; 0</c> picks the
+        /// medieval/metal pack (move/stop on <c>.noise2</c>/<c>.noise1</c>) — same shape as the door pack.
+        /// </summary>
+        public static void ApplySecretSounds(Entity e)
+        {
+            if (e.Sounds > 0)
+            {
+                e.Noise2 = "plats/medplat1.wav";
+                e.Noise1 = "plats/medplat2.wav";
+            }
+        }
+
+        // ====================================================================
+        //  set_platmovetype (platforms.qc) + cubic_speedfunc_is_sane (lib/math.qh)
+        // ====================================================================
+
+        /// <summary>
+        /// Port of <c>set_platmovetype</c> (platforms.qc:209): parse the <c>.platmovetype</c> spawn-key string
+        /// ("start end [force]") into <see cref="Entity.PlatMoveStart"/>/<see cref="Entity.PlatMoveEnd"/>. One
+        /// token sets both ends; a 3rd "force" token skips the sanity check. Returns false (and leaves the
+        /// values parsed) on an insane reverse curve — QC <c>objerror</c>s there; the headless caller treats a
+        /// false return as "reject this mover / keep its default curve". A null/empty string leaves the
+        /// port's default (PlatMoveStart/End = 0, the smoothstep ease — same as QC's uninitialized float
+        /// fields and set_platmovetype's n==0 branch), so stock movers ease exactly as Base.
+        /// </summary>
+        public static bool SetPlatMoveType(Entity e, string? s)
+        {
+            if (string.IsNullOrWhiteSpace(s))
+                return true; // no key — Base's n==0 path also yields 0/0 (already the field default)
+
+            string[] argv = s.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries);
+            int n = argv.Length;
+
+            // QC stof() yields 0 for an unparsable token. platmovetype_start/_end are .float — keep the
+            // fractional value (0.5/1.5/2.5 ease factors are valid per cubic_speedfunc_is_sane), don't truncate.
+            e.PlatMoveStart = n > 0 ? StofFloat(argv[0]) : 0f;
+            e.PlatMoveEnd = n > 1 ? StofFloat(argv[1]) : e.PlatMoveStart;
+
+            if (n > 2 && argv[2] == "force")
+                return true; // no checking, return immediately (QC)
+
+            if (!CubicSpeedFuncIsSane(e.PlatMoveStart, e.PlatMoveEnd))
+                return false; // QC objerror: "platform would go in reverse"
+
+            return true;
+        }
+
+        /// <summary>QC stof(): parse a leading float, 0 on failure (used by the platmovetype tokenizer).</summary>
+        private static float StofFloat(string s)
+            => float.TryParse(s, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out float v) ? v : 0f;
+
+        /// <summary>
+        /// Port of <c>cubic_speedfunc_is_sane</c> (lib/math.qh:138): reject ease curves whose speed function
+        /// would reverse the mover (negative speed factors, or a curve whose first-derivative zeros fall inside
+        /// 0..1). Used by <see cref="SetPlatMoveType"/> to validate a mapper's platmovetype.
+        /// </summary>
+        public static bool CubicSpeedFuncIsSane(float startSpeedFactor, float endSpeedFactor)
+        {
+            if (startSpeedFactor < 0f || endSpeedFactor < 0f)
+                return false;
+
+            // The possible zeros of the first derivative are outside 0..1 (QC "better" check).
+            if (startSpeedFactor <= 3f && endSpeedFactor <= 3f)
+                return true;
+
+            // Otherwise the first derivative must have no zeros at all (an ellipse condition, QC).
+            float se = startSpeedFactor + endSpeedFactor;
+            float s_e = startSpeedFactor - endSpeedFactor;
+            if (3f * (se - 4f) * (se - 4f) + s_e * s_e <= 12f)
+                return true;
+
+            return false;
         }
 
         /// <summary>setorigin through the facade when present, else a plain assignment (headless tests).</summary>

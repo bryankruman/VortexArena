@@ -91,11 +91,12 @@ public class WarpzoneSpawnTests
         Assert.Equal("trigger_warpzone", a.Trigger!.ClassName);
         Assert.Equal(Solid.Trigger, a.Trigger!.Solid);
 
-        // an entity crossing INTO portal A emerges at portal B's plane (momentum preserved).
-        var e = new Entity { Origin = a.InOrigin, Velocity = new Vector3(-200, 0, 0) };
+        // an entity that has CROSSED INTO portal A (now just past the IN plane on its far/negative side, as the QC
+        // WarpZone_PlaneDist < 0 gate requires — server.qc:193) emerges at portal B's plane (momentum preserved).
+        var e = new Entity { Origin = a.InOrigin - new Vector3(1, 0, 0), Velocity = new Vector3(-200, 0, 0) };
         float speed = e.Velocity.Length();
         Assert.True(mgr.Teleport(e, a));
-        AssertVec(b.InOrigin, e.Origin, 0.5f);
+        AssertVec(b.InOrigin, e.Origin, 1.5f);
         Assert.True(MathF.Abs(e.Velocity.Length() - speed) < 0.01f);
     }
 
@@ -134,6 +135,75 @@ public class WarpzoneSpawnTests
         mgr.InitMapZones();
 
         Assert.All(mgr.Zones, z => Assert.True(z.Linked, "both portals link even though only A set .target"));
+    }
+
+    [Fact]
+    public void MiscWarpzonePosition_Spawnfunc_OrientsAZone()
+    {
+        (EngineServices svc, WarpzoneManager mgr) = Setup();
+        SpawnBrush(svc, "*1", targetName: "wzA", target: "wzB");
+        SpawnBrush(svc, "*2", targetName: "wzB", target: "wzA");
+
+        // QC's CANONICAL position spawnfunc name (server.qc:642). Must orient zone A identically to
+        // trigger_warpzone_position — not be silently dropped.
+        Entity pos = svc.Entities.Spawn();
+        pos.Origin = new Vector3(0, 0, 0);
+        pos.Angles = new Vector3(0, 33f, 0);
+        pos.Target = "wzA";
+        WarpzoneSpawns.MiscWarpzonePositionSetup(pos);
+
+        mgr.InitMapZones();
+
+        Warpzone a = mgr.Zones.First(z => z.TargetName == "wzA");
+        Assert.Same(pos, a.Aiment);   // the canonical position helper was attached as the zone's aiment
+        Assert.True(a.Linked);
+    }
+
+    [Fact]
+    public void Reconnect_RelinksAfterRetarget()
+    {
+        (EngineServices svc, WarpzoneManager mgr) = Setup();
+        Entity ba = SpawnBrush(svc, "*1", targetName: "wzA", target: "wzB");
+        Entity bb = SpawnBrush(svc, "*2", targetName: "wzB", target: "wzA");
+        mgr.InitMapZones();
+        Assert.All(mgr.Zones, z => Assert.True(z.Linked));
+
+        // Retarget A to a non-existent partner, then reconnect: A must drop its link (partner gone).
+        Warpzone a = mgr.Zones.First(z => z.TargetName == "wzA");
+        Warpzone b = mgr.Zones.First(z => z.TargetName == "wzB");
+        a.Target = "nope";
+        // Base two-way link: clear B's back-reference too so the reverse pass can't relink them.
+        b.Target = "";
+        mgr.Reconnect();
+        Assert.False(a.Linked, "A no longer names a valid partner after reconnect");
+
+        // Point A back at B and reconnect: the pair re-links.
+        a.Target = "wzB";
+        mgr.Reconnect();
+        Assert.True(a.Linked && b.Linked, "the pair re-links once A targets B again");
+    }
+
+    [Fact]
+    public void WarpObservers_WarpsASolidNotClient_ThroughAZone()
+    {
+        (EngineServices svc, WarpzoneManager mgr) = Setup();
+        SpawnBrush(svc, "*1", targetName: "wzA", target: "wzB");
+        SpawnBrush(svc, "*2", targetName: "wzB", target: "wzA");
+        mgr.InitMapZones();
+        Warpzone a = mgr.Zones.First(z => z.TargetName == "wzA");
+        Warpzone b = mgr.Zones.First(z => z.TargetName == "wzB");
+
+        // A SOLID_NOT observer-style entity sitting just past portal A's plane (inside the trigger box) is warped to
+        // portal B each frame — the touch pass can't fire for a non-solid mover. Use a real engine entity so its
+        // AbsMin/AbsMax are linked for the overlap test.
+        Entity obs = svc.Entities.Spawn();
+        obs.Solid = Solid.Not;
+        svc.Entities.SetSize(obs, new Vector3(-4, -4, -4), new Vector3(4, 4, 4));
+        svc.Entities.SetOrigin(obs, a.InOrigin - new Vector3(1, 0, 0)); // just across the IN plane, inside the box
+        obs.Velocity = new Vector3(-50, 0, 0);
+
+        mgr.WarpObservers(new[] { obs });
+        AssertVec(b.InOrigin, obs.Origin, 2f);   // emerged at portal B
     }
 
     private static void AssertVec(Vector3 expected, Vector3 actual, float tol = 1e-4f)

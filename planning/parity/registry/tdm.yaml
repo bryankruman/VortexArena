@@ -1,0 +1,387 @@
+unit: tdm
+category: gametype
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 13
+  worst_gaps:
+    - "Map-support gating: m_isAlwaysSupported (>=8 spawns & diameter>3250) unimplemented; the m_isForcedSupported (g_tdm_on_dm_maps) half is now CODED (MapInfoBackend.ApplyForcedGametypes) but DEAD (no live caller / cvar wiring) — map-pool/menu concern, no in-match impact"
+    - "Custom per-map team config (spawnfunc tdm_team names/colors; mapinfo teams= -> g_tdm_teams) not ported — maps render with the stock team set"
+features:
+  - id: tdm.identity.registration
+    name: "TDM gametype identity + default match limits (timelimit=15 pointlimit=50 teams=2 leadlimit=0)"
+    layer: [shared]
+    base_refs:
+      - "common/gametypes/gametype/tdm/tdm.qh:INIT(TeamDeathmatch)"
+      - "common/gametypes/gametype/tdm/tdm.qh:REGISTER_GAMETYPE(TEAM_DEATHMATCH)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:Tdm"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:OnInit"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:SeedTimeLimit"
+      - "src/XonoticGodot.Server/GameWorld.cs:ResolveGameType"
+      - "src/XonoticGodot.Server/GameWorld.cs:539"
+    constants:
+      - { name: "netname", base: "tdm", port: "tdm", match: true }
+      - { name: "flags", base: "TEAMPLAY|USEPOINTS|PRIORITY", port: "TeamGame=true (USEPOINTS/PRIORITY implicit)", match: true }
+      - { name: "timelimit", base: "15 (min)", port: "15 (SeedTimeLimit seeds it at OnInit when value still equals the generic 20)", match: true }
+      - { name: "pointlimit", base: "50 (frags)", port: "50 (SeedLimit writes fraglimit=50 from the -1 sentinel)", match: true }
+      - { name: "teams", base: "2", port: "DefaultTeams=2", match: true }
+      - { name: "leadlimit", base: "0", port: "DefaultLeadLimit=0", match: true }
+      - { name: "legacydefaults", base: "50 20 2 0", port: "not modeled (menu)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "tdm.qh legacydefaults \"50 20 2 0\" (menu create-match preset) is still not modeled, but that is menu metadata; the in-match defaults (timelimit=15, pointlimit=50, teams=2, leadlimit=0) are now all seeded correctly at boot."
+    verification:
+      - { kind: code_read, ref: "Tdm.OnInit (Tdm.cs:119) -> SeedLimit(g_tdm_point_limit->fraglimit,50) + SeedLimit(g_tdm_point_leadlimit->leadlimit,0) + SeedTimeLimit(15); GameWorld.cs:491 GameType?.OnInit() runs live AFTER ConfigLoader.LoadServerConfig (433) so the shipped -1 cvars are present; Cvars.cs:108 timelimit default is 20 so SeedTimeLimit's genericDefault==20 guard is correct", result: pass }
+    confidence: high
+    notes: "Wave-2 added Tdm.OnInit limit/timelimit seeding. Identity faithful; all in-match match-limit metadata now seeded. Was values:partial (timelimit=20, pointlimit dead) -> now values:faithful."
+
+  - id: tdm.init.gamerules
+    name: "Server init: GameRules_teams + spawning_teams + limit_score/lead"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/tdm/sv_tdm.qc:tdm_Initialize"
+      - "common/gametypes/sv_rules.qc:GameRules_teams"
+      - "common/gametypes/sv_rules.qc:GameRules_limit_score"
+      - "common/gametypes/sv_rules.qc:GameRules_limit_lead"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:564"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:Activate"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:OnInit"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:SeedLimit"
+    constants:
+      - { name: "teamplay_enabled", base: "GameRules_teams(true)", port: "TeamGame=true -> Teamplay(isTeamGame:true)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Engine-side teamplay flag (SERVERFLAG_TEAMPLAY / cvar_set teamplay 2) is handled host-side via TeamGame rather than an explicit GameRules_teams call; behavior matches. Limit seeding (GameRules_limit_score/lead) is now mirrored faithfully by Tdm.OnInit -> SeedLimit, which handles the -1 'use mapinfo default' sentinel exactly as sv_rules.qc does (skip cvar_set when limit<0, seed the gametype default)."
+    verification:
+      - { kind: code_read, ref: "GameWorld:564 new Teamplay(GameType.TeamGame, TeamCountFor(GameType), Scores); GameWorld:2698 tdm.Activate seeds team slots; Tdm.SeedLimit mirrors GameRules_limit_score/lead -1 handling", result: pass }
+    confidence: high
+    notes: "Team enablement + team-slot seeding live; the limit-wiring half (previously buggy for -1) is now faithful via SeedLimit."
+
+  - id: tdm.rules.team_count
+    name: "Team count (override>=2 ? g_tdm_teams_override : g_tdm_teams, clamp 2..4)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/tdm/sv_tdm.qc:tdm_DelayedInit"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:TeamCount"
+      - "src/XonoticGodot.Server/GameWorld.cs:TeamCountFor"
+    constants:
+      - { name: "g_tdm_teams", base: "2", port: "2 (read)", match: true }
+      - { name: "g_tdm_teams_override", base: "0 (use g_tdm_teams unless >=2)", port: "0 (read; >=2 wins)", match: true }
+      - { name: "clamp", base: "bound(2,n,4)", port: "Clamp(n,2,4)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "Tdm.TeamCount mirrors override>=2?override:teams clamp 2..4; GameWorld.TeamCountFor (GameWorld:4653) feeds new Teamplay(...)", result: pass }
+    confidence: high
+    notes: "TeamCount read live by TeamCountFor at boot to size the Teamplay manager, bot population, and team-score seeding. Unchanged by Wave-2."
+
+  - id: tdm.rules.team_spawns
+    name: "Team spawnpoint gating (g_tdm_team_spawns, default 0)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/tdm/sv_tdm.qc:tdm_Initialize"
+      - "common/gametypes/sv_rules.qc:GameRules_spawning_teams"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:RequestsTeamSpawns"
+      - "src/XonoticGodot.Server/ClientManager.cs:683"
+    constants:
+      - { name: "g_tdm_team_spawns", base: "0", port: "0 (default false)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "Tdm.RequestsTeamSpawns (Tdm.cs:180) reads g_tdm_team_spawns (default 0); ClientManager:683 SpawnSystem.RequestTeamSpawns(gt.RequestsTeamSpawns)", result: pass }
+    confidence: high
+    notes: "Default 0 => TDM does NOT use team spawnpoints (FFA-style spawns) even though kills are team-scored, matching Base. Unchanged by Wave-2."
+
+  - id: tdm.scoring.team_frag
+    name: "Team frag scoring (enemy +1 attacker team; suicide/world -1 victim team; teamkill -1 attacker team) -> ST_SCORE"
+    layer: [authority]
+    base_refs:
+      - "server/damage.qc:GiveFrags"
+      - "common/gametypes/sv_rules.qh:GameRules_scoring_add_team"
+      - "server/scores.qc:PlayerTeamScore_Add"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:OnDeath"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:AddTeamScore"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:GetTeamScore"
+      - "src/XonoticGodot.Server/GameWorld.cs:2699"
+    constants:
+      - { name: "enemy_frag", base: "+1", port: "+1", match: true }
+      - { name: "suicide", base: "-1", port: "-1", match: true }
+      - { name: "world_death", base: "-1", port: "-1", match: true }
+      - { name: "teamkill", base: "-1", port: "-1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "Tdm.OnDeath AddTeamScore(+/-1) matches GiveFrags team side; TeamScoreSource=tdm.GetTeamScore (GameWorld:2699); Scores.SubscribeToDeaths ownsScore:false so no double-count of the team total", result: pass }
+    confidence: high
+    notes: "Team total is the single source of truth in GameScores, read through the gametype. Death handler subscribed live on Activate(). Unchanged by Wave-2."
+
+  - id: tdm.scoring.player_frag
+    name: "Per-player SP_SCORE frag credit (each frag also lands on the killer's individual score)"
+    layer: [authority]
+    base_refs:
+      - "server/damage.qc:GiveFrags"
+      - "common/gametypes/sv_rules.qh:GameRules_scoring_add_team"
+      - "server/scores.qc:PlayerTeamScore_Add"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:OnDeath"
+      - "src/XonoticGodot.Common/Gameplay/Player/Player.cs:ScoreFrags"
+    constants:
+      - { name: "enemy_frag_to_player", base: "+1 SP_SCORE", port: "+1 (attacker.ScoreFrags += 1)", match: true }
+      - { name: "suicide_to_player", base: "-1 SP_SCORE", port: "-1 (victim.ScoreFrags -= 1)", match: true }
+      - { name: "teamkill_to_player", base: "-1 SP_SCORE", port: "-1 (attacker.ScoreFrags -= 1)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "Tdm.OnDeath (Tdm.cs:261) now writes attacker.ScoreFrags/victim.ScoreFrags on each frag/teamkill/suicide branch, mirroring GiveFrags->GameRules_scoring_add_team->PlayerTeamScore_Add (writes BOTH SP_SCORE and ST_SCORE). Player.ScoreFrags (Player.cs:44) routes to GameScores.SetPlayer(this, GameScores.Score) — the networked scoreboard Score column. Death handler is live on the obituary bus via Activate (GameWorld:1374). Scores.cs:40 comment now matches the code.", result: pass }
+      - { kind: code_read, ref: "GtKillCount spree bump also now wired in all branches (Tdm.cs:294,302 attacker.GtKillCount += 1 on enemy frag, =0 on teamkill/death), so the NadeBonus kill-spree bonus accrues in TDM too.", result: pass }
+    confidence: high
+    notes: "FIXED in Wave-2. This was the baseline's worst gap (every TDM player's Score read 0). Now each frag credits the killer's individual SP_SCORE on the live death path; per-player standings/MVP within a team are correct. The earlier Scores.cs/GameWorld.cs comment contradiction is resolved (the code now does what the comments asserted)."
+
+  - id: tdm.rules.point_limit
+    name: "Team point-limit end-of-match (g_tdm_point_limit; -1 = use mapinfo 50)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/tdm/sv_tdm.qc:tdm_Initialize"
+      - "common/gametypes/sv_rules.qc:GameRules_limit_score"
+      - "server/world.qc:WinningCondition_Scores"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:OnInit"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:SeedLimit"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:PointLimit"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:UpdateLeaderAndCheckLimit"
+      - "src/XonoticGodot.Server/GameWorld.cs:3278"
+    constants:
+      - { name: "g_tdm_point_limit (cfg default)", base: "-1 (=> mapinfo pointlimit 50)", port: "-1 resolved to 50 via SeedLimit + PointLimit", match: true }
+      - { name: "effective_pointlimit", base: "50", port: "50 (fraglimit seeded at boot; match ends at 50)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "Tdm.OnInit -> SeedLimit(g_tdm_point_limit -> fraglimit, default 50): the shipped -1 is resolved to 50 and written to fraglimit at boot. Tdm.PointLimit also resolves a runtime -1 to 50. UpdateLeaderAndCheckLimit (Tdm.cs:348, run per-frame at GameWorld:3278 + on death) ends the match when bestScore >= pointLimit. So a stock TDM now ends on the 50-frag limit, not only on the timelimit.", result: pass }
+    confidence: high
+    notes: "FIXED in Wave-2. The -1 'use mapinfo default' sentinel is now resolved (SeedLimit/PointLimit), and the per-frame + on-death win check fires. Previously the -1 was read literally so the frag limit never fired."
+
+  - id: tdm.rules.lead_limit
+    name: "Team lead-limit end-of-match (g_tdm_point_leadlimit; -1 = use mapinfo 0)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/tdm/sv_tdm.qc:tdm_Initialize"
+      - "common/gametypes/sv_rules.qc:GameRules_limit_lead"
+      - "server/world.qc:WinningCondition_Scores"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:LeadLimit"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:UpdateLeaderAndCheckLimit"
+    constants:
+      - { name: "g_tdm_point_leadlimit (cfg default)", base: "-1 (=> mapinfo leadlimit 0)", port: "-1 resolved to 0 (off) via SeedLimit + LeadLimit", match: true }
+      - { name: "effective_leadlimit", base: "0 (off)", port: "0 (off, via >0 guard)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "Tdm.LeadLimit resolves the shipped -1 to 0 (off); SeedLimit seeds leadlimit=0. UpdateLeaderAndCheckLimit (Tdm.cs:367-375) now mirrors world.qc:1625-1633 exactly: fraglimitReached || leadlimitReached normally, BUT fraglimitReached && leadlimitReached when both limits set AND LeadAndFrag (autocvar_leadlimit_and_fraglimit) is on. The CvarLeadAndFrag/LeadAndFrag wiring was added in Wave 6a (commit e596bf0, 2026-06-25), after the 2026-06-22 baseline.", result: pass }
+    confidence: high
+    notes: "FIXED in Wave 6a. The leadlimit_and_fraglimit conjunction in the win condition is now modeled (Tdm.cs:371-375 == world.qc:1628-1633), matching the same gating already used by the frags-remaining announcer. The -1 sentinel is handled explicitly via SeedLimit/LeadLimit. Was logic:partial (conjunction unmodeled) -> now logic:faithful."
+
+  - id: tdm.rules.tie_overtime
+    name: "Tied-team -> overtime/sudden-death (no draw at the limit)"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:WinningCondition_Scores"
+      - "server/scores.qc:WinningConditionHelper"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:ReportsTie"
+      - "src/XonoticGodot.Server/GameWorld.cs:4088"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "OverTimeManagerTests.Tdm_ReportsTie_OnEqualTeamPoints_NotWhenLeading exercises Tdm.ReportsTie over team ST_SCORE", result: pass }
+    confidence: high
+    notes: "Top-two team tie at the limit enters overtime via the OverTime/OverTimeManager framework instead of drawing. Unchanged by Wave-2."
+
+  - id: tdm.team_balance.join
+    name: "Smallest-team assignment on join (TeamBalance_JoinBestTeam)"
+    layer: [authority]
+    base_refs:
+      - "server/teamplay.qc:TeamBalance_JoinBestTeam"
+      - "server/teamplay.qc:TeamBalance_FindBestTeam"
+    port_refs:
+      - "src/XonoticGodot.Server/Teamplay.cs:AssignBestTeam"
+      - "src/XonoticGodot.Server/ClientManager.cs:224"
+    constants:
+      - { name: "uneven_threshold", base: ">=2 player gap (autobalance)", port: ">=2 (TeamsAreUneven)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Tdm.AssignTeam (and the TeamBalance.JoinSmallestTeam helper it wraps, Tdm.cs:43/264) is a DEAD duplicate with no live caller: the join path uses the richer Server-side Teamplay.AssignBestTeam (smallest team, score tiebreak, skill weighting, bot autobalance). No player-visible gap, but the redundant copy could drift. Unchanged by Wave-2."
+    verification:
+      - { kind: code_read, ref: "ClientManager:224 _teamplay.AssignBestTeam on join; grep Tdm.AssignTeam -> self-only (no caller)", result: pass }
+    confidence: high
+    notes: "Live team assignment is faithful to TeamBalance_FindBestTeam (incl. lower-score tiebreak and bot autobalance). Tdm.AssignTeam remains unused."
+
+  - id: tdm.presentation.remaining_frags
+    name: "Remaining-frags team announcer (ANNCE_REMAINING_FRAG_1/2/3)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/gametypes/gametype/tdm/sv_tdm.qc:MUTATOR_HOOKFUNCTION(tdm, Scores_CountFragsRemaining)"
+      - "server/world.qc:WinningCondition_Scores"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:CountFragsRemaining"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:ResetFragsRemaining"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:UpdateLeaderAndCheckLimit"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:122"
+    constants:
+      - { name: "announce_thresholds", base: "1,2,3 frags left", port: "1,2,3 (REMAINING_FRAG_1/2/3)", match: true }
+      - { name: "leadlimit_and_fraglimit", base: "max(fragsleft,leadingfragsleft) when both+cvar, else min", port: "same (reads leadlimit_and_fraglimit)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "GameScores.CountFragsRemaining (GameScores.cs:819) is a line-faithful port of world.qc:1592-1621 (fragsleft = min/max of limit-top and second+leadlimit-top; leadlimit_and_fraglimit handled; fragsleft_last latch via _fragsLeftLast; Annce REMAINING_FRAG_1/2/3 once). Called per-frame from Tdm.UpdateLeaderAndCheckLimit (Tdm.cs:384), which runs at GameWorld:3278 + on death; the QC Scores_CountFragsRemaining hook (sv_tdm.qc:35 returns true) is the always-call gate here. Latch re-armed at match start via Activate -> ResetFragsRemaining (GameScores.cs:805). Assets REMAINING_FRAG_1/2/3 -> 1fragleft/2fragsleft/3fragsleft registered (NotificationsList.cs:122-124), Annce broadcast via NotificationSystem.Send(NotifBroadcast.All,...).", result: pass }
+    confidence: high
+    notes: "FIXED in Wave-2. Now that the point limit actually fires (tdm.rules.point_limit), the team frags-left announcer is meaningful AND wired. Same closure also benefits Deathmatch's frags-remaining gap. Live broadcast verified via the Annce notification path."
+
+  - id: tdm.rules.map_support
+    name: "Map-support gating (m_isAlwaysSupported >=8 spawns & diameter>3250; m_isForcedSupported g_tdm_on_dm_maps)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/tdm/tdm.qh:METHOD(TeamDeathmatch, m_isAlwaysSupported)"
+      - "common/gametypes/gametype/tdm/tdm.qh:METHOD(TeamDeathmatch, m_isForcedSupported)"
+    port_refs:
+      - "src/XonoticGodot.Common/Menu/MapInfoBackend.cs:ApplyForcedGametypes"
+    constants:
+      - { name: "always_supported", base: "spawnpoints>=8 && diameter>3250", port: "none", match: false }
+      - { name: "g_tdm_on_dm_maps", base: "0 (DM maps also offer TDM when set)", port: "ApplyForcedGametypes promotes DM->TDM when ForceTdmOnDmMaps, BUT that flag is never wired from the cvar and MapInfoBackend has no live constructor (dead)", match: false }
+    status:
+      logic: partial
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "m_isAlwaysSupported (auto-offer TDM on maps with >=8 spawnpoints AND diameter>3250) is still entirely unimplemented (no BSP world-bounds/spawn-count probe in the menu's file-only mapinfo layer)."
+      - "m_isForcedSupported (g_tdm_on_dm_maps -> DM maps also support TDM) now has CODE — MapInfoBackend.ApplyForcedGametypes adds 'tdm' to a DM map's supported set when forceTdmOnDmMaps — but it is DEAD: (a) no caller constructs MapInfoBackend anywhere in src, and (b) the ForceTdmOnDmMaps flag defaults false and is never set from the g_tdm_on_dm_maps cvar. The Duel.cs:39 comment claiming a live 'MapInfoCache.Get' caller is stale (no MapInfoCache.cs exists). So at runtime g_tdm_on_dm_maps still changes nothing."
+    verification:
+      - { kind: code_read, ref: "MapInfoBackend.ApplyForcedGametypes (MapInfoBackend.cs:134-149) adds 'tdm' to SupportedGametypes when forceTdmOnDmMaps && dm-supported && !tdm-supported; MapInfoBackend.Get (110) calls it with ForceTdmOnDmMaps (default false, never reassigned).", result: pass }
+      - { kind: code_read, ref: "grep 'new MapInfoBackend'/'ForceTdmOnDmMaps'/'ApplyForcedGametypes'/'g_tdm_on_dm_maps' across src -> only MapInfoBackend.cs self-references; no constructor, no cvar wiring, MapInfoCache.cs does not exist. m_isAlwaysSupported/diameter -> only doc comments. So the forced-support half is coded but unreachable, the always-supported half absent.", result: fail }
+    confidence: high
+    notes: "Drift since baseline: the m_isForcedSupported (g_tdm_on_dm_maps) HALF gained a port impl (MapInfoBackend.ApplyForcedGametypes, shared with Duel's forced-support), so the baseline 'no implementation at all' is stale -> bumped logic missing->partial. But the code is DEAD (no MapInfoBackend constructor, ForceTdmOnDmMaps never wired to the cvar), so liveness na->dead and the feature stays OPEN. m_isAlwaysSupported half remains fully missing. Low gameplay impact (map-pool/menu, not in-match). NOT closed by Wave 16/17."
+
+  - id: tdm.rules.map_team_config
+    name: "Map team config (spawnfunc tdm_team custom names/colors; mapinfo teams= -> g_tdm_teams via m_parse_mapinfo/m_setTeams)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/tdm/sv_tdm.qc:spawnfunc(tdm_team)"
+      - "common/gametypes/gametype/tdm/sv_tdm.qc:tdm_DelayedInit (Team_MapEnts_FindOrSpawn)"
+      - "common/gametypes/gametype/tdm/tdm.qh:METHOD(TeamDeathmatch, m_parse_mapinfo / m_setTeams)"
+    port_refs: []
+    constants:
+      - { name: "tdm_team_entity", base: "netname + cnt -> team = cnt+1", port: "none (default red/blue/yellow/pink set)", match: false }
+      - { name: "mapinfo_teams", base: "teams= -> cvar_set g_tdm_teams", port: "none (reads g_tdm_teams/override cvars only)", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Custom per-map team declarations are not ported: spawnfunc_tdm_team (map-defined team netname + scoreboard color cnt, team=cnt+1) is ignored, and the mapinfo `teams=` override path (m_parse_mapinfo / m_setTeams writing g_tdm_teams) is not implemented. The port reads team COUNT only from g_tdm_teams / g_tdm_teams_override cvars and always uses the default team set. Maps that rely on tdm_team for non-default team names/colors render with the stock teams. NOT addressed by Wave-2."
+    verification:
+      - { kind: code_read, ref: "grep tdm_team/m_setTeams/parse_mapinfo/teams= in src -> doc-comment mentions only; Tdm.TeamCount reads g_tdm_teams* cvars only", result: fail }
+    confidence: high
+    notes: "Cosmetic / map-authoring concern; team count itself is faithful via the cvar path (tdm.rules.team_count). Still open after Wave-2."

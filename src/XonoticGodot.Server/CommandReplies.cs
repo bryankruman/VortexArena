@@ -137,13 +137,46 @@ public sealed class CommandReplies
     }
 
     /// <summary>
-    /// QC <c>getrankings()</c>: race top-N times for the current map. No race-records store is wired at this
-    /// seam, so this returns QC's empty case verbatim: "No records are available for the map: &lt;map&gt;".
+    /// QC <c>getrankings()</c> (server/command/getreplies.qc:46): the race/CTS top-N times for the current map,
+    /// read from the persistent <see cref="XonoticGodot.Common.Gameplay.RaceRecords"/> table (the C# successor to
+    /// the QC <c>ServerProgsDB</c> ranking store). In a non-race mode the table is empty, so this falls through to
+    /// QC's verbatim empty case "No records are available for the map: &lt;map&gt;". The record-type segment keys
+    /// off the live gametype (CTS_RECORD for cts, RACE_RECORD for rc), exactly as QC's <c>record_type</c> global.
     /// </summary>
     private string GetRankings()
     {
         string map = string.IsNullOrEmpty(_world.MapName) ? "(unknown)" : _world.MapName;
-        return $"No records are available for the map: {map}";
+
+        // QC: getrankings() reads race_readTime(map, i)/race_readName for i in 1..RANKINGS_CNT off record_type.
+        // record_type is CTS_RECORD under g_cts / RACE_RECORD otherwise; only those modes file ranked times.
+        string gt = _world.GameType?.NetName ?? "";
+        string? recordType = gt switch
+        {
+            "cts" => XonoticGodot.Common.Gameplay.RaceRecords.CtsRecord,
+            "rc"  => XonoticGodot.Common.Gameplay.RaceRecords.RaceRecord,
+            _     => null,
+        };
+
+        if (recordType is not null)
+        {
+            var sb = new System.Text.StringBuilder();
+            for (int i = 1; i <= XonoticGodot.Common.Gameplay.RaceRecords.RankingsCnt; i++)
+            {
+                float t = XonoticGodot.Common.Gameplay.RaceRecords.ReadTime(map, recordType, i);
+                if (t == 0f)
+                    continue; // QC: if (t == 0) continue;
+                string name = XonoticGodot.Common.Gameplay.RaceRecords.ReadName(map, recordType, i);
+                string pos = XonoticGodot.Common.Gameplay.Scoring.GameScores.CountOrdinal(i);
+                string time = XonoticGodot.Common.Gameplay.Scoring.GameScores.TimeEncodedToString(
+                    XonoticGodot.Common.Gameplay.Scoring.GameScores.TimeEncode(t), compact: false);
+                // QC: strcat(strpad(8, p), " ", strpad(-8, TIME_ENCODED_TOSTRING(t, false)), " ", n, "\n")
+                sb.Append(pos.PadLeft(8)).Append(' ').Append(time.PadRight(8)).Append(' ').Append(name).Append('\n');
+            }
+            if (sb.Length != 0)
+                return $"Records for {map}:\n{sb}"; // QC: strcat("Records for ", map, ":\n", s)
+        }
+
+        return $"No records are available for the map: {map}"; // QC empty case
     }
 
     /// <summary>QC <c>getladder()</c>: the cross-map race ladder. No store wired → QC's "No ladder on this server!".</summary>
@@ -239,6 +272,10 @@ public sealed class CommandReplies
         "timeformat", "timestamps", "g_require_stats", "g_chatban_list", "g_playban_list",
         "g_playban_minigames", "g_maplist", "g_maplist_mostrecent", "sv_motd", "sv_termsofservice_url",
         "sv_adminnick", "hostname",
+        // The port mirrors QC's `serverflags` GLOBAL into a cvar so the shared-store client reads it; QC's
+        // serverflags is a global (never in the cvarlist), so exclude it from the server-browser pure/impure
+        // scan — it's a computed value derived from already-listed sv_* cvars, not an admin setting.
+        "serverflags",
     };
 
     // QC the extra BADPREFIX(...) for the pure (gameplay) pass.

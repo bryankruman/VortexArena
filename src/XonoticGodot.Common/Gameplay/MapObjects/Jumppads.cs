@@ -8,9 +8,13 @@
 // Core behavior ported FAITHFULLY: trigger_push_calculatevelocity (the projectile-motion solver, including
 // solve_quadratic and the up/down-jump flighttime branch), the touch launch, weighted-random target
 // resolution, the no-target movedir push, PUSH_ONCE self-removal, the jumppad sound/effect debounce,
-// trigger_push_velocity (the player-directional XY/Z velocity pads with add/bidir/clamp modes), and the
-// teamplay pad ownership. Genuinely out of scope: warpzones, the bot waypoint trajectory probing
-// (trigger_push_test / tracetoss), and CSQC networking.
+// trigger_push_velocity (the player-directional XY/Z velocity pads with add/bidir/clamp modes), the
+// teamplay pad ownership, the message-jumppad centerprint, and the kill-credit (pushltime/istypefrag) reset.
+// Genuinely out of scope: warpzones, the bot waypoint trajectory probing (trigger_push_test / tracetoss),
+// CSQC networking, and (pending cross-file infra) the ANIMACTION_JUMP one-shot jump pose (the port has no
+// networked anim-action seam — same as PlayerPhysics jump and the walljump grunt; the locomotion blend still
+// shows the airborne pose because the launch clears the on-ground flag). The jumppadcount/jumppadsused
+// multi-pad bookkeeping IS ported (JumppadPush), as are the q3compat gravity correction + target_push 1.5s debounce.
 
 using System.Numerics;
 using XonoticGodot.Common.Framework;
@@ -34,6 +38,9 @@ public static class Jumppads
     public const int PvBidirectionalXy = 1 << 4; // PUSH_VELOCITY_BIDIRECTIONAL_XY
     public const int PvBidirectionalZ = 1 << 5;  // PUSH_VELOCITY_BIDIRECTIONAL_Z
     public const int PvClampNegativeAdds = 1 << 6; // PUSH_VELOCITY_CLAMP_NEGATIVE_ADDS
+
+    /// <summary>QC <c>NUM_JUMPPADSUSED</c> (jumppads.qh:27): size of the per-player recent-jumppad ring.</summary>
+    private const int NumJumppadsUsed = 3;
 
     private const string CvarGravity = "sv_gravity";
     private const float DefGravity = 800f;
@@ -226,11 +233,40 @@ public static class Jumppads
         {
             if (self.PushLTime < MapMover.Now() && !(MapMover.IsDead(targ) && targ.Velocity == Vector3.Zero))
             {
-                self.PushLTime = MapMover.Now() + 0.2f;
+                // QC jumppads.qc:367-373: a Q3 target_push uses a longer 1.5s debounce and skips the flash;
+                // every other pad flashes (EFFECT_JUMPPAD) and uses the stock 0.2s debounce.
+                if (CompatRemaps.IsQ3Compat && self.ClassName == "target_push")
+                    self.PushLTime = MapMover.Now() + 1.5f;
+                else
+                    self.PushLTime = MapMover.Now() + 0.2f;
                 MapMover.Sound(targ, SoundChannel.Auto, self.Noise);
             }
+            // QC jumppads.qc:380-388: multi-pad combo bookkeeping. Bump jumppadcount once per DISTINCT pad in
+            // the current air-time (the jumppadsused ring dedupes a re-touch of the same pad), so a player who
+            // chains several pads gets a >1 count (read by bot nav / the combo trace). jumppadcount is reset on
+            // land/jump in PlayerPhysics.
+            Entity?[] used = targ.JumpPadsUsed ??= new Entity?[NumJumppadsUsed];
+            bool found = false;
+            for (int i = 0; i < targ.JumpPadCount && i < NumJumppadsUsed; i++)
+                if (ReferenceEquals(used[i], self))
+                    found = true;
+            if (!found)
+            {
+                used[targ.JumpPadCount % NumJumppadsUsed] = self;
+                ++targ.JumpPadCount;
+            }
+
+            // QC: a message-jumppad center-prints this.message to the launched real client (jumppads.qc:392-393).
+            // Real-client/non-empty gating is done inside the seam; bots fall through (lastteleport stamp).
+            MapMover.Centerprint(targ, self.Message);
             targ.LastTeleportTime = MapMover.Now();
             targ.LastTeleportOrigin = targ.Origin;
+
+            // QC: reset who pushed you into a hazard so the jumppad doesn't keep crediting an old attacker for a
+            // later kill (jumppads.qc:407-409). (animdecide_setaction(ANIMACTION_JUMP) is the third-person jump
+            // pose only — the port has no animdecide action seam, so it stays a documented presentation gap.)
+            targ.PushLTime = 0f;
+            targ.IsTypeFrag = false;
         }
 
         // If the jumppad's destination itself has targets, fire them (QC: SUB_UseTargets(this.enemy,...)).
@@ -329,6 +365,12 @@ public static class Jumppads
         float grav = Gravity();
         if (pushedEntity.Gravity != 0f)
             grav *= pushedEntity.Gravity;
+
+        // Q3 has frametime-dependent gravity, but its trigger_push velocity calc doesn't account for it; QC
+        // corrects for that so entities land where they would in Q3 @ gravity 800/125fps (jumppads.qc:48-49:
+        // grav /= 750/800 — the exact float 0.9375). Only on a Q3/Q3DF import map.
+        if (CompatRemaps.IsQ3Compat)
+            grav /= 750f / 800f;
 
         float zdist = torg.Z - org.Z;
         Vector3 flat = torg - org;

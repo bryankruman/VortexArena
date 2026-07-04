@@ -21,6 +21,22 @@ namespace XonoticGodot.Common.Gameplay;
 /// </summary>
 public static class NotifTokens
 {
+    /// <summary>
+    /// Key-bind tokens (QC NOTIF_ARGUMENT_LIST <c>pass_key</c>/<c>nade_key</c>/<c>join_key</c>, all.qh) are
+    /// <c>ARG_CS</c> — CSQC-only — because only the client knows its own binds (QC resolves them via
+    /// <c>getcommandkey</c>). The port formats notification text SERVER-side, where binds are unknown, so we
+    /// cannot resolve them here. Instead each key token expands to a recoverable client-substitution
+    /// SENTINEL (<c>\x02KB:&lt;token&gt;\x02</c>) that survives the wire <c>WriteString</c> intact; the client
+    /// (<c>HudNotifications.SubstituteKeyBinds</c>) replaces each sentinel with the local
+    /// <c>BindTable.CommandKey</c> result. The STX delimiter never occurs in normal message/color-code text.
+    /// </summary>
+    public const string KeyBindSentinelPrefix = "KB:";
+
+    /// <summary>The closing marker of a key-bind sentinel — see <see cref="KeyBindSentinelPrefix"/>.</summary>
+    public const string KeyBindSentinelSuffix = "";
+
+    private static string KeyBindSentinel(string token) => KeyBindSentinelPrefix + token + KeyBindSentinelSuffix;
+
     /// <summary>The KILL_SPREE_LIST milestones (count -> phrase), QC notifications/all.qh.</summary>
     private static readonly (int Count, string Center, string Normal, string Gentle)[] SpreeList =
     {
@@ -78,6 +94,17 @@ public static class NotifTokens
         "f1ord" => Ordinal((int)F(f, 0)),
         "f1time" => ProcessTime((int)F(f, 0)),
 
+        // race times: the float args carry TIME_ENCODE'd (hundredths) integers; TIME_ENCODED_TOSTRING(n, true)
+        // = clockedtime_tostring(n, true, true) is the compact mm:ss.hh / ss.hh string.
+        "f1race_time" => RaceTime((int)F(f, 0)),
+        "f2race_time" => RaceTime((int)F(f, 1)),
+        "f3race_time" => RaceTime((int)F(f, 2)),
+        // race_col: ^F1 when the position is 1 (a good/first time), else ^F2. Color codes left raw for the
+        // client's CCR expansion (QC CCR wraps it; the port's HudText.Expand does the same expansion).
+        "race_col" => (int)F(f, 0) == 1 ? "^F1" : "^F2",
+        // race_diff: ^3[+0.0] when equal, ^1[+diff] when f2 slower, ^2[-diff] when f2 faster (encoded ints).
+        "race_diff" => RaceDiff((int)F(f, 1), (int)F(f, 2)),
+
         // kill-spree phrasing
         "spree_cen" => ShowSprees() ? SpreeCen((int)F(f, 0)) : "",
         "spree_inf" => ShowSprees() ? SpreeInf(1, input, S(s, 1), (int)F(f, 1)) : "",
@@ -92,6 +119,20 @@ public static class NotifTokens
         // team names: SVQC uses f1 directly (1..4), CSQC uses f1-1; we take the server convention (f1 = team idx 1..4).
         "death_team" => TeamColoredFullName((int)F(f, 0)),
 
+        // hash-replace tokens: the port formats server-side, so we take the ARG_SV variants (all.qh:465-466):
+        // "s3#s2" -> s3, "#s2" -> s2 (the CSQC HASH_REPLACE in-template attacker-name splice is a client-only
+        // path the port doesn't take). The "#" in the template is consumed verbatim alongside the %s.
+        "s3#s2" => S(s, 2),
+        "#s2" => S(s, 1),
+
+        // key-bind hints (QC ARG_CS pass_key/nade_key/join_key, getcommandkey lookups): resolved CLIENT-side
+        // (only the client knows its binds) — emit a sentinel the client swaps for the local key (see
+        // KeyBindSentinelPrefix). Used by CTF_PASS_REQUESTED/ONS_TELEPORT/VEHICLE_ENTER* (pass_key = +use),
+        // NADE_THROW (nade_key = the +hook/offhand button) and the spectator-join hint (join_key = +jump).
+        "pass_key" => KeyBindSentinel("pass_key"),
+        "nade_key" => KeyBindSentinel("nade_key"),
+        "join_key" => KeyBindSentinel("join_key"),
+
         // frag presentation (server passes the killed player's ping/health/armor as floats)
         "frag_ping" => FragPing(true, F(f, 1)),
         "frag_stats" => FragStats(F(f, 1), F(f, 2), F(f, 3)),
@@ -101,7 +142,7 @@ public static class NotifTokens
 
     // ---- helpers (QC util.qc / all.qh) ----
 
-    private static bool ShowLocation() => CvarBool("notification_show_location", true);
+    private static bool ShowLocation() => CvarBool("notification_show_location", false);
     private static bool ShowSprees() => CvarBool("notification_show_sprees", true);
     private static bool ShowSpreesCenter() => CvarBool("notification_show_sprees_center", true);
     private static int ShowSpreesInfo() => CvarInt("notification_show_sprees_info", 3);
@@ -143,6 +184,24 @@ public static class NotifTokens
         return $"{m}:{s:00}";
     }
 
+    // QC TIME_ENCODED_TOSTRING(n, true) = clockedtime_tostring(n, true, true): an encoded-hundredths race
+    // time -> a compact "mm:ss.hh" / "ss.hh" string. Shares GameScores' exact clockedtime_tostring port.
+    private static string RaceTime(int encoded) => Scoring.GameScores.TimeEncodedToString(encoded, compact: true);
+
+    // QC "race_diff" (all.qh:448): the signed delta between two encoded race times.
+    //   |f2 - f3| renders as "0.00"  -> "^3[+0.0]"  (a tie)
+    //   f2 > f3 (this time slower)   -> "^1[+<mmssth(f2-f3)>]"
+    //   f2 < f3 (this time faster)   -> "^2[-<mmssth(f3-f2)>]"
+    // Color codes are left raw for the client's CCR expansion.
+    private static string RaceDiff(int f2, int f3)
+    {
+        if (RaceTime(System.Math.Abs(f2 - f3)) == "0.00")
+            return "^3[+0.0]";
+        return f2 > f3
+            ? $"^1[+{RaceTime(f2 - f3)}]"
+            : $"^2[-{RaceTime(f3 - f2)}]";
+    }
+
     // QC notif_arg_spree_cen: centered spree banner (with " " suffix).
     private static string SpreeCen(int spree)
     {
@@ -153,7 +212,7 @@ public static class NotifTokens
                 if (item.Count == spree)
                     return item.Center + " ";
             // non-milestone: show a generic spree count unless special-only
-            if (!CvarBool("notification_show_sprees_center_specialonly", false))
+            if (!CvarBool("notification_show_sprees_center_specialonly", true))
                 return $"{spree} frag spree! ";
             return "";
         }
@@ -177,7 +236,7 @@ public static class NotifTokens
                     foreach (var item in SpreeList)
                         if (item.Count == spree)
                             return $"{player}{nl} ";
-                    if (!CvarBool("notification_show_sprees_info_specialonly", false))
+                    if (!CvarBool("notification_show_sprees_info_specialonly", true))
                         return $"{player}^K1 has {spree} frags in a row! {nl}";
                     return "";
                 }
@@ -189,7 +248,7 @@ public static class NotifTokens
                     return $", ending their {spree} frag spree";
                 return "";
             case -2:
-                if (spree > 1)
+                if (spree > 1 && (ShowSpreesInfo() & 1) != 0)
                     return $", losing their {spree} frag spree";
                 return "";
         }
@@ -223,7 +282,27 @@ public static class NotifTokens
         return "";
     }
 
-    private static string WeaponAmmoName(int id) => "ammo"; // QC resolves ammo_type.m_name; generic here
+    // QC notif_arg_item_wepammo: weapon (f1) ammo type name (cells/rockets/shells/bullets/fuel).
+    // Returns the ammo type's m_name in lowercase, or empty if no ammo.
+    private static string WeaponAmmoName(int id)
+    {
+        if (id >= 0 && id < Registry<Weapon>.Count)
+        {
+            var w = Registry<Weapon>.ById(id);
+            if (w.AmmoType == ResourceType.None)
+                return ""; // ammo-less weapon
+            return w.AmmoType switch
+            {
+                ResourceType.Shells => "shells",
+                ResourceType.Bullets => "bullets",
+                ResourceType.Rockets => "rockets",
+                ResourceType.Cells => "cells",
+                ResourceType.Fuel => "fuel",
+                _ => "",
+            };
+        }
+        return "";
+    }
 
     // QC item_buffname: REGISTRY_GET(StatusEffects, f1).m_name. Buffs live in StatusEffectsCatalog.
     private static string BuffName(int id)
@@ -250,16 +329,18 @@ public static class NotifTokens
     private static bool CvarBool(string name, bool fallback)
     {
         if (Api.Services is null) return fallback;
-        // The facade returns 0 for an unset cvar, indistinguishable from an explicit 0; a non-zero value
-        // means "on", and an unset cvar falls back to the QC autocvar default (these flags default on).
-        float v = Api.Cvars.GetFloat(name);
-        return v != 0f || fallback;
+        // An UNSET cvar reads as an empty string (CvarService.GetString of a missing key); only then do we
+        // fall back to the QC autocvar default. An explicitly-set cvar (incl. an explicit "0") is honored,
+        // so we never force a flag on/off when the user set it. Same unset-detection convention as
+        // MovementParameters.Exists / PhysicsPreset.
+        if (Api.Cvars.GetString(name).Length == 0) return fallback;
+        return Api.Cvars.GetFloat(name) != 0f;
     }
 
     private static int CvarInt(string name, int fallback)
     {
         if (Api.Services is null) return fallback;
-        float v = Api.Cvars.GetFloat(name);
-        return v != 0f ? (int)v : fallback;
+        if (Api.Cvars.GetString(name).Length == 0) return fallback;
+        return (int)Api.Cvars.GetFloat(name);
     }
 }

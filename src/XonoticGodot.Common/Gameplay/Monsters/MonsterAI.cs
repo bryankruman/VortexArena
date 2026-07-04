@@ -103,8 +103,27 @@ public static class MonsterAI
         /// <summary>When the current scripted animation ends (QC .anim_finished).</summary>
         public float AnimFinished;
 
+        /// <summary>Earliest time the next throttled voice cue may play (QC .msound_delay): pain 1.2s, idle 7s.</summary>
+        public float MSoundDelay;
+
         /// <summary>Logical animation phase driving timing (see <see cref="MonsterAnim"/>). Client playback is CSQC.</summary>
         public MonsterAnim Anim = MonsterAnim.Idle;
+
+        /// <summary>
+        /// The corpse has landed (QC <c>mr_deadthink</c> IS_ONGROUND): selects the landed-corpse death frame
+        /// group (die2) over the falling one (die1) for monsters that split their death anim. Set by the
+        /// descriptor's dead-think (e.g. the wyvern) and read by <c>DriveAnimFrame</c>; reset on respawn.
+        /// </summary>
+        public bool DeathLanded;
+
+        /// <summary>
+        /// Per-phase animation VARIANT index (QC <c>setanim(random &gt;= 0.5 ? anim_pain1 : anim_pain2)</c> and the
+        /// golem's <c>anim_melee2/anim_melee3</c> random swing pick). Chosen once when a phase is (re)entered and
+        /// read by <c>DriveAnimFrame</c> → the descriptor's <c>AnimFrame(phase, die2, variant)</c> so a monster with
+        /// two interchangeable pain/attack groups alternates between them instead of always stamping the first.
+        /// Defaults to 0 (the canonical group) for descriptors that don't use variants.
+        /// </summary>
+        public int AnimVariant;
 
         // --- lifecycle: death / respawn / loot / miniboss (QC .monster_lifetime / .candrop / spawnflags) ---
 
@@ -152,6 +171,10 @@ public static class MonsterAI
         /// <summary>Deathtype each queued combo swing carries (QC golem claw = DEATH_MONSTER_GOLEM_CLAW).</summary>
         public string ComboDeathType = DeathTypes.Generic;
 
+        /// <summary>Per-swing melee animtime for a combo swing (QC M_Golem_Attack_Swing passes 0.8 to
+        /// Monster_Attack_Melee — the per-swing attack_finished window). Cadence (NextComboSwing) is separate.</summary>
+        public float ComboSwingAnimTime = 0.5f;
+
         /// <summary>A deferred attack action that lands after a wind-up (QC Monster_Delay).</summary>
         public Action<Entity>? DelayedAction;
 
@@ -169,6 +192,10 @@ public static class MonsterAI
 
         /// <summary>Armor value to restore when the shield expires.</summary>
         public float ShieldRestoreArmor;
+
+        /// <summary>QC <c>.sprite</c> — the floating WP_Monster health-bar waypoint sprite (spawned when
+        /// <c>g_monsters_healthbars</c>; updated on each hit, killed on death). Null when healthbars are off.</summary>
+        public Waypoints.WaypointSprite? Sprite;
     }
 
     /// <summary>
@@ -177,7 +204,7 @@ public static class MonsterAI
     /// death once dead). The actual frame playback is client-render (CSQC) — see the deferred note in
     /// <see cref="RunThink"/>. Kept as a logical state so timing/gating is faithful headless.
     /// </summary>
-    public enum MonsterAnim { Idle, Walk, Run, Attack, Pain, Death }
+    public enum MonsterAnim { Idle, Walk, Run, Attack, Pain, Death, Spawn, Block, BlockEnd, Shoot }
 
     // QC stored monster state on the edict; we keep a side table keyed by the entity instance.
     private static readonly Dictionary<Entity, MonsterState> _states = new();
@@ -208,6 +235,15 @@ public static class MonsterAI
         e.Flags |= EntFlags.Monster;
         e.Solid = Solid.BBox;
         e.MoveType = MoveType.Step;
+
+        // QC Monster_Spawn:1479 — dphitcontentsmask = SOLID|BODY|BOTCLIP|MONSTERCLIP (+ PLAYERCLIP when
+        // g_monsters_playerclip_collisions, :1488). A monster is SOLID_BBOX, so without this the trace mask falls
+        // through to the generic SOLID|BODY|CORPSE default (TraceService.GenericHitMask) — the monster would ignore
+        // monster-clip/bot-clip AI brushes and wrongly clip corpses. Stamp the explicit Base mask here (the Invasion
+        // gametype already stamps the same SOLID|BODY|BOTCLIP|MONSTERCLIP value; this makes EVERY monster faithful).
+        e.DpHitContentsMask = SuperContentsSolid | SuperContentsBody | SuperContentsBotClip | SuperContentsMonsterClip;
+        if (Cvar("g_monsters_playerclip_collisions", 1f) != 0f) // monsters.cfg: g_monsters_playerclip_collisions 1
+            e.DpHitContentsMask |= SuperContentsPlayerClip;
         e.TakeDamage = DamageMode.Aim;
         e.DeadState = DeadFlag.No;
         e.Gravity = 1f;
@@ -243,13 +279,34 @@ public static class MonsterAI
         // Miniboss: spawnflag or random chance (QC Monster_Miniboss_Setup). Boosts health + flags loot.
         if (!st.Respawned)
         {
-            bool flagged = (e.SpawnFlags & MonsterFlag_Miniboss) != 0;
-            if (flagged || Prandom.Float() * 100f < Cvar("g_monsters_miniboss_chance", 0f))
+            // QC Monster_Miniboss_Setup:531 — a mutator may veto miniboss status, which clears MONSTERFLAG_MINIBOSS
+            // (so other code doesn't identify the monster as a miniboss) and skips the boost. No stock mutator uses
+            // this hook, but the chain is wired for parity (FireMonsterCheckBossFlag).
+            if (MutatorHooks.FireMonsterCheckBossFlag(e))
             {
-                e.Health += Cvar("g_monsters_miniboss_healthboost", 100f);
-                st.IsMiniboss = true;
+                e.SpawnFlags &= ~MonsterFlag_Miniboss;
+            }
+            else
+            {
+                bool flagged = (e.SpawnFlags & MonsterFlag_Miniboss) != 0;
+                if (flagged || Prandom.Float() * 100f < Cvar("g_monsters_miniboss_chance", 0f))
+                {
+                    e.Health += Cvar("g_monsters_miniboss_healthboost", 100f);
+                    st.IsMiniboss = true;
+                    e.SpawnFlags |= MonsterFlag_Miniboss; // QC:543 — identifier for other code
+                    e.Effects |= EfRed; // QC Monster_Miniboss_Setup:523 — the red glow that marks a miniboss
+                }
             }
         }
+
+        // Debug/cheat presentation flags (QC Monster_Spawn:1484-1485): g_fullbrightplayers -> EF_FULLBRIGHT,
+        // g_nodepthtestplayers -> EF_NODEPTHTEST (draw-through-walls). Both default 0 (off). Applied on every
+        // spawn (not respawn-gated in QC). The g_monsters_edit -> grab=1 cheat (QC:1483) is NOT ported: the
+        // port's grab/drag system is the sandbox SandboxObject path, with no .grab field on a plain Entity.
+        if (Cvar("g_fullbrightplayers", 0f) != 0f)
+            e.Effects |= EfFullbright;
+        if (Cvar("g_nodepthtestplayers", 0f) != 0f)
+            e.Effects |= EfNodepthtest;
 
         // Skill scaling (QC Monster_Spawn_Setup: health *= MONSTER_SKILLMOD on first/non-respawn spawn).
         if (!st.Respawned)
@@ -304,7 +361,152 @@ public static class MonsterAI
         // in RunThink; here we seed the default so a hit before the first think still pushes.
         e.DamageForceScale = st.DamageForceScale;
 
+        // QC Monster_Spawn_Setup:1364 — Monster_Sound(monstersound_spawn, 0, false, CH_VOICE): the spawn cue.
+        MonsterSound(e, st, "spawn", 0f, false, SoundChannel.Voice);
+
         return st;
+    }
+
+    // ====================================================================================
+    // Team / skill colors (monster_setupcolors / monster_changeteam, sv_monsters.qc:172/200)
+    // ====================================================================================
+
+    /// <summary>RENDER_COLORMAPPED (BIT(10)) — the render flag the csqcmodel reads to apply a colormap tint.</summary>
+    private const int RenderColormapped = 1 << 10;
+
+    /// <summary>
+    /// Port of <c>monster_setupcolors</c> (sv_monsters.qc:172): pick the monster's <c>.colormap</c> by team (in
+    /// teamplay), by owner (a player-spawned monster), else by skill tier so monsters are tinted by difficulty.
+    /// QC also sets <c>.glowmod = colormapPaletteColor(colormap &amp; 0x0F, false)</c>; the headless Entity has no
+    /// glowmod field, but the csqcmodel derives the glowmod from the colormap nibble client-side, so writing the
+    /// authoritative colormap (with RENDER_COLORMAPPED) is the load-bearing decision — the established colormap
+    /// render seam (<see cref="Entity.ColorMapOverride"/>, the same field g_model_setcolormaptoactivator uses).
+    /// </summary>
+    public static void SetupColors(Entity e, MonsterState st)
+    {
+        int colormap;
+        Entity? owner = e.Owner;
+        if (IsTeamplay && e.Team != 0f)
+            colormap = 1024 + ((int)e.Team - 1) * 17;
+        else if (owner is not null && (owner.Flags & EntFlags.Client) != 0)
+            colormap = owner.ColorMapOverride & ~RenderColormapped; // inherit the player's colormap value
+        else if (st.Skill <= MonsterSkill.Easy)
+            colormap = 1126;
+        else if (st.Skill <= MonsterSkill.Medium)
+            colormap = 1075;
+        else if (st.Skill <= MonsterSkill.Hard)
+            colormap = 1228;
+        else if (st.Skill <= MonsterSkill.Insane)
+            colormap = 1092;
+        else if (st.Skill <= MonsterSkill.Nightmare)
+            colormap = 1160;
+        else
+            colormap = 1024;
+
+        // QC stores the bare colormap; the port's render seam expects RENDER_COLORMAPPED set when a colormap is
+        // present (mirrors g_model_setcolormaptoactivator / MapModels.SetColormapToActivator).
+        e.ColorMapOverride = colormap > 0 ? (colormap | RenderColormapped) : 0;
+    }
+
+    /// <summary>
+    /// Port of <c>monster_changeteam</c> (sv_monsters.qc:200): only in teamplay — re-team the monster, (re)arm it
+    /// as an attackable target, re-tint it for the new team, and (if it has a healthbar sprite) re-color the danger
+    /// radar icon to the new team (QC:211-216 WaypointSprite_UpdateTeamRadar + sprite.team = newteam).
+    /// </summary>
+    public static void ChangeTeam(Entity e, float newTeam)
+    {
+        if (!IsTeamplay)
+            return;
+        e.Team = newTeam;
+        // QC: if (!this.monster_attack) IL_PUSH(g_monster_targets, this); this.monster_attack = true; — the port
+        // scans FindInRadius for live monsters in teamplay (FindTarget), so a re-teamed monster is already a
+        // valid target without an intrusive-list push; re-tint to the new team.
+        MonsterState? st = StateOf(e);
+        if (st is not null)
+        {
+            SetupColors(e, st);
+            // QC monster_changeteam:211-216: if (this.sprite) { WaypointSprite_UpdateTeamRadar(this.sprite,
+            // RADARICON_DANGER, team?Team_ColorRGB:'1 0 0'); this.sprite.team = newteam; }
+            if (st.Sprite is not null)
+            {
+                Vector3 col = newTeam != 0f ? Teams.ColorRgb((int)newTeam) : new Vector3(1f, 0f, 0f);
+                Waypoints.WaypointSprites.UpdateTeamRadar(st.Sprite, st.Sprite.RadarIcon, col);
+                st.Sprite.Team = (int)newTeam;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Port of the healthbar block in <c>Monster_Spawn_Setup</c> (sv_monsters.qc:1366-1376): spawn the floating
+    /// WP_Monster waypoint sprite (RADARICON_DANGER) at <c>maxs.z + 15</c> above the monster, colored by team
+    /// (<see cref="Teams.ColorRgb"/>) or red in FFA, and prime its max-health/health bar unless the monster is
+    /// INVINCIBLE. The port's <c>UpdateHealth</c> takes a pre-normalized 0..1 fill (the CSQC client normalizes by
+    /// max in QC), so the bar is fed <c>health / max_health</c>. Stored on <see cref="MonsterState.Sprite"/>.
+    /// </summary>
+    private static void SpawnHealthbar(Entity e, MonsterState st)
+    {
+        Vector3 col = e.Team != 0f ? Teams.ColorRgb((int)e.Team) : new Vector3(1f, 0f, 0f);
+        // QC WaypointSprite_Spawn(WP_Monster, 0, 1024, this, '0 0 1'*(maxs.z+15), NULL, team, this, sprite, true,
+        // RADARICON_DANGER): lifetime 0 (persists), maxdist 1024, follows the monster at maxs.z+15, hideable true.
+        var offset = new Vector3(0f, 0f, e.Maxs.Z + 15f);
+        Waypoints.WaypointSprite wp = Waypoints.WaypointSprites.Spawn(
+            "Monster", 0f, 1024f, e, offset, e.Origin, (int)e.Team, col,
+            radarIcon: 1, rule: Waypoints.SpriteRule.Default, hideable: true);
+        st.Sprite = wp;
+
+        // QC: if (!(spawnflags & MONSTERFLAG_INVINCIBLE)) { UpdateMaxHealth(max_health); UpdateHealth(RES_HEALTH); }
+        if ((e.SpawnFlags & MonsterFlag_Invincible) == 0)
+        {
+            Waypoints.WaypointSprites.UpdateMaxHealth(wp, st.MaxHealth);
+            Waypoints.WaypointSprites.UpdateHealth(wp, st.MaxHealth > 0f ? e.Health / st.MaxHealth : -1f);
+        }
+    }
+
+    /// <summary>
+    /// Port of <c>WaypointSprite_UpdateHealth(this.sprite, GetResource(this, RES_HEALTH))</c> (sv_monsters.qc:1104
+    /// pain / :1155 corpse): refresh the floating health bar after a hit. No-op when healthbars are off (Sprite
+    /// null). Feeds the pre-normalized 0..1 fill the port's bar expects.
+    /// </summary>
+    public static void UpdateHealthbar(MonsterState st, float health)
+    {
+        if (st.Sprite is null) return;
+        Waypoints.WaypointSprites.UpdateHealth(st.Sprite, st.MaxHealth > 0f ? health / st.MaxHealth : -1f);
+    }
+
+    /// <summary>
+    /// Set a monster's collision size, then apply the shared post-size finalization QC does in
+    /// <c>Monster_Spawn_Setup</c> (sv_monsters.qc) AFTER the descriptor's <c>mr_setup</c> stamped the base size:
+    /// (1) the Quake-resize (<c>if (g_monsters_quake_resize &amp;&amp; (spawnflags &amp; MONSTER_SIZE_QUAKE) &amp;&amp;
+    /// !RESPAWNED) { scale *= 1.3; setsize(mins*1.3, maxs*1.3); }</c>) — the port scales the COLLISION bbox here
+    /// (the visual <c>scale</c> needs a networked render-scale field the port lacks, see the unportable note);
+    /// and (2) <c>view_ofs = '0 0 0.35' * maxs.z</c> — the eye height every monster LOS/aim/danger trace reads
+    /// (<see cref="FindTarget"/>, <see cref="ValidTarget"/>, <see cref="FaceTarget"/>, <c>CheckDanger</c>,
+    /// <see cref="WanderTarget"/>). Concrete monsters call this in their <see cref="Monster.Spawn"/> in place of
+    /// the raw <c>Api.Entities.SetSize</c> so the eye is at ~35% of the bbox height, not at the origin/feet.
+    /// </summary>
+    public static void ApplySize(Monster def, Entity e, Vector3 mins, Vector3 maxs)
+    {
+        // QC Monster_Spawn_Setup: MONSTER_SIZE_QUAKE monsters spawn 1.3x larger (non-respawn only) when
+        // g_monsters_quake_resize. Scale the collision bbox; the matching visual scale*=1.3 is render-deferred
+        // (no Entity render-scale field — see unportable). Gated on the descriptor's SizeQuake flag (default off,
+        // so the stock five are unaffected — none are Quake-imported).
+        MonsterState? st = StateOf(e);
+        bool respawned = st?.Respawned ?? ((e.SpawnFlags & MonsterFlag_Respawned) != 0);
+        if (def.SizeQuake && !respawned && Cvar("g_monsters_quake_resize", 1f) != 0f) // monsters.cfg: g_monsters_quake_resize 1
+        {
+            mins *= 1.3f;
+            maxs *= 1.3f;
+        }
+
+        if (Api.Services is not null)
+            Api.Entities.SetSize(e, mins, maxs);
+        else
+            { e.Mins = mins; e.Maxs = maxs; e.Size = maxs - mins; }
+
+        // QC Monster_Spawn_Setup: this.view_ofs = '0 0 0.35' * this.maxs.z — the monster's eye sits at 35% of the
+        // bbox top. Without this seed view_ofs stays (0,0,0) and every eye-based trace (LOS/aim/danger) fires from
+        // the origin (feet/center), shooting low and seeing through the floor. Set from the FINAL maxs (post-resize).
+        e.ViewOfs = new Vector3(0f, 0f, 0.35f * maxs.Z);
     }
 
     // ====================================================================================
@@ -390,6 +592,18 @@ public static class MonsterAI
         if (!st.Spawned && !st.Respawned)
             MonstersTotal++;
 
+        // QC Monster_Spawn:1525 — if (!(this.spawnflags & MONSTERFLAG_RESPAWNED)) monster_setupcolors(this).
+        // Tints the monster by team / owner / skill tier (the difficulty colormap). Respawned monsters keep the
+        // colormap they were spawned with, so this is gated to the first life.
+        if (!st.Respawned)
+            SetupColors(e, st);
+
+        // QC Monster_Spawn_Setup:1366 — if (autocvar_g_monsters_healthbars) spawn a floating WP_Monster health-bar
+        // waypoint sprite at maxs.z+15, RADARICON_DANGER, colored by team (Team_ColorRGB) or red. Updated on each
+        // hit (MarkPain / MonsterDeadDamage) and killed on death (MarkDead). Default g_monsters_healthbars 0.
+        if (Cvar("g_monsters_healthbars", 0f) != 0f)
+            SpawnHealthbar(e, st);
+
         // QC: this.use = Monster_Use; (a trigger acquiring this monster points it at the activator).
         e.Use = (self, actor) =>
         {
@@ -402,6 +616,15 @@ public static class MonsterAI
         // monster actually run; the simulation loop's SV_RunThink fires it.
         e.Think = self => { self.NextThink = Now; st.Def.Think(self); };
         e.NextThink = Now;
+
+        // QC sv_monsters.qc:1381: if (MUTATOR_CALLHOOK(MonsterSpawn, this)) return false; — a mutator may cancel
+        // the spawn (e.g. instagib sets Mage skin=1; no mutator returns true so no cancel in practice).
+        if (MutatorHooks.FireMonsterSpawn(e))
+        {
+            Remove(e);
+            return false;
+        }
+
         return true;
     }
 
@@ -493,9 +716,17 @@ public static class MonsterAI
         return n <= 0 ? null : Monsters.All[Prandom.RangeInt(0, n)];
     }
 
-    /// <summary>QC Monster_Remove (sv_monsters.qc): forget the monster state and delete the edict.</summary>
+    /// <summary>QC Monster_Remove (sv_monsters.qc:947): kill the healthbar sprite, forget the monster state and
+    /// delete the edict.</summary>
     private static void Remove(Entity e)
     {
+        // QC Monster_Remove:959 — WaypointSprite_Kill(this.sprite): a removed monster must not leave an orphaned
+        // floating health bar (e.g. a SPAWNED monster culled on round restart, or a skill-culled one).
+        if (StateOf(e) is { Sprite: not null } st)
+        {
+            Waypoints.WaypointSprites.Kill(st.Sprite);
+            st.Sprite = null;
+        }
         Forget(e);
         if (Api.Services is not null)
             Api.Entities.Remove(e);
@@ -546,13 +777,34 @@ public static class MonsterAI
     public static bool ValidTarget(Entity self, Entity? targ, bool skipFacing = false)
     {
         if (self is null || targ is null || targ == self || targ.IsFreed) return false;
+
+        // QC IS_VEHICLE(targ): a target driving a vehicle (the headless port marks a vehicle edict with a
+        // VehicleDef descriptor). QC exempts a vehicle from the dead/health, notarget and alpha gates below
+        // (it's a solid object, not a living/spectating client), so several checks carry a !IS_VEHICLE guard.
+        var selfState = StateOf(self);
+        bool targIsVehicle = targ.VehicleDef is not null;
+
+        // QC Monster_ValidTarget:108 — (IS_VEHICLE(targ) && !MON_FLAG_RANGED): melee vs a vehicle is useless, so
+        // a melee-only monster (e.g. the zombie) never acquires a vehicle. A ranged monster may.
+        if (targIsVehicle && selfState is not null && !selfState.Def.IsRanged) return false;
+
+        // QC Monster_ValidTarget:108 — game_stopped || time < game_starttime: no target acquisition before the
+        // match clock starts or once the match is stopped (warmup/intermission).
+        if (MatchHalted()) return false;
         if (targ.TakeDamage == DamageMode.No) return false;
-        if (targ.DeadState != DeadFlag.No || targ.Health <= 0f) return false;
+        // QC Monster_ValidTarget:112 — the dead/zero-health gate carries !IS_VEHICLE (a vehicle is never "dead").
+        if (!targIsVehicle && (targ.DeadState != DeadFlag.No || targ.Health <= 0f)) return false;
         if (self.DeadState != DeadFlag.No || self.Health <= 0f) return false;
-        if ((targ.Flags & EntFlags.NoTarget) != 0) return false;
+        // QC Monster_ValidTarget:114 — FL_NOTARGET also carries !IS_VEHICLE.
+        if (!targIsVehicle && (targ.Flags & EntFlags.NoTarget) != 0) return false;
+
+        // QC Monster_ValidTarget:115 — (!autocvar_g_monsters_typefrag && PHYS_INPUT_BUTTON_CHAT(targ)): when
+        // typefrag is off (default 1, so normally inactive), a target with the chat console open (typing) is
+        // spared. Entity.ButtonChat is the live input mirror (written by PlayerPhysics from the typing intent).
+        if (Cvar("g_monsters_typefrag", 1f) == 0f && targ.ButtonChat) return false;
 
         // Don't attack our follow partner, nor a monster following us (QC monster_follow guard).
-        var st = StateOf(self);
+        var st = selfState;
         if (st?.Follow == targ) return false;
         var ts = StateOf(targ);
         if (ts?.Follow == self) return false;
@@ -560,15 +812,27 @@ public static class MonsterAI
         // Team gate: monsters never attack same-team entities in teamplay (QC SAME_TEAM).
         if (IsTeamplay && self.Team != 0f && targ.Team == self.Team) return false;
 
-        // Faded-out entities are not visible enough to target (QC alpha < 0.5 && alpha != 0). Alpha lives on
-        // the gameplay state of clients; entities without it read as fully opaque (alpha 0 == default).
-        // (No alpha field on the headless Entity yet; opacity is assumed — the alpha-fade gate is a no-op.)
+        // QC Monster_ValidTarget:117 — (targ.alpha != 0 && targ.alpha < 0.5): a faded/cloaked target is too dim
+        // to see. The port's Entity.Alpha is a live render-alpha (default 1 = opaque; PowerupsMutator drops it to
+        // the invisibility alpha, CloakedMutator to 0.25), so a target turned mostly-transparent is now spared.
+        // (QC's `alpha != 0` excludes the QC "0 == default opaque" sentinel; the port uses 1 as the opaque
+        // default and 0 only for the gibbed/cleared marker, so we mirror QC by keeping the != 0 guard.)
+        if (targ.Alpha != 0f && targ.Alpha < 0.5f) return false;
 
-        // Line of sight: trace from our eye to the target's bbox center; blocked => invalid.
+        // QC Monster_ValidTarget:119 — MUTATOR_CALLHOOK(MonsterValidTarget, this, targ) invalidates the target
+        // (the powerups mutator forbids targeting a player holding Invisibility — monster stealth).
+        if (MutatorHooks.FireMonsterValidTarget(self, targ)) return false;
+
+        // Line of sight: QC Monster_ValidTarget:118 first does a coarse checkpvs(eye, targ) cull (gated by
+        // g_monsters_lineofsight), THEN the fine traceline. The PVS pre-cull rejects a target in a non-visible
+        // leaf even when an oblique traceline would clip through. Engine-only (compiled BSP PVS), so it's gated on
+        // Api.Services like the turret port — deterministic tests with no PVS fall through to the traceline.
         if (Cvar("g_monsters_lineofsight", 1f) != 0f)
         {
             Vector3 eye = self.Origin + self.ViewOfs;
             Vector3 targCenter = (targ.AbsMin + targ.AbsMax) * 0.5f;
+            if (Api.Services is not null && !Api.Trace.CheckPvs(eye, targCenter))
+                return false; // not potentially visible — QC checkpvs coarse cull
             TraceResult tr = Api.Trace.Trace(eye, Vector3.Zero, Vector3.Zero, targCenter, MoveFilter.NoMonsters, self);
             if (tr.Fraction < 1f && tr.Ent != targ)
                 return false; // solid in the way
@@ -634,8 +898,52 @@ public static class MonsterAI
         return closest;
     }
 
-    /// <summary>Whether a player target is crouched (QC PHYS_INPUT_BUTTON_CROUCH). No crouch flag headless yet.</summary>
-    private static bool IsCrouching(Entity e) => false;
+    /// <summary>Whether a player target is crouched (QC PHYS_INPUT_BUTTON_CROUCH). Entity.ButtonCrouch is the
+    /// live input mirror (written by the input layer before PlayerPhysics), so a crouching target is seen at
+    /// 75% range as in QC — the stealth/range benefit is now modeled.</summary>
+    private static bool IsCrouching(Entity e) => e.ButtonCrouch;
+
+    /// <summary>
+    /// Port of <c>Monster_Sound</c> (sv_monsters.qc:368): play one of the monster's voice cues, honouring the
+    /// <c>g_monsters_sounds</c> master gate and the shared <c>msound_delay</c> throttle. <paramref name="cue"/>
+    /// is the suffix of the fixed-path sample (sight/pain/death/idle/melee/attack/ranged/spawn) — the full
+    /// <c>.sounds</c>-file GlobalSound lookup + skin-keyed Monster_Sounds_Update is a presentation gap left for
+    /// the client (named no-op). When <paramref name="delayToo"/> the cue is skipped while still inside the
+    /// previous throttle window (QC's pain 1.2s / idle 7s self-spam guards); every cue advances the window by
+    /// <paramref name="soundDelay"/>.
+    /// </summary>
+    private static void MonsterSound(Entity self, MonsterState st, string cue, float soundDelay, bool delayToo,
+        SoundChannel chan)
+    {
+        // QC: if (!autocvar_g_monsters_sounds || (delaytoo && time < this.msound_delay)) return;
+        if (Cvar("g_monsters_sounds", 1f) == 0f) return;
+        if (delayToo && Now < st.MSoundDelay) return;
+        // QC: string sample = this.(samplefield); if (sample != "") sample = GlobalSound_sample(...);
+        // sound7(this, chan, sample, ...). A cue that is COMMENTED OUT in the model's .sounds file (or whose
+        // model ships no .sounds at all) yields an EMPTY sample, so the engine plays nothing — but the throttle
+        // window is still advanced. We mirror that: only emit a sample for a cue this monster actually defines.
+        // (SoundCues==null = legacy "not audited, play all"; an empty set = fully silent monster.)
+        bool cueDefined = st.Def.SoundCues is null || st.Def.SoundCues.Contains(cue);
+        if (st.Def.Model is not null && cueDefined)
+        {
+            // QC GlobalSound resolves the model .sounds line "sound/monsters/<dir>/<cue> <count>": when count>0
+            // pick a random numbered variant (cue1..cueN), else the bare cue name. The samples live under the
+            // monster's sound subdir (sound/monsters/<dir>/), NOT a flat monsters/<name>_<cue> path.
+            int count = st.Def.SoundCueCount(cue);
+            string suffix = count > 0 ? (Prandom.RangeInt(0, count) + 1).ToString() : "";
+            Api.Sound.Play(self, chan, "monsters/" + st.Def.SoundDir + "/" + cue + suffix + st.Def.SoundExt);
+        }
+        st.MSoundDelay = Now + soundDelay; // QC: this.msound_delay = time + sound_delay
+    }
+
+    /// <summary>
+    /// Play the dispatch-level <c>monstersound_melee</c> voice cue (QC <c>Monster_Attack_Check:468/478</c>:
+    /// fired once per attack DISPATCH whenever the attackfunc returns <c>attack_success==1</c>, for melee AND
+    /// ranged). The melee combo plays it from <see cref="QueueCombo"/>; ranged attacks (the golem smash /
+    /// lightning) call this at dispatch since they succeed without a connecting traceline.
+    /// </summary>
+    public static void PlayMeleeCue(Entity self, MonsterState st)
+        => MonsterSound(self, st, "melee", 0f, false, SoundChannel.Voice);
 
     /// <summary>
     /// Port of <c>Monster_Enemy_Check</c> (sv_monsters.qc): drop the current enemy if it became invalid or
@@ -648,10 +956,33 @@ public static class MonsterAI
             Entity en = self.Enemy;
             Vector3 targOrigin = (en.AbsMin + en.AbsMax) * 0.5f;
             bool tooFar = (self.Origin - targOrigin).Length() > st.TargetRange;
+
+            // QC Monster_Enemy_Check:1247 re-traces LOS to the held enemy each second and drops it when something
+            // solid (not the enemy itself) blocks the way — so an enemy that ducks behind a wall is RELEASED, it
+            // isn't held until it strays out of range. (WarpZone_TraceLine -> our MOVE_NOMONSTERS traceline.)
+            bool losBlocked = false;
+            TraceResult tr = Api.Trace.Trace(self.Origin, Vector3.Zero, Vector3.Zero, targOrigin,
+                MoveFilter.NoMonsters, self);
+            if (tr.Fraction < 1f && tr.Ent != en)
+                losBlocked = true;
+
+            // QC also drops a frozen enemy (STAT(FROZEN, enemy)).
+            bool frozenEnemy = StatusEffectsCatalog.Frozen != null
+                               && StatusEffectsCatalog.Has(en, StatusEffectsCatalog.Frozen);
+
+            // QC Monster_Enemy_Check:1256 — (enemy.alpha < 0.5 && enemy.alpha != 0): drop an enemy that has
+            // faded out (turned invisible/cloaked). Entity.Alpha is now a live render-alpha (opaque default 1;
+            // PowerupsMutator/CloakedMutator drop it), so a chased enemy that activates invisibility is released
+            // — matching the now-live alpha gate in ValidTarget. (The != 0 guard mirrors QC's opaque sentinel.)
+            bool fadedEnemy = en.Alpha < 0.5f && en.Alpha != 0f;
+
             if (en.IsFreed || en.DeadState != DeadFlag.No || en.Health < 1f
                 || (en.Flags & EntFlags.NoTarget) != 0
+                || frozenEnemy
+                || fadedEnemy
                 || en.TakeDamage == DamageMode.No
-                || tooFar)
+                || tooFar
+                || losBlocked)
             {
                 self.Enemy = null;
             }
@@ -662,8 +993,8 @@ public static class MonsterAI
         }
 
         self.Enemy = FindTarget(self, st);
-        if (self.Enemy is not null && st.Def.Model is not null)
-            Api.Sound.Play(self, SoundChannel.Voice, "monsters/" + st.Def.NetName + "_sight.wav");
+        if (self.Enemy is not null)
+            MonsterSound(self, st, "sight", 0f, false, SoundChannel.Voice); // QC monstersound_sight (no throttle)
     }
 
     // ====================================================================================
@@ -705,6 +1036,44 @@ public static class MonsterAI
             self.MoveType = MoveType.Bounce;
             return;
         }
+
+        // QC Monster_Move:826-840 — the match-state halt: game_stopped, the prematch clock (time < game_starttime),
+        // and the round-not-started gate all force the monster to brake-and-idle (it doesn't roam/chase before the
+        // match goes live or after it stops). RunThink's spawn_time gate covers `time < this.spawn_time`; the
+        // campaign bots-may-start hold (QC sv_monsters.qc:846 `autocvar_g_campaign && !campaign_bots_may_start`) is
+        // now wired via CampaignMovementHeld (the MonsterMove mutator hook + draggedby remain host concerns).
+        if (MatchHalted() || CampaignMovementHeld())
+        {
+            BrakeSimple(self, st.StopSpeed, flyOrSwim);
+            if (Now >= st.SpawnTime) st.Anim = MonsterAnim.Idle;
+            return;
+        }
+
+        // QC Monster_Move:859-863 — prune a stale follow leader: drop monster_follow when the leader is on a
+        // different team (teamplay + g_monsters_teams) or has become a spectator/observer, so the monster stops
+        // tailing a leader it should no longer follow. (IS_SPEC/IS_OBSERVER -> a leader that left active play; the
+        // headless proxy reads that as "no longer a live client".)
+        if (st.Follow is not null)
+        {
+            bool leaderGone = st.Follow.IsFreed || (st.Follow.Flags & EntFlags.Client) == 0;
+            bool diffTeam = IsTeamplay && Cvar("g_monsters_teams", 1f) != 0f
+                            && self.Team != 0f && st.Follow.Team != self.Team;
+            if (leaderGone || diffTeam)
+                st.Follow = null;
+        }
+
+        // QC nades MonsterMove hook (entrap.qc:58-62): when a veiled monster's veil time lapses, restore its
+        // pre-veil alpha. (The entrap run/walk slow from the same hook is applied at the speed computation below.)
+        if (self.NadeVeilTime != 0f && self.NadeVeilTime <= Now)
+        {
+            self.Alpha = self.NadeVeilPrevAlpha;
+            self.NadeVeilTime = 0f;
+        }
+
+        // QC Monster_Move:880 — Monster_Sound(monstersound_idle, 7, true, CH_VOICE) when the monster has no enemy:
+        // the ~7s-throttled wandering idle voice. (delaytoo gates AND advances msound_delay so it can't spam.)
+        if (self.Enemy is null)
+            MonsterSound(self, st, "idle", 7f, true, SoundChannel.Voice);
 
         // Pick destination by movestate (Monster_Move_Target).
         bool running = self.Enemy is not null || st.MonsterMoveTo != Vector3.Zero;
@@ -756,6 +1125,16 @@ public static class MonsterAI
             // Webbed: a monster caught in spider web moves at half speed (QC spiderweb MonsterMove hook).
             if (StatusEffectsCatalog.Has(self, MonsterFramework.Webbed))
                 speed *= 0.5f;
+            // Entrapped: a monster inside a nades entrap orb is slowed (QC nades MonsterMove hook, entrap.qc:48
+            // — scales BOTH run and walk speed by g_nades_entrap_speed while nade_entrap_time > time). The orb's
+            // nade_entrap_touch flags nade_entrap_time on monsters the same as on players.
+            if (self.NadeEntrapTime > Now)
+                speed *= EntrapSpeed();
+            // Stunned: a monster hit by a disability-buff carrier runs/walks slower (QC buffs MonsterMove hook,
+            // disability.qc:19-28 — scales BOTH run and walk speed by g_buffs_disability_speed while Stunned).
+            var stunnedDef = StatusEffectsCatalog.Stunned;
+            if (stunnedDef is not null && StatusEffectsCatalog.Has(self, stunnedDef))
+                speed *= DisabilitySpeed();
             MoveSimple(self, forward, speed, flyOrSwim, vzKeep);
 
             if (Now > st.PainFinished && Now > st.AnimFinished && st.State == 0)
@@ -843,28 +1222,40 @@ public static class MonsterAI
         return tr.EndPos;
     }
 
-    /// <summary>movelib_move_simple (common/physics/movelib.qc): accelerate toward forward*speed.</summary>
+    /// <summary>
+    /// movelib_move_simple (common/physics/movelib.qh:36): <c>velocity = velocity*(1-blendrate) +
+    /// (newdir*blendrate)*velo</c> with the monster blendrate 0.4 (QC Monster_Move:910). This is the EXACT QC
+    /// blend (algebraically <c>velocity + (newdir*velo - velocity)*0.4</c>, which is what we compute), NOT a
+    /// frametime approximation — Base's movelib blend is itself frametime-independent (a per-call lerp).
+    /// </summary>
     private static void MoveSimple(Entity self, Vector3 forward, float speed, bool flyOrSwim, float vzKeep)
     {
         if (!flyOrSwim) forward.Z = 0f;
         forward = QMath.Normalize(forward);
-        // QC movelib_move_simple blends current velocity toward the target at "0.4" (a per-frame lerp);
-        // approximate with a fixed blend so behavior is stable regardless of frametime.
+        // QC: velocity*(1-0.4) + (forward*0.4)*speed  ==  velocity + (forward*speed - velocity)*0.4 (this form).
         Vector3 want = forward * speed;
         Vector3 v = self.Velocity + (want - self.Velocity) * 0.4f;
         self.Velocity = v;
         if (!flyOrSwim) self.Velocity.Z = vzKeep;
     }
 
-    /// <summary>movelib_brake_simple (common/physics/movelib.qc): decay horizontal velocity toward zero.</summary>
+    /// <summary>
+    /// movelib_brake_simple (common/physics/movelib.qc:163): subtract <paramref name="stopSpeed"/> from the
+    /// velocity MAGNITUDE (not a multiplicative decay) and preserve the Z component:
+    /// <c>mspeed = max(0, vlen(v) - force); v = normalize(v) * mspeed; v.z = oldz;</c>. This is the exact QC
+    /// brake — a flat per-call speed reduction, so a slow monster snaps to rest in one brake call rather than
+    /// decaying geometrically. <paramref name="flyOrSwim"/> monsters keep Z in the brake too (their Z is part of
+    /// the movement plane), matching QC which restores velocity_z unconditionally.
+    /// </summary>
     private static void BrakeSimple(Entity self, float stopSpeed, bool flyOrSwim)
     {
-        float vz = self.Velocity.Z;
         Vector3 v = self.Velocity;
-        float keep = System.Math.Clamp(1f - stopSpeed * 0.01f, 0f, 1f);
-        v *= keep;
+        float vz = v.Z;                                     // QC: vz = this.velocity.z
+        float mspeed = System.Math.Max(0f, v.Length() - stopSpeed); // QC: max(0, vlen(velocity) - force)
+        v = QMath.Normalize(v) * mspeed;                    // QC: this.velocity = normalize(velocity) * mspeed
+        v.Z = vz;                                           // QC: this.velocity_z = vz
         self.Velocity = v;
-        if (!flyOrSwim) self.Velocity.Z = vz;
+        _ = flyOrSwim; // QC restores velocity_z regardless of fly/swim — the param is kept for call-site symmetry
     }
 
     /// <summary>QC shortangle_f: shortest signed angular difference, in (-180, 180].</summary>
@@ -881,6 +1272,80 @@ public static class MonsterAI
         a %= 360f;
         if (a < 0f) a += 360f;
         return a;
+    }
+
+    /// <summary>
+    /// Port of <c>Monster_Move_2D</c> (sv_monsters.qc:1161): a self-contained "walk straight ahead in my facing
+    /// direction, reverse 180° when I hit a wall, another monster, or a ledge (unless allow_jumpoff)" mover. It
+    /// is a public Base API (sv_monsters.qh:111) with NO stock caller — mapper/custom monsters drive it directly
+    /// (e.g. a side-scroller-style patrol). Ported faithfully for parity/registry completeness so a custom port
+    /// monster has the same building block. <paramref name="mspeed"/> is the forward ground speed;
+    /// <paramref name="allowJumpoff"/> lets the monster walk off ledges instead of turning around.
+    ///
+    /// The movement gate (QC :1163-1172) brakes + idles when the match isn't live: game_stopped / round not
+    /// started / before game_starttime / before spawn_time / draggedby / campaign-bots-not-ready. The port folds
+    /// game_stopped+round-not-started+prematch into <see cref="MatchHalted"/> and the campaign hold into
+    /// <see cref="CampaignMovementHeld"/> (same seams the main <see cref="Move"/> uses); draggedby is a deferred
+    /// host concern (no .draggedby field on the headless Entity, consistent with the rest of the framework).
+    /// </summary>
+    public static void Move2D(Entity self, float mspeed, bool allowJumpoff)
+    {
+        MonsterState? st = StateOf(self);
+        if (st is null) return;
+
+        // QC :1163 — the not-live brake-and-idle gate.
+        if (MatchHalted() || CampaignMovementHeld() || Now < st.SpawnTime)
+        {
+            // QC :1168 — only show the idle anim once the spawn animation has finished.
+            if (Now >= st.SpawnTime) st.Anim = MonsterAnim.Idle;
+            BrakeSimple(self, 0.6f, false); // QC :1170 movelib_brake_simple(this, 0.6)
+            DriveAnimFrame(self, st);
+            return;
+        }
+
+        // QC :1174-1186 — trace 32u forward; reverse on a wall or another monster, but NOT on a player (we walk
+        // INTO a player to attack it).
+        Vector3 a = self.Origin + self.ViewOfs;       // CENTER_OR_VIEWOFS(this)
+        Vector3 forward = QMath.Forward(self.Angles);
+        Vector3 b = a + forward * 32f;
+        TraceResult tr = Api.Trace.Trace(a, Vector3.Zero, Vector3.Zero, b, MoveFilter.Normal, self);
+
+        bool reverse = tr.Fraction != 1f;
+        if (tr.Ent is not null && (tr.Ent.Flags & EntFlags.Client) != 0) reverse = false;
+        if (tr.Ent is not null && (tr.Ent.Flags & EntFlags.Monster) != 0) reverse = true;
+
+        // QC :1188-1193 — ledge check: if not allowed to jump off and we're grounded, trace down 32u from the
+        // forward point; nothing there (fraction == 1) means a ledge ahead, so reverse.
+        if (!allowJumpoff && self.OnGround)
+        {
+            TraceResult down = Api.Trace.Trace(b, Vector3.Zero, Vector3.Zero, b - new Vector3(0f, 0f, 32f),
+                MoveFilter.Normal, self);
+            if (down.Fraction == 1f) reverse = true;
+        }
+
+        // QC :1195-1199 — flip 180° and re-derive the facing vector.
+        if (reverse)
+        {
+            Vector3 ang = self.Angles;
+            ang.Y = AngleMod(ang.Y - 180f);
+            self.Angles = ang;
+            forward = QMath.Forward(self.Angles);
+        }
+
+        // QC :1201 — movelib_move_simple_gravity(this, v_forward, mspeed, 1): blend toward forward*mspeed at
+        // blendrate 1 (i.e. set velocity = forward*mspeed) but ONLY while on the ground; gravity owns Z.
+        if (self.OnGround)
+        {
+            float vz = self.Velocity.Z;
+            Vector3 fwd = forward; fwd.Z = 0f;
+            self.Velocity = QMath.Normalize(fwd) * mspeed; // blendrate 1 => velocity = newdir*velo
+            self.Velocity.Z = vz;
+        }
+
+        // QC :1203-1209 — walk anim when actually moving, else idle (gated by the pain/attack windows).
+        if (Now > st.PainFinished && Now > st.AttackFinished)
+            st.Anim = self.Velocity.Length() > 10f ? MonsterAnim.Walk : MonsterAnim.Idle;
+        DriveAnimFrame(self, st);
     }
 
     // ====================================================================================
@@ -938,6 +1403,7 @@ public static class MonsterAI
         if (self.DeadState != DeadFlag.No || self.Health <= 0f)
         {
             DeadThink(self, st);
+            DriveAnimFrame(self, st); // die1/die2 corpse pose (the descriptor maps the phase to a frame group)
             return;
         }
 
@@ -951,9 +1417,13 @@ public static class MonsterAI
         // Expire a timed mage shield, restoring armor (mirrors STATUSEFFECT_Shield expiry).
         RunStatusTimers(self, st);
 
-        // Don't act until the spawn animation has finished (QC .spawn_time gate).
+        // Don't act until the spawn animation has finished (QC .spawn_time gate). The spawn pose set in Setup
+        // (QC mr_setup setanim(anim_spawn)) still plays during this window — stamp it onto the networked Frame.
         if (Now < st.SpawnTime)
+        {
+            DriveAnimFrame(self, st);
             return;
+        }
 
         // Frozen: drop the enemy and don't think (QC Monster_Think frozen branch); else re-acquire.
         bool frozen = StatusEffectsCatalog.Frozen != null && StatusEffectsCatalog.Has(self, StatusEffectsCatalog.Frozen);
@@ -979,9 +1449,39 @@ public static class MonsterAI
 
         Move(self, st);
         AttackCheck(self, st);
-        // NOTE (client-render): CSQC monster animation frame playback (Monster_Anim / CSQCMODEL_AUTOUPDATE).
-        // The server-side anim PHASE that drives timing is maintained in st.Anim by Move/MarkPain/MarkDead.
+        // CSQC monster animation frame playback (Monster_Anim / CSQCMODEL_AUTOUPDATE): translate the logical
+        // anim PHASE (maintained in st.Anim by Move/MarkPain/MarkDead) into the descriptor's concrete MD3
+        // frame group and stamp it onto the networked Entity.Frame so the client ModelAnimator plays it.
+        DriveAnimFrame(self, st);
     }
+
+    /// <summary>
+    /// Map the monster's logical <see cref="MonsterAnim"/> phase to its descriptor's concrete MD3 frame-group
+    /// start index (QC <c>mr_anim</c>) and write it to the networked <see cref="Entity.Frame"/>, so the client
+    /// model actually plays the named group (CSQCMODEL_AUTOUPDATE). Descriptors that haven't declared their
+    /// frame table return <c>null</c> and leave <see cref="Entity.Frame"/> untouched (no regression).
+    /// </summary>
+    private static void DriveAnimFrame(Entity self, MonsterState st)
+    {
+        float? frame = st.Def.AnimFrame(ToPhase(st.Anim), st.DeathLanded, st.AnimVariant);
+        if (frame.HasValue)
+            self.Frame = frame.Value;
+    }
+
+    /// <summary>Bridge the internal <see cref="MonsterAnim"/> to the descriptor-layer <see cref="MonsterAnimPhase"/>.</summary>
+    private static MonsterAnimPhase ToPhase(MonsterAnim a) => a switch
+    {
+        MonsterAnim.Walk => MonsterAnimPhase.Walk,
+        MonsterAnim.Run => MonsterAnimPhase.Run,
+        MonsterAnim.Attack => MonsterAnimPhase.Attack,
+        MonsterAnim.Pain => MonsterAnimPhase.Pain,
+        MonsterAnim.Death => MonsterAnimPhase.Death,
+        MonsterAnim.Spawn => MonsterAnimPhase.Spawn,
+        MonsterAnim.Block => MonsterAnimPhase.Block,
+        MonsterAnim.BlockEnd => MonsterAnimPhase.BlockEnd,
+        MonsterAnim.Shoot => MonsterAnimPhase.Shoot,
+        _ => MonsterAnimPhase.Idle,
+    };
 
     /// <summary>
     /// Port of <c>Monster_Touch</c> (sv_monsters.qc): a non-monster attackable that bumps into us and isn't
@@ -1020,8 +1520,11 @@ public static class MonsterAI
             if (ValidTarget(self, self.Enemy, false) && self.Enemy is not null)
             {
                 FaceTarget(self, self.Enemy);
-                MeleeAttack(self, st, st.ComboSwingDamage, st.AttackRange, 0.5f,
-                    st.ComboDeathType, freeze: false);
+                // QC M_Golem_Attack_Swing animtime = 0.8 (the per-swing attack_finished window); the swing
+                // CADENCE stays 0.5s (NextComboSwing). The melee voice cue already fired once at dispatch
+                // (QueueCombo), so suppress the per-swing cue here (QC plays it per dispatch, not per swing).
+                MeleeAttack(self, st, st.ComboSwingDamage, st.AttackRange, st.ComboSwingAnimTime,
+                    st.ComboDeathType, freeze: false, playMeleeCue: false);
             }
         }
     }
@@ -1070,7 +1573,7 @@ public static class MonsterAI
     /// + cooldown. Returns true if the swing connected with a damageable entity.
     /// </summary>
     public static bool MeleeAttack(Entity self, MonsterState st, float damage, float range,
-        float animTime, string deathType, bool freeze = true)
+        float animTime, string deathType, bool freeze = true, bool playMeleeCue = true)
     {
         if (freeze) st.State = MonsterState_AttackMelee;
         st.AttackFinished = Now + animTime;
@@ -1085,6 +1588,11 @@ public static class MonsterAI
         {
             Vector3 force = QMath.Normalize(hit.Origin - self.Origin);
             Combat.Damage(hit, self, self, damage * SkillMod(st), deathType, hit.Origin, force);
+            // QC Monster_Attack_Check:468/478 plays monstersound_melee once per attack DISPATCH on success — for
+            // a single-swing melee monster (zombie/spider) the MeleeAttack call IS the dispatch, so play it here;
+            // the golem combo fires its dispatch-level cue in QueueCombo and passes playMeleeCue=false per swing.
+            if (playMeleeCue)
+                MonsterSound(self, st, "melee", 0f, false, SoundChannel.Voice);
             return true;
         }
         return false;
@@ -1096,7 +1604,8 @@ public static class MonsterAI
     /// would land on the enemy, launch it and install <paramref name="touchFunc"/> as the contact handler.
     /// Sets the ranged state + cooldown. Returns true if the leap was performed.
     /// </summary>
-    public static bool Leap(Entity self, MonsterState st, Vector3 vel, EntityTouch touchFunc, float animTime)
+    public static bool Leap(Entity self, MonsterState st, Vector3 vel, EntityTouch touchFunc, float animTime,
+        MonsterAnim leapAnim = MonsterAnim.Attack)
     {
         if (st.State != 0) return false;
         if ((self.Flags & EntFlags.OnGround) == 0) return false;
@@ -1113,7 +1622,7 @@ public static class MonsterAI
         st.AttackFinished = Now + animTime;
         st.AnimFinished = Now + animTime;
         st.State = MonsterState_AttackRanged;
-        st.Anim = MonsterAnim.Attack;
+        st.Anim = leapAnim; // QC Monster_Attack_Leap(actor, actor.anim_shoot, ...): the leap plays the shoot group
         self.Touch = touchFunc;
         Vector3 o = self.Origin; o.Z += 1f; Api.Entities.SetOrigin(self, o);
         self.Velocity = vel;
@@ -1125,6 +1634,14 @@ public static class MonsterAI
     /// Approximate QC <c>tracetoss</c>: simulate the ballistic arc of <paramref name="self"/> launched at
     /// <paramref name="vel"/> under gravity and return the first thing it would hit. Stepped traceline
     /// integration (deterministic, headless) — enough to gate a leap on "will I land on my enemy?".
+    ///
+    /// [warpzones.combat.traceextras] WARPZONE-AWARE, matching QC <c>WarpZone_TraceToss_ThroughZone</c>
+    /// (lib/warpzone/common.qc): each integration segment is swept with <see cref="WarpzoneTrace.TraceBoxWarpzone"/>
+    /// so a toss arc that crosses a seamless portal continues on the far side — the segment endpoint comes back in
+    /// the FINAL (post-portal) frame and the running velocity is rotated through the accumulated portal chain, so a
+    /// monster's leap-aim correctly probes an enemy reached through a warpzone. With no warpzones in the world the
+    /// warpzone-aware sweep collapses to exactly one plain <see cref="ITraceService.Trace"/> per step, so the arc is
+    /// byte-for-byte unchanged on a non-warpzone map (the common case).
     /// </summary>
     private static TraceResult TraceToss(Entity self, Vector3 vel)
     {
@@ -1135,9 +1652,19 @@ public static class MonsterAI
         for (int i = 0; i < 80; i++) // ~4s of flight
         {
             Vector3 next = pos + v * step;
-            TraceResult tr = Api.Trace.Trace(pos, self.Mins, self.Maxs, next, MoveFilter.Normal, self);
+            // QC WarpZone_TraceToss runs each ballistic segment through WarpZone_TraceBox: a portal crossing
+            // transforms the remaining arc to the far side. AmbientManager is null on a non-warpzone world, where
+            // TraceBoxWarpzone is a single plain trace with an identity transform (arc unchanged).
+            WarpzoneTraceResult wr = Api.Trace.TraceBoxWarpzone(pos, self.Mins, self.Maxs, next,
+                MoveFilter.Normal, self);
+            TraceResult tr = wr.Trace;
             if (tr.Fraction < 1f) return tr;
-            pos = next;
+            // The segment endpoint is already in the FINAL portal frame; rotate the integrated velocity through the
+            // same portal chain so gravity keeps pulling "down" correctly on the far side (QC re-applies the
+            // warpzone transform to velocity across the seam). Identity chain == no-op on a non-warpzone map.
+            pos = tr.EndPos;
+            if (wr.ZonesCrossed > 0)
+                v = wr.Transform.TransformDirection(v);
             v.Z -= g * step;
         }
         return TraceResult.Miss(pos);
@@ -1162,19 +1689,29 @@ public static class MonsterAI
     /// <summary>
     /// Queue a multi-swing melee combo (QC golem <c>Monster_Delay(this, swing_cnt, 0.5, …)</c>): lock the
     /// monster for the combo duration and land <paramref name="swings"/> melee hits 0.5s apart, handled in
-    /// <see cref="RunDelayedActions"/>.
+    /// <see cref="RunDelayedActions"/>. <paramref name="perSwingAnimTime"/> is each swing's animtime (QC
+    /// M_Golem_Attack_Swing passes 0.8 to Monster_Attack_Melee), distinct from the 0.5s swing cadence.
     /// </summary>
-    public static void QueueCombo(Entity self, MonsterState st, int swings, float perSwingDamage, string deathType)
+    public static void QueueCombo(Entity self, MonsterState st, int swings, float perSwingDamage, string deathType,
+        float perSwingAnimTime = 0.5f)
     {
         swings = System.Math.Clamp(swings, 1, 3);
         st.State = MonsterState_AttackMelee;
         st.ComboSwings = swings;
         st.ComboSwingDamage = perSwingDamage;
         st.ComboDeathType = deathType;
+        st.ComboSwingAnimTime = perSwingAnimTime;
         st.NextComboSwing = Now + 0.5f;
+        // QC: anim_finished = attack_finished_single[0] = time + 0.5 * swing_cnt (the dispatch-level combo lock).
         st.AttackFinished = Now + 0.5f * swings;
         st.AnimFinished = st.AttackFinished;
         st.Anim = MonsterAnim.Attack;
+        // QC M_Golem_Attack MELEE: setanim(random() >= 0.5 ? anim_melee2 : anim_melee3) — pick the swing variant
+        // once at dispatch (descriptors with a single attack group ignore this; the golem alternates 4/5).
+        st.AnimVariant = MonsterRandom.Next() >= 0.5f ? 1 : 0;
+        // QC Monster_Attack_Check:468 plays monstersound_melee ONCE per attack DISPATCH on attack_success==1
+        // (not per connecting swing). The golem's MELEE branch returns true, so the cue fires here, at dispatch.
+        MonsterSound(self, st, "melee", 0f, false, SoundChannel.Voice);
     }
 
     /// <summary>
@@ -1203,6 +1740,11 @@ public static class MonsterAI
         proj.Owner = owner;
         proj.NetName = st.Def.NetName;
         proj.MoveType = moveType;
+        // QC .bouncefactor / .bouncestop for MOVETYPE_BOUNCE projectiles (spider web 0.3/0.05, golem zap
+        // 0.5/0.075). The engine MoveType.Bounce integrator reads these off the entity (PhysicsToss); a
+        // zero leaves the engine on its built-in defaults (0.5 / 60/800), so passing 0f is a faithful no-op.
+        proj.BounceFactor = bounceFactor;
+        proj.BounceStop = bounceStop;
         // QC golem/spider PROJECTILE_MAKETRIGGER (SOLID_CORPSE + dphitcontentsmask SOLID|BODY|CORPSE): transparent
         // to the firer's movement so the monster's own projectile can't collide with / detonate on it. Opt-in
         // because not every caller of this shared spawner uses it — the mage spike is SOLID_BBOX (mage.qc:224)
@@ -1307,21 +1849,26 @@ public static class MonsterAI
         // non-kill hit (NEEDKILL included), unlike INVINCIBLE.
         if (!isKill && StatusEffectsCatalog.Has(self, MonsterFramework.SpawnShield)) return 0f;
 
-        // Mage Shield greatly reduces incoming damage while active (QC armor block via STATUSEFFECT_Shield).
-        if (!isKill && StatusEffectsCatalog.Has(self, MonsterFramework.Shield))
-        {
-            float block = Cvar("g_monster_mage_shield_blockpercent", 0.9f);
-            take *= System.Math.Clamp(1f - block, 0f, 1f);
-        }
-
         if (take > 0f)
         {
             self.Health -= take;
-            st.PainFinished = Now + 0.34f;
+            // QC mr_pain: actor.pain_finished = time + N. The generic monster keeps the zombie's 0.34s; a
+            // monster that overrides mr_pain with a wider window (wyvern/golem = 0.5s) exposes it via PainWindow.
+            st.PainFinished = Now + st.Def.PainWindow;
             st.Anim = MonsterAnim.Pain;
-            if (st.Def.Model is not null)
-                Api.Sound.Play(self, SoundChannel.Body, "monsters/" + st.Def.NetName + "_pain.wav");
+            // QC mr_pain: setanim(random() >= 0.5 ? anim_pain2 : anim_pain1) — pick a pain variant once per pain
+            // event (descriptors with a single pain group ignore this; the golem alternates pain1 '7'/pain2 '8').
+            st.AnimVariant = MonsterRandom.Next() >= 0.5f ? 1 : 0;
+            // QC Monster_Damage:1101 — Monster_Sound(monstersound_pain, 1.2, true, CH_PAIN): the 1.2s throttle
+            // (delaytoo) stops a stream of hits from machine-gunning the pain voice. CH_PAIN(-6) = the auto pain
+            // channel so overlapping hurt cues stack rather than cut each other off.
+            MonsterSound(self, st, "pain", 1.2f, true, SoundChannel.PainAuto);
         }
+
+        // QC Monster_Damage:1104 — if (this.sprite) WaypointSprite_UpdateHealth(this.sprite, RES_HEALTH). Runs
+        // unconditionally (even on a 0-take hit), so the floating health bar tracks every damage event. No-op when
+        // healthbars are off (Sprite null).
+        UpdateHealthbar(st, self.Health);
 
         // Pause health regen after a hit (QC sets .dmg_time; the port's regen pause is .pauseregen_finished).
         // (QC's body-impact spamsound + the take>50/>100 extra gib splashes are client VFX/audio — named no-ops.)
@@ -1366,9 +1913,8 @@ public static class MonsterAI
         if (deathType == DeathTypes.Kill) st.CanDrop = false;
         MonsterFramework.DropItem(self, st, attacker);
 
-        // Death sound.
-        if (st.Def.Model is not null)
-            Api.Sound.Play(self, SoundChannel.Voice, "monsters/" + st.Def.NetName + "_death.wav");
+        // Death sound (QC Monster_Dead:1044 — monstersound_death, no throttle).
+        MonsterSound(self, st, "death", 0f, false, SoundChannel.Voice);
 
         // QC Monster_Dead:1046 — ++monsters_killed, but ONLY for a NATURAL (map-placed, first-life) monster.
         // Command/wave-spawned (MONSTERFLAG_SPAWNED) and already-respawned (MONSTERFLAG_RESPAWNED) kills never
@@ -1402,9 +1948,20 @@ public static class MonsterAI
         st.State = 0;
         st.AttackFinished = 0f;
         st.Anim = MonsterAnim.Death;
+        // QC mr_death: setanim(random() > 0.5 ? anim_die1 : anim_die2) — the descriptor rolls its death
+        // variant once at the moment of death (e.g. zombie picks die1/die2 randomly). The result is stored
+        // in DeathLanded so DriveAnimFrame passes it as the die2 flag to AnimFrame. Monsters that use the
+        // falling→landed split (wyvern) return false here (die1 = falling) and set DeathLanded=true later
+        // via their dead-think; monsters that want an immediate random pick (zombie) return the roll directly.
+        st.DeathLanded = st.Def.RollDeathVariant();
 
         if ((self.Flags & (EntFlags.Fly | EntFlags.Swim)) == 0)
             self.Velocity = Vector3.Zero;
+
+        // QC Monster_Damage:1134 / Monster_Dead:961 — WaypointSprite_Kill(this.sprite): remove the floating
+        // health-bar waypoint sprite when the monster dies. No-op when healthbars are off (Sprite null).
+        Waypoints.WaypointSprites.Kill(st.Sprite);
+        st.Sprite = null;
 
         // QC Monster_Damage:1136 — MUTATOR_CALLHOOK(MonsterDies, this, attacker, deathtype). The port's
         // MonsterDies equivalent is the direct NadeBonus.OnMonsterDies (there is no MutatorHooks.MonsterDies
@@ -1600,6 +2157,13 @@ public static class MonsterAI
             st.SpawnTime = Now;
             st.PainFinished = Now;
             st.Anim = MonsterAnim.Idle;
+            st.DeathLanded = false; // a respawned monster's corpse-landed flag must clear so it isn't stuck on die2
+            // QC Monster_Miniboss_Setup:523-528 re-applies EF_RED on a RESPAWNED miniboss (MarkDead cleared
+            // s.Effects to 0). A regular monster comes back with no glow.
+            if (st.IsMiniboss) s.Effects |= EfRed;
+            // QC Monster_Respawn -> Monster_Spawn -> Monster_Spawn_Setup re-runs the healthbar block, so a
+            // respawned monster regains its floating WP_Monster sprite (MarkDead killed + nulled the old one).
+            if (st.Sprite is null && Cvar("g_monsters_healthbars", 0f) != 0f) SpawnHealthbar(s, st);
             // Re-arm the monster damage seam (the corpse left GtEventDamage installed, but a respawn re-establishes
             // the full live contract) + re-seed knockback receptivity for the generic apply-push.
             s.GtEventDamage = MonsterEventDamage;
@@ -1624,6 +2188,13 @@ public static class MonsterAI
     public static float FrameTime => Api.Services is null ? 0f : Api.Clock.FrameTime;
 
     /// <summary>Read a balance/config float, falling back when unset or services are absent (QC autocvar default).</summary>
+    /// <summary>QC autocvar_g_nades_entrap_speed (mutators.cfg:299, default 0.5): the entrap move-speed factor.</summary>
+    private static float EntrapSpeed() => Cvar("g_nades_entrap_speed", 0.5f);
+
+    // QC autocvar_g_buffs_disability_speed (0.7): the run/walk multiplier a Stunned monster moves at (buffs
+    // MonsterMove hook, disability.qc:25-26).
+    private static float DisabilitySpeed() => Cvar("g_buffs_disability_speed", 0.7f);
+
     public static float Cvar(string name, float fallback)
     {
         if (Api.Services is null) return fallback;
@@ -1648,6 +2219,34 @@ public static class MonsterAI
 
     /// <summary>Whether team play is active (QC <c>teamplay</c>); read from the gametype cvar.</summary>
     public static bool IsTeamplay => Cvar("teamplay", 0f) != 0f;
+
+    /// <summary>
+    /// QC <c>game_stopped || time &lt; game_starttime</c> (Monster_ValidTarget:108): monsters do nothing before
+    /// the match clock starts or once it has been stopped (warmup/intermission/timeout). Reads the same live host
+    /// seams the vehicle/mutator ports use — <see cref="VehicleCommon.GameStopped"/> (driven by the server each
+    /// frame from <c>Intermission.Running || MatchEnded || Timeout.IsPaused</c>, GameWorld.cs SEAM E), falling back
+    /// to the <c>g_game_stopped</c> cvar mirror — plus <see cref="StartItem.GameStartTimeProvider"/> for the prematch
+    /// clock; headless tests with no host wire-up read as "match live".
+    /// </summary>
+    public static bool MatchHalted()
+    {
+        if (VehicleCommon.GameStopped) return true;
+        if (Api.Services is not null && Api.Cvars.GetFloat("g_game_stopped") != 0f) return true;
+        float gameStart = StartItem.GameStartTimeProvider?.Invoke() ?? 0f;
+        return Now < gameStart;
+    }
+
+    /// <summary>
+    /// QC <c>(autocvar_g_campaign &amp;&amp; !campaign_bots_may_start)</c> (sv_monsters.qc:846 Monster_Move /
+    /// :1165 Monster_Move_2D): in a campaign, monster MOVEMENT is frozen until the human spawns. The server wires this
+    /// to <c>g_campaign &amp;&amp; !Campaign.BotsMayStart</c>; unset (non-campaign play, headless tests) → never holds.
+    /// This is the move-specific gate ONLY — QC does NOT key target acquisition (Monster_ValidTarget) off it, so it is
+    /// kept out of <see cref="MatchHalted"/> (shared with ValidTarget).
+    /// </summary>
+    public static System.Func<bool>? CampaignBotHold;
+
+    /// <summary>True when monster movement must hold for the campaign bots-may-start gate (see <see cref="CampaignBotHold"/>).</summary>
+    public static bool CampaignMovementHeld() => CampaignBotHold?.Invoke() ?? false;
 
     /// <summary>QC WATERLEVEL_WETFEET: the threshold below which a swimmer is considered out of water.</summary>
     public const int WaterLevel_WetFeet = 1;
@@ -1685,6 +2284,24 @@ public static class MonsterAI
     public const int MonsterFlag_Respawned = 1 << 15;
     /// <summary>QC MONSTER_RESPAWN_DEATHPOINT (reuses MONSTERFLAG_FLY_VERTICAL's bit per zombie.qh).</summary>
     public const int MonsterRespawn_DeathPoint = 1 << 3;
+
+    /// <summary>DP <c>EF_RED = 128</c> (dpextensions.qc:179) — the red glow QC stamps on a miniboss (and re-applies on respawn).</summary>
+    public const int EfRed = 128;
+
+    /// <summary>DP <c>EF_FULLBRIGHT = 512</c> (dpextensions.qc:133) — set when g_fullbrightplayers (QC Monster_Spawn:1484).</summary>
+    public const int EfFullbright = 512;
+
+    /// <summary>DP <c>EF_NODEPTHTEST = 8192</c> (dpextensions.qc:141) — draw-through-walls when g_nodepthtestplayers (QC Monster_Spawn:1485).</summary>
+    public const int EfNodepthtest = 8192;
+
+    // SUPERCONTENTS_* bits for the monster's dphitcontentsmask (QC Monster_Spawn:1479/1488). Common can't
+    // reference XonoticGodot.Engine.Collision.SuperContents, so they are mirrored here EXACTLY as Invasion.cs /
+    // Nexball.cs / LagComp.cs do (DPCONTENTS_* values; TraceService honors Entity.DpHitContentsMask).
+    private const int SuperContentsSolid       = 0x00000001; // QC DPCONTENTS_SOLID
+    private const int SuperContentsBody        = 0x02000000; // QC DPCONTENTS_BODY
+    private const int SuperContentsPlayerClip  = 0x00000100; // QC DPCONTENTS_PLAYERCLIP
+    private const int SuperContentsMonsterClip = 0x00000200; // QC DPCONTENTS_MONSTERCLIP
+    private const int SuperContentsBotClip     = 0x00000800; // QC DPCONTENTS_BOTCLIP
 }
 
 /// <summary>QC monster skill levels (sv_monsters.qh: MONSTER_SKILL_*).</summary>

@@ -1,0 +1,437 @@
+unit: turret-machinegun
+category: turret
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 14
+  worst_gaps:
+    - "FIXED (re-verified 2026-06-27): the muzzle flash + EFFECT_BULLET tracer ARE emitted on the live turret Attack path (MachinegunTurret.cs:95-102 — TurretCombat.FireBullet tracerEffect:\"BULLET\" sweeps EFFECT_BULLET via EffectEmitter.EmitTrail >16u, and EffectEmitter.Emit(\"MACHINEGUN_MUZZLEFLASH\") fires the muzzleflash). Both effects are registered (EffectsList.cs:78 uzi_muzzleflash, :246 tr_bullet isTrail) and networked via the standard EffectRequest sink."
+    - "FIXED since the 2026-06-25 row-write (stale registry corrected): the NORMAL-respawn-path death FX, impact sound, and gib toss are now LIVE. TurretAI.Die:1102-1107 emits EFFECT_ROCKET_EXPLODE + plays weapons/rocket_impact.wav AND calls TossDeathGibs on EVERY death (not just NORESPAWN); TossDeathGibs/TossGib/GibBoom (:1199-1307) spawn the base-gib + head_model debris as server-side physics entities that render via the entity feed (the vehicle-wreckage pattern). The 2026-06-25 die_respawn row still recorded presentation/audio MISSING — that was stale (these landed in Wave 15, 322fc26)."
+    - "FIXED since the 2026-06-25 row-write: low-health sparks/smoke ARE emitted. TurretAI.DrawFx:1319-1337 (called every think from RunCombat:686) throws te_spark <127hp, SMOKE_LARGE <85hp, SMOKE_SMALL <32hp from one shared random roll, faithful to cl_turrets.qc:39-53. The summary previously listed this as still-missing."
+    - "Residual CLIENT presentation still missing (the true dominant residual): no tur_head sub-entity / machinegun.md3 HEAD MODEL at tag_head (head is angle-state only, so the head model never renders or frame-animates and the muzzle flash anchors at the muzzle ORIGIN not a tag_fire bone), no team glowmod/colormap, and no waypoint sprite / 2D healthbar (turret_draw2d). Sparks/smoke + death gibs + muzzleflash/tracer are now DONE; the head-model render, team glow, and waypoint/healthbar are what remain."
+    - "NEW REGRESSION this wave (2026-06-28, uncommitted): turret_respawn no longer restores the full volley. The wave rewrote Respawn (TurretAI.cs:1205) to `VollyCounter = ShotVollyMax > 0 ? ShotVollyMax : 1`, but ShotVollyMax (TurretAI.cs:98) is NEVER ASSIGNED anywhere — TurretSpawn.Init sets VollyCounter, not ShotVollyMax (grep: zero `ShotVollyMax =` sites). It defaults to 0, so a respawned machinegun (shot_volly=5) resets VollyCounter to 1 instead of 5. Net effect: the FIRST burst after respawn is a single shot then the 0.5s volley pause (self-corrects to 5 on the next burst, since Fire resets VollyCounter to p.ShotVolly). Minor but a real Base divergence (Base turret_respawn sv_turrets.qc:282 resets to shot_volly). The comment claims Init clamps it — false. Fix: set st.ShotVollyMax = shotVolly>1?shotVolly:1 in TurretSpawn.Init."
+    - "FIXED: checkpvs is in ValidTarget (TurretAI.cs:333, Api.Trace.CheckPvs before alpha/team/range, no-op on unvised maps like DarkPlaces); the fire-time AIMDIST on-target test rides a REAL tracebox (UpdateImpact:837, RunCombat:808-818 tests st.DistImpactToAimPos when engine services exist, geometric OnTarget only headless) so the port no longer fires through walls; TFL_DMG_HEADSHAKE is applied (EventDamage:1056-1060); and turret_firecheck is fully ported (target-of-opportunity :777, AFF :801 flag-gated, volley pre-ammo :823)."
+features:
+  - id: turret-machinegun.spawn.spawnfunc
+    name: "Map spawnfunc + g_turrets master gate"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/machinegun.qc:5 (spawnfunc(turret_machinegun))"
+      - "common/turrets/sv_turrets.qc:1247 (turret_initialize)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs (Machinegun + Spawn)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs (Register turret_machinegun)"
+      - "src/XonoticGodot.Server/GameWorld.cs (SpawnFuncs.TrySpawn in SpawnMapEntities)"
+    constants:
+      - { name: "g_turrets", base: "1", port: "default-on (MasterSwitchEnabled)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "MapObjectsRegistry registers turret_machinegun; GameWorld invokes via the BSP entity lump; MasterSwitchEnabled mirrors !autocvar_g_turrets", result: pass }
+    confidence: high
+    notes: "Unchanged. A hand-placed turret_machinegun on a stock map spawns and is deleted when g_turrets is explicitly 0, like QC."
+
+  - id: turret-machinegun.spawn.identity
+    name: "Identity: model, hitbox, health, team, solidity"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/turrets/turret/machinegun.qh (mins/maxs/model/head_model/netname/fullname/spawnflags)"
+      - "common/turrets/sv_turrets.qc:1321 (model/size/team/solid/health stamping)"
+      - "common/turrets/sv_turrets.qc:1344 (tur_head = new(turret_head); setattachment tag_head)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/MachinegunTurret.cs:48 (ctor)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:43 (Init)"
+    constants:
+      - { name: "m_mins", base: "'-32 -32 0'", port: "(-32,-32,0)", match: true }
+      - { name: "m_maxs", base: "'32 32 64'", port: "(32,32,64)", match: true }
+      - { name: "health", base: "256", port: "256 (StartHealth)", match: true }
+      - { name: "body model", base: "models/turrets/base.md3", port: "models/turrets/base.md3", match: true }
+      - { name: "head_model", base: "models/turrets/machinegun.md3", port: "NOT IMPLEMENTED (no tur_head entity)", match: false }
+      - { name: "movetype", base: "default (emplacement) / SOLID_BBOX", port: "MoveType.Noclip + Solid.BBox", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No separate tur_head sub-entity / machinegun.md3 head model attached at tag_head (Base turret_initialize:1344 spawns a turret_head entity and _setmodel(head_model)); the port's head is angle-state only (TurretState.HeadAngles), so the head model never renders or frame-animates. The descriptor still CARRIES HeadModel (MachinegunTurret.cs:56) so the death-gib toss can throw the head model, but nothing attaches it as a live render bone. This is now the unit's primary presentation residual (sparks/smoke/gibs/muzzleflash/tracer all landed)."
+    verification:
+      - { kind: value, ref: "machinegun.qh vs MachinegunTurret ctor + TurretSpawn.Init — mins/maxs/health/body model all match", result: pass }
+    confidence: high
+    notes: "Body identity faithful; the head-MODEL render is the missing half (presentation: partial). Unchanged since baseline. Note (2026-06-27): the related low-health smoke/spark + death-gib presentation that the unit summary used to lump under this residual is now implemented elsewhere (DrawFx / TossDeathGibs) — only the head-model render, team glow, and waypoint/healthbar remain."
+
+  - id: turret-machinegun.setup.flags
+    name: "tr_setup behaviour flags (target/aim/ammo/damage/turret)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/machinegun.qc:9 (tr_setup)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/MachinegunTurret.cs:45 (Select) + :62 (Think/TurretParams) + :59 (headShake:true)"
+    constants:
+      - { name: "target_select_flags", base: "PLAYERS|RANGELIMITS|TEAMCHECK", port: "Players|RangeLimits|TeamCheck", match: true }
+      - { name: "aim_flags", base: "LEAD|SHOTTIMECOMPENSATE", port: "lead+shotTimeCompensate (zPredict false)", match: true }
+      - { name: "ammo_flags", base: "BULLETS|RECHARGE|RECIEVE", port: "ammo regen modelled (no flag bitmask)", match: true }
+      - { name: "turret_flags", base: "HITSCAN (|= TUR_FLAG_PLAYER from qh)", port: "hitscan (fireBullet)", match: true }
+      - { name: "damage_flags", base: "HEADSHAKE (+ inherited default RETALIATE|AIMSHAKE|YES, RETALIATE never read)", port: "headShake:true APPLIED; retaliate NOT applied (matches Base)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "machinegun.qc:9 flag set vs MachinegunTurret.Select (no SelectAngleLimits) / TurretParams (zPredict:false) / TurretSpawn.Init headShake:true. target_select + aim + headshake flag SETS now MATCH Base", result: pass }
+    confidence: high
+    notes: "FIXED since baseline: the headshake gap is closed — TurretSpawn.Init is called with headShake:true (MachinegunTurret.cs:60), so TurretState.HeadShake is set and EventDamage applies the head jitter. The target-select/aim/retaliate sets were already faithful. No residual flag-set gap."
+
+  - id: turret-machinegun.tunables.balance
+    name: "Per-unit balance tunables (g_turrets_unit_machinegun_*)"
+    layer: [authority]
+    base_refs:
+      - "turrets.cfg:210-244 (g_turrets_unit_machinegun_*)"
+      - "common/turrets/sv_turrets.qc:365 (load_unit_settings)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/MachinegunTurret.cs:22-40 (consts)"
+    constants:
+      - { name: "shot_dmg", base: "10", port: "10", match: true }
+      - { name: "shot_refire", base: "0.1", port: "0.1", match: true }
+      - { name: "shot_spread", base: "0.015", port: "0.015", match: true }
+      - { name: "shot_force", base: "20", port: "20", match: true }
+      - { name: "shot_speed", base: "34920", port: "34920", match: true }
+      - { name: "shot_volly", base: "5", port: "5", match: true }
+      - { name: "shot_volly_refire", base: "0.5", port: "0.5", match: true }
+      - { name: "target_range", base: "4500", port: "4500", match: true }
+      - { name: "target_range_min", base: "2", port: "2", match: true }
+      - { name: "target_range_optimal", base: "1000", port: "1000", match: true }
+      - { name: "ammo_max", base: "1500", port: "1500", match: true }
+      - { name: "ammo_recharge", base: "75", port: "75", match: true }
+      - { name: "aim_firetolerance_dist", base: "25", port: "25", match: true }
+      - { name: "aim_speed", base: "120", port: "120", match: true }
+      - { name: "aim_maxpitch", base: "25", port: "25", match: true }
+      - { name: "aim_maxrot", base: "360", port: "360", match: true }
+      - { name: "rangebias/samebias/anglebias/playerbias/missilebias", base: "0.25/0.25/0.5/1/0", port: "0.25/0.25/0.5/1/0", match: true }
+      - { name: "track_type/accel_pitch/accel_rot/blendrate", base: "3/0.4/0.9/0.2", port: "FluidInertia/0.4/0.9/0.2", match: true }
+      - { name: "respawntime", base: "60", port: "60 (TurretSpawn.Init default)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Per-unit values are still hardcoded consts, not loaded from cvars: server overrides of g_turrets_unit_machinegun_*, the g_turrets_reloadcvars live-reload, and the per-entity turret_scale_* map multipliers (load_unit_settings) have no effect. (The turret-FRAMEWORK cvars — targetscan_*/aimidle/nofire — ARE cvar-backed via TurretAI.Cvar; only the per-unit balance block remains hardcoded.)"
+    verification:
+      - { kind: value, ref: "turrets.cfg:210-244 re-diffed vs MachinegunTurret consts — every numeric matches", result: pass }
+    confidence: high
+    notes: "Defaults bit-faithful; only the per-unit cvar-override/scale plumbing is absent. Unchanged since baseline."
+
+  - id: turret-machinegun.think.loop
+    name: "Per-frame think (ammo regen + acquire/aim/track/fire driver)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:991 (turret_think)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:586 (RunCombat)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:210 (Cvar helper)"
+      - "src/XonoticGodot.Engine/Simulation/SimulationLoop.cs (RunThink / RunEntity walk)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs (re-arm NextThink each frame)"
+    constants:
+      - { name: "ammo regen", base: "ammo += ammo_recharge*frametime (cap)", port: "same (RunCombat:593)", match: true }
+      - { name: "targetscan_mindelay", base: "0.1", port: "0.1 (cvar g_turrets_targetscan_mindelay, fallback 0.1)", match: true }
+      - { name: "targetscan_maxdelay", base: "1.0", port: "1.0 (cvar g_turrets_targetscan_maxdelay, fallback 1.0)", match: true }
+      - { name: "aimidle_delay", base: "5", port: "5 (cvar g_turrets_aimidle_delay, fallback 5)", match: true }
+      - { name: "nofire gate", base: "autocvar_g_turrets_nofire bails turret_fire:961", port: "Cvar(g_turrets_nofire) short-circuits Fire (:765)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "RunCombat:608-610 reads Cvar(g_turrets_targetscan_maxdelay,1f)/mindelay/aimidle; Fire:765 reads Cvar(g_turrets_nofire). Cvar() falls back to the turrets.cfg default when unset, so values are Base-correct either way", result: pass }
+    confidence: high
+    notes: "Faithful. maxDelay 1.0 (cvar-backed) and the g_turrets_nofire master-disable gate both present. Unchanged since baseline."
+
+  - id: turret-machinegun.target.validate
+    name: "turret_validate_target reject cascade"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:677 (turret_validate_target)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:257 (ValidTarget)"
+    constants:
+      - { name: "alpha cloak", base: "alpha!=0 && alpha<=0.3 reject", port: "same (:271)", match: true }
+      - { name: "checkpvs", base: "reject if !checkpvs(target.origin, turret)", port: "Api.Trace.CheckPvs gate (:274, no-op on unvised maps like DP)", match: true }
+      - { name: "angle gate", base: "only when TFL_TARGETSELECT_ANGLELIMITS set (machinegun does NOT set it)", port: "only when SelectAngleLimits set (machinegun no longer sets it)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "ValidTarget:263-349 re-read vs turret_validate_target:677-796 — owner/self(:267-268), checkpvs(:274), alpha(:277), notarget/dead/takedamage(:280-282), players/missiles flags(:288-291), noturrets(:294), team self+owner+aiment(:299-313), range(:318-322), angle-gate (SelectAngleLimits, skipped for machinegun)(:325), grapplinghook(:334), LOS-flag (skipped)(:337) all covered. checkpvs is PRESENT", result: pass }
+    confidence: high
+    notes: "FIXED since baseline (logic partial -> faithful): the checkpvs gate is implemented (TurretAI.cs:274, Api.Trace.CheckPvs before the alpha/team/range checks, independent of the LOS flag, returns true on an unvised map exactly like DarkPlaces). The angle-gate over-application was already fixed (machinegun omits SelectAngleLimits). LOS is not applied at validate time by either side (machinegun select flags omit TFL_TARGETSELECT_LOS). No residual validate-cascade gap. Re-verified 2026-06-25 — unchanged from prior audit (line refs refreshed)."
+
+  - id: turret-machinegun.target.score
+    name: "turret_targetscore_generic bias-weighted scoring"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:78 (turret_targetscore_generic)"
+      - "common/turrets/sv_turrets.qc:809 (turret_select_target)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:351 (ScoreTarget) + :396 (SelectTarget)"
+    constants:
+      - { name: "killzone ikr", base: "target_range_optimal (1000)", port: "RangeOptimal (1000)", match: true }
+      - { name: "out-of-range penalty", base: "score*=0.001", port: "score*=0.001", match: true }
+      - { name: "sticky enemy", base: "* samebias", port: "* SameBias", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "TurretTargetingTests.ScoreTarget_MatchesTheQcBiasFormula / DistanceScore_PeaksAtOptimalRange / BeyondRangeMax_CollapsesByAFactor1000 / SelectTarget_*", result: pass }
+    confidence: high
+    notes: "Unchanged. Scoring is the best-covered area; unit tests assert the QC formula directly."
+
+  - id: turret-machinegun.aim.lead
+    name: "turret_aim_generic lead + shot-traveltime compensation"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:12 (turret_aim_generic)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:455 (AimPoint)"
+    constants:
+      - { name: "mintime", base: "max(attack_finished-time,0)+sys_frametime", port: "same (:466)", match: true }
+      - { name: "impact_time", base: "vlen(enemy-muzzle)/shot_speed", port: "same (:471)", match: true }
+      - { name: "zPredict", base: "OFF (machinegun aim_flags omit TFL_AIM_ZPREDICT)", port: "false", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "TurretAimTrackTests (shared aim/lead pipeline)", result: pass }
+      - { kind: code, ref: "MachinegunTurret.cs:69 zPredict:false matches machinegun tr_setup (no TFL_AIM_ZPREDICT)", result: pass }
+    confidence: high
+    notes: "Unchanged. zPredict off, lead + shottimecompensate faithful."
+
+  - id: turret-machinegun.track.fluidinertia
+    name: "turret_track FLUIDINERTIA head slew"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:528 (turret_track, TFL_TRACKTYPE_FLUIDINERTIA)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:512 (Track, TrackFluidInertia)"
+    constants:
+      - { name: "track_accel_pitch/rot", base: "0.4/0.9", port: "0.4/0.9", match: true }
+      - { name: "track_blendrate", base: "0.2", port: "0.2", match: true }
+      - { name: "aim_maxpitch/maxrot clamp", base: "25/360", port: "25/360", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "TurretAimTrackTests (head slew/clamp)", result: pass }
+    confidence: medium
+    notes: "Unchanged. Body stays fixed (emplacement); head angle-state slews per the fluid-inertia motor."
+
+  - id: turret-machinegun.fire.gate_volley
+    name: "turret_firecheck + turret_fire refire/volley bookkeeping"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:874 (turret_firecheck)"
+      - "common/turrets/sv_turrets.qc:960 (turret_fire)"
+      - "common/turrets/sv_turrets.qc:496 (turret_do_updates tracebox -> tur_dist_impact_to_aimpos)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:653 (fire gate in RunCombat) + :764 (Fire) + :731 (UpdateImpact) + OnTarget geometric fallback"
+    constants:
+      - { name: "refire", base: "time + shot_refire (0.1)", port: "now + 0.1", match: true }
+      - { name: "ammo cost", base: "ammo -= shot_dmg (10)", port: "Ammo -= ShotDamage (10)", match: true }
+      - { name: "volley refire", base: "time + shot_volly_refire (0.5) at burst end", port: "now + 0.5", match: true }
+      - { name: "nofire gate", base: "turret_fire:961 bails if autocvar_g_turrets_nofire", port: "Fire:765 Cvar(g_turrets_nofire) short-circuit", match: true }
+      - { name: "fire-tolerance (AIMDIST)", base: "tur_dist_impact_to_aimpos <= 25 (trace-based)", port: "trace-based DistImpactToAimPos from UpdateImpact (:750); geometric OnTarget only headless (:708)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "RunCombat:653-721 fire gate + Fire:764 + UpdateImpact:731 vs turret_firecheck/turret_fire/turret_do_updates — refire/ammo(:655-656)/volley/nofire(:771), the AIMDIST trace(:702-712), target-of-opportunity (:671), AFF (:695 flag-gated), and volley-pre-ammo (:717) all present. OnTarget barrel-line is the headless-only fallback (:708)", result: pass }
+    confidence: high
+    notes: "FIXED since baseline (logic partial -> faithful): (1) the AIMDIST fire gate rides a REAL tracebox — UpdateImpact (:869, port of turret_do_updates) traces the muzzle forward to the aimpos distance and RunCombat:840-850 tests st.DistImpactToAimPos against the fire tolerance when engine services exist; the geometric OnTarget barrel-line is only the headless fallback. So a wall between muzzle and aimpos blocks the shot — the port no longer fires through obstructions. (2) The simplified-firecheck gap is closed: target-of-opportunity/tur_impactent (:809), the AFF friendly-fire branch (:833, default flags leave AFF off for the machinegun so behaviour is unchanged), and the volley-status pre-ammo gate (:855) are all ported. Burst-of-5 + 0.5s pause + ammo spend + nofire all faithful DURING normal combat. CAVEAT (cross-ref die_respawn): the FIRST burst after a respawn is currently a single shot, not 5 — the ShotVollyMax-unset regression on the respawn row leaves VollyCounter=1 post-respawn; the steady-state burst-of-5 logic here is correct, the defect is purely the respawn reset. Re-verified 2026-06-28."
+
+  - id: turret-machinegun.weapon.firebullet
+    name: "wr_think fireBullet (hitscan bullet + spread + force)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/machinegun_weapon.qc:7 (METHOD MachineGunTurretAttack wr_think)"
+      - "common/turrets/turret.qh:51 (default tr_attack -> wr_think with the turret as actor, non-player)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/MachinegunTurret.cs:81 (Attack)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretCombat.cs:27 (FireBullet)"
+    constants:
+      - { name: "deathtype", base: "DEATH_TURRET_MACHINEGUN", port: "DeathTypes.TurretMachinegun", match: true }
+      - { name: "fire sound (turret path)", base: "NONE (W_SetupShot_Dir SND_MachineGunTurretAttack_FIRE is inside `if (isPlayer)`)", port: "NONE (turret path silent)", match: true }
+      - { name: "spread/dmg/force", base: "0.015 / 10 / 20", port: "0.015 / 10 / 20", match: true }
+      - { name: "muzzle flash", base: "W_MuzzleFlash_Model(MDL_MACHINEGUN_MUZZLEFLASH) at tag_fire (machinegun_weapon.qc:23, turret path)", port: "EffectEmitter.Emit(\"MACHINEGUN_MUZZLEFLASH\") at muzzle origin (MachinegunTurret.cs:98); not parented to tag_fire bone", match: true }
+      - { name: "EFFECT_BULLET tracer", base: "fireBullet(... EFFECT_BULLET) (machinegun_weapon.qc:22, turret path)", port: "TurretCombat.FireBullet tracerEffect:\"BULLET\" -> EffectEmitter.EmitTrail (TurretCombat.cs:59-63)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Muzzle flash is emitted at the muzzle ORIGIN along the shot dir, not parented to a tag_fire bone of a head sub-entity (Base setattachment(muzzle_flash, tur_head, \"tag_fire\"), machinegun_weapon.qc:24) — because the port has no tur_head edict. The flash effect fires; its anchoring is approximate. Minor presentation residual tied to the head-model gap, not a missing emit."
+    verification:
+      - { kind: code, ref: "machinegun_weapon.qc:7-25 re-read: fireBullet(:22) + W_MuzzleFlash_Model(:23) + setattachment(:24) sit AFTER the `if (isPlayer){...}` block, so the turret path fires the bullet + muzzle flash + tracer but NO sound (the only SND_ is inside isPlayer). Port Attack(:81-98) fires the bullet silently AND emits the EFFECT_BULLET tracer (tracerEffect:\"BULLET\") + MACHINEGUN_MUZZLEFLASH — both now ported", result: pass }
+      - { kind: code, ref: "EffectsList.cs:78 registers MACHINEGUN_MUZZLEFLASH=uzi_muzzleflash and :246 registers BULLET=tr_bullet (isTrail). EffectEmitter.Emit/EmitTrail queue an EffectRequest on the standard networked Sink. Attack runs on the live Fire path, so both effects reach clients. Re-verified 2026-06-27 (line refs refreshed)", result: pass }
+    confidence: high
+    notes: "FIXED since baseline (presentation missing -> faithful): the muzzle flash + EFFECT_BULLET tracer that Base emits on the turret (non-player) path are now BOTH ported and live. MachinegunTurret.Attack(:91) calls TurretCombat.FireBullet with tracerEffect:\"BULLET\" (sweeps EFFECT_BULLET from muzzle to impact via EmitTrail, gated >16u like the player path) and Attack(:98) emits MACHINEGUN_MUZZLEFLASH. Hitscan bullet + spread (0.015) + force (20) + deathtype faithful; the turret path is correctly SILENT (Base's only sound emitter is inside the isPlayer block). Only residual: the flash is emitted at the muzzle origin rather than parented to a tag_fire bone (no tur_head edict)."
+
+  - id: turret-machinegun.lifecycle.use_team
+    name: "turret_use: adopt activator team, set active"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc (turret_use)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:815 (Use)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:92 (e.Use wired)"
+    constants:
+      - { name: "active", base: "active = (team != 0)", port: "Active = (Team != 0)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "TurretAI.Use:815 vs turret_use; wired via e.Use in TurretSpawn.Init:92", result: pass }
+    confidence: medium
+    notes: "Unchanged. Use is wired to Entity.Use; whether a trigger targets a hand-placed machinegun on a stock map is map-dependent (machinegun turrets are usually free-standing/active by default)."
+
+  - id: turret-machinegun.lifecycle.damage
+    name: "turret_damage gate: inactive-immunity, friendly-fire, headshake"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:207 (turret_damage; wired as .event_damage in turret_initialize/turret_respawn)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:828 (Damage) + :867 (EventDamage shim, headshake :893-897)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:93 (e.GtEventDamage = TurretAI.EventDamage)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs (EventDamage routes non-player edicts with GtEventDamage)"
+    constants:
+      - { name: "inactive immunity", base: "if (!active) return", port: "if (!Active) return 0 (Damage:832)", match: true }
+      - { name: "friendlyfire scale", base: "g_friendlyfire (0 => no team dmg)", port: "g_friendlyfire (Damage:835-840)", match: true }
+      - { name: "health subtract", base: "TakeResource(RES_HEALTH, damage)", port: "TakeResource(Health, take) (EventDamage:880, no armor split)", match: true }
+      - { name: "headshake", base: "tur_head.angles += rand*damage + TNSF_ANG", port: "HeadAngles += (rand-0.5)*take pitch+yaw (EventDamage:893-897)", match: true }
+      - { name: "retaliate (Enemy=attacker)", base: "Base NEVER does this (TFL_DMG_RETALIATE set but read by no code)", port: "Damage does not set Enemy=attacker (matches Base)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Headshake jitter is applied to the angle-state head (TurretState.HeadAngles, EventDamage:893-897) but there is no separate tur_head edict and no CSQC TNSF_ANG send, so the recoil flinch is server-state only — it will not be visible until a head model is attached and networked. Behaviour is faithful; visual is presentation-deferred."
+    verification:
+      - { kind: code, ref: "DamageSystem.EventDamage routes any non-player target with a GtEventDamage to it; TurretSpawn.Init:93 wires GtEventDamage=TurretAI.EventDamage; chain is LIVE: hit -> Apply -> EventDamage -> Damage gate -> health subtract -> headshake (:886) -> Combat.Death on lethal", result: pass }
+      - { kind: code, ref: "EventDamage:893-897 applies HeadAngles +-take on X and Y when st.HeadShake (set headShake:true via TurretSpawn.Init); Base turret_damage:228-234 matches. Retaliation correctly omitted (Base never reads TFL_DMG_RETALIATE)", result: pass }
+    confidence: high
+    notes: "FIXED since baseline (logic partial -> faithful): the headshake behaviour is applied — EventDamage:893-897 jitters the head-local angles +-take on pitch and yaw exactly like turret_damage:228-234. Inactive-immunity + friendly-fire scaling + own health subtract run on the live damage path via the GtEventDamage shim; retaliation correctly omitted. The only residual is presentation (no tur_head edict / no TNSF_ANG networking), so the flinch is invisible — recorded as presentation: partial, logic faithful. Re-verified 2026-06-25 — unchanged (line refs refreshed)."
+
+  - id: turret-machinegun.lifecycle.die_respawn
+    name: "turret_die / turret_respawn (+ death FX, gibs)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:166 (turret_die) + :265 (turret_respawn)"
+      - "common/turrets/sv_turrets.qc:182 (RadiusDamage death blast — COMMENTED OUT)"
+      - "common/turrets/cl_turrets.qc (turret_die FX/gibs, client)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:907 (Die) + :949 (Respawn) + :796 (EnsureDeathHook/OnAnyDeath)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs (Combat.Death.Call via TurretAI.EventDamage:897)"
+    constants:
+      - { name: "respawntime", base: "60 (turret_hide: nextthink = time + respawntime - 0.2)", port: "60 (Die schedules Hide@+0.2 -> Respawn@+respawntime-0.2)", match: true }
+      - { name: "death blast", base: "COMMENTED OUT (no RadiusDamage) at sv_turrets.qc:182", port: "NO RadiusDamage (TurretAI.Die:1092 emits no area damage)", match: true }
+      - { name: "death FX/sound", base: "cl_turrets.qc turret_die: EFFECT_ROCKET_EXPLODE + SND_ROCKET_IMPACT on EVERY death (TNSF_STATUS health==0)", port: "EFFECT_ROCKET_EXPLODE + weapons/rocket_impact.wav on every death (Die:1104-1105)", match: true }
+      - { name: "death gibs", base: "cl_turrets.qc:319-348 base-gib1..4 + head_model toss (50% coin flip), exploding head gib spins", port: "TossDeathGibs:1199-1235 — base-gib coin flip + head_model gib (spin/halved gravity), server-spawned physics gibs", match: true }
+      - { name: "respawn volley reset", base: "volly_counter = shot_volly (5) (turret_respawn sv_turrets.qc:282)", port: "VollyCounter = ShotVollyMax>0?ShotVollyMax:1 — ShotVollyMax NEVER SET (defaults 0) -> resets to 1 not 5 (Respawn:1205)", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "REGRESSION (this wave, 2026-06-28 uncommitted): respawn does NOT restore the full magazine. Respawn:1205 reads st.ShotVollyMax, but nothing ever assigns it (grep: zero `ShotVollyMax =` sites; TurretSpawn.Init sets VollyCounter, not ShotVollyMax), so it defaults 0 and the ternary falls to VollyCounter=1. A respawned machinegun (shot_volly=5) thus fires ONE shot then the 0.5s volley pause on its first post-respawn burst instead of a 5-shot burst (self-corrects next burst because Fire resets VollyCounter to p.ShotVolly). Base turret_respawn:282 resets to shot_volly=5. The doc-comment's claim that Init clamps ShotVollyMax is false. One-line fix: st.ShotVollyMax = shotVolly>1?shotVolly:1 in TurretSpawn.Init."
+      - "Gibs render via server-spawned physics entities (the entity feed / vehicle-wreckage pattern), not a CSQC turret_die handler; the head gib reuses the descriptor's HeadModel even though the head model itself never renders on the live turret (the head-model gap is on the identity row, not here). Code-faithful; no runtime visual capture was run for this re-audit, so the rendered outcome is code-verified not behaviorally-verified."
+      - "Respawn restores state but does not re-stamp a head model / send a full CSQC update (TNSF_FULL_UPDATE) — no networking layer. Visual-only residual; tracks the identity-row head-model gap."
+    verification:
+      - { kind: test, ref: "TurretLifecycleTests.Die_Unsolidifies_StopsDamage_AndSchedulesRespawn / Respawn_RestoresFullCombatState / LethalDamage_ThroughTheSharedDeathHook_RunsDie (note: existing tests do NOT assert the post-respawn VollyCounter value, so they miss the new ShotVollyMax-unset regression)", result: pass }
+      - { kind: code, ref: "TurretAI.Die:1092 — NO RadiusDamage (Base sv_turrets.qc:182 commented out). Die:1102-1107 emits ROCKET_EXPLODE + rocket_impact.wav + TossDeathGibs on the LIVE death path (both respawning and NORESPAWN); TossDeathGibs/TossGib/GibBoom:1199-1307 spawn base-gib + head_model debris. Effects registered (EffectsList.cs:139 ROCKET_EXPLODE) + networked via EffectEmitter sink; Api.Sound.Play is the live sound seam. Build green 2026-06-28", result: pass }
+      - { kind: code, ref: "Respawn:1205 reads st.ShotVollyMax; grep across src finds the field declared (TurretAI.cs:98) + read here but ZERO assignment sites -> defaults 0 -> respawn resets VollyCounter to 1 not 5. Concrete regression introduced by the uncommitted TurretAI.cs edit this wave", result: fail }
+    confidence: high
+    notes: "Death FX/audio/gibs FIXED (Wave 15, 322fc26) and faithful — death rocket-explode + rocket_impact.wav + base-gib/head_model toss emit on EVERY death (Die:1102-1107 + TossDeathGibs), not just NORESPAWN. BUT logic downgraded faithful->partial THIS WAVE (2026-06-28): the uncommitted Respawn rewrite (VollyCounter = ShotVollyMax... ) wired in a field that is never assigned, so a respawned multi-shot turret restores a 1-shot magazine instead of shot_volly. Build green; existing lifecycle tests don't catch it (no post-respawn VollyCounter assert). RadiusDamage death blast correctly absent. Confidence high on the regression (code-traced, grep-confirmed zero setters); the death-FX visuals remain code-verified not runtime-captured."

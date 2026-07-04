@@ -28,9 +28,9 @@
 //     onto solids a player hits, so the QC vehicles_touch -> vehicles_enter path can't fire. The default is
 //     use-key, so UseKey() below is the parity path; touch-mode is a flagged partial.
 //   * The controller/targetname/ACTIVE_NOT/delayspawn init scheduling, the `g_vehicles_steal` enemy-board
-//     gameplay (shield zero + flags backup + intruder waypoint), vehicles_setreturn for a LIVING abandoned
-//     vehicle, and RemoveGrapplingHooks(pl) are NOT ported here (cross-boundary / out of scope — see notes
-//     at each site). The destroyed-vehicle respawn IS handled (descriptor Death()).
+//     gameplay (shield zero + flags backup + intruder waypoint), and vehicles_setreturn for a LIVING abandoned
+//     vehicle are NOT ported here (cross-boundary / out of scope — see notes at each site). The
+//     destroyed-vehicle respawn IS handled (descriptor Death()). RemoveGrapplingHooks(pl) IS now wired.
 //   * Client-side seated prediction (disableclientprediction=1) is out of scope — the server is authoritative
 //     and fully testable headlessly.
 
@@ -88,16 +88,22 @@ public static class VehicleBoarding
         }
 
         // QC: else if (autocvar_g_vehicles_enter) { ... radius search ... }
-        if (Cvar("g_vehicles_enter", DefaultEnter) == 0f)
-            return; // touch-mode board (handled by vehicles_touch) — not reachable in this port; see file note.
+        // QC PlayerUseKey guards: not frozen, not dead, not an independent player. (When boarding is off, or the
+        // player is dead, QC skips the radius search but STILL falls through to the trailing PlayerUseKey hook.)
+        if (Cvar("g_vehicles_enter", DefaultEnter) != 0f && !pl.IsDead)
+        {
+            Entity? closest = FindBoardableInRadius(pl);
+            if (closest is not null)
+            {
+                Enter(pl, closest);
+                return; // boarded a vehicle (QC vehicles_enter; return) — the use-key hook does NOT fire.
+            }
+        }
 
-        // QC PlayerUseKey guards: not frozen, not dead, not an independent player.
-        if (pl.IsDead)
-            return;
-
-        Entity? closest = FindBoardableInRadius(pl);
-        if (closest is not null)
-            Enter(pl, closest);
+        // QC PlayerUseKey tail (client.qc:2666): "a use key was pressed; call handlers" — fired only when the
+        // press neither exited a seated vehicle nor boarded one. This is the live entry for the CTF flag
+        // throw/pass-request, the Keepaway/Nexball ball drop, and the KeyHunt voluntary key-drop (kh_Key_DropOne).
+        MutatorHooks.FirePlayerUseKey(pl);
     }
 
     /// <summary>
@@ -198,25 +204,41 @@ public static class VehicleBoarding
         if (vehicle.Owner is not null)
             return false;
 
-        // QC: the teamplay enemy-board branch. With g_vehicles_steal off (the default) an enemy simply cannot
-        // board a team vehicle. The steal gameplay (shield=0, flags backup, intruder waypoint) is out of scope
-        // (a flagged partial — see file note); model only the DEFAULT "different team -> refuse".
+        // QC: the teamplay enemy-board branch (sv_vehicles.qc:960-979). A different-team player CAN board a
+        // team vehicle when g_vehicles_steal is on — the STOCK Base default is 1 (vehicles.cfg:5 +
+        // sv_vehicles.qh:11), so vehicle-stealing is part of stock teamplay. Stealing zeroes the shield, backs
+        // up the vehicle flags, and strips VHF_SHIELDREGEN (so the stolen craft cannot regen its shield back),
+        // which vehicles_exit later restores from old_vehicle_flags. With steal off the enemy simply refuses.
         if (vehicle.Team != 0f && VehiclePhysics.DiffTeam(pl, vehicle))
         {
-            if (Cvar("g_vehicles_steal", 0f) == 0f)
+            if (Cvar("g_vehicles_steal", 1f) == 0f)
                 return false;
-            // NOTE — cross-boundary (out of scope): g_vehicles_steal enemy-board (vehicle_shield = 0;
-            // old_vehicle_flags backup; ~VHF_SHIELDREGEN; the WP_VehicleIntruder waypoint + steal notifications).
+
+            vehicle.VehicleShield = 0f;
+            vehicle.OldVehicleFlags = vehicle.VehicleFlags; // backup so the exit restores SHIELDREGEN
+            vehicle.VehicleFlags &= ~VehicleFlags.ShieldRegen;
+
+            // NOTE — cross-boundary (CSQC/notify): the WP_VehicleIntruder radar waypoint
+            // (g_vehicles_steal_show_waypoint) and the CENTER_VEHICLE_STEAL / _SELF centerprint notifications
+            // are presentation and deferred; the authoritative steal state (shield zero + flag backup/strip) is
+            // applied above so a stolen vehicle behaves correctly server-side.
         }
 
-        // QC: RemoveGrapplingHooks(pl).
-        // NOTE — cross-boundary (out of scope): detaching the boarder's own in-flight grappling hook. The
-        // port's hook reset is a private, per-weapon-slot routine (Weapons/Hook.cs RemoveHook(slot)) with no
-        // public "drop this player's hooks" entry; deferred (a held hook on board is a rare edge case).
+        // QC sv_vehicles.qc:981 vehicles_enter: RemoveGrapplingHooks(pl) — drop the boarder's own in-flight
+        // grappling hooks (and restore FLY->WALK) so a held hook can't keep reeling the now-seated player.
+        Hook.RemoveGrapplingHooks(pl);
 
         // Board as PILOT: the descriptor vr_enter runs VehicleCommon.EnterVehicle (the link + physics freeze +
         // team/ammo reset) then applies the per-vehicle movetype/HUD seed.
         info.Enter(vehicle, pl);
+
+        // [sv-antilag.clear.on_spawn] QC clears the antilag ring on vehicle enter (sv_vehicles.qc) so a shot
+        // can't rewind the now-seated player toward its pre-board position. Set the explicit one-shot flag the
+        // net driver honors on its next record pass (Entity.AntilagNeedsClear). Clear the VEHICLE body's ring
+        // too: a now-manned vehicle becomes an antilag target (its body is what shots hit), and its pre-board
+        // history (or stale history from a previous pilot) must not rewind a shot back to where it was parked.
+        pl.AntilagNeedsClear = true;
+        vehicle.AntilagNeedsClear = true;
 
         // QC: MUTATOR_CALLHOOK(VehicleEnter, pl, veh) — fired after seating. Notify-style (return unused).
         var a = new MutatorHooks.VehicleEnterArgs(pl, vehicle);
@@ -245,6 +267,13 @@ public static class VehicleBoarding
             return;
 
         Entity seat = pl.Vehicle;
+
+        // [sv-antilag.clear.on_spawn] QC clears the antilag ring on vehicle exit too (sv_vehicles.qc:775 +
+        // the per-vehicle exit fns) — the player is relocated to the eject point, so old history must not
+        // rewind a shot back into the vehicle. One-shot flag honored by the net driver's next record pass.
+        // Clear the vehicle body's ring as well so the next pilot doesn't inherit this occupant's history.
+        pl.AntilagNeedsClear = true;
+        seat.AntilagNeedsClear = true;
 
         // QC: if (vehic.vehicle_flags & VHF_PLAYERSLOT) { vehic.vehicle_exit(vehic, eject); return; }
         // A gunner's "vehicle" is the gun SLOT — exit it via the body's multi-seat exit, NOT the pilot path.
@@ -275,9 +304,15 @@ public static class VehicleBoarding
         var a = new MutatorHooks.VehicleExitArgs(pl, vehicle);
         MutatorHooks.VehicleExit.Call(ref a);
 
+        // QC vehicles_exit tail (sv_vehicles.qc:862): vehicles_setreturn(vehic). An abandoned LIVING vehicle
+        // is scheduled to drift home to its spawn point after respawntime-1 (the alive-path delay inside
+        // SetReturn) — without this an idle pilot-less vehicle would sit wherever it was parked forever. The
+        // death path schedules its OWN return from the DamageVehicle tail; this covers the pilot-quit case.
+        VehicleCommon.SetReturn(vehicle);
+
         // NOTE — cross-boundary (other systems/agents): SVC_SETVIEWPORT/SETVIEWANGLES + CSQCVehicleSetup,
         // the temp_wepent switch-weapon restore, the Kill_Notification(CPID_VEHICLES) centerprint clear,
-        // vehicles_setreturn (the LIVING-vehicle return helper — out of scope), and last_vehiclecheck.
+        // and last_vehiclecheck. The WP_Vehicle return waypoint itself (vehicles_showwp) is still CSQC-deferred.
     }
 
     // =====================================================================================

@@ -6,8 +6,9 @@
 // monsters are enabled; the guard is kept for parity. Uses the existing MonsterAI.SpawnMonster (the port's
 // spawnmonster()).
 //
-// monster_lifetime (g_nades_pokenade_monster_lifetime) has no field in the port's monster model, so the
-// timed despawn is a documented deferral; the INSANE skill + owner/team are applied faithfully.
+// monster_lifetime (g_nades_pokenade_monster_lifetime, 150s) is set on the spawned monster's MonsterState so
+// MonsterAI.RunThink suicides it when the clock runs out (the port's Monster_Think monster_lifetime kill);
+// the INSANE skill + owner/team are applied faithfully.
 
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Services;
@@ -44,8 +45,11 @@ public sealed class NadeMonsterBoom : INadeBoom
         if (mon is null)
             return; // monster failed to be spawned
 
-        // QC also sets monster_skill again post-spawn + monster_lifetime; the skill is already applied above and
-        // monster_lifetime has no field in the port (deferred — see file header).
+        // QC: if (autocvar_g_nades_pokenade_monster_lifetime > 0) e.monster_lifetime = time + lifetime;
+        //     e.monster_skill = MONSTER_SKILL_INSANE;
+        float lifetime = Api.Cvars.GetFloat("g_nades_pokenade_monster_lifetime");
+        if (lifetime > 0f && MonsterAI.StateOf(mon) is { } st)
+            st.Lifetime = Api.Clock.Time + lifetime;
         mon.MonsterSkill = MonsterSkill.Insane;
     }
 }

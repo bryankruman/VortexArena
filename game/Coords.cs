@@ -12,7 +12,13 @@ namespace XonoticGodot.Game;
 ///
 /// Quake (X forward, Y left, Z up)  ->  Godot (X right, Y up, Z back):
 ///   <c>godot = (q.X, q.Z, -q.Y)</c>   and the inverse   <c>q = (g.X, -g.Z, g.Y)</c>.
-/// The two are exact inverses, so a value round-trips without drift.
+/// The two are exact inverses, so a value round-trips without drift. The map is a PROPER rotation (det +1,
+/// not a mirror) and is linear with no translation, so it applies to directions/basis vectors as well as points.
+///
+/// <para>⚠ ANGLES are a separate trap: Quake pitch is DOWN-positive and the Euler order differs from Godot —
+/// NEVER feed Quake angles to a Godot Euler ctor. Build a Godot basis from <c>QMath.AngleVectors</c> + these
+/// swaps (columns <c>right, up, -forward</c>), and round-trip directions→angles with <c>FixedVecToAngles</c>,
+/// not <c>VecToAngles</c>. Full rules + the warpzone/portal seam: <b>planning/COORDINATE_CONVENTIONS.md</b>.</para>
 /// </summary>
 public static class Coords
 {

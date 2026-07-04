@@ -1,0 +1,146 @@
+[
+ {
+  "unit": "turret-flac",
+  "tier": "opus",
+  "notes": [
+   "[turret-flac.identity.spawn | presentation] FLAC turret identity, hitbox, model, health, map spawn  -  head model models/turrets/flac.md3 not set (no head-bone attachment in port). NOTE: the head-FRAME cycle (++frame wrap 4) DID land in Wave 8e \u2014 it runs on the turret edict's own networked Entity.Frame (FlacTurret.cs:154) \u2014 but there is still no separate head model/bone to drive.",
+   "[turret-flac.fire.flak_shell | presentation] Flak shell fire: fast splash projectile + timed air-burst fuse  -  Presentation partial (Wave 8e landed the server-emit side): BLASTER_MUZZLEFLASH is now emitted via EffectEmitter (FlacTurret.cs:149), the shell is stamped NetName='hagar' so the client ProjectileCatalog resolves the HAGAR trail (FlacTurret.cs:114), and the 4-frame head cycle runs on turret.Frame (FlacTurret.cs:154). REMAINING: the actual HAGAR trail RENDER + muzzleflash draw live in the Godot client project (not qcsrc) and are not yet verified end-to-end; the turret has no head MODEL/bone so the frame index drives nothing visible yet.",
+   "[turret-flac.weapon.player_form | presentation,liveness] Hidden player FLAC weapon (FlacAttack, impulse 5)  -  FlacWeapon is implemented but its [Weapon] registration is intentionally OFF (FlacTurret.cs:178): impulse 5 collides with the Raptor bomb-mode impulse and registering shifts WeaponById/MenuWeaponOrder, which would break those test contracts. So the hidden player FLAC weapon has NO live caller (liveness dead).; presentation partial: BLASTER_MUZZLEFLASH is now emitted (FlacTurret.cs:273) \u2014 but with except: actor, whereas Base flac_weapon.qc:30 uses Send_Effect (networks to ALL incl. the firing player, not Send_Effect_Except). Minor: a player firing their own hidden weapon won't see their own muzzle flash. Also the hagar trail RENDER is client-side (Godot project, outside qcsrc parity)."
+  ]
+ },
+ {
+  "unit": "turret-hellion",
+  "tier": "opus",
+  "notes": [
+   "[turret-hellion.identity.def | presentation] Identity, hitbox, models, spawnflags  -  Head model (hellion.md3) not instantiated as a separate spinning-launcher head entity; no tag attachment.",
+   "[turret-hellion.weapon.launch | presentation] HellionAttack: launch a heat-seeking missile (2-shot volley)  -  No two-cannon tag_fire/tag_fire2 muzzle alternation (single computed ShotOrg origin). The head-spin frame state that Base uses to SELECT the tag is now cycled (turret-hellion.anim.headspin) but there is no head-model bone, so the muzzle-tag alternation stays a client-render gap.; No PROJECTILE_ROCKET CSQC trail / MIF_SPLASH|MIF_PROXY|MIF_GUIDED_HEAT flags (no visible smoke trail).",
+   "[turret-hellion.anim.headspin | presentation] Launcher head-spin animation (tr_think frame 1..6 -> 0)  -  Server-authoritative frame STATE is now cycled (idle 0 -> spinning 1..6 kicked per shot, wrap at >=7), but there is no separate head MODEL entity (hellion.md3) attached to a bone, so the cycling frame drives no VISIBLE spinning launcher and is not used to select the firing muzzle tag (tag_fire vs tag_fire2 / two-cannon alternation) \u2014 both remain client-render gaps tracked here + on turret-hellion.weapon.launch."
+  ]
+ },
+ {
+  "unit": "turret-machinegun",
+  "tier": "opus",
+  "notes": [
+   "[turret-machinegun.spawn.identity | presentation] Identity: model, hitbox, health, team, solidity  -  No separate tur_head sub-entity / head model attached at tag_head (Base turret_initialize:1344 spawns a turret_head entity and _setmodel(head_model)); the port's head is angle-state only (TurretState.HeadAngles), so the head model never renders or animates.",
+   "[turret-machinegun.lifecycle.damage | presentation] turret_damage gate: inactive-immunity, friendly-fire, headshake  -  Headshake jitter is applied to the angle-state head (TurretState.HeadAngles, EventDamage:893-897) but there is no separate tur_head edict and no CSQC TNSF_ANG send, so the recoil flinch is server-state only \u2014 it will not be visible until a head model is attached and networked. Behaviour is faithful; visual is presentation-deferred.",
+   "[turret-machinegun.lifecycle.die_respawn | presentation,audio] turret_die / turret_respawn (+ death FX, gibs)  -  No client death FX: the non-NORESPAWN branch in Base turret_die does NO sound/effect (only the NORESPAWN branch plays SND_ROCKET_IMPACT + EFFECT_ROCKET_EXPLODE before delete \u2014 the port does port that NORESPAWN branch at Die:927-932); base/head gib toss lives in cl_turrets.qc (client). Port emits no client FX/gibs on the normal respawn path. Still open.; Respawn restores state but does not re-stamp a head model / send a full CSQC update (TNSF_FULL_UPDATE) \u2014 no networking layer. Still open."
+  ]
+ },
+ {
+  "unit": "turret-mlrs",
+  "tier": "opus",
+  "notes": [
+   "[turret-mlrs.identity.def | presentation] Identity, hitbox, models, spawnflags  -  Head model (mlrs.md3) not instantiated as a separate tur_head entity; no tag_head attachment. The ammo-gauge frame now rides the turret's own .Frame (see turret-mlrs.anim.ammogauge) but the head model is not separately rendered/animated.",
+   "[turret-mlrs.anim.ammogauge | presentation] tr_think head ammo-gauge frame (0 full .. 6 empty by remaining ammo)  -  Frame formula now ported every think onto the turret edict's OWN .Frame (Bound(0, 6 - floor(0.1 + Ammo/ShotDamage), 6)) \u2014 logic/values/timing faithful. But Base writes it to the separate tur_head entity's .frame and nets that head; the port has no distinct head bone entity, so the gauge is not rendered on a separately-attached mlrs.md3 head. Presentation partial.",
+   "[turret-mlrs.damage.lifecycle | presentation] Damage gating, head-shake, death + respawn  -  Death gib toss still missing: Base cl_turrets.qc turret_die tosses base-gibN.md3 + head_model gibs (turret_gibtoss). The port has no CSQC turret edict to spawn client gib entities, so no gibs fly on death.; No client turret_draw (cl_turrets.qc): the head does not visibly spin (angles += avelocity*dt) and a damaged MLRS emits no low-health sparks (<127 hp -> te_spark) or smoke (<85 EFFECT_SMOKE_LARGE / <32 EFFECT_SMOKE_SMALL)."
+  ]
+ },
+ {
+  "unit": "turret-plasma_dual",
+  "tier": "opus",
+  "notes": [
+   "[turret-plasma_dual.damage.gating_die_respawn | presentation,audio] Damage handling: friendly-fire scale, MOVE-shove, die + timed respawn  -  Respawn EF_NODRAW hide-frame split not modeled: Base hides (EF_NODRAW) at time+0.2 then turret_respawn at respawntime-0.2; port schedules Respawn directly at now+RespawnTime. NET respawn timing is identical (0.2 + (60-0.2) = 60 == now+60) \u2014 only the intermediate EF_NODRAW hide-frame (a presentation detail) is unmodeled.; Death FX/sound (SND_ROCKET_IMPACT + EFFECT_ROCKET_EXPLODE) only fire in Base on TFL_DMG_DEATH_NORESPAWN; plasma_dual always respawns so this branch never applies (port has it coded in Die but unreachable for this unit). tr_death is a no-op for plasma_dual.",
+   "[turret-plasma_dual.damage.headshake | presentation] TFL_DMG_HEADSHAKE: jolt head angles by random*damage on hit  -  Server-side head-angle jolt is now applied, but the CLIENT-rendered head model (plasmad.md3) is not attached, so the visible flinch is not drawn (the head-angle state nudges the next shot's aim, which IS the gameplay effect). Base also nets TNSF_ANG to CSQC; the port has no turret CSQC net layer.",
+   "[turret-plasma_dual.presentation.head_frame_anim | presentation] Head-frame wheel animation (tr_think 0..6 + ++frame on fire)  -  Server-authoritative head-frame state (Entity.Frame) is now ported and live, but the CLIENT render of the spinning plasmad.md3 head bone is absent \u2014 the static base.md3 body has no spin frames and there is no tur_head sub-entity / CSQC turret net layer, so the wheel is not visibly drawn.; Two-barrel tag_fire alternation (tag_fire on plasmad.md3) not modeled \u2014 single computed ShotOrg muzzle."
+  ]
+ },
+ {
+  "unit": "weapon-blaster",
+  "tier": "opus",
+  "notes": [
+   "[weapon-blaster.identity.registration | presentation] Blaster identity, flags, models, infinite ammo  -  model/anim/crosshair fidelity (view/world/item models, gfx/crosshairlaser, weaponlaser image) not audited here \u2014 names declared only.",
+   "[weapon-blaster.bolt.think_lifetime | presentation] Bolt think: MOVETYPE_FLY + remove after lifetime (W_Blaster_Think)  -  CSQCProjectile(PROJECTILE_BLASTER) client trail/sprite STILL not networked: the flying bolt has no DP-style render trail (Wave-1/2 added no client-render seam for the bolt).",
+   "[weapon-blaster.offhand.fire | liveness] Offhand blaster (g_offhand_blaster mutator) fires without switching weapons  -  Live only when g_offhand_blaster is set (default 0 in mutators.cfg:435), so liveness stays partial \u2014 but when enabled the behaviour is now faithful."
+  ]
+ },
+ {
+  "unit": "fx-effectinfo",
+  "tier": "opus",
+  "notes": [
+   "[fx-effectinfo.emit.by_name_fallback | presentation,liveness] Emit by effectinfo name (Send_Effect_) \u2014 registry scan + engine fallback  -  The Effect=null engine-fallback request (unregistered effectinfo name) records the name but there is no DP-engine __pointparticles equivalent client-side; only names that also resolve in the effectinfo.txt catalog render. Used by te_csqc_lightningarc/te_beam (arc_lightning/heal_beam) which are handled by the beam renderer rather than the registry.",
+   "[fx-effectinfo.emit.te_builtins | presentation,liveness] te_* temp-effect builtins (te_explosion/te_spark/te_gunshot/te_blood/lightningarc/beams)  -  The te_* helper -> registry-name mapping (e.g. TeSmallflash -> BLASTER_MUZZLEFLASH, TeGunshot -> MACHINEGUN_IMPACT) is a port convention, not a 1:1 DP te_* semantic; not verified that every live caller hits these wrappers vs emitting the registry effect directly. Beam/arc temp-effects route to BeamRenderer, not the particle catalog."
+  ]
+ },
+ {
+  "unit": "fx-notifications",
+  "tier": "opus",
+  "notes": [
+   "[fx-notifications.args.tokens | presentation] Arg-token expansion (NOTIF_ARGUMENT_LIST / Local_Notification_sprintf)  -  Tokens are resolved SERVER-side reading the SERVER's notification_show_location / _show_sprees* cvars; in Base these are CSQC-side per-client, so the port loses per-client control of location/spree display (direct consequence of server-side formatting \u2014 see fx-notifications.net.protocol intended divergence). This is now the ONLY residual on the cvar-driven tokens (the default polarities are fixed).; race tokens (f1race_time/f2race_time/f3race_time, race_col, race_diff) referenced by the RACE_* notifs in NotificationsList.cs are NOT implemented in ResolveOne (drop to '' at :99) \u2014 race split/record lines lose their time/diff/color text.; key-bind tokens (pass_key/nade_key/join_key \u2014 getcommandkey lookups) and the s3#s2/#s2 HASH_REPLACE tokens are not implemented in Resol",
+   "[fx-notifications.info.killfeed | presentation] MSG_INFO -> console line + HUD kill-notify (icon, attacker/victim)  -  MULTIICON_INFO (icon derived from args via iconargs) has no port path; the only Base user is MINIGAME_INVITE (minigames not a port priority).; notification_allow_chatboxprint (MSG_INFO -> chatbox routing) not modelled; benign \u2014 Base disables it in code (default 0)."
+  ]
+ },
+ {
+  "unit": "fx-sounds",
+  "tier": "opus",
+  "notes": [
+   "[fx-sounds.emit.play2_family | liveness] play2 / play2team / play2all / spamsound  -  play2 per-recipient targeting is a broadcast approximation: QC play2 sends MSG_ONE (msg_entity=e) so EXACTLY one client hears it; the port's SoundWire has no per-client send, so Play2/Play2Team broadcast to all connected clients \u2014 exact only on a single-human listen server.; Vehicle lock/locking play2 sites (sv_vehicles.qc:114-139) remain unwired; a couple of map-object/weapon cues use Api.Sound.Play directly rather than the SoundSystem.Play2 idiom (functionally audible, but not per-recipient and not gated).",
+   "[fx-sounds.voice.globalsound_dispatch | logic] _GlobalSound VOICETYPE routing (recipients + taunt/gentle gates)  -  AUTOTAUNT per-recipient probability roll (tauntrand < CS_CVAR(it).cl_autotaunt) still omitted: per-client cl_autotaunt is not networked, so autotaunts that clear sv_autotaunt always play for all recipients (documented deferral; a single global cl_autotaunt default 0 would wrongly silence ALL autotaunts).; TAUNT does not trigger animdecide_setaction(ANIMACTION_TAUNT) on the living speaker (no anim-action seam yet)."
+  ]
+ },
+ {
+  "unit": "mutator-walljump",
+  "tier": "haiku",
+  "notes": [
+   "[mutator-walljump.fx.anim_and_oldvel | presentation] Jump animation action + post-impulse oldvelocity stash  -  animdecide_setaction(player, ANIMACTION_JUMP, true) not triggered on a wall jump (no anim-action seam in the port; WalljumpMutator.cs:128 is a comment only). UNCHANGED \u2014 same missing server->client one-shot action channel noted on Dodging. Purely cosmetic (jump pose).",
+   "[mutator-walljump.menu.describe | presentation] MENUQC mutator description text (Mutators dialog)  -  Base METHOD(MutatorWallJump, describe) supplies the localized blurb shown for the walljump mutator in the MENUQC Mutators dialog ('...enables jumping off walls for added mobility. To do a wall jump, tap jump when against a wall.'). No equivalent per-mutator describe text is wired in the port's mutator-selection menu. Cosmetic menu-only text; newly mapped this audit (not in the prior baseline)."
+  ]
+ },
+ {
+  "unit": "turret-tesla",
+  "tier": "opus",
+  "notes": [
+   "[turret-tesla.identity.def | presentation] Identity, hitbox, models, spawnflags  -  Head model (tesla_head.md3) not instantiated as a separate head/coil entity; no tag_head attachment. TrThink computes head spin as state (HeadAngles) but grep confirms no head-bone node consumes HeadAngles, so the coil never visibly spins (see anim feature).",
+   "[turret-tesla.anim.tr_think | presentation] tr_think head spin-up + idle random crackle arc  -  Head spin not rendered: TrThink computes HeadAVelocity ('0 45 0' low-ammo / '0 180 0' charged, scaled by ammo/shot_dmg, zeroed when inactive) and integrates HeadAngles, but grep confirms no head-bone/coil entity (tesla_head.md3) consumes HeadAngles \u2014 the coil never visibly spins. Server-side state only.; Idle crackle arc reach distribution: Prandom.Vec() returns each component in [-1,1] (a cube) whereas QC randomvec() (DP builtin #91) rejection-samples a uniform direction inside the unit sphere; the *350 idle crackle endpoint is thus a slightly different shape. Cosmetic-only (idle muzzle crackle)."
+  ]
+ },
+ {
+  "unit": "weapon-devastator",
+  "tier": "opus",
+  "notes": [
+   "[weapon-devastator.presentation.flight_fx | presentation,liveness] Flying rocket model/trail/spin/light/fly-sound + muzzle flash  -  Muzzle-flash MODEL (models/flash.md3) is not attached at the muzzle \u2014 only the ROCKET_MUZZLEFLASH particle effect is emitted (Attack: EffectEmitter.Emit ROCKET_MUZZLEFLASH, no flash-model attach).; Crosshair image/size (gfx/crosshairrocketlauncher, 0.7) not audited in this pass.",
+   "[weapon-devastator.menu.describe | presentation] Weapon-guide description text (MENUQC describe)  -  The MENUQC weapon-guide paragraphs (remote-controlled rocket, hold-to-guide, ammo drain, rocket-flying with the rocketflying mutator, keybinds, DPS) are not ported \u2014 the port has no in-game weapon-guide page for the Devastator."
+  ]
+ },
+ {
+  "unit": "fx-deathtypes",
+  "tier": "haiku",
+  "notes": [
+   "[fx-deathtypes.message.mapper_custom | liveness] HURTTRIGGER mapper message (msg_from_ent / DEATH_*_VOID_ENT) + DEATH_CUSTOM (deathmessage)  -  DEATH_CUSTOM emitter is DEAD: the selector + emit path are now fully wired (DeathTypes.Custom const, Scores.EmitObituary CUSTOM branch with the 'You were %s' formatting matching damage.qc:457), but nothing in the port tags a death with DeathTypes.Custom (grep finds only the consumer at Scores.cs:610) \u2014 no mapper trigger_hurt/deathmessage emitter, so the path never fires."
+  ]
+ },
+ {
+  "unit": "mutator-damagetext",
+  "tier": "opus",
+  "notes": [
+   "[damagetext.cl.draw_fade_shrink_move | presentation] Per-frame draw: fade, shrink, world/screen drift, centering, color codes, font  -  drawfontscale crisp-cell scaling: QC renders the string into a size_max-sized font cell scaled by drawfontscale = size/size_max, then offsets y by drawfontscale.x*size/2 (cl_damagetext.qc:91-93). The port draws at a direct integer pixel size with no drawfontscale cell, so glyph metrics and the small vertical re-centering differ slightly. Minor presentation residual; the visible number, color codes, font, drift and horizontal centering are otherwise faithful."
+  ]
+ },
+ {
+  "unit": "mutator-dynamic_handicap",
+  "tier": "opus",
+  "notes": [
+   "[dynamic_handicap.present.handicap_level | presentation] handicap_level int networked to client for scoreboard icon color  -  Presentation is faithful in color/level/value but uses a flat colored square as the scoreboard marker instead of the real gfx/scoreboard/player_handicap 32x32 texture (the port panel has no gfx texture path; ScoreboardPanel.cs:1073-1081 draws an exact-tint square). The level int, the network round-trip, and the tint formula are all bit-faithful to Base."
+  ]
+ },
+ {
+  "unit": "mutator-new_toys",
+  "tier": "haiku",
+  "notes": [
+   "[mutator-new_toys.menu.describe_page | presentation] MENUQC describe page (mutator info text listing current new-toy weapons + instagib/ok exclusivity note)  -  The describe() content (gimmicky-weapons intro, InstaGib/Overkill mutual-exclusivity note, and the current new-toy weapon list) IS ported, but as the New Toys checkbox tooltip rather than a dedicated PAGE_TEXT describe-page widget (the port has no describe-page surface \u2014 DialogMutators.cs:214 comment). Presentation surface differs; text is faithful. The weapon list is a hardcoded literal ('Seeker, Mine Layer, HLAC, Rifle, Arc') instead of Base's runtime FOREACH(Weapons, nt_IsNewToy) enumeration, so it would not auto-update if the new-toy set changed \u2014 inert at the current fixed set."
+  ]
+ },
+ {
+  "unit": "weapon-hlac",
+  "tier": "haiku",
+  "notes": [
+   "[weapon-hlac.fx.muzzle_impact | presentation] Muzzle flash, impact effect, fire/impact sounds  -  Runtime green->blaster effect fallback (v0.8.6 compat, hlac.qc:225-228) not ported; cosmetic, only matters on a build missing the green HLAC effects (both are registered in the port). Unchanged by Wave-2."
+  ]
+ },
+ {
+  "unit": "weapon-rifle",
+  "tier": "opus",
+  "notes": [
+   "[rifle.fx.impact | presentation] Bullet impact effect (EFFECT_RIFLE_IMPACT == machinegun_impact)  -  Emit PATH still diverges from Base: the port emits RIFLE_IMPACT server-side per bullet inside FireBullets off a world-only re-trace; Base emits it CSQC in wr_impacteffect off the Damage_DamageInfo feed. The effect NAME + the org2/backoff offsets now match QC, but the per-bullet server emit is a different fan-out than the CSQC damageinfo path \u2014 remote-client render not visually verified."
+  ]
+ }
+]

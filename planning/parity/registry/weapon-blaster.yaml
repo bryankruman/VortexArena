@@ -1,0 +1,385 @@
+unit: weapon-blaster
+category: weapon
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-27"
+summary:
+  feature_count: 12
+  worst_gaps:
+    - "no networked PROJECTILE_BLASTER flying-bolt trail/sprite (CSQCProjectile client render) for the in-hand bolt"
+    - "impact particle uses -normalize(velocity) as the w_backoff plane normal (approximation); impact sound+particle emitted server-side instead of CSQC wr_impacteffect (intended divergence)"
+    - "bot lead is the GENERIC engine-level projectile lead (BotBrain.ShotLead reading the weapon speed cvar), not the per-weapon wr_aim dispatch seam (faithful in effect for the blaster, leads at speed 6000)"
+features:
+  - id: weapon-blaster.identity.registration
+    name: "Blaster identity, flags, models, infinite ammo"
+    layer: [shared]
+    base_refs:
+      - "common/weapons/weapon/blaster.qh:CLASS(Blaster)"
+      - "common/weapons/weapon/blaster.qc:wr_checkammo1"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Blaster.cs:Blaster"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:WeaponAmmo.Check"
+    constants:
+      - { name: "impulse", base: "1", port: "1", match: true }
+      - { name: "spawnflags", base: "NORMAL|CANCLIMB|TYPE_SPLASH", port: "Normal|CanClimb|TypeSplash", match: true }
+      - { name: "m_color", base: "'0.969 0.443 0.482'", port: "(0.969,0.443,0.482)", match: true }
+      - { name: "netname", base: "blaster", port: "blaster", match: true }
+      - { name: "viewmodel", base: "h_laser.iqm", port: "h_laser.iqm", match: true }
+      - { name: "worldmodel", base: "v_laser.md3", port: "v_laser.md3", match: true }
+      - { name: "itemmodel", base: "g_laser.md3", port: "g_laser.md3", match: true }
+      - { name: "ammo", base: "infinite (wr_checkammo true)", port: "WeaponAmmo.Check => true", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "model/anim/crosshair fidelity (view/world/item models, gfx/crosshairlaser, weaponlaser image) not audited here — names declared only."
+    verification:
+      - { kind: code_read, ref: "blaster.qh ATTRIBs vs Blaster.cs ctor (Impulse/SpawnFlags/Color/ViewModel/WorldModel/ItemModel match); unchanged by Wave-1/2", result: pass }
+      - { kind: code_read, ref: "WeaponAmmo.Check: Blaster => true (WeaponFireGate.cs)", result: pass }
+    confidence: high
+    notes: "Identity and infinite ammo verified against Blaster.cs:38-49. Untouched by the Wave-1/2 implementation. Legacy 'laser' netname / weapon_laser Nexuiz-compat spawnfunc not separately modeled (no impact on stock play)."
+
+  - id: weapon-blaster.primary.attack
+    name: "Primary fire spawns the blaster bolt (W_Blaster_Attack)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/blaster.qc:W_Blaster_Attack"
+      - "common/weapons/weapon/blaster.qc:wr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Blaster.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Blaster.cs:WrThink"
+    constants:
+      - { name: "shotangle (deg)", base: "0", port: "0", match: true }
+      - { name: "recoil (punchangle)", base: "3", port: "3", match: true }
+      - { name: "deathtype", base: "WEP_BLASTER.m_id", port: "RegistryId", match: true }
+      - { name: "fire sound", base: "SND_BLASTER_FIRE (lasergun_fire) on CH_WEAPON_B", port: "weapons/lasergun_fire.wav on SoundChannel.Weapon", match: true }
+      - { name: "muzzle flash", base: "W_MuzzleFlash / EFFECT_BLASTER_MUZZLEFLASH", port: "EffectEmitter.Emit(\"BLASTER_MUZZLEFLASH\") => laser_muzzleflash", match: true }
+      - { name: "projectile flag", base: "FL_PROJECTILE", port: "EntFlags.Item (FL_PROJECTILE stand-in)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "fire sound is on the port's single SoundChannel.Weapon; QC uses CH_WEAPON_B specifically (cosmetic channel-routing nuance, same cue)."
+    verification:
+      - { kind: code_read, ref: "blaster.qc:52-94 vs Blaster.Attack (Blaster.cs:140-192): s_forward (cs:146), SetupShot(recoil 3) (cs:148), velocity+VecToAngles (cs:159-160), MakeTrigger (cs:162), Flags=EntFlags.Item (cs:163), BotDodge producer (cs:169-170), Touch/Think wiring (cs:173-177), EditProjectile (cs:181-182), immediate-think tail (cs:184-185), fire sound + muzzleflash (cs:187-188) all present", result: pass }
+      - { kind: code_read, ref: "live: WeaponFireDriver.Frame -> weapon.WrThink(slot0,Primary)", result: pass }
+      - { kind: code_read, ref: "EFFECT names registered: EffectsList.cs (BLASTER_IMPACT=laser_impact, BLASTER_MUZZLEFLASH=laser_muzzleflash)", result: pass }
+    confidence: high
+    notes: "s_forward = v_forward*cos(shotangle)+v_up*sin(shotangle); MUTATOR_CALLHOOK(EditProjectile) before the delay-0 immediate-think tail, both reproduced. Wave-1/2 left the attack body intact and added missile.Flags=EntFlags.Item (FL_PROJECTILE), enabling the interact path below."
+
+  - id: weapon-blaster.primary.balance
+    name: "Primary balance constants (damage/force/speed/radius/refire/lifetime)"
+    layer: [shared]
+    base_refs:
+      - "bal-wep-xonotic.cfg:26-43 g_balance_blaster_primary_*"
+      - "common/weapons/weapon/blaster.qh:W_PROPS(Blaster)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Blaster.cs:Configure"
+    constants:
+      - { name: "primary_damage", base: "20", port: "20", match: true }
+      - { name: "primary_edgedamage", base: "10", port: "10", match: true }
+      - { name: "primary_radius", base: "60", port: "60", match: true }
+      - { name: "primary_force", base: "375", port: "375", match: true }
+      - { name: "primary_force_zscale", base: "1", port: "1", match: true }
+      - { name: "primary_speed", base: "6000", port: "6000", match: true }
+      - { name: "primary_spread", base: "0", port: "0", match: true }
+      - { name: "primary_refire", base: "0.7", port: "0.7", match: true }
+      - { name: "primary_animtime", base: "0.1", port: "0.1", match: true }
+      - { name: "primary_delay", base: "0", port: "0", match: true }
+      - { name: "primary_lifetime", base: "5", port: "5", match: true }
+      - { name: "primary_shotangle", base: "0", port: "0", match: true }
+      - { name: "switchdelay_drop", base: "0.1", port: "0.1 (base SwitchDelayDrop)", match: true }
+      - { name: "switchdelay_raise", base: "0.1", port: "0.1 (base SwitchDelayRaise)", match: true }
+    status:
+      logic: na
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value_diff, ref: "bal-wep-xonotic.cfg:26-43 (all 12 primary cvars) vs Blaster.Configure fallbacks — exact match; unchanged by Wave-1/2", result: pass }
+    confidence: high
+    notes: "All 12 primary cvars + recoil 3 + switchdelay 0.1 verified against Base config. Values read live from the cvar store (Bal helper) with these as stock fallbacks. Untouched by the Wave-1/2 implementation."
+
+  - id: weapon-blaster.shot.setup
+    name: "Shot setup (W_SetupShot_Dir: trueaim, muzzle origin, punchangle)"
+    layer: [authority]
+    base_refs:
+      - "server/weapons/tracing.qc:W_SetupShot_Dir_ProjectileSize_Range"
+      - "server/weapons/tracing.qh:W_SetupShot_Dir"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:SetupShot"
+    constants:
+      - { name: "antilag (blaster)", base: "false", port: "false (projectile, no antilag arg)", match: true }
+      - { name: "trueaim_minrange clamp", base: "g_trueaim_minrange (default 44)", port: "applied (WeaponFiring.cs:232-234, cvar g_trueaim_minrange fallback 44)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "tracing.qc W_SetupShot_Dir vs WeaponFiring.SetupShot: eye->trueaim trace, muzzle-offset nudge, punchangle_x=-recoil all present; warpzone trueaim present", result: pass }
+      - { kind: code_read, ref: "WeaponFiring.cs:232-234 — trueaim_minrange clamp PORTED + RE-VERIFIED: if VLen(shotEnd-eye) < g_trueaim_minrange (cvar, default 44) shotEnd = eye + normalize(forward)*minrange. Reached by Blaster.Attack->SetupShot (Blaster.cs:148). Common project builds clean.", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED (2026-06-27): the g_trueaim_minrange clamp is applied (WeaponFiring.cs:232-234) — the one previously-open shot-setup gap is closed. Eye->trueaim trace, muzzle-offset nudge and punchangle_x=-recoil match. Per-model tag_shot muzzle offset registered from parsed models; falls back to a generic offset on a tag-less/dedicated path. Recoil only applied to clients with g_norecoil off. LagComp wired (no-op for the antilag=false blaster). Line ref corrected from the stale 216-222 baseline."
+
+  - id: weapon-blaster.shot.velocity
+    name: "Bolt launch velocity (W_SetupProjVelocity_Explicit)"
+    layer: [shared]
+    base_refs:
+      - "server/weapons/tracing.qc:W_SetupProjVelocity_Explicit"
+      - "server/weapons/tracing.qc:W_CalculateProjectileVelocity"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:ProjectileVelocity"
+    constants:
+      - { name: "speed", base: "6000", port: "6000", match: true }
+      - { name: "spread", base: "0", port: "0", match: true }
+      - { name: "newton_style (inheritance)", base: "0 (off)", port: "off (not modeled)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "g_projectiles_newton_style velocity inheritance not modeled; matches the stock default 0 (no inheritance), so no observable divergence in stock play."
+    verification:
+      - { kind: code_read, ref: "W_SetupProjVelocity_Explicit vs WeaponFiring.ProjectileVelocity: speed*normalize(dir), spread folded in, up/z 0; unchanged by Wave-1/2", result: pass }
+    confidence: high
+    notes: "velocity = speed * normalize(w_shotdir); up/z launch 0, spread 0. angles=vectoangles(velocity) set in Blaster.Attack. Untouched by Wave-1/2."
+
+  - id: weapon-blaster.bolt.think_lifetime
+    name: "Bolt think: MOVETYPE_FLY + remove after lifetime (W_Blaster_Think)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/blaster.qc:W_Blaster_Think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Blaster.cs:OnThink"
+      - "src/XonoticGodot.Engine/Simulation/MoveTypePhysics.cs:RunEntity"
+    constants:
+      - { name: "lifetime (s)", base: "5", port: "5", match: true }
+      - { name: "movetype", base: "MOVETYPE_FLY", port: "MoveType.Fly", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "CSQCProjectile(PROJECTILE_BLASTER) client trail/sprite STILL not networked: the flying bolt has no DP-style render trail (Wave-1/2 added no client-render seam for the bolt)."
+    verification:
+      - { kind: code_read, ref: "blaster.qc:44-50 vs Blaster.OnThink: MoveType.Fly + SUB_Remove at +lifetime; unchanged by Wave-1/2", result: pass }
+      - { kind: code_read, ref: "MoveTypePhysics Fly case -> runThink + PhysicsToss; PushEntity(doTouch:true) fires Touch during the step", result: pass }
+    confidence: high
+    notes: "Bolt is stepped every server tick (movement + Touch + Think) by SimulationLoop/MoveTypePhysics; SUB_Remove at +lifetime reproduced. Only the client trail is missing — unchanged by Wave-1/2."
+
+  - id: weapon-blaster.bolt.touch_radiusdamage
+    name: "Bolt impact: radius damage + knockback with force_zscale + g_projectiles_interact (W_Blaster_Touch / RadiusDamageForSource)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/blaster.qc:W_Blaster_Touch"
+      - "server/damage.qc:RadiusDamageForSource"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Blaster.cs:OnTouch"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:RadiusDamage"
+    constants:
+      - { name: "damage / edgedamage", base: "20 / 10", port: "20 / 10", match: true }
+      - { name: "radius", base: "60", port: "60", match: true }
+      - { name: "force", base: "375", port: "375", match: true }
+      - { name: "force_xyzscale.z", base: "force_zscale=1", port: "(1,1,force_zscale)", match: true }
+      - { name: "blast center", base: "origin+(mins+maxs)*0.5", port: "origin+(Mins+Maxs)*0.5", match: true }
+      - { name: "direct-hit (toucher)", base: "full dmg, skip LOS box test", port: "directHit=other (LOS skipped at WeaponSplash.cs)", match: true }
+      - { name: "g_projectiles_interact gate", base: "==1 && (toucher.flags & FL_PROJECTILE) && !toucher.damageforcescale", port: "==1 && (other.Flags & EntFlags.Item) && other.DamageForceScale==0", match: true }
+      - { name: "g_projectiles_interact default", base: "1", port: "1 (balance-xonotic.cfg:203, bundled)", match: true }
+      - { name: "impact sound", base: "SND_LASERIMPACT (laserimpact) CSQC wr_impacteffect", port: "weapons/laserimpact.wav (server-side ImpactSound)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "QC plays the impact sound + impact particle CLIENT-side in CSQC wr_impacteffect (at w_org along w_backoff); the port emits both server-side from OnTouch (project-wide pattern, see WeaponSplash.ImpactSound docs). Cue (laserimpact) and blast position match; the exact w_backoff plane-normal is approximated by -normalize(velocity)."
+    gaps:
+      - "impact particle uses -normalize(velocity) as the w_backoff plane normal (approximation, not the exact surface normal); CSQCProjectile networking of the impact is server-emitted instead of CSQC-rendered."
+    verification:
+      - { kind: code_read, ref: "blaster.qc:5-42 (incl. interact hack lines 15-22,38-39) vs Blaster.OnTouch (Blaster.cs:204-237): event_damage=func_null reproduced by self.Touch=null (cs:206); g_projectiles_interact==1 + (other.Flags & EntFlags.Item) + other.DamageForceScale==0 -> set DamageForceScale=1 then restore 0 (cs:212-228); force_xyzscale.z (cs:225); center=origin+(mins+maxs)*0.5 (cs:222); directHit=other -- bit-for-bit match", result: pass }
+      - { kind: value_diff, ref: "g_projectiles_interact default: balance-xonotic.cfg:203 set 1 in BOTH Base and assets/data/.../balance-xonotic.cfg -> interact path live under stock play", result: pass }
+      - { kind: code_read, ref: "projectiles set Flags=EntFlags.Item (Devastator/Electro/Mortar/Hagar/etc.) and default DamageForceScale=0 -> the interact predicate is genuinely reachable when a bolt touches another projectile", result: pass }
+      - { kind: code_read, ref: "damage.qc RadiusDamageForSource vs WeaponSplash.RadiusDamage: falloff, per-axis force scale, directHit skips LOS, force tracks damage fraction", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED (2026-06-27): the g_projectiles_interact==1 hack is ported faithfully (Blaster.cs:212-228) — a blaster bolt that touches another projectile (FL_PROJECTILE / EntFlags.Item, damageforcescale 0) temporarily sets its damageforcescale=1 so the blast knocks it, then restores 0; the cvar gate (==1, NOT 2) and default (1) match Base (balance-xonotic.cfg:203 bundled). The only residual is presentation (server-side impact emit + approximated plane normal, intended_divergence). Line ref corrected from the stale 188-208 baseline."
+
+  - id: weapon-blaster.refire.gate
+    name: "Refire/animtime gate (weapon_prepareattack + weapon_thinkf)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/blaster.qc:wr_think"
+      - "server/weapons/weaponsystem.qc:weapon_prepareattack"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:PrepareAttack"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Blaster.cs:RefireFor"
+    constants:
+      - { name: "refire (s)", base: "0.7", port: "0.7", match: true }
+      - { name: "animtime (s)", base: "0.1", port: "0.1", match: true }
+      - { name: "ratefactor hook", base: "W_WeaponRateFactor(actor)", port: "WeaponRateFactor(actor)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "weaponsystem.qc weapon_prepareattack vs WeaponFireGate.PrepareAttack: held-button check, WS_READY gate, ATTACK_FINISHED refire gate, spawn-shield drop, WeaponRateFactor, animtime->ready think; unchanged by Wave-1/2", result: pass }
+    confidence: high
+    notes: "ATTACK_FINISHED gate, WS_READY check, animtime->ready think and the WeaponRateFactor mutator hook all ported. In-hand path goes through PrepareAttack. Untouched by Wave-1/2."
+
+  - id: weapon-blaster.secondary.lastweapon
+    name: "Secondary = switch back to previous weapon (W_LastWeapon), not a fire mode"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/blaster.qc:wr_think"
+      - "server/weapons/selection.qc:W_LastWeapon"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Blaster.cs:WrThink"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Blaster.cs:LastWeapon"
+    constants:
+      - { name: "gate", base: "only if m_switchweapon == WEP_BLASTER", port: "only if ActiveWeaponId == RegistryId", match: false }
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC gates the switch on m_switchweapon == WEP_BLASTER (the weapon being switched TO); the port gates on ActiveWeaponId == RegistryId (the currently active weapon). Functionally equivalent in steady state, but during a switch-in-progress the precise guard window may differ (minor edge case)."
+      - "fallback when no previous weapon recorded picks best-owned-by-impulse; QC W_LastWeapon relies on the tracked previous selection (cnt) — minor edge-case behavior on a first-ever secondary press."
+    verification:
+      - { kind: code_read, ref: "blaster.qc:111-116 + selection.qc:W_LastWeapon vs Blaster.LastWeapon: reads Entity.LastWeaponId (QC .cnt), falls back to best owned weapon; unchanged by Wave-1/2", result: pass }
+    confidence: medium
+    notes: "Secondary is a weapon-switch, not refire-gated. Port reads Entity.LastWeaponId (QC .cnt). The m_switchweapon vs ActiveWeaponId guard is a slightly different gate (not runtime-verified that LastWeaponId is always populated correctly by the switch system). Untouched by Wave-1/2."
+
+  - id: weapon-blaster.offhand.fire
+    name: "Offhand blaster (g_offhand_blaster mutator) fires without switching weapons"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/blaster.qc:OffhandBlaster.offhand_think"
+      - "common/mutators/mutator/offhand_blaster/sv_offhand_blaster.qc"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OffhandBlasterMutator.cs:FireOffhand"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OffhandBlasterMutator.cs:WeaponRateFactor"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Blaster.cs:WrThink"
+    constants:
+      - { name: "jump_interval refire", base: "refire * W_WeaponRateFactor(actor)", port: "refire * WeaponRateFactor(actor)", match: true }
+      - { name: "slot", base: "weaponentities[1]", port: "slot MaxWeaponSlots (ungated, fired directly)", match: true }
+      - { name: "makevectors(v_angle)", base: "uses actor view angles", port: "WrThink->Attack uses actor.Angles", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Live only when g_offhand_blaster is set (default 0 in mutators.cfg:435), so liveness stays partial — but when enabled the behaviour is now faithful."
+    verification:
+      - { kind: code_read, ref: "blaster.qc:138-147 OffhandBlaster.offhand_think (jump_interval = time + refire * W_WeaponRateFactor) vs OffhandBlasterMutator.FireOffhand (OffhandBlasterMutator.cs:83-100): OffhandNextThink = now + refire * WeaponRateFactor(player) (cs:99) -- MATCHES", result: pass }
+      - { kind: code_read, ref: "OffhandBlasterMutator.WeaponRateFactor (cs:108-117): 1/g_weaponratefactor then MUTATOR_CALLHOOK(WeaponRateFactor, f, actor) via MutatorHooks.WeaponRateFactor.Call -- mirrors WeaponFireGate.WeaponRateFactor", result: pass }
+      - { kind: code_read, ref: "IsEnabled = g_offhand_blaster != 0 (default 0, cs:22-23); wired via PlayerSpawn + PlayerPreThink hooks (cs:36-42,60-77)", result: pass }
+    confidence: high
+    notes: "FIX (Wave-1/2): the offhand refire interval now applies W_WeaponRateFactor (OffhandBlasterMutator.cs adds a local WeaponRateFactor that calls the same 1/g_weaponratefactor + WeaponRateFactor mutator hook the in-hand path uses), so a speed-powerup/buff player's offhand blaster fires faster exactly like the in-hand one. Baseline values:partial/timing:partial -> faithful. Still fires via an ungated high slot (MaxWeaponSlots) bypassing PrepareAttack, gated by OffhandNextThink. Liveness stays partial (mutator default off)."
+
+  - id: weapon-blaster.bot.aim_dodge
+    name: "Bot weapon aim (wr_aim projectile lead) + bot_dodge of incoming bolts"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/blaster.qc:wr_aim"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:AimAndDecideFire"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:CurrentShotSpeed"
+      - "src/XonoticGodot.Server/Bot/BotAim.cs:ShotLead"
+    constants:
+      - { name: "bot_aim(speed, 0, lifetime, false, true) lead", base: "leads target for projectile (speed 6000)", port: "generic ShotLead(enemyCenter, enemy.Velocity, CurrentShotSpeed()); blaster speed read from g_balance_blaster_primary_speed (6000)", match: true }
+      - { name: "bot_dodge / bot_dodgerating (producer)", base: "missile.bot_dodge=true / bot_dodgerating=damage + IL_PUSH(g_bot_dodge)", port: "missile.BotDodge=true / BotDodgeRating=Primary.Damage (Blaster.cs:169-170); Entity.BotDodge/BotDodgeRating fields exist", match: true }
+      - { name: "bot_dodge danger-list (consumer)", base: "havocbot_dodge findchainfloat(bot_dodge,true) avoids the bolt (SUPERBOT-gated)", port: "BotBrain.HavocbotDodge (BotBrain.cs:683) scans Api.Entities.All for BotDodge edicts, SUPERBOT-gated (Skill<=SuperbotSkill 100 -> '0 0 0'), folds the world-space dodge vector into the wish-move (BotBrain.cs:503-528)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "lead is a GENERIC engine-level projectile lead (BotBrain.ShotLead using the weapon's speed cvar), not the per-weapon wr_aim hook; faithful in effect for the blaster (leads at speed 6000), but the wr_aim/bot_aim weapon-dispatch seam itself is not modeled."
+      - "dodge is SUPERBOT-gated (Skill>100) exactly as in Base (havocbot_dodge is disabled for non-SUPERBOT bots there too), so under stock skill levels bots do not specifically swerve from bolts; this matches Base behaviour, it is not a port limitation."
+    verification:
+      - { kind: code_read, ref: "BotBrain.AimAndDecideFire (BotBrain.cs:599): shotSpeed = CurrentShotSpeed() -> non-hitscan weapon reads BalanceNames(w).Speed i.e. g_balance_<wep>_primary_speed (BotBrain.cs:907-919), then w.BotAimShotSpeed (Blaster.BotAimShotSpeed => Primary.Speed); lead = Aim.ShotLead(enemyCenter, enemy.Velocity, shotSpeed); the bot LEADS the blaster bolt at speed 6000", result: pass }
+      - { kind: code_read, ref: "Blaster.cs:169-170 sets missile.BotDodge=true; missile.BotDodgeRating=Primary.Damage (producer). BotBrain.HavocbotDodge (BotBrain.cs:683-735) is the CONSUMER: findchainfloat(bot_dodge,true) analogue scanning Api.Entities.All (cs:689,698-701), perpendicular-to-flight dodge for moving hazards (cs:706-722), SUPERBOT gate (Skill<=SuperbotSkill -> '0 0 0', cs:686-687), owner-skip (cs:702); called live at BotBrain.cs:503 (OUTSIDE the enemy block, every decide tick) and folded into the wish-move (cs:522-528)", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED (2026-06-27 consolidated re-audit): the bot-dodge CONSUMER is IMPLEMENTED and LIVE -- BotBrain.HavocbotDodge (BotBrain.cs:683-735) ports havocbot_dodge's findchainfloat(bot_dodge,true) danger-list scan, returning a world-space dodge vector that BotBrain folds into the wish-move (BotBrain.cs:503-528) on the real bot decide tick (called outside the enemy-present block, so it runs every tick). SUPERBOT gate (Skill<=SuperbotSkill 100 -> zero) mirrors Base, which itself disables havocbot_dodge for non-SUPERBOT bots, so the gating is FAITHFUL not a port shortfall. Producer (Blaster.cs:169-170 bot_dodge/bot_dodgerating) and aim lead (generic ShotLead at the blaster speed cvar 6000 via BotAimShotSpeed) confirmed in place. Both Server+Common projects build clean. Net: faithful/faithful/live. Residual: the lead uses the generic engine ShotLead rather than the per-weapon wr_aim dispatch seam (faithful in effect). Line refs corrected from the stale 156-157/462-489/599-663 baseline."
+
+  - id: weapon-blaster.notification.kill_suicide
+    name: "Blaster kill/suicide death notifications (wr_killmessage / wr_suicidemessage)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/blaster.qc:wr_suicidemessage"
+      - "common/weapons/weapon/blaster.qc:wr_killmessage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:49"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:126"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:1182"
+    constants:
+      - { name: "kill notif", base: "WEAPON_BLASTER_MURDER", port: "WEAPON_BLASTER_MURDER", match: true }
+      - { name: "suicide notif", base: "WEAPON_BLASTER_SUICIDE", port: "WEAPON_BLASTER_SUICIDE (self->DEATH_SELF_GENERIC)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "blaster.qc:128-136 wr_suicidemessage/wr_killmessage vs DeathMessages.cs:48-49,125-126 (case \"blaster\" -> WEAPON_BLASTER_MURDER / WEAPON_BLASTER_SUICIDE) and NotificationsList.cs:1182-1183 (Multi registrations)", result: pass }
+    confidence: medium
+    notes: "Added 2026-06-25 audit (registry coverage gap — was unmapped in the baseline). The blaster's deathtype routes to the correct murder/suicide notification ids; registered as Multi notifications. The MENUQC describe() weapon-guide text remains unmapped (pure menu documentation, out of gameplay scope)."

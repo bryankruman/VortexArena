@@ -49,7 +49,6 @@ public partial class ConsoleOverlay : CanvasLayer
     private Action<string>? _cvarChangedSub;     // CvarService.Changed handler watching `developer`
     private int _renderedDeveloper = -1;         // dev level the scrollback was last rendered at
     private bool _eatEscapeRelease;              // true between the Escape press we consumed and its matching release
-    private Input.MouseModeEnum _savedMouseMode = Input.MouseModeEnum.Visible;
 
     /// <summary>True while the drop-down is showing (mirrors <see cref="ConsoleState.IsOpen"/>).</summary>
     public bool IsOpen => _panel.Visible;
@@ -241,8 +240,7 @@ public partial class ConsoleOverlay : CanvasLayer
             return;
         _panel.Visible = true;
         ConsoleState.IsOpen = true;               // freezes the play path's polled input + fires release-all
-        _savedMouseMode = Input.MouseMode;
-        Input.MouseMode = Input.MouseModeEnum.Visible;
+        MouseCapture.SetWantCapture(false);        // free the cursor for typing (focus-gated in MouseCapture)
         _input.Clear();
         _histIndex = -1;
         _input.GrabFocus();
@@ -255,9 +253,9 @@ public partial class ConsoleOverlay : CanvasLayer
         _panel.Visible = false;
         ConsoleState.IsOpen = false;
         _input.ReleaseFocus();
-        // Recapture the mouse only if a match is live and not paused; otherwise restore what we saved (menu).
-        bool capture = _shouldCaptureOnClose?.Invoke() ?? false;
-        Input.MouseMode = capture ? Input.MouseModeEnum.Captured : _savedMouseMode;
+        // Want the cursor recaptured only if a match is live and not paused; otherwise leave it free (menu).
+        // MouseCapture only actually grabs while the window is focused.
+        MouseCapture.SetWantCapture(_shouldCaptureOnClose?.Invoke() ?? false);
     }
 
     // =============================================================================================

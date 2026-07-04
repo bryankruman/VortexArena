@@ -68,6 +68,15 @@ public sealed class Bans
     /// <summary>QC <c>BAN_MAX</c>: max simultaneous ban slots.</summary>
     public const int BanMax = 256;
 
+    /// <summary>QC <c>g_chatban_list</c> cvar name — the mute prefix-list.</summary>
+    public const string ChatBanList = "g_chatban_list";
+
+    /// <summary>QC <c>g_playban_list</c> cvar name — the forced-spectate prefix-list.</summary>
+    public const string PlayBanList = "g_playban_list";
+
+    /// <summary>QC <c>g_voteban_list</c> cvar name — the no-voting prefix-list.</summary>
+    public const string VoteBanList = "g_voteban_list";
+
     private readonly List<BanEntry> _bans = new();
     private bool _loaded;
 
@@ -181,7 +190,13 @@ public sealed class Bans
     {
         if (!IsClientBanned(client))
             return false;
-        Echo($"^1NOTE:^7 banned client {client.NetName} just tried to enter");
+        // QC Ban_MaybeEnforceBan (server/ipban.qc:451-467): log netaddress (not netname), and include the
+        // crypto_idfp in parentheses when the client has one — used for admin audit trails.
+        string addr = client.NetAddress ?? client.NetName;
+        if (!string.IsNullOrEmpty(client.PersistentId))
+            Echo($"^1NOTE:^7 banned client {addr} ({client.PersistentId}) just tried to enter");
+        else
+            Echo($"^1NOTE:^7 banned client {addr} just tried to enter");
         if (Cvars.Bool("g_ban_telluser"))
             DropClient?.Invoke(client, "You are banned from this server.");
         else
@@ -285,26 +300,30 @@ public sealed class Bans
 
     /// <summary>
     /// QC <c>Ban_Enforce</c>: kick every currently-connected client matching ban slot <paramref name="j"/>
-    /// (or all slots if j&lt;0). No-op without a wired <see cref="Roster"/>.
+    /// (or all slots if j&lt;0). Emits a per-client <c>^1NOTE:^7 banned client &lt;name&gt;^7 has to go\n</c>
+    /// line (concatenated into one bprint) and appends <c>": affects &lt;name&gt;, ..."</c> to the reason,
+    /// matching Base exactly (server/ipban.qc:Ban_Enforce). No-op without a wired <see cref="Roster"/>.
     /// </summary>
     public void Enforce(int j, string reason)
     {
         if (Roster is null) return;
-        var affected = new List<Player>();
+        // QC Ban_Enforce: build `s` as per-client "^1NOTE:^7 banned client <name>^7 has to go\n" lines,
+        // append ": affects <name>, ..." to the reason as the roster is walked, then bprint(s).
+        var sb = new StringBuilder();
         foreach (Player p in Roster())
         {
-            if (j < 0 ? IsClientBanned(p) : IsClientBannedBySlot(p, j))
-                affected.Add(p);
-        }
-        if (affected.Count == 0) return;
-        var names = new StringBuilder();
-        foreach (Player p in affected)
-        {
-            if (names.Length > 0) names.Append(", ");
-            names.Append(p.NetName);
+            if (!(j < 0 ? IsClientBanned(p) : IsClientBannedBySlot(p, j))) continue;
+            if (!string.IsNullOrEmpty(reason))
+            {
+                reason = sb.Length == 0
+                    ? reason + ": affects " + p.NetName
+                    : reason + ", " + p.NetName;
+            }
+            sb.Append("^1NOTE:^7 banned client ").Append(p.NetName).Append("^7 has to go\n");
             DropClient?.Invoke(p, string.IsNullOrEmpty(reason) ? "banned" : reason);
         }
-        Echo($"^1banned: {names} {(string.IsNullOrEmpty(reason) ? "" : "(" + reason + ")")}");
+        if (sb.Length > 0)
+            Echo(sb.ToString());
     }
 
     private bool IsClientBannedBySlot(Player client, int slot)
@@ -321,19 +340,25 @@ public sealed class Bans
         return ip.Idfp is null;
     }
 
-    /// <summary>QC <c>Ban_View</c>: print each active ban (with its <c>unban #N</c> index) + the total count.</summary>
+    /// <summary>
+    /// QC <c>Ban_View</c>: print a header, each active ban (with its <c>unban #N</c> index), and the Base
+    /// footer <c>^2Done listing all active (N) bans.</c> (server/ipban.qc:Ban_View).
+    /// </summary>
     public void View()
     {
         if (!_loaded) Load();
+        // QC: LOG_INFO("^2Listing all existing active bans:");
+        Echo("^2Listing all existing active bans:");
         float now = Now;
         int n = 0;
         for (int i = 0; i < _bans.Count; i++)
         {
             if (_bans[i].IsEmpty || now > _bans[i].Expire) continue;
-            Echo($"#{i}: {_bans[i].Ip} is still banned for {_bans[i].Expire - now:0} seconds");
+            Echo($"  #{i}: {_bans[i].Ip} is still banned for {_bans[i].Expire - now:0} seconds");
             n++;
         }
-        Echo($"{n} ban(s) active");
+        // QC: LOG_INFO("^2Done listing all active (", ftos(n), ") bans.");
+        Echo($"^2Done listing all active ({n}) bans.");
     }
 
     // =============================================================================================
@@ -442,4 +467,24 @@ public sealed class Bans
         }
         Cvars.Set(listCvar, string.Join(' ', kept));
     }
+
+    /// <summary>
+    /// QC <c>PlayerInList(client, autocvar_g_chatban_list)</c> (server/client.qc:1246): is the player muted by
+    /// the chat-ban prefix list? The seam callers use to re-apply mute on connect (and the mute command's check).
+    /// </summary>
+    public static bool IsChatBanned(Player p) => PlayerInList(p, ChatBanList);
+
+    /// <summary>
+    /// QC <c>PlayerInList(client, autocvar_g_playban_list)</c> (server/client.qc:1243 / 2274): is the player on
+    /// the play-ban (forced-spectate) prefix list? The single seam for both the connect-time re-spectate and the
+    /// load-bearing join-attempt gate (<c>Join_Try</c> refuses the join with <c>CENTER_JOIN_PLAYBAN</c> when this
+    /// is true for a non-INGAME client).
+    /// </summary>
+    public static bool IsPlayBanned(Player p) => PlayerInList(p, PlayBanList);
+
+    /// <summary>
+    /// QC <c>PlayerInList(client, autocvar_g_voteban_list)</c>: is the player on the vote-ban prefix list (may not
+    /// call or cast votes)? The seam the vote controller consults.
+    /// </summary>
+    public static bool IsVoteBanned(Player p) => PlayerInList(p, VoteBanList);
 }

@@ -1,0 +1,869 @@
+unit: freezetag
+category: gametype
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"  # OPUS re-audit (parity-port-waves): registry-drift corrections — frozen_anim (PlayerModel.FrozenHold), bots (BotObjectiveRoles.RoleFreezeTag), frozen.no_pickup BuffTouch guard (BuffsMutator.cs:402), and the waypoints Frozen→Reviving swap (st.HasReviver) all flipped to faithful/live. Also: freezetag.frags.center_message CLOSED this wave — FreezeTag.Activate now subscribes OnFragCenterMessage (FreezeTag.cs:298-299,934-948), swapping the personal frag centerprint to FRAG_FREEZE/FRAGGED_FREEZE and suppressing on an already-frozen re-kill; the producer was the sole missing piece, the rest of the chain (hook MutatorHooks.cs:616, live call Scores.cs:809 + consumer :810-814, choices NotificationsList.cs:1292-1293) was already in place. missing/dead → faithful/live. Common builds clean.
+summary:
+  feature_count: 30
+  worst_gaps:
+    - "FIXED 2026-06-27: GiveFragsForKill→0 is now subscribed (FreezeTag.OnGiveFragsForKill, FreezeTag.cs:876) and live (Scores.cs:548) — the engine-frag double-count on an enemy freeze is closed. See freezetag.scoring.no_kill_frags."
+    - "FIXED 2026-06-27: g_freezetag_weaponarena 'most_available' is now applied (FreezeTag.OnSetWeaponArena, FreezeTag.cs:887) and live (SpawnSystem.cs:999/1223). FT players get the full arsenal arena over the start loadout. See freezetag.weaponarena."
+    - "FIXED 2026-06-27: frozen-player regen gate (FreezeTag.OnPlayerRegen, live PlayerFrameLogic.cs:56) and frozen-pickup gate (FreezeTag.OnItemTouch, live ItemPickupRules.cs:378) are both implemented. See freezetag.frozen.no_regen / freezetag.frozen.no_pickup."
+    - "STILL OPEN: no ice (MDL_ICE) entity model — only the icy player-model colormod tint (ClientWorld.FrozenColormod). The signature ice cube is absent. (The ANIMSTATE_FROZEN frozen pose is now LIVE via PlayerModel.FrozenHold — see freezetag.presentation.frozen_anim — registry drift corrected this wave.)"
+    - "STILL OPEN: void/lava NEEDKILL soft-kill relocate (g_frozen_damage_trigger 0) is still missing (FT OnDamageCalculate leaves NEEDKILL deathtypes alone; the relocate-to-spawn needs the server spawn selector and is not done). Default cvar 1 = die, so dormant at stock anyway."
+    - "FIXED this wave: the per-freeze CHOICE centerprint (FragCenterMessage 'You froze X'/'You were frozen by Y') now has its FT producer (freezetag.frags.center_message) — FreezeTag.Activate subscribes OnFragCenterMessage (FreezeTag.cs:298-299) which sets FRAG_FREEZE/FRAGGED_FREEZE and suppresses both on an already-frozen re-kill; FragCenterMessage.Call (Scores.cs:809) consumes the result (Scores.cs:810-814). missing/dead → faithful/live."
+    - "FIXED since the 06-27 row was written: the CENTER_ALONE 'you are now alone' last-survivor notification (freezetag.notif.alone) IS now sent — FreezeTag.NotifyLastPlayerForTeam (FreezeTag.cs:1063) is called from OnDeath (FreezeTag.cs:339, live via Combat.Death) and center-prints ALONE to a team's lone unfrozen survivor."
+features:
+  - id: freezetag.mode.registration
+    name: "Mode registration: teams, team-spawns, score/lead limits, FT scoring fields"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qh:REGISTER_MUTATOR(ft)"
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:freezetag_Initialize"
+      - "common/gametypes/gametype/freezetag/freezetag.qh:INIT(FreezeTag)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:Activate"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:TeamCount"
+    constants:
+      - { name: "default teams", base: "2 (1..4 via g_freezetag_teams/_override, BITS(bound(2,n,4)))", port: "2 (clamp 2..4)", match: true }
+      - { name: "mapinfo defaults", base: "timelimit=20 pointlimit=10 teams=2 leadlimit=6", port: "fraglimit→10 round-limit", match: false }
+      - { name: "g_freezetag_team_spawns", base: "1", port: "RequestsTeamSpawns reads cvar (default 1)", match: true }
+      - { name: "team primary slot", base: "ST_FT_ROUNDS 'rounds'", port: "TeamSlotSecondary 'rounds'", match: true }
+      - { name: "player columns", base: "SP_SCORE primary + FREEZETAG_REVIVALS", port: "Score primary + FREEZETAG_REVIVALS", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Match limit semantics differ: Base reads mapinfo pointlimit (10) / leadlimit (6) via g_freezetag_point_limit=-1 passthrough; port keys off fraglimit/leadlimit. Live default round target (10) coincidentally matches, leadlimit 6 likely not honored."
+    verification:
+      - { kind: code-read, ref: "FreezeTag.Activate GameScores setup; freezetag_Initialize", result: pass }
+    confidence: high
+    notes: "Scoring-field shape (team rounds + revivals column + SP_SCORE primary) is faithful. Limit cvar plumbing still diverges (unchanged from baseline)."
+
+  - id: freezetag.freeze.apply
+    name: "Freeze a fragged player (ice, HP=1, status effect, score matrix)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:freezetag_Freeze"
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:freezetag_Add_Score"
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, PlayerDies)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:Freeze"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:OnDeath"
+    constants:
+      - { name: "freeze HP", base: "RES_HEALTH = 1", port: "SetResource(Health, 1)", match: true }
+      - { name: "score self-freeze", base: "victim -1", port: "victim -1", match: true }
+      - { name: "score teammate freeze", base: "attacker -1, victim -1", port: "attacker -1, victim -1", match: true }
+      - { name: "score enemy freeze", base: "attacker +1, victim -1", port: "attacker +1, victim -1", match: true }
+      - { name: "score rules-freeze (null/non-player)", base: "no score", port: "no score", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No distinct ice block entity fires (covered by freezetag.presentation.ice_model). State transition + score + the freeze/self notifications are faithful."
+    verification:
+      - { kind: code-read, ref: "OnDeath wired via Combat.Death.Add in Activate; Freeze applies Frozen status effect + arms auto-thaw timer (gated on ReviveAuto && maxtime>0) + score matrix + sends INFO/CENTER_FREEZETAG_SELF or INFO_FREEZETAG_FREEZE (live NotificationNetSink)", result: pass }
+    confidence: high
+    notes: "Applies StatusEffectsCatalog.Frozen (the shared status effect the weapon/movement/damage locks read). The freeze/self notifications are live. The ice cube itself remains its own row."
+
+  - id: freezetag.freeze.weaponlock
+    name: "Frozen player cannot fire weapons"
+    layer: [shared]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, LockWeapon)"
+      - "common/physics/player.qc:(weapon ready gate PHYS_FROZEN)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:WeaponLocked"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:IsFrozen"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "WeaponLocked returns true on FrozenStat!=0 OR Frozen status effect; Freeze sets the status effect", result: pass }
+    confidence: high
+    notes: "Reads the shared Frozen status effect, so it triggers for FT freezes. Unchanged from baseline."
+
+  - id: freezetag.freeze.movementlock
+    name: "Frozen player cannot move or jump"
+    layer: [shared]
+    base_refs:
+      - "common/physics/player.qc:PM_check_frozen"
+      - "common/physics/player.qc:PlayerJump (PHYS_FROZEN no-jump)"
+    port_refs:
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:IsFrozen"
+    constants:
+      - { name: "frozen move", base: "movement = '0 0 0' (dodging-frozen sub-case allows ±2)", port: "move = Vector3.Zero (dodging-frozen omitted)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "sv_dodging_frozen sub-case (±2 movement for dodge direction) not modeled — only matters with the dodging mutator + sv_dodging_frozen 1 (both default off)."
+    verification:
+      - { kind: code-read, ref: "PlayerPhysics zeros move when IsFrozen; blocks jump", result: pass }
+    confidence: high
+    notes: "Core 'encased in ice can't move' behavior is faithful at stock defaults. Unchanged from baseline."
+
+  - id: freezetag.unfreeze
+    name: "Unfreeze: clear ice state, restore health, re-enable"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:freezetag_Unfreeze"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:Unfreeze"
+    constants:
+      - { name: "restored HP", base: "start_health (player) / max_health", port: "StartHealth", match: true }
+      - { name: "spawnshield on revive", base: "spawnshieldtime = time + g_freezetag_revive_spawnshield (1s)", port: "SpawnShieldExpire = time + ReviveSpawnShield (read by damage pipeline)", match: true }
+      - { name: "pauseregen", base: "pauseregen_finished = time + g_balance_pause_health_regen", port: "PauseRegenFinished = max(cur, now + g_balance_pause_health_regen)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Does not delete an ice entity (not spawned in the first place); the waypoint sprite IS cleared (it stops being collected once IsFrozen flips false)."
+    verification:
+      - { kind: code-read, ref: "Unfreeze clears status effect + restores StartHealth + sets SpawnShieldExpire when spawnShieldSeconds>0 + sets PauseRegenFinished = max(cur, now + g_balance_pause_health_regen); CollectWaypoints stops emitting the Frozen sprite once unfrozen", result: pass }
+    confidence: high
+    notes: "FIX since last audit: Unfreeze now sets PauseRegenFinished (FreezeTag.cs:366-368), closing the pauseregen gap the baseline flagged. Spawn-shield-on-revive remains faithful."
+
+  - id: freezetag.revive.manual
+    name: "Manual revive by nearby teammate (range geometry + progress)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, PlayerPreThink)"
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:IN_REVIVING_RANGE"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:ReviveTick"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:InRevivingRange"
+      - "src/XonoticGodot.Server/GameWorld.cs:DriveGametypeFrame"
+    constants:
+      - { name: "g_freezetag_revive_extra_size", base: "100 qu bbox expand", port: "100 (DefaultReviveExtraSize)", match: true }
+      - { name: "revive speed used", base: "revive_speed_t2s=0.25 (t2s on, default) / revive_speed=0.4*(1-base) (t2s off)", port: "t2s ON → ReviveSpeedT2s 0.25; t2s OFF → ReviveSpeed 0.4*(1-base)", match: true }
+      - { name: "clearspeed", base: "1.6 (only decays when revive_time_to_score<=0)", port: "1.6; with t2s ON progress is NOT cleared, with t2s OFF decays at clearspeed*(1-base)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "ReviveTick branches on t2s: uses ReviveSpeedT2s when ReviveTimeToScore>0 (default), holds progress (no clear) out of range, decays at clearspeed only with t2s off; called per-frame from DriveGametypeFrame (GameWorld.cs:2299) after SetRoster", result: pass }
+    confidence: high
+    notes: "The Base-default time-to-score path is the live path; range geometry + speed + decay all match Base. Unchanged."
+
+  - id: freezetag.revive.score
+    name: "Revive scoring (reviver +1, FREEZETAG_REVIVALS +1; revived player return)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, PlayerPreThink)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:ReviveTick"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:AddRevival"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:TryRevive"
+    constants:
+      - { name: "revival credit", base: "FREEZETAG_REVIVALS +1 per nearby reviver", port: "FREEZETAG_REVIVALS +1 per nearby reviver", match: true }
+      - { name: "SCORE on revive", base: "t2s ON (default): SCORE accrues over time (+1 per 1.5s); t2s OFF: +1 per reviver on completion", port: "same — t2s ON accrues via _reviveTime, t2s OFF awards +1 on completion", match: true }
+      - { name: "nade bonus", base: "nades_GiveBonus(g_nades_bonus_score_low)", port: "not awarded", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No nade revival bonus (g_nades_bonus_score_low) on a completed revive — minor, requires the nades mutator."
+    verification:
+      - { kind: code-read, ref: "ReviveTick accrues per-reviver SCORE over time with t2s on (+1 per revive_time_to_score), awards +1 on completion only with t2s off; AddRevival credits FREEZETAG_REVIVALS to each nearby reviver", result: pass }
+    confidence: high
+    notes: "SCORE timing/path matches Base (time-accrual under the default t2s). Only the nade bonus remains. Unchanged."
+
+  - id: freezetag.revive.time_to_score
+    name: "Time-to-score revive model (revive_time_to_score / speed_t2s)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, PlayerPreThink)"
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qh:autocvar_g_freezetag_revive_time_to_score"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:ReviveTick"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:TryRevive"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:ReviveTimeToScore"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:ReviveSpeedT2s"
+    constants:
+      - { name: "g_freezetag_revive_time_to_score", base: "1.5 (ON by default)", port: "DefaultReviveTimeToScore 1.5", match: true }
+      - { name: "g_freezetag_revive_speed_t2s", base: "0.25", port: "DefaultReviveSpeedT2s 0.25", match: true }
+      - { name: "progress not cleared (t2s on)", base: "REVIVE_PROGRESS sticks at max(manual, base_progress) out of range", port: "same — held, never cleared when t2s on; higher manual progress shortens auto-thaw remaining", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "ReviveTick implements the full t2s branch: speed_t2s 0.25, per-reviver time accrual (+1 SCORE per 1.5s), no-clear hold of progress; ReviveTimeToScore/ReviveSpeedT2s cvar-backed with correct defaults", result: pass }
+    confidence: high
+    notes: "This is the Base default model and is the live path. Unchanged."
+
+  - id: freezetag.revive.auto_timeout
+    name: "Auto-thaw after g_freezetag_frozen_maxtime"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:freezetag_Freeze"
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, PlayerPreThink)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:Freeze"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:ReviveTick"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:ReviveAuto"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:ReviveAutoProgress"
+    constants:
+      - { name: "g_freezetag_frozen_maxtime", base: "60 s", port: "live cvar; FrozenMaxtime fallback 60", match: true }
+      - { name: "g_freezetag_revive_auto", base: "1", port: "ReviveAuto cvar (default true); arms FrozenTimeout only when on", match: true }
+      - { name: "g_freezetag_revive_auto_progress", base: "1 (continuous base_progress ramp)", port: "ReviveAutoProgress cvar (default true); base_progress = clamp(1-(timeout-now)/maxtime)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "Freeze arms FrozenTimeout iff (ReviveAuto && maxtime>0); ReviveTick computes a continuous baseProgress ramp when autoProgress on, treats n=0 + elapsed timeout as an n=-1 auto-revive of last resort that credits nobody but sends FREEZETAG_AUTO_REVIVED (live)", result: pass }
+    confidence: high
+    notes: "The continuous base_progress ramp and the revive_auto on/off gate are implemented and live; the auto-revive notification is wired."
+
+  - id: freezetag.revive.auto_reducible
+    name: "Hitting a frozen enemy speeds their auto-thaw (revive_auto_reducible)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, Damage_Calculate)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:OnDamageCalculate"
+    constants:
+      - { name: "g_freezetag_revive_auto_reducible", base: "1 (enemy hits reduce; -1 also teammates)", port: "cvar read, default 1; enemyOrAlways gate", match: true }
+      - { name: "revive_auto_reducible_forcefactor", base: "0.01", port: "cvar read, fallback 0.01", match: true }
+      - { name: "revive_auto_reducible_maxforce", base: "400", port: "cvar read, fallback 400", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "FreezeTag.OnDamageCalculate (FreezeTag.cs:410-437) gated on autoRevive && reducible!=0: enemyOrAlways (reducible<0 OR DIFF_TEAM); when |reducible|==1 accumulates frag_force length up to maxforce 400, per-frame FrozenForce accumulator (cleared each frame in ReviveTick:553-554), converts via forcefactor 0.01, subtracts from st.FrozenTimeout clamped at now. Subscribed onto live MutatorHooks.DamageCalculate (DamageSystem.cs:256).", result: pass }
+    confidence: high
+    notes: "FIX from baseline (missing→faithful, na→live). The full revive_auto_reducible model is now implemented and live: enemy hits speed a frozen enemy's auto-thaw, restoring the core 'don't shoot frozen enemies' tactic. The per-frame force accumulator is correctly reset across the roster in ReviveTick."
+
+  - id: freezetag.damage.frozen_invuln
+    name: "Frozen players take 0 health damage + g_frozen_force knockback scaling"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, Damage_Calculate)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:OnDamageCalculate"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs"
+    constants:
+      - { name: "frag_damage on frozen", base: "0 (non-NEEDKILL/teamchange)", port: "args.Damage = 0f for frozen non-NEEDKILL/non-teamchange", match: true }
+      - { name: "g_frozen_force", base: "0.6 force multiplier", port: "g_frozen_force cvar, fallback 0.6, args.Force *= frozenForce", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "FreezeTag.OnDamageCalculate (FreezeTag.cs:439-459): for a frozen target whose deathtype is NOT NEEDKILL and NOT a teamchange, sets args.Damage = 0 and scales args.Force by g_frozen_force (0.6). Subscribed in Activate (FreezeTag.cs:250-251) onto MutatorHooks.DamageCalculate, fired live DamageSystem.cs:256; the subtract path (EventDamage, DamageSystem.cs:279-280) only fires when damage!=0 OR force!=0, so the HP=1 frozen body takes no health damage.", result: pass }
+    confidence: high
+    notes: "FIX from baseline (missing→faithful, na→live) — the most impactful gameplay-correctness gap is now CLOSED. Frozen players are damage-immune (knockback still applies, scaled by g_frozen_force). The DamageCalculate hook the baseline noted as 'named but not subscribed' is now subscribed by FreezeTag.Activate."
+
+  - id: freezetag.damage.softkill_void
+    name: "Frozen void/lava soft-kill teleport + g_frozen_damage_trigger; fall/nade revive"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, Damage_Calculate)"
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, PlayerDies)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:OnDamageCalculate"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:OnDamageCalculate"
+    constants:
+      - { name: "g_frozen_damage_trigger", base: "1 (frozen die in void/lava)", port: "none (no relocate path)", match: false }
+      - { name: "g_frozen_revive_falldamage", base: "0 (off)", port: "g_frozen_revive_falldamage cvar, fallback 0", match: true }
+      - { name: "g_frozen_revive_falldamage_health", base: "40", port: "g_frozen_revive_falldamage_health cvar, fallback 40", match: true }
+      - { name: "g_freezetag_revive_nade / _nade_health", base: "1 / 40", port: "FreezeTag.OnDamageCalculate (FreezeTag.cs:485-499): a frozen player's own DEATH_NADE within 0.1s of toss → Unfreeze + restore g_freezetag_revive_nade_health (40) + suppress hit + INFO_REVIVED_NADE/CENTER_REVIVE_SELF; live=1 via gametypes-server.cfg", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: faithful
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "STILL OPEN — no soft-kill relocate path (g_frozen_damage_trigger 0): the NEEDKILL soft-kill (restore HP=1+armor, teleport to a spawn point, no weapon reset) in PlayerDies / the Damage_Calculate relocate branch is absent — FT.OnDamageCalculate leaves NEEDKILL deathtypes alone (frozen player dies in void/lava), and the relocate needs the server spawn selector (intentionally NOT done in the gametype layer). Base default cvar is 1 = die, so this branch is dormant at stock cvars regardless."
+      - "Fall-damage revive (g_frozen_revive_falldamage) is implemented and live (FreezeTag.cs:507-515): a hard enough DEATH_FALL hit thaws the player to falldamage_health (40) and sends FREEZETAG_REVIVED_FALL/_REVIVE_SELF. Default off, so dormant at stock cvars but correct when enabled."
+      - "Nade self-revive is now FULLY implemented (FIX since baseline): FreezeTag.OnDamageCalculate (FreezeTag.cs:485-499) Unfreezes the player, restores g_freezetag_revive_nade_health (40), suppresses damage/force, and sends INFO_FREEZETAG_REVIVED_NADE + CENTER_FREEZETAG_REVIVE_SELF. g_freezetag_revive_nade ships 1 so it is live. (NadesMutator still also zeroes the same hit, but the actual unfreeze now lives in FT, hook-order-independent.)"
+    verification:
+      - { kind: code-read, ref: "FreezeTag.OnDamageCalculate implements fall-damage revive AND nade self-revive (both live via MutatorHooks.DamageCalculate, DamageSystem.cs:264) but NOT the NEEDKILL void/lava relocate. No g_frozen_damage_trigger relocate reference in src/game.", result: partial }
+    confidence: high
+    notes: "FIX since last audit: nade self-revive is now a REAL revive (Unfreeze + health + notifications), not a suppression stub — logic/values/presentation/audio for that branch are now faithful. Only the void/lava NEEDKILL soft-kill relocate remains open (and it is default-dormant). Liveness stays partial (relocate absent)."
+
+  - id: freezetag.revive.spawnshield
+    name: "Post-revive spawn shield (g_freezetag_revive_spawnshield)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, PlayerPreThink)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:Unfreeze"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:ReviveSpawnShield"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:HasSpawnShield"
+    constants:
+      - { name: "g_freezetag_revive_spawnshield", base: "1 s", port: "DefaultReviveSpawnShield 1f", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "Unfreeze sets targ.SpawnShieldExpire = now + ReviveSpawnShield when spawnShieldSeconds>0; TryRevive/ReviveTick pass ReviveSpawnShield; DamageSystem.HasSpawnShield reads SpawnShieldExpire and gates damage", result: pass }
+    confidence: high
+    notes: "A freshly revived player gets a 1s spawn shield that the live damage pipeline honors. Unchanged."
+
+  - id: freezetag.round.flow
+    name: "Round handler flow (warmup/countdown/round/end-delay, ROUND_OVER tie)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:freezetag_CheckTeams"
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:freezetag_CheckWinner"
+      - "server/round_handler.qc:round_handler_Think"
+    port_refs:
+      - "src/XonoticGodot.Server/RoundHandler.cs:Think"
+      - "src/XonoticGodot.Server/GameWorld.cs:EnableRounds"
+      - "src/XonoticGodot.Server/GameWorld.cs:MirrorRoundTiming"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:CheckTeams"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:CheckWinner"
+    constants:
+      - { name: "g_freezetag_warmup", base: "10 s", port: "live cvar; EnableRounds countdown = g_freezetag_warmup (fallback 5)", match: true }
+      - { name: "g_freezetag_round_timelimit", base: "360 s", port: "live cvar (fallback 180)", match: true }
+      - { name: "g_freezetag_round_enddelay", base: "0 s", port: "live cvar (fallback 5)", match: true }
+      - { name: "countdown", base: "5 s", port: "5 s (RoundHandler default)", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "C# fallback timings (warmup 5/timelimit 180/enddelay 5) still differ from Base (10/360/0); masked live because gametypes-server.cfg ships. The round-timelimit-expiry tie path (CheckWinner ROUND_OVER) IS implemented (FreezeTag.cs:797-811: thaw all + ROUND_OVER notif + return -1) but depends on Handler.RoundEndTime being mirrored from the live RoundHandler."
+    verification:
+      - { kind: code-read, ref: "GameWorld FreezeTag case (GameWorld.cs:1803) calls EnableRounds(ft.CheckTeams, ()=>ft.CheckWinner()!=0, onRoundStart=thaw-all, endDelay/countdown/roundTimeLimit from FT cvars); _roundSync mirrors timing into ft.Handler via MirrorRoundTiming; DriveGametypeFrame FT case calls ReviveTick only (not CheckRound) to avoid double-award", result: pass }
+    confidence: high
+    notes: "The live server RoundHandler uses FT's own CheckTeams/CheckWinner (frozen players count as eliminated) + a thaw-everyone onRoundStart + FT's cvars, and ft.Handler is kept in sync. CheckWinner awards ST_FT_ROUNDS itself and now resolves the round-timelimit tie (ROUND_OVER). Only the C# fallback timing constants diverge."
+
+  - id: freezetag.win.roundlimit
+    name: "Match win on round/lead limit (ST_FT_ROUNDS)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:freezetag_CheckWinner"
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qh:GameRules_limit_score/limit_lead"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:CheckWinner"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:CheckRound"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:UpdateLeaderAndCheckLimit"
+    constants:
+      - { name: "round win score", base: "TeamScore_AddToTeam(winner, ST_FT_ROUNDS, +1)", port: "AddToTeam(winner, TeamSlotSecondary, +1)", match: true }
+      - { name: "round limit default", base: "mapinfo pointlimit 10", port: "fraglimit else 10", match: true }
+      - { name: "lead limit default", base: "mapinfo leadlimit 6", port: "leadlimit cvar else 0", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Lead-limit default (Base 6 via mapinfo) likely not honored (port reads leadlimit cvar, default 0 = off)."
+    verification:
+      - { kind: code-read, ref: "CheckWinner (the live canRoundEnd predicate) adds team rounds + UpdateLeaderAndCheckLimit sets MatchEnded; round resolution runs on the live RoundHandler path, not a duplicate per-frame CheckRound", result: pass }
+    confidence: high
+    notes: "Round resolution is driven via the live RoundHandler polling CheckWinner (which awards ST_FT_ROUNDS). The duplicate per-frame CheckRound is not called in DriveGametypeFrame. Lead-limit default still diverges. Unchanged."
+
+  - id: freezetag.startitems
+    name: "FT start loadout (g_ft_start_health/armor/ammo)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, SetStartItems)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:OnSetStartItems"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:ComputeStartItems"
+    constants:
+      - { name: "g_ft_start_health", base: "100", port: "100 (DefaultStartHealth)", match: true }
+      - { name: "g_ft_start_armor", base: "100", port: "100", match: true }
+      - { name: "g_ft_start_ammo (shells/nails/rockets/cells/fuel)", base: "60/320/160/180/0", port: "60/320/160/180/0", match: true }
+      - { name: "unlimited-ammo when !g_use_ammunition", base: "start_items |= IT_UNLIMITED_AMMO", port: "ItemFlags.Add(UNLIMITED_AMMO) when g_use_ammunition==0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "Activate registers OnSetStartItems on MutatorHooks.SetStartItems; SpawnSystem.ComputeStartItems fires SetStartItems.Call live; FT handler sets 100/100 + ammo and the unlimited-ammo flag", result: pass }
+    confidence: high
+    notes: "FT players receive the 100/100 + ammo loadout (strips the unlimited flags + re-adds UNLIMITED_AMMO when ammo consumption is off). Unchanged (live)."
+
+  - id: freezetag.eliminated.net
+    name: "Networked alive counts + eliminated set (mod icons, scoreboard grey-out)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:freezetag_count_alive_players"
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:freezetag_isEliminated"
+    port_refs:
+      - "src/XonoticGodot.Net/GametypeStatusBlock.cs:Capture"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:AliveCount"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:IsEliminated"
+      - "game/hud/ModIconsPanel.cs:DrawCaStyle"
+    constants:
+      - { name: "alive stats", base: "STAT(REDALIVE..PINKALIVE)", port: "4-byte alive counts red,blue,yellow,pink", match: true }
+      - { name: "eliminated predicate", base: "frozen || dead", port: "IsEliminated = IsDead || IsFrozen", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "GametypeStatusBlock FreezeTag case writes alive counts + ft.IsEliminated id list; ModIconsPanel FreezeTag mode draws CA-style grid", result: pass }
+    confidence: high
+    notes: "FT reuses the CA mod-icon drawer with its own layout cvar, matching HUD_Mod_FreezeTag. Unchanged (faithful)."
+
+  - id: freezetag.presentation.ice_model
+    name: "Ice entity model over frozen players (MDL_ICE, 20 frames, team color)"
+    layer: [presentation]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:freezetag_Freeze (ice entity)"
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:freezetag_Ice_Think"
+    port_refs:
+      - "game/client/ClientWorld.cs:FrozenColormod"
+    constants:
+      - { name: "ice model", base: "MDL_ICE, frame = floor(random()*21)", port: "none (only a blue model tint)", match: false }
+      - { name: "ice tint", base: "colormod/glowmod = Team_ColorRGB(team)", port: "FrozenColormod on player model", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No distinct ice block entity (random 1-of-20 frame, team-colored, following the player at origin-16) — frozen players only get an icy-blue colormod on their normal model."
+    verification:
+      - { kind: code-read, ref: "ClientWorld applies FrozenColormod when HasStatusEffect(Frozen); no MDL_ICE entity spawn (grep MDL_ICE in src/game → no matches)", result: pass }
+    confidence: high
+    notes: "STILL OPEN — unchanged. Tint conveys frozen-ness but the signature ice cube is absent."
+
+  - id: freezetag.presentation.waypoints
+    name: "Frozen / Reviving waypoint sprites over frozen players"
+    layer: [presentation]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:freezetag_Freeze (WP_Frozen)"
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, PlayerPreThink) (WP_Reviving/health bar)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:CollectWaypoints"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs"
+      - "game/net/ServerNet.cs:SendWaypoints"
+    constants:
+      - { name: "WP offset", base: "'0 0 64'", port: "new Vector3(0,0,64)", match: true }
+      - { name: "WP health bar", base: "REVIVE_PROGRESS 0..1", port: "Health = clamp(ReviveProgress,0,1), MaxHealth=1", match: true }
+      - { name: "Frozen→Reviving swap", base: "WP_Reviving once a reviver is in range (n>0 or progress>0.95)", port: "st.HasReviver (n>0) || ReviveProgress>=0.95f", match: true }
+      - { name: "sprite colors", base: "WP_FROZEN_COLOR / WP_REVIVING_COLOR", port: "(0.25,0.9,1) / (1,0.5,0)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Frozen→Reviving swap heuristic: FIXED — FrozenState.HasReviver is now set in ReviveTick (n>0, FreezeTag.cs:709) and CollectWaypoints uses st.HasReviver || st.ReviveProgress>=0.95f (FreezeTag.cs:852), matching Base's n>0 || progress>0.95 exactly."
+    verification:
+      - { kind: code-read, ref: "CollectWaypoints overrides GameType.CollectWaypoints, emits one Frozen/Reviving sprite per frozen roster player with the thaw-progress bar; ServerNet.SendWaypoints calls GameType.CollectWaypoints and serializes the per-peer subset over the live waypoint channel (same path as CTF flag sprites)", result: pass }
+    confidence: high
+    notes: "Spawns the Frozen/Reviving sprites (offset 64, progress health bar, team-tinted) shipped through the live SendWaypoints path. FIX: the Frozen↔Reviving swap now matches Base exactly (st.HasReviver = n>0 set in ReviveTick, CollectWaypoints swaps on HasReviver || progress>=0.95) — the prior ReviveProgress>0 heuristic gap is closed."
+
+  - id: freezetag.presentation.notifications
+    name: "Freeze/revive/self/auto-revive/spawn-late notifications (+ sounds)"
+    layer: [presentation, audio]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:(Send_Notification INFO/CENTER_FREEZETAG_*)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:Freeze"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:ReviveTick"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:OnDamageCalculate"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs"
+      - "game/net/ServerNet.cs:NotificationNetSink"
+    constants:
+      - { name: "freeze line", base: "INFO_FREEZETAG_FREEZE / CENTER+INFO_FREEZETAG_SELF", port: "Send INFO_FREEZETAG_FREEZE / CENTER+INFO_FREEZETAG_SELF", match: true }
+      - { name: "revive lines", base: "CENTER_FREEZETAG_REVIVE/REVIVED + INFO_FREEZETAG_REVIVED", port: "same three sent on manual revive", match: true }
+      - { name: "auto-revive line", base: "CENTER+INFO_FREEZETAG_AUTO_REVIVED (f1=frozen seconds)", port: "same, frozenTime = round(now - FrozenTime)", match: true }
+      - { name: "fall-revive line", base: "INFO_FREEZETAG_REVIVED_FALL + CENTER_FREEZETAG_REVIVE_SELF", port: "sent from OnDamageCalculate fall-revive branch", match: true }
+      - { name: "spawn-late / nade lines", base: "CENTER_FREEZETAG_SPAWN_LATE; INFO_FREEZETAG_REVIVED_NADE", port: "SPAWN_LATE sent by OnPlayerSpawn (FreezeTag.cs:321); REVIVED_NADE sent by the nade self-revive branch (FreezeTag.cs:496)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "Freeze sends INFO/CENTER_FREEZETAG_SELF or INFO_FREEZETAG_FREEZE; ReviveTick sends CENTER_FREEZETAG_REVIVE/REVIVED + INFO_FREEZETAG_REVIVED (manual) and CENTER+INFO_FREEZETAG_AUTO_REVIVED (auto); OnDamageCalculate sends INFO_FREEZETAG_REVIVED_FALL/REVIVED_NADE + CENTER_FREEZETAG_REVIVE_SELF on a fall/nade revive; OnPlayerSpawn sends CENTER_FREEZETAG_SPAWN_LATE; all on the live NotificationSystem with the host NotificationNetSink shipping to clients", result: pass }
+    confidence: high
+    notes: "FIX since last audit: every FT notification line now has a live producer. SPAWN_LATE fires from OnPlayerSpawn (live MutatorHooks.PlayerSpawn) and REVIVED_NADE from the nade self-revive branch (live DamageCalculate) — the baseline listed both as 'declared but never sent'. The full freeze/self/manual-revive/auto-revive/fall-revive/nade-revive/spawn-late set is wired onto the live NotificationSystem, which the host nets to clients."
+
+  - id: freezetag.presentation.overlay_eventchase
+    name: "Full-screen frozen overlay tint + cl_eventchase_frozen cam + damage HUD"
+    layer: [presentation]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/cl_freezetag.qc:MUTATOR_HOOKFUNCTION(cl_ft, HUD_Draw_overlay)"
+      - "common/gametypes/gametype/freezetag/cl_freezetag.qc:MUTATOR_HOOKFUNCTION(cl_ft, WantEventchase)"
+      - "common/gametypes/gametype/freezetag/cl_freezetag.qc:MUTATOR_HOOKFUNCTION(cl_ft, HUD_Damage_show)"
+    port_refs:
+      - "game/client/ViewEffects.cs:UpdateFrozenOverlay"
+      - "game/net/NetGame.cs:UpdateFrozenOverlay call"
+      - "game/hud/CrosshairPanel.cs:ReviveProgress"
+      - "game/client/FirstPersonView.cs:WantEventChase"
+      - "game/net/NetGame.cs:ViewState.IsFrozen feed (~4293)"
+    constants:
+      - { name: "overlay color", base: "'0.25 0.90 1' warming with REVIVE_PROGRESS", port: "(0.25+colFade, 0.90-colFade, 1-colFade), colFade=max(0,p*2-1)", match: true }
+      - { name: "overlay alpha", base: "0.3 + 0.7*(1 - max(0, REVIVE_PROGRESS*4-3))", port: "0.3f + 0.7f*(1 - max(0, p*4-3))", match: true }
+      - { name: "crosshair revive ring", base: "REVIVE_PROGRESS ring", port: "CrosshairPanel.ReviveProgress fed from LocalServerPlayer.ReviveProgress each frame", match: true }
+      - { name: "cl_eventchase_frozen", base: "third-person cam while frozen", port: "FirstPersonView.WantEventChase frozenChase (cl_eventchase_frozen != 0), fed by NetGame ViewState.IsFrozen", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Overlay + crosshair ring + eventchase cam are all driven on the host/listen-server path (LocalServerPlayer / its Frozen status effect); a pure remote client with no LocalServerPlayer shows none of them (the cross-client wepent/stat follow-up)."
+    verification:
+      - { kind: code-read, ref: "ViewEffects.UpdateFrozenOverlay implements the exact QC col_fade/alpha_fade formula + '0.25 0.90 1' base, called from NetGame with isFrozen + LocalServerPlayer.ReviveProgress; NetGame feeds Crosshair.ReviveProgress = LocalServerPlayer.ReviveProgress so the thaw ring draws; NetGame ~4293 sets ViewState.IsFrozen from LocalServerPlayer's Frozen status effect and FirstPersonView.WantEventChase engages the cl_eventchase_frozen pull-back cam. ReviveTick mirrors FrozenState.ReviveProgress onto Player.ReviveProgress.", result: pass }
+    confidence: high
+    notes: "FIX since last audit: cl_eventchase_frozen is now implemented and live (FirstPersonView.WantEventChase frozenChase + NetGame ViewState.IsFrozen feed) — the baseline listed it as a missing gap. The full-screen overlay + crosshair thaw ring remain live on the listen-server path. Only pure-remote-client coverage remains open (presentation: partial)."
+
+  - id: freezetag.bots
+    name: "Bot freeing / offense roles + frozen-target gating"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:havocbot_role_ft_offense"
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:havocbot_role_ft_freeing"
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, HavocBot_ChooseRole/Bot_ForbidAttack)"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotObjectiveRoles.cs:RoleFreezeTag (664-689)"
+      - "src/XonoticGodot.Server/Bot/BotRoles.cs:128 (ChooseRole \"freezetag\"/\"ft\" → RoleFreezeTag)"
+      - "src/XonoticGodot.Server/Bot/BotController.cs:101 (AddBot → Role = ChooseRole)"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:1093 (ShouldAttack frozen-target skip)"
+    constants:
+      - { name: "role timeout", base: "time + 10..20 s (random)", port: "none (RoleFreezeTag assigned once at AddBot, no re-roll)", match: false }
+      - { name: "free-player rating", base: "freeing 20000 / offense items+enemies", port: "RatingFrozenTeammate 20000 (frozen same-team), items 10000, enemies 7000, roam 3000", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Role-timeout re-pick (10-20 s random) not implemented: Base periodically re-evaluates the role; the port assigns RoleFreezeTag once at spawn. Cosmetic for FT because freeing+offense is always the right combined role. Only values: partial for this."
+      - "BotBrain.FtRoleTimeout field absent — does not affect observable FT behaviour at stock settings."
+    verification:
+      - { kind: code-read, ref: "BotObjectiveRoles.RoleFreezeTag (BotObjectiveRoles.cs:664-689) rates frozen same-team players at RatingFrozenTeammate=20000 (BotObjectiveRoles.cs:655) plus offense goals (items 10000, enemies 7000, roam 3000); BotRoles.ChooseRole (BotRoles.cs:128) maps \"freezetag\"/\"ft\" → RoleFreezeTag, assigned at BotController.AddBot (BotController.cs:101). BotBrain.ShouldAttack returns false for a Frozen-status target (BotBrain.cs:1093). Only the 10-20 s role-timeout re-roll is absent.", result: pass }
+    confidence: high
+    notes: "FIX (registry drift): BotObjectiveRoles.RoleFreezeTag (BotObjectiveRoles.cs:664-689) implements both the freeing role (rates frozen same-team players at 20000 — dominant over items/enemies) and the offense goals (items 10000, enemies 7000, roam 3000). BotRoles.ChooseRole (BotRoles.cs:128) dispatches \"freezetag\" or \"ft\" → RoleFreezeTag, wired in BotController.AddBot (BotController.cs:101). The frozen-target attack gate (ShouldAttack BotBrain.cs:1093) is also live. The prior 'logic: partial/values: missing' entry was written before RoleFreezeTag landed. Role-timeout randomisation (10-20 s) is absent (Base re-rolls the role; port uses a static per-session assignment) — cosmetic for FT since the combined freeing+offense role is always appropriate."
+
+  - id: freezetag.spawn.late
+    name: "Mid-round joiner spawns AS FROZEN (PlayerSpawn → SPAWN_LATE)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, PlayerSpawn)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:OnPlayerSpawn"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:PlayerSpawn"
+    constants:
+      - { name: "spawn-while-round-live → freeze", base: "round_handler_IsRoundStarted → freezetag_Freeze(player, NULL) + CENTER_FREEZETAG_SPAWN_LATE", port: "Handler.IsRoundStarted → Freeze(player, null, announce:false) + CENTER_FREEZETAG_SPAWN_LATE", match: true }
+      - { name: "round-reset respawn excluded", base: "freezetag_frozen_timeout == -1 (reset_map_players) → no freeze", port: "gated on Handler.IsRoundStarted (false during countdown) so reset respawns are excluded", match: true }
+      - { name: "attacker (no score)", base: "NULL attacker → no score change", port: "attacker null → no score change", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base also handles the dead-player respawn path (freezetag_frozen_timeout <= -2 → freeze with no SPAWN_LATE center line) as a distinct case; the port folds mid-round (re)spawns into the single IsRoundStarted gate. Outcome (a mid-round materializing player ends up frozen) matches; the dead-vs-late distinction is cosmetic."
+    verification:
+      - { kind: code-read, ref: "OnPlayerSpawn (FreezeTag.cs:310-324) registered on MutatorHooks.PlayerSpawn in Activate (FreezeTag.cs:258-259); fires when Handler.IsRoundStarted and player not already frozen/match not ended; sends CENTER_FREEZETAG_SPAWN_LATE then Freeze(player, null, announce:false)", result: pass }
+    confidence: high
+    notes: "NEW row (coverage gap in the baseline registry). The mid-round spawn-as-frozen behavior is implemented and live — a player joining a live round can't run around; they spawn frozen with the SPAWN_LATE center line. Closes the 'spawn-as-frozen unimplemented' note the baseline carried under freezetag.damage.softkill_void."
+
+  - id: freezetag.scoring.no_kill_frags
+    name: "No engine frags counted on a freeze-kill (GiveFragsForKill → 0)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, GiveFragsForKill, CBC_ORDER_FIRST)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:OnGiveFragsForKill"
+    constants:
+      - { name: "frag delta on kill", base: "M_ARGV(2,float) = 0 (return true)", port: "args.FragScore = 0f; return true", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "FreezeTag.Activate subscribes _giveFragsHandler = OnGiveFragsForKill onto MutatorHooks.GiveFragsForKill (FreezeTag.cs:274-275); OnGiveFragsForKill (FreezeTag.cs:876-880) sets args.FragScore = 0 and returns true; GiveFragsForKill.Call fires live in Scores.cs:548 BEFORE GiveFrags, so the per-kill engine frag is zeroed — no double-count on top of Freeze's ±1 matrix", result: pass }
+    confidence: high
+    notes: "FIX since 2026-06-25 (missing→faithful, na→live). The GiveFragsForKill→0 suppression is now implemented and live, mirroring CA/Keepaway. The engine-frag/score double-count the baseline flagged is closed."
+
+  - id: freezetag.weaponarena
+    name: "FT default weapon arena (g_freezetag_weaponarena 'most_available')"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, SetWeaponArena)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:OnSetWeaponArena"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:SetWeaponArena.Call"
+    constants:
+      - { name: "g_freezetag_weaponarena", base: "'most_available' (gametypes-server.cfg:429)", port: "CvarString(g_freezetag_weaponarena, 'most_available') when arena unset/'0'", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "FreezeTag.Activate subscribes _weaponArenaHandler = OnSetWeaponArena onto MutatorHooks.SetWeaponArena (FreezeTag.cs:280-281); OnSetWeaponArena (FreezeTag.cs:887-892) sets the arena to g_freezetag_weaponarena ('most_available' fallback) when the configured arena is '0'/empty — bit-for-bit Base's `if(arena==\"0\"||\"\") arena = autocvar_g_freezetag_weaponarena`; SetWeaponArena.Call fires live in SpawnSystem.cs:999 (normal) and :1223 (warmup)", result: pass }
+    confidence: high
+    notes: "FIX since 2026-06-25 (missing→faithful, na→live). FT now defaults the weapon arena to 'most_available' so players spawn with (nearly) the full arsenal on top of the start loadout, matching stock FT. Mirrors CA's OnSetWeaponArena."
+
+  - id: freezetag.frozen.no_regen
+    name: "Frozen players don't regen health/armor (PlayerRegen)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, PlayerRegen)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:OnPlayerRegen"
+      - "src/XonoticGodot.Server/PlayerFrameLogic.cs:PlayerRegen.Call"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "FreezeTag.Activate subscribes _regenHandler = OnPlayerRegen onto MutatorHooks.PlayerRegen (FreezeTag.cs:285-286); OnPlayerRegen (FreezeTag.cs:898-899) returns true iff the player is frozen — Base's `return STAT(FROZEN)`; PlayerRegen.Call fires live in PlayerFrameLogic.cs:56 where a true return disables regen", result: pass }
+    confidence: high
+    notes: "FIX since 2026-06-25 (missing→faithful, na→live). A frozen player's health/armor regen is now suppressed (they stay at HP=1 while frozen), matching Base."
+
+  - id: freezetag.frozen.no_pickup
+    name: "Frozen players can't pick up items or buffs (ItemTouch/BuffTouch)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, ItemTouch)"
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, BuffTouch)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:OnItemTouch"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:FireItemTouch"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "FreezeTag.Activate subscribes _itemTouchHandler = OnItemTouch onto MutatorHooks.ItemTouch (FreezeTag.cs:290-291); OnItemTouch (FreezeTag.cs:906-907) returns true (MUT_ITEMTOUCH_RETURN) iff the toucher is frozen; FireItemTouch fires live in ItemPickupRules.cs:378. BuffsMutator.BuffTouch (BuffsMutator.cs:385) now also has a direct IsFrozen(toucher) guard (BuffsMutator.cs:402) inserted after the DeadState check (:397), covering buff pickups without needing a separate MutatorHooks.BuffTouch chain.", result: pass }
+    confidence: high
+    notes: "FIX (missing→faithful, na→live). A frozen (pushed/teleported) body no longer collects world items (OnItemTouch gate) OR buffs — BuffsMutator.BuffTouch now has its own IsFrozen(toucher) guard, so both pickup paths are gated. Both Base ft ItemTouch and BuffTouch behaviours are covered."
+
+  - id: freezetag.frags.center_message
+    name: "Per-freeze choice centerprint ('You froze X' / 'You were frozen by Y')"
+    layer: [presentation]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, FragCenterMessage)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:OnFragCenterMessage"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:FragCenterMessage (chain)"
+      - "src/XonoticGodot.Server/Scores.cs:809 (FragCenterMessage.Call — LIVE; result consumed Scores.cs:810-814)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:1292 (CHOICE FRAG_FREEZE/FRAGGED_FREEZE)"
+    constants:
+      - { name: "attacker line", base: "CHOICE_FRAG_FREEZE 'You froze X'", port: "args.AttackerChoice = 'FRAG_FREEZE' (FreezeTag.cs:945) → DEATH_MURDER_FRAG_FREEZE 'You froze X' (NotificationsList.cs:936)", match: true }
+      - { name: "target line", base: "CHOICE_FRAGGED_FREEZE 'You were frozen by Y'", port: "args.TargetChoice = 'FRAGGED_FREEZE' (FreezeTag.cs:946) → DEATH_MURDER_FRAGGED_FREEZE 'You were frozen by Y' (NotificationsList.cs:937)", match: true }
+      - { name: "already-frozen suppression", base: "if STAT(FROZEN, frag_target): M_ARGV(4,bool)=true (drop both)", port: "if IsFrozen(targ): args.Suppress=true (FreezeTag.cs:940-943); Scores.cs:810 gates both sends on !Suppress", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "FreezeTag.Activate subscribes _fragCenterMsgHandler = OnFragCenterMessage onto MutatorHooks.FragCenterMessage (FreezeTag.cs:298-299); OnFragCenterMessage (FreezeTag.cs:934-948) sets AttackerChoice='FRAG_FREEZE'/TargetChoice='FRAGGED_FREEZE' or Suppress=true when the target was already frozen, returns false on MatchEnded/non-player target. FragCenterMessage.Call fires live in the obituary path (Scores.cs:809) BEFORE FreezeTag.OnDeath (both ride Combat.Death; SubscribeToDeaths added first), so IsFrozen reads the pre-death state = QC STAT(FROZEN, frag_target). Scores.cs:810-814 consumes the result: gates both SendChoiceToOne on !Suppress and uses AttackerChoice/TargetChoice. FRAG_FREEZE/FRAGGED_FREEZE choices map to the 'You froze X'/'You were frozen by Y' center notifications (NotificationsList.cs:936-937,1292-1293). Common builds clean.", result: pass }
+    confidence: high
+    notes: "FIX this wave (missing→faithful, dead→live). FreezeTag now subscribes OnFragCenterMessage, swapping the personal frag centerprint to the freeze lines ('You froze X' / 'You were frozen by Y') and suppressing both on an already-frozen re-kill — bit-for-bit the QC ft FragCenterMessage hook. The producer that was the sole missing piece in the prior audit is wired; the full hook→choice→live-call→consumer chain is now closed."
+
+  - id: freezetag.presentation.frozen_anim
+    name: "Frozen-pose player animation (PlayerAnim ANIMSTATE_FROZEN)"
+    layer: [presentation]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, PlayerAnim)"
+    port_refs:
+      - "game/client/PlayerModel.cs:FrozenHold"
+      - "game/client/ClientWorld.cs:1092 (pm.FrozenHold = HasStatusEffect(e, Frozen) before Pose)"
+    constants:
+      - { name: "anim flag", base: "M_ARGV(1,int) |= ANIMSTATE_FROZEN when STAT(FROZEN)", port: "PlayerModel.FrozenHold: pins loco=Idle, skips _legsTime advance and upper-body action overlay", match: true }
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "ClientWorld.cs:1092 sets pm.FrozenHold = HasStatusEffect(e, StatusEffectsCatalog.Frozen) every frame before pm.Pose(); PlayerModel.Pose (PlayerModel.cs:220-226) when FrozenHold: forces loco=Idle, does NOT advance _legsTime (pins the frame), skips the upper-body action overlay (FrozenHold guard at :242). The live Frozen status effect is applied by FreezeTag.Freeze and cleared by Unfreeze via StatusEffectsCatalog.", result: pass }
+    confidence: high
+    notes: "FIX (registry drift): the frozen-pose animation IS implemented and live — ClientWorld sets PlayerModel.FrozenHold every frame from the networked Frozen status effect, and PlayerModel.Pose pins the idle locomotion frame + skips upper-body overlays when FrozenHold. The prior 'logic: missing' entry was written before this feature landed. Pairs with the still-open MDL_ICE ice-cube entity (freezetag.presentation.ice_model)."
+
+  - id: freezetag.notif.alone
+    name: "Last-survivor 'You are now alone!' centerprint (LastPlayerForTeam → CENTER_ALONE)"
+    layer: [presentation]
+    base_refs:
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:freezetag_LastPlayerForTeam"
+      - "common/gametypes/gametype/freezetag/sv_freezetag.qc:freezetag_LastPlayerForTeam_Notify"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:NotifyLastPlayerForTeam"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:OnDeath"
+    constants:
+      - { name: "alone line", base: "CENTER_ALONE 'You are now alone!' to the team's last unfrozen survivor", port: "NotificationSystem.Center(last, \"ALONE\") (FreezeTag.cs:1079); CENTER_ALONE declared NotificationsList.cs:872 '^F4You are now alone!'", match: true }
+      - { name: "survivor test", base: "!STAT(FROZEN) && !IS_DEAD teammate, leaving player excluded, round started only", port: "!IsEliminated (frozen OR dead excluded) teammate, leaving excluded, gated on Handler.IsRoundStarted", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base freezetag_LastPlayerForTeam_Notify is also invoked from the PlayerSpawn/teamchange paths (where a respawn/team-swap can leave a lone survivor); the port wires it ONLY through OnDeath (the freeze-on-frag path). The dominant freeze case is covered; a survivor created by a teammate's mid-round respawn/teamchange without a freeze would miss the ALONE cue — minor edge."
+    verification:
+      - { kind: code-read, ref: "FreezeTag.NotifyLastPlayerForTeam (FreezeTag.cs:1063-1080) scans the same-team roster, excludes the leaving (just-frozen) player + any IsEliminated (frozen/dead) teammate, and on exactly one survivor sends NotificationSystem.Center(last, \"ALONE\"); called from OnDeath (FreezeTag.cs:339) which is live via Combat.Death.Add(OnDeath) in Activate. CENTER_ALONE declared NotificationsList.cs:872; NotificationSystem.Center is the live center-print convenience (NotificationSystem.cs:196).", result: pass }
+    confidence: high
+    notes: "FIX since the prior 06-27 row (missing→faithful, dead→live). The 'you are now alone' last-survivor center-print IS now sent: FreezeTag grew its own NotifyLastPlayerForTeam (mirroring CA/Survival) and calls it from the death/freeze hook. FT-correct survivor test (frozen teammates don't count, via IsEliminated). Only the spawn/teamchange invocation site is not wired (OnDeath only) — minor coverage edge, hence the single gap."

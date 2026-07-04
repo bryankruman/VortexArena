@@ -8,7 +8,15 @@ namespace XonoticGodot.Common.Gameplay;
 /// of players and their weapons so everyone is semi-transparent. Enabled by the <c>g_cloaked</c> cvar.
 ///
 /// Core behavior ported: the SetDefaultAlpha override that sets the player/weapon default alpha from
-/// <c>g_balance_cloaked_alpha</c>. (The mutators-string reporting is cosmetic and skipped.)
+/// <c>g_balance_cloaked_alpha</c>. This is now LIVE — <see cref="GameWorld"/> fires
+/// <c>MutatorHooks.FireSetDefaultAlpha()</c> at worldspawn (Wave-1 alpha-net seam) and seeds
+/// <c>GameWorld.DefaultPlayerAlpha</c>/<c>DefaultWeaponAlpha</c>, which spawn/death read and the client
+/// renders via <c>PlayerModel.ApplyAlpha</c>.
+///
+/// The active-mutators pretty-string contribution (QC <c>BuildMutatorsPrettyString</c> → ", Cloaked",
+/// suppressed in CTS) is ported via <see cref="BuildMutatorsPrettyString"/>. The MENUQC create-game checkbox
+/// (<c>g_cloaked</c> "Cloaked" / "All players are almost invisible") lives in the menu's DialogMutators; the
+/// in-game per-mutator describe page is part of the absent menu-mutator describe system (shared infra gap).
 /// </summary>
 [Mutator]
 public sealed class CloakedMutator : MutatorBase
@@ -46,8 +54,26 @@ public sealed class CloakedMutator : MutatorBase
     {
         // QC: default_player_alpha = autocvar_g_balance_cloaked_alpha;
         //     default_weapon_alpha = default_player_alpha; return true;
-        args.PlayerAlpha = Alpha;
-        args.WeaponAlpha = Alpha;
+        // Re-read the autocvar live (Base reads autocvar_* on every hook fire); fall back to the cached
+        // 0.25 default if the cvar is unregistered/0 (matches the Hook() guard — 0 means "unset" here).
+        float a = Alpha;
+        if (Api.Services is not null)
+        {
+            float live = Api.Cvars.GetFloat("g_balance_cloaked_alpha");
+            if (live != 0f) a = live;
+        }
+        args.PlayerAlpha = a;
+        args.WeaponAlpha = a; // default_weapon_alpha = default_player_alpha
         return true; // QC returns true (handled).
+    }
+
+    // MUTATOR_HOOKFUNCTION(cloaked, BuildMutatorsPrettyString) — sv_cloaked.qc:15-18:
+    //   if (!g_cts) M_ARGV(0, string) = strcat(M_ARGV(0, string), ", Cloaked");
+    // Append ", Cloaked" to the human-readable active-mutators string, suppressed in the CTS gametype.
+    public override string BuildMutatorsPrettyString(string s)
+    {
+        // QC g_cts gate — mirrors the !g_cts read PowerupsMutator uses for its CTS-suppressed broadcasts.
+        bool cts = Api.Services is not null && Api.Cvars.GetFloat("g_cts") != 0f;
+        return cts ? s : s + ", Cloaked";
     }
 }

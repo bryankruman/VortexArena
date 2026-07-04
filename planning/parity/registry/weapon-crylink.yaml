@@ -1,0 +1,417 @@
+unit: weapon-crylink
+category: weapon
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-27"  # re-audit (post Wave-16/17): port files (Crylink.cs/WeaponSplash.cs) UNCHANGED since Wave-13 — Wave-16/17 touched only this yaml's last_audited comment. All 13 rows re-verified line-by-line vs current code; no status drift. (BotBrain dispatch line drifted to :447.)
+summary:
+  feature_count: 13
+  worst_gaps:
+    - "LinkJoin head-dangle edge case: port keys the group on the C# group[0] list head and cannot re-head the ring to a live spike the way QC's queuenext/queueprev does. If the head spike dies before release the survivors don't converge (WrThink still clears wait-release so the player isn't stranded). Edge case, no stock-balance impact."
+    - "WarpZone reference-frame transforms (WarpZone_RefSys_Transform*) in W_Crylink_LinkJoin omitted — no-op without warpzones."
+    - "Bot aim (wr_aim) secondary lead-speed: the 10/90 primary/secondary button pick is now ported + live (BotWantsSecondary), but BotAimShotSpeed returns a single lead speed (Primary.Speed) for both modes rather than QC's per-mode bot_aim(secondary_speed) — the shared port-wide wr_aim lead simplification, not a crylink-specific defect."
+features:
+  - id: crylink.identity
+    name: "Weapon identity, flags, models, color, balance defaults"
+    layer: [shared]
+    base_refs:
+      - "common/weapons/weapon/crylink.qh:CLASS(Crylink)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:Crylink"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:Configure"
+    constants:
+      - { name: "impulse", base: "6", port: "6", match: true }
+      - { name: "ammo_type", base: "RES_CELLS", port: "Cells", match: true }
+      - { name: "spawnflags", base: "NORMAL|RELOADABLE|TYPE_SPLASH|CANCLIMB", port: "Normal|Reloadable|TypeSplash|CanClimb", match: true }
+      - { name: "color", base: "0.918 0.435 0.976", port: "0.918 0.435 0.976", match: true }
+      - { name: "models", base: "h_crylink.iqm / v_crylink.md3 / g_crylink.md3", port: "same", match: true }
+      - { name: "switchdelay_raise/drop", base: "0.2 / 0.2", port: "via base", match: true }
+      - { name: "pickup_ammo", base: "30", port: "via item pickup balance", match: true }
+      - { name: "secondary (enable)", base: "1", port: "SecondaryEnabled=true", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "crylink.qh vs Crylink ctor; models/color/impulse/flags match (Crylink.cs:57-69)", result: pass }
+      - { kind: value_diff, ref: "bal-wep-xonotic.cfg vs Crylink.Configure — every default verified line-by-line; joinexplode cvars now read too (Crylink.cs:89-93,111-115)", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-22 (post-Wave-2): all balance defaults match the cfg exactly; Configure additionally reads the joinexplode_* cvars (Crylink.cs:89-93,111-115). Live via the weapon registry + WeaponFireDriver. No change vs baseline."
+
+  - id: crylink.primary.attack
+    name: "Primary: 6-spike circular burst (W_Crylink_Attack)"
+    layer: [authority, shared]
+    base_refs:
+      - "common/weapons/weapon/crylink.qc:W_Crylink_Attack"
+      - "common/weapons/calculations.qc:W_CalculateSpreadPattern"
+      - "server/weapons/tracing.qc:W_SetupProjVelocity_Explicit"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:CalculateSpreadPattern"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:ProjectileVelocity"
+    constants:
+      - { name: "primary_shots", base: "6", port: "6", match: true }
+      - { name: "primary_damage", base: "10", port: "10", match: true }
+      - { name: "primary_edgedamage", base: "5", port: "5", match: true }
+      - { name: "primary_radius", base: "80", port: "80", match: true }
+      - { name: "primary_force", base: "-50", port: "-50", match: true }
+      - { name: "primary_speed", base: "2000", port: "2000", match: true }
+      - { name: "primary_spread", base: "0.08", port: "0.08", match: true }
+      - { name: "primary_ammo", base: "3", port: "3", match: true }
+      - { name: "primary_bounces", base: "1", port: "1", match: true }
+      - { name: "primary_bouncedamagefactor", base: "1", port: "1", match: true }
+      - { name: "recoil/punchangle", base: "2", port: "recoil:2f", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value_diff, ref: "bal-wep-xonotic.cfg:273-296 vs Crylink.Configure — all 18 primary defaults match line-for-line", result: pass }
+      - { kind: code_read, ref: "crylink.qc:281-378 vs Crylink.cs:Attack — circular spread (CalculateSpreadPattern shot 0 centered), ProjectileVelocity, MoveType.BounceMissile, fire sound + muzzleflash all faithful; primary middle-spike index 0 matches QC (counter==0)", result: pass }
+      - { kind: code_read, ref: "SetupShot accuracy 'fired' denominator now seeded: Crylink.cs:223-225 computes maxDmg = damage*shots*(1+bouncedamagefactor*bounces)[+joinexplode_damage] and calls WeaponFiring.SetupShot(actor, forward, wep:this, maxDamage:maxDmg, recoil:2f) — matches crylink.qc:285-291 W_SetupShot maxdamage arg", result: pass }
+    confidence: high
+    notes: "RE-AUDITED 2026-06-25: the baseline SetupShot-omits-maxDamage gap is now CLOSED — Crylink.Attack passes wep:this + the QC maxdmg formula (Crylink.cs:223-225), so the accuracy fired/max denominator is seeded exactly as QC. Fire sound played explicitly (Crylink.cs:300 weapons/crylink_fire.wav) on SoundChannel.Weapon; muzzleflash CRYLINK_MUZZLEFLASH emitted (Crylink.cs:301). Live via WeaponFireDriver -> WrThink -> Attack. FIX vs baseline (gap removed)."
+
+  - id: crylink.secondary.attack
+    name: "Secondary: 5-spike tight group, strong pull (W_Crylink_Attack2)"
+    layer: [authority, shared]
+    base_refs:
+      - "common/weapons/weapon/crylink.qc:W_Crylink_Attack2"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:Attack"
+    constants:
+      - { name: "secondary_shots", base: "5", port: "5", match: true }
+      - { name: "secondary_damage", base: "8", port: "8", match: true }
+      - { name: "secondary_edgedamage", base: "4", port: "4", match: true }
+      - { name: "secondary_radius", base: "100", port: "100", match: true }
+      - { name: "secondary_force", base: "-200", port: "-200", match: true }
+      - { name: "secondary_speed", base: "3000", port: "3000", match: true }
+      - { name: "secondary_spread", base: "0.01", port: "0.01", match: true }
+      - { name: "secondary_spreadtype", base: "1", port: "1 (circular)", match: true }
+      - { name: "secondary_ammo", base: "3", port: "3", match: true }
+      - { name: "secondary_bounces", base: "0", port: "0", match: true }
+      - { name: "secondary_bouncedamagefactor", base: "0.5", port: "0.5", match: true }
+      - { name: "deathtype HITTYPE_SECONDARY bit", base: "m_id | HITTYPE_SECONDARY", port: "string deathTag carries Secondary bit (WithHitType)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "spreadtype 0 (linear horizontal fan) IS implemented (Crylink.cs:239-243) but unreachable at the stock default spreadtype 1. Not a defect — full parity coverage."
+    verification:
+      - { kind: value_diff, ref: "bal-wep-xonotic.cfg:300-324 vs Crylink.Configure", result: pass }
+      - { kind: code_read, ref: "crylink.qc:380-483 vs Crylink.cs:Attack(secondary=true) — circular + linear-fan branches present; deathtype Secondary bit carried via string deathTag (WithHitType, Crylink.cs:216, DeathTypes.Secondary verified present); middle-spike index (shots-1)*0.5 for secondary (Crylink.cs:221) matches crylink.qc:448 (counter==(shots-1)*0.5); per-spike fadetime read individually (MiddleFadeTime/OtherFadeTime, Crylink.cs:256-257)", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-22 (Wave-2 fixes confirmed in place): (1) deathtype carries HITTYPE_SECONDARY via DeathTypes.WithHitType(...,Secondary); (2) secondary middle-lifetime spike is the CENTER spike index (shots-1)*0.5; (3) per-spike *_middle_fadetime/*_other_fadetime feed fade_rate individually. Strong negative force (pull) faithful. weapons/crylink_fire2.wav played; impact fx via the `secondary` bool. No change vs baseline."
+
+  - id: crylink.projectile.touch_bounce_fade
+    name: "Spike touch: faded radius damage, limited bounces, bounce-damage factor"
+    layer: [authority, shared]
+    base_refs:
+      - "common/weapons/weapon/crylink.qc:W_Crylink_Touch"
+      - "server/damage.qc:RadiusDamage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:OnTouch"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:RadiusDamage"
+    constants:
+      - { name: "primary_bounces", base: "1", port: "1", match: true }
+      - { name: "primary_bouncedamagefactor", base: "1", port: "1", match: true }
+      - { name: "secondary_bouncedamagefactor", base: "0.5", port: "0.5", match: true }
+      - { name: "fade scalar a", base: "bound(0, 1-(time-fade_time)*fade_rate, 1)", port: "Clamp(1-(Time-MaxHealth)*Health,0,1)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "crylink.qc:226-274 vs Crylink.cs:OnTouch — fade scalar/finalhit/bounce-factor/RadiusDamage faithful; chain-detonate checked FIRST on any damaging touch (Crylink.cs:436-446) matching QC ordering (chain THEN else-finalhit, crylink.qc:248-265); owner=NULL (Crylink.cs:462) + HITTYPE_BOUNCE tag (Crylink.cs:463-470) done", result: pass }
+      - { kind: code_read, ref: "WeaponSplash.RadiusDamage now RETURNS total_damage_to_creatures (WeaponSplash.cs:55,264), gated on MapMover.IsCreature (WeaponSplash.cs:202) so a wall-only hit returns 0; OnTouch gates chain-detonate on the EXACT `totalDamage > 0f` (Crylink.cs:431-437), matching crylink.qc:248-249 `if (totaldamage && (...))`", result: pass }
+      - { kind: code_read, ref: "Crylink.cs:441/:450/:509 ImpactSound plays crylink_impact.wav (primary) / crylink_impact2.wav (secondary), matching QC SND_CRYLINK_IMPACT/IMPACT2 keyed off HITTYPE_SECONDARY; both samples present", result: pass }
+    confidence: high
+    notes: "RE-AUDITED 2026-06-25 (FIX): the baseline's only residual — the approximate chain-detonate gate (because RadiusDamage was VOID) — is now CLOSED. WeaponSplash.RadiusDamage returns total_damage_to_creatures (creature-gated, WeaponSplash.cs:202,264) and OnTouch gates the chain on the exact `totalDamage > 0f` (Crylink.cs:436). The reachable divergence (a secondary spike hitting a bare wall chain-detonating in the port but not in Base) is eliminated: a wall-only blast returns 0 -> no chain, exactly as Base. logic partial -> faithful."
+
+  - id: crylink.linkjoin.converge_on_release
+    name: "Link-join: held group converges on release (W_Crylink_LinkJoin)"
+    layer: [authority, shared]
+    base_refs:
+      - "common/weapons/weapon/crylink.qc:W_Crylink_LinkJoin"
+      - "common/weapons/weapon/crylink.qc:wr_think (release branch)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:LinkJoin"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:WrThink"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/EntityWeaponState.cs:CrylinkLastGroup"
+    constants:
+      - { name: "primary_joinspread", base: "0.2", port: "0.2", match: true }
+      - { name: "secondary_joinspread", base: "0", port: "0", match: true }
+      - { name: "primary_joindelay", base: "0.1", port: "0.1", match: true }
+      - { name: "secondary_joindelay", base: "0", port: "0 (cfg) — Configure reads it; field default 0.1 overridden", match: true }
+      - { name: "jspeed", base: "joinspread*speed", port: "joinspread*speed", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port keys the group on the C# group[0] list head; QC re-heads the queuenext/queueprev ring to a live spike when the head dies. If the port's head spike dies before release the group can't converge (WrThink notes this and still clears wait-release so the player isn't stranded, Crylink.cs:166-175), whereas Base would converge the survivors. Edge case."
+      - "WarpZone reference-frame transforms (WarpZone_RefSys_Transform*) in W_Crylink_LinkJoin are omitted — no-op without warpzones."
+    verification:
+      - { kind: code_read, ref: "crylink.qc:94-169 vs Crylink.cs:LinkJoin (306-348) — avg org/vel, jspeed==0 parallel branch, meeting-point retarget all faithful; returns (origin,time) and schedules the linkjoineffect think", result: pass }
+      - { kind: code_read, ref: "release gate crylink.qc:518-545 (waitrelease + !(fire&bit) + time>teleport_time) vs WrThink:155-177; joinDelay floor uses group.LTime+joinDelay vs QC firetime+joindelay", result: pass }
+      - { kind: code_read, ref: "WrThink runs the release branch every tick via WeaponFireDriver.cs:163 (WrThink(Primary) unconditional); st.ButtonAttack/2 supply the held state", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-22. Convergence math unchanged (faithful). Wave-2 added the meeting-time linkjoineffect scheduling (see crylink.linkjoin.joinexplode_bonus). SecondaryJoinDelay field default 0.1 but Configure overwrites from cvar (0). No change vs baseline."
+
+  - id: crylink.linkexplode.chain_detonate
+    name: "Link-explode: chain-detonate the group on a damaging hit (W_Crylink_LinkExplode)"
+    layer: [authority, shared]
+    base_refs:
+      - "common/weapons/weapon/crylink.qc:W_Crylink_LinkExplode"
+      - "common/weapons/weapon/crylink.qc:W_Crylink_Touch_WouldHitFriendly"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:LinkExplode"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:WouldHitFriendly"
+    constants:
+      - { name: "primary_linkexplode", base: "0", port: "0", match: true }
+      - { name: "secondary_linkexplode", base: "1", port: "1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "crylink.qc:57-85 + 209-260 vs Crylink.cs:LinkExplode (496-517) + WouldHitFriendly (478-491) — per-link faded RadiusDamage faithful; WouldHitFriendly friendly-gate implemented (Teams.SameTeam + Api.Entities.FindInRadius); directHit threaded into each link's RadiusDamage (Crylink.cs:507-508); no JOINEXPLODE emitted from chain (Crylink.cs:514-516)", result: pass }
+      - { kind: code_read, ref: "chain-detonate now entered on the EXACT totaldamage>0 gate (Crylink.cs:436, via WeaponSplash.RadiusDamage return) rather than the prior approximate couldDamage — matches crylink.qc:248-249", result: pass }
+    confidence: high
+    notes: "RE-AUDITED 2026-06-25: (1) W_Crylink_Touch_WouldHitFriendly ported (WouldHitFriendly) and gates linkexplode==1 — secondary chains refrain near teammates, matching Base (rad+16 = QC rad+MAX_DAMAGEEXTRARADIUS); (2) per-link impact sound correct (crylink_impact / crylink_impact2 by mode); (3) directHit (original toucher) passed into each link's RadiusDamage (QC directhitentity); (4) no wrong-trigger CRYLINK_JOINEXPLODE from chain. The baseline's residual gap — entering on the approximate couldDamage gate — is CLOSED now that OnTouch gates on the exact RadiusDamage totaldamage return. Gap removed."
+
+  - id: crylink.linkjoin.joinexplode_bonus
+    name: "Convergence join-explode bonus + EFFECT_CRYLINK_JOINEXPLODE (W_Crylink_LinkJoinEffect_Think)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/weapons/weapon/crylink.qc:W_Crylink_LinkJoinEffect_Think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:ScheduleLinkJoinEffect"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:LinkJoin"
+    constants:
+      - { name: "primary_joinexplode", base: "1", port: "Primary.JoinExplode=1 (read in Configure)", match: true }
+      - { name: "primary_joinexplode_damage", base: "0", port: "0", match: true }
+      - { name: "primary_joinexplode_radius", base: "0", port: "0", match: true }
+      - { name: "primary_joinexplode_force", base: "0", port: "0", match: true }
+      - { name: "primary_joinexplode_edgedamage", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Convergence-count test uses the C# group list rather than the QC queuenext ring; if the LinkJoin head dangled (head spike died pre-release) the group never schedules the think, so the survivors' convergence sparkle is missed in that edge case (same head-dangle limitation as crylink.linkjoin.converge_on_release)."
+    verification:
+      - { kind: code_read, ref: "crylink.qc:171-207 W_Crylink_LinkJoinEffect_Think vs Crylink.cs:ScheduleLinkJoinEffect (356-386) — meeting-time self-deleting think, vlen2(org-this)<vlen2(vel)*frametime convergence count, n>=2 && joinexplode gate, (n/shots)-scaled joinexplode RadiusDamage, EFFECT_CRYLINK_JOINEXPLODE at the meeting point all faithful", result: pass }
+      - { kind: code_read, ref: "Configure reads the joinexplode_* cvars into Primary/Secondary.JoinExplode* (Crylink.cs:89-93,111-115); LinkJoin schedules the effect with the per-mode GroupInfo.Bal (Crylink.cs:346)", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-22 (Wave-2 missing/dead -> faithful/live confirmed): ScheduleLinkJoinEffect spawns the meeting-time linkjoineffect think exactly as QC. It evaluates the >=2-converged joinexplode RadiusDamage and emits EFFECT_CRYLINK_JOINEXPLODE at the CONVERGENCE point (correct trigger). Joinexplode cvars read. Bonus damage is 0 at stock balance, so the player-observable win is the convergence sparkle (now fired from the right place). Live: scheduled from LinkJoin, which runs on the release branch of WrThink each tick. No change vs baseline."
+
+  - id: crylink.ammo.checkammo
+    name: "Per-mode ammo check + wait-release ammo guard (wr_checkammo1/2)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/crylink.qc:wr_checkammo1"
+      - "common/weapons/weapon/crylink.qc:wr_checkammo2"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:CheckAmmoPrimary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:CheckAmmoSecondary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:WeaponAmmo.Check"
+    constants:
+      - { name: "primary_ammo", base: "3", port: "3", match: true }
+      - { name: "secondary_ammo", base: "3", port: "3", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Clip-load fallback term (weapon_load[m_id] >= ammo) omitted; moot while reload_ammo defaults 0 (clips disabled)."
+    verification:
+      - { kind: code_read, ref: "crylink.qc:548-568 vs Crylink.cs:508-521 — wait-release guard (crylink_waitrelease && crylink_lastgroup -> return true) implemented (Crylink.cs:511,519); dispatch verified live at WeaponFireGate.cs:513 (Crylink c => secondary ? c.CheckAmmoSecondary : c.CheckAmmoPrimary)", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-22 (Wave-2 fix confirmed): the 'don't run out of ammo while waiting for release' guard is implemented — CheckAmmoPrimary/Secondary read the primary-slot CrylinkWaitRelease/LastGroup state and return true while a join-group waits (Crylink.cs:511,519), matching crylink.qc:551,562. Resource>=ammo check faithful and LIVE (WeaponFireGate.cs:513 dispatches Crylink). Reading slot 0 is consistent with the single-slot fire model. No change vs baseline."
+
+  - id: crylink.reload
+    name: "Forced reload + clip system (wr_reload)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/crylink.qc:wr_reload"
+      - "common/weapons/weapon/crylink.qc:wr_think (forced-reload branch)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:WrReload"
+    constants:
+      - { name: "reload_ammo", base: "0", port: "0 (reload disabled)", match: true }
+      - { name: "reload_time", base: "2", port: "2 (via base)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Clip-load reload semantics: WrReload (the base WeaponFireGate machine) reloads the generic clip; QC's wr_reload also passes SND_RELOAD. The reload SOUND cue (SND_RELOAD) is whatever the base reload machine plays — not crylink-specific, faithful by inheritance. No crylink-specific reload gap remains."
+    verification:
+      - { kind: code_read, ref: "crylink.qc:493-498 wr_think forced-reload head vs Crylink.cs:147-156 — `forcedReload = ReloadingAmmo()!=0 && st.ClipLoad < min(Primary.Ammo,Secondary.Ammo)` then WrReload(actor,slot); the fire1/fire2 branches are gated on `!forcedReload` (Crylink.cs:193,198) so a forced reload SUPPRESSES firing this tick exactly as the QC if/else-if head", result: pass }
+      - { kind: code_read, ref: "crylink.qc:570-573 wr_reload vs base WrReload (WeaponFireGate.cs:223) — ammoMin floor = ReloadingAmmoMin() overridden to min(Primary.Ammo,Secondary.Ammo) (Crylink.cs:211), matching W_Reload(...,min(WEP_CVAR_PRI(ammo),WEP_CVAR_SEC(ammo)),...); ReloadingAmmo() reads g_balance_crylink_reload_ammo (WeaponFireGate.cs:408, default 0)", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-25 (Wave-5 FIX): the QC wr_think forced-reload pre-check is now MIRRORED in Crylink.WrThink (Crylink.cs:147-156) — previously absent (baseline gap). It is the head of the if/else-if firing chain (fire branches gated `!forcedReload`), structurally faithful to crylink.qc:495-516. ReloadingAmmoMin override (Crylink.cs:211) gives the correct min(pri,sec) clip size. Still INACTIVE at stock balance (g_balance_crylink_reload_ammo defaults 0 -> ReloadingAmmo()==0 -> forcedReload never true), so liveness stays `dead` at stock cvars (INTENTIONAL, matches Base) — but the path is now genuinely live the instant the cvar is flipped, whereas the baseline had no crylink code on this path at all. Logic gap CLOSED."
+
+  - id: crylink.fx.trail_muzzle_impact
+    name: "Trail (purple plasma), muzzle flash, impact particle, projectile render"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/crylink.qc:wr_impacteffect"
+      - "common/effects/all.inc:48-51 (CRYLINK_IMPACT/IMPACT2/JOINEXPLODE/MUZZLEFLASH)"
+      - "client/weapons/projectile.qc (PROJECTILE_CRYLINK / _BOUNCING + TR_CRYLINKPLASMA)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:81-84"
+      - "game/client/ProjectileCatalog.cs:91,272"
+      - "game/net/NetGame.cs:2202"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:Attack"
+    constants:
+      - { name: "CRYLINK_IMPACT (primary)", base: "crylink_impactbig", port: "crylink_impactbig", match: true }
+      - { name: "CRYLINK_IMPACT2 (secondary)", base: "crylink_impact", port: "crylink_impact", match: true }
+      - { name: "CRYLINK_JOINEXPLODE", base: "crylink_joinexplode", port: "crylink_joinexplode", match: true }
+      - { name: "CRYLINK_MUZZLEFLASH", base: "crylink_muzzleflash", port: "crylink_muzzleflash (NetGame:1989)", match: true }
+      - { name: "trail effect", base: "TR_CRYLINKPLASMA", port: "TR_CRYLINKPLASMA (purple shards)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Muzzleflash/impact particle/trail are server-side-emitted-then-networked rather than from CSQC wr_impacteffect — the port-wide presentation convention, visually equivalent. The big/small impact-particle mapping (primary=impactbig, secondary=impact) matches Base exactly (EffectsList.cs:75-76 vs all.inc:48-49, re-verified line-for-line)."
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "EffectsList.cs:81-84 vs all.inc:48-51 — impact big/small swap correct (CRYLINK_IMPACT=crylink_impactbig, CRYLINK_IMPACT2=crylink_impact); CRYLINK_JOINEXPLODE + CRYLINK_MUZZLEFLASH registered", result: pass }
+      - { kind: code_read, ref: "ProjectileCatalog.cs:91,272 Crylink/CrylinkBouncing -> TR_CRYLINKPLASMA PurplePlasma GlowSprite + light; NetGame:2202 'crylink'->CRYLINK_MUZZLEFLASH", result: pass }
+    confidence: high
+    notes: "RE-AUDITED 2026-06-27. The convergence CRYLINK_JOINEXPLODE sparkle fires from the correct trigger (the meeting-time think, crylink.linkjoin.joinexplode_bonus) — no wrong-trigger emission from LinkExplode. Purple plasma shard trail for both bouncing and non-bouncing variants, faithful to projectile.qc. Effect names match all.inc:48-51 line-for-line (re-verified). NetGame muzzleflash mapping at NetGame.cs:2202 ('crylink' -> CRYLINK_MUZZLEFLASH). Impact-SOUND fidelity tracked under crylink.projectile.touch_bounce_fade. No status change vs baseline (port_ref lines updated for drift)."
+
+  - id: crylink.notifications.kill_suicide_message
+    name: "Kill/suicide obituary messages (wr_killmessage / wr_suicidemessage)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/crylink.qc:wr_suicidemessage"
+      - "common/weapons/weapon/crylink.qc:wr_killmessage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:351-352,1187-1188"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:51-52"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:128-129"
+    constants:
+      - { name: "murder notif", base: "WEAPON_CRYLINK_MURDER", port: "WEAPON_CRYLINK_MURDER", match: true }
+      - { name: "suicide notif", base: "WEAPON_CRYLINK_SUICIDE", port: "WEAPON_CRYLINK_SUICIDE", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "NotificationsList.cs:351-352 registers CRYLINK_MURDER (\"felt the strong pull of ... Crylink\") + CRYLINK_SUICIDE; the multi WEAPON_CRYLINK_MURDER/SUICIDE at NotificationsList.cs:1187-1188; DeathMessages.cs:51-52,128-129 maps the 'crylink' deathtype string -> WEAPON_CRYLINK_MURDER / WEAPON_CRYLINK_SUICIDE (crylink.qc:580,575)", result: pass }
+    confidence: high
+    notes: "ADDED 2026-06-25 (registry coverage gap — feature existed unmapped). QC wr_killmessage->WEAPON_CRYLINK_MURDER and wr_suicidemessage->WEAPON_CRYLINK_SUICIDE are both ported: the notifications are registered and the crylink deathtype-string is mapped to them in DeathMessages (the obituary dispatch). Faithful and live via the death-message pipeline. spec file already marks this FAITHFUL (specs/weapon-crylink.md:118)."
+
+  - id: crylink.bot.wr_aim
+    name: "Bot aim (wr_aim): bias toward primary/secondary, lead the target"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/crylink.qc:wr_aim"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:BotWantsSecondary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs:BotAimShotSpeed"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:447"
+    constants:
+      - { name: "primary-fire bias", base: "random() < 0.10 -> primary, else secondary", port: "ctx.Random01 >= 0.10 -> secondary (i.e. 10% primary, 90% secondary)", match: true }
+      - { name: "primary lead speed", base: "bot_aim(primary_speed,...)", port: "BotAimShotSpeed => Primary.Speed", match: true }
+      - { name: "secondary lead speed", base: "bot_aim(secondary_speed,...)", port: "BotAimShotSpeed => Primary.Speed (single-speed lead, shared simplification)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Secondary lead speed: QC's wr_aim leads the secondary shot at WEP_CVAR_SEC(speed) (3000); the port's BotAimShotSpeed returns a single speed (Primary.Speed=2000) regardless of which mode the 10/90 pick routes to. This is the shared port-wide wr_aim lead-speed simplification (the brain keys lead off one per-weapon BotAimShotSpeed, not per-fire-mode), tracked at bot-ai.aim.lead — not a crylink-specific logic defect. The mode-PICK and the primary lead are faithful."
+    verification:
+      - { kind: code_read, ref: "Crylink.cs:209-213 BotWantsSecondary returns ctx.Random01 >= 0.10f (10% primary, 90% secondary) == QC random()<0.10; Crylink.cs:219 BotAimShotSpeed => Primary.Speed", result: pass }
+      - { kind: code_read, ref: "live dispatch: BotBrain.cs:445-447 sets _botAimState.Random01 then calls w.BotWantsSecondary(...) on the real bot fire-decision path; base hook default false overridden by Crylink", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-27 (post Wave-16/17 re-audit — Crylink.cs unchanged since Wave-13, still faithful/live). The port implements the QC METHOD(Crylink, wr_aim) via the shared BotWantsSecondary/BotAimShotSpeed hooks (same Wave-12 pattern that closed bot-aim across Shotgun/Rifle/Fireball/Electro/Machinegun/Tuba/Vaporizer). The 10%-primary / 90%-secondary button pick (Crylink.cs:212) is bit-faithful and LIVE via BotBrain.cs:447 (line drifted from the prior :421-423 ref). Only residual is the single-speed lead (secondary uses 2000 not 3000), the documented shared bot-aim limitation."
+
+  - id: crylink.menu.describe
+    name: "MENUQC weapon-guide prose (describe)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/crylink.qc:describe (MENUQC, crylink.qc:609-626)"
+    port_refs: []
+    constants: []
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The MENUQC describe() weapon-guide prose (burst of laser-like projectiles, converge-on-release, double-damage-on-bounce, secondary tight-group, cells ammo, 'crylink running' pull blurb + W_Guide_Keybinds/DPS_bothMultishot) has no port. Menu-only documentation; no gameplay impact. Consistent with the weapon-shotgun.menu.describe gap."
+    verification:
+      - { kind: code_read, ref: "grep describe/PAGE_TEXT across src/.../Weapons: no Crylink describe port; Base crylink.qc:609-626 has the MENUQC describe()", result: fail }
+    confidence: high
+    notes: "ADDED 2026-06-27 (registry coverage gap — feature existed in Base, unmapped in the baseline). MENUQC describe() weapon-guide text is not ported. Pure menu documentation, out of gameplay scope (same classification as weapon-shotgun.menu.describe). NOTE: the QH declares SOUND(CRYLINK_LINKJOIN, crylink_linkjoin) but Base's QC never calls it — dead in Base too, so it is not a port gap and gets no row."

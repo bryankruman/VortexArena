@@ -217,7 +217,9 @@ public partial class PowerupsPanel : HudPanel
             // Remaining time (QC: bound(0, statuseffect_time - time, 99)).
             float left = s.ExpireTime > 0f ? Mathf.Clamp(s.ExpireTime - now, 0f, 99f) : 0f;
             if (s.ExpireTime > 0f && left <= 0f) continue; // expired this frame
-            bool infinite = s.ExpireTime <= 0f;            // permanent / passively granted (QC PERSISTENT)
+            // QC m_tick: PERSISTENT effects carry the flag and never time out (sv_status_effects.qc:20-22).
+            // The flag is set per-tick via the effect's m_persistent check, and networked in the PERSISTENT bit.
+            bool infinite = (s.Flags & StatusEffectFlags.Persistent) != 0; // passively granted (QC PERSISTENT)
             float life = def.Lifetime > 0f ? def.Lifetime : StatusEffectLifetime;
 
             string label, icon;
@@ -423,40 +425,9 @@ public partial class PowerupsPanel : HudPanel
     private void DrawProgressBar(Vector2 origin, Vector2 size, float lengthRatio, bool vertical, int baralign,
         Color color, float alpha)
     {
-        if (alpha <= 0f) return;
-        if (lengthRatio <= 0f) return; // QC: only baralign 3 allows negative (grow-up/left); fractions here are >=0
-        if (lengthRatio > 1f) lengthRatio = 1f;
-
-        var fill = new Color(color.R, color.G, color.B, alpha);
-        Rect2 fillRect;
-
-        if (vertical)
-        {
-            float h = size.Y;
-            float top = origin.Y;
-            if (baralign == 1)      top += (1f - lengthRatio) * h;                 // bottom align
-            else if (baralign == 2) top += 0.5f * (1f - lengthRatio) * h;          // center align
-            else if (baralign == 3) { h *= 0.5f; top += h; }                       // center, grow down
-            fillRect = new Rect2(new Vector2(origin.X, top), new Vector2(size.X, h * lengthRatio));
-        }
-        else
-        {
-            float w = size.X;
-            float left = origin.X;
-            if (baralign == 1)      left += (1f - lengthRatio) * w;                 // right align
-            else if (baralign == 2) left += 0.5f * (1f - lengthRatio) * w;         // center align
-            else if (baralign == 3) { w *= 0.5f; left += w; }                      // center, grow right
-            fillRect = new Rect2(new Vector2(left, origin.Y), new Vector2(w * lengthRatio, size.Y));
-        }
-
-        // QC: drawpic the "progressbar"/"progressbar_vertical" skin art tinted by colormod×alpha. Drawn-rect
-        // fallback (with a faint track behind it) when the art is missing so the bar still reads.
-        string barName = vertical ? "progressbar_vertical" : "progressbar";
-        if (!DrawSkinPic(barName, fillRect, fill))
-        {
-            DrawRect(new Rect2(origin, size), new Color(0f, 0f, 0f, alpha * 0.35f)); // track
-            DrawRect(fillRect, fill);
-        }
+        // Delegate to the shared faithful primitive (HudPanel.DrawProgressBar): the QC 3-slice cap render
+        // (drawsubpic square/middle/cap → rounded ends), full baralign 0/1/2/3, the clamp + skin-resolve.
+        DrawProgressBar(new Rect2(origin, size), "progressbar", lengthRatio, vertical, baralign, color, alpha);
     }
 
     // -------------------------------------------------------------------------------------------------
@@ -545,6 +516,7 @@ public partial class PowerupsPanel : HudPanel
     private void DrawIconAspect(Rect2 box, string icon, Color color, float alpha, float fadelerp)
     {
         box = Expand(box, fadelerp);
+        alpha = ExpandAlpha(alpha, fadelerp); // QC: theAlpha * (1 - fadelerp)
         var mod = new Color(1f, 1f, 1f, alpha);
         if (!DrawSkinPic(icon, box, mod))
         {
@@ -560,6 +532,7 @@ public partial class PowerupsPanel : HudPanel
     {
         if (string.IsNullOrEmpty(text)) return;
         box = Expand(box, fadelerp);
+        alpha = ExpandAlpha(alpha, fadelerp); // QC: theAlpha * (1 - fadelerp)
         int size = Mathf.Max(8, Mathf.FloorToInt(box.Size.Y));
         // Shrink to fit width if needed (mimics aspect-fit).
         float w = MeasureText(text, size);
@@ -572,14 +545,20 @@ public partial class PowerupsPanel : HudPanel
         DrawText(new Vector2(tx, ty), text, col, size);
     }
 
-    /// <summary>Scale a rect up around its center by the expanding fade lerp (QC drawpic_*_expanding grows the
-    /// pic to ~2× as fadelerp→1; here a gentle 1→1.5× pulse keeps the flash readable in the small cell).</summary>
+    /// <summary>Scale a rect up around its center by the expanding fade lerp — the faithful QC
+    /// <c>expandingbox_sizefactor_from_fadelerp</c> (client/draw.qc:50): <c>sz = 1.2 / (1.2 - fadelerp)</c>
+    /// (1× at fadelerp 0, growing toward ~6× as fadelerp→1), centered via
+    /// <c>expandingbox_resize_centered_box_offset</c> (offset = boxsize·0.5·(1−sz)). The art's alpha is faded
+    /// by <c>(1 − fadelerp)</c> separately by the callers (QC <c>theAlpha * (1 - fadelerp)</c>).</summary>
     private static Rect2 Expand(Rect2 box, float fadelerp)
     {
         if (fadelerp <= 0f) return box;
-        float scale = 1f + 0.5f * Mathf.Clamp(fadelerp, 0f, 1f);
-        var newSize = box.Size * scale;
-        var newPos = box.Position - (newSize - box.Size) * 0.5f;
+        float sz = 1.2f / (1.2f - Mathf.Clamp(fadelerp, 0f, 1f));
+        var newSize = box.Size * sz;
+        var newPos = box.Position + box.Size * (0.5f * (1f - sz));
         return new Rect2(newPos, newSize);
     }
+
+    /// <summary>QC expanding alpha fade: <c>theAlpha * (1 - fadelerp)</c> (client/draw.qc:65).</summary>
+    private static float ExpandAlpha(float alpha, float fadelerp) => alpha * (1f - Mathf.Clamp(fadelerp, 0f, 1f));
 }

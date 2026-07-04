@@ -16,10 +16,30 @@ public sealed class MeleeOnlyMutator : MutatorBase
 {
     public MeleeOnlyMutator() => NetName = "melee_only";
 
-    // QC: expr_evaluate(autocvar_g_melee_only) && !instagib && !ok && !weaponarena.
-    // The other-mutator exclusion is the bootstrap's job; here we read the real enable cvar.
+    // QC: REGISTER_MUTATOR(melee_only, expr_evaluate(autocvar_g_melee_only)
+    //   && !MUTATOR_IS_ENABLED(mutator_instagib) && !MUTATOR_IS_ENABLED(ok)
+    //   && !MapInfo_LoadedGametype.m_weaponarena).
+    // autocvar_g_melee_only is a STRING evaluated with expr_evaluate (like rocketflying), not a float.
     public override bool IsEnabled =>
-        Api.Services is not null && Api.Cvars.GetFloat("g_melee_only") != 0f;
+        Api.Services is not null
+        && ExprEvaluate(Api.Cvars.GetString("g_melee_only"))
+        && !OtherEnabled("instagib")
+        && !OtherEnabled("overkill")
+        && Api.Cvars.GetFloat("g_weaponarena") == 0f; // QC !MapInfo_LoadedGametype.m_weaponarena
+
+    // QC MUTATOR_IS_ENABLED reads the other mutator's enable predicate (not its added state), so
+    // activation order between them can't race. (overkill's NetName is "ok"'s registration in the port.)
+    private static bool OtherEnabled(string netName)
+        => Mutators.ByName(netName) is { } m && m.IsEnabled;
+
+    /// <summary>QC <c>expr_evaluate(s)</c> for a cvar string: false for "" / "0" / "false", true otherwise.</summary>
+    private static bool ExprEvaluate(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return false;
+        s = s.Trim();
+        if (s == "0" || string.Equals(s, "false", System.StringComparison.OrdinalIgnoreCase)) return false;
+        return true;
+    }
 
     private HookHandler<MutatorHooks.SetStartItemsArgs>? _onSetStartItems;
     private HookHandler<MutatorHooks.SetWeaponArenaArgs>? _onSetWeaponArena;
@@ -88,6 +108,17 @@ public sealed class MeleeOnlyMutator : MutatorBase
 
     private bool OnForbidRandomStartWeapons(ref MutatorHooks.ForbidRandomStartWeaponsArgs args) => true;
     private bool OnForbidThrow(ref MutatorHooks.ForbidThrowCurrentWeaponArgs args) => true;
+
+    // MUTATOR_HOOKFUNCTION(melee_only, BuildMutatorsString) — sv_melee_only.qc:44-47:
+    //   M_ARGV(0, string) = strcat(M_ARGV(0, string), ":MeleeOnly");
+    // The machine token for g_mutatormsg / the server-browser mutators field. Reaches the live
+    // MutatorActivation.BuildMutatorsString chain (run from GameWorld GameLogInit).
+    public override string BuildMutatorsString(string s) => s + ":MeleeOnly";
+
+    // MUTATOR_HOOKFUNCTION(melee_only, BuildMutatorsPrettyString) — sv_melee_only.qc:49-52:
+    //   M_ARGV(0, string) = strcat(M_ARGV(0, string), ", Melee only Arena");
+    // The human-readable "modifications" label; the leading ", " is stripped once by the caller.
+    public override string BuildMutatorsPrettyString(string s) => s + ", Melee only Arena";
 
     // MUTATOR_HOOKFUNCTION(melee_only, FilterItem) — strip small health/armor (the only "extra" sustain
     // melee_only leaves out so fights stay close-range). QC switches on ITEM_HealthSmall / ITEM_ArmorSmall;

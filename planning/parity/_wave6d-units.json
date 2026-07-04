@@ -1,0 +1,161 @@
+[
+ {
+  "unit": "overkill-weapons",
+  "tier": "haiku",
+  "notes": [
+   "[logic] overkill-weapons.shared.secondary_blaster_jump: refire_type==0 secondary path (blaster on the shared ATTACK_FINISHED timer) is not handled; only refire_type==1 is. Default is 1 for all five OK weapons, so no observable gap at stock balance. ; FIRE2 weapon animation / animdecide_setaction not driven (no third-person fire-2 pose).",
+   "[logic/values] overkill-weapons.okhmg.nadesupport: STILL OPEN: throwing a nade while holding the OK HMG deals full nade self-damage instead of 10%. NadeProjectile.cs:186 explicitly defers the Nade_Damage mutator hook; no okhmg branch was added by the waves."
+  ]
+ },
+ {
+  "unit": "weapon-arc",
+  "tier": "opus",
+  "notes": [
+   "[timing] weapon-arc.beam.dps_core: Damage applied along a single straight trace; Base traces a multi-segment bezier (control point pulled toward wantdir by tightness) so the beam body can clip geometry differently near a swept corner. Endpoint hit-reg matches. UNCHANGED. ; Wave-2 added a LagComp.Begin/End bracket around the damage trace (Arc.cs:301-307) to mirror Base WarpZone_traceline_antilag. The provider IS installed live: game/net/ServerNet.cs:298 assigns LagComp.Provider = new LagCompProvider(this) in the ServerNet ctor (alongside the proven-live EffectEmitter.Sink/NotificationSystem.Sink wirings), routing Begin/End -> Be",
+   "[values] weapon-arc.beam.curve_direction: tightness / degreespersegment / distancepersegment / ARC_MAX_SEGMENTS loaded but unused: no bezier control point, no segmentation. The beam_dir blend math itself is bit-faithful. UNCHANGED.",
+   "[logic] weapon-arc.beam.heat_overheat: Structural divergence (UNCHANGED): Base stores beam_heat on the beam ENTITY (arc_beam) and DELETES that entity when the beam ends — heat is gone, and arc_overheat/arc_cooldown are pure timestamps used for the HUD %% and the re-fire gate. The port keeps heat as a persistent slot-state value (st.BeamHeat) drained over time by BeamCooldown. Observably close at stock values; not bit-structurally identical. ; cooldown_release still ignored (Arc.cs CooldownSpeed has no cooldown_release branch); Base sets arc_overheat when (cooldown_release || overheat). Dormant at stock cooldown_release 0. ; Heat-%%",
+   "[logic] weapon-arc.beam.burst_variant: Port recomputes burst = `ATCK2 held && !bolt` fresh each tick (Arc.cs:173,176); Base latches `beam_bursting = true` on the beam entity, so a burst beam KEEPS bursting after ATCK2 is released until the beam ends (arc.qc:205-209,571). The latch (st.BeamBursting) is still not modeled. UNCHANGED. ; ARC_BT_BURST visual thickness (14) and burst beam color/visuals absent (depends on beam.visual feature). UNCHANGED.",
+   "[logic/timing] weapon-arc.bolt.secondary_burst: Whole bolt_count burst fires in ONE WrThink call (one PrepareAttack, a for-loop over Bolt.Count at Arc.cs:372); Base fires one bolt per bolt_refire via misc_bulletcounter counting up from -to_shoot, enforcing bolt_refire2 only after the last bolt. Dormant at stock bolt_count 1. UNCHANGED. ; Ammo: port consumes flat bolt_ammo once (Arc.cs:365); Base scales to_shoot by min(1, ammo/bolt_ammo) and W_DecreaseAmmo(min(bolt_ammo, ammo)). Dormant at bolt_count 1. UNCHANGED. ; No muzzle flash (Base W_MuzzleFlash); the bolt's recoil/W_SetupShot recoil 2 is applied. UNCHANGED.",
+   "[logic/values/timing] weapon-arc.beam.visual: The beam does NOT route through BeamRenderer.Beam. arc_beam is registered isTrail:true (EffectsList.cs:51), classified as Trail first, so the EffectClass.Beam route is never reached; the arc_beam effectinfo block is `type spark` trailspacing 10 with no `orientation beam` line, so the EiOrientation.Beam route is also never taken. Renders as a SPARK PARTICLE TRAIL swept origin->endpos, not a cylindric beam. UNCHANGED by Wave-1/2. ; No dedicated networked beam entity (ENT_CLIENT_ARC_BEAM): the beam is re-emitted as an arc_beam trail each SERVER tick and drawn STRAIGHT, not the curving bezier swee",
+   "[logic] weapon-arc.heat_persistence: arc_overheat / arc_cooldown are not migrated to a dropped Arc and restored on pickup (Base wr_drop/wr_pickup), and not cleared on reset/death (wr_resetplayer/wr_playerdeath). The port keeps heat on the slot state (st.BeamHeat/ArcOverheat) with no drop/pickup/death hooks. Mostly dormant since primary beam_heat is 0. UNCHANGED by Wave-1/2 (WeaponThrowing.cs:50 notes no port weapon implements wr_drop yet).",
+   "[logic/values/timing] weapon-arc.smoke_overheat_fx: No heat-fraction EFFECT_ARC_SMOKE while heating, no EFFECT_ARC_OVERHEAT_FIRE while overheated+firing, and no SND_ARC_LOOP_OVERHEAT loop (with its stop-on-cool/switch logic). The barrel never visibly/audibly smokes or jams. UNCHANGED by Wave-1/2."
+  ]
+ },
+ {
+  "unit": "weapon-blaster",
+  "tier": "haiku",
+  "notes": [
+   "[logic/values] weapon-blaster.bot.aim_dodge: bot_dodge/bot_dodgerating projectile-danger list NOT implemented: bots do not specifically avoid incoming blaster bolts. Blaster.Attack sets no bot_dodge=true/bot_dodgerating=damage on the bolt, and there is no danger-list/dodge-rating registry in src/.../Bot (BotDanger covers only trigger_hurt/fall hazards). The generic CombatMovement strafe is evasive combat movement, not the QC bolt-specific avoidance. ; lead is a GENERIC engine-level projectile lead (BotBrain.ShotLead using the weapon's speed cvar), not the per-weapon wr_aim hook; faithful in effect for the blaster (leads at speed 6000), b"
+  ]
+ },
+ {
+  "unit": "weapon-crylink",
+  "tier": "sonnet",
+  "notes": [
+   "[logic] crylink.projectile.touch_bounce_fade: Chain-detonate gate is approximate, not exact: QC requires RadiusDamage's totaldamage RETURN > 0 (crylink.qc:235,247); port's RadiusDamage is VOID (verified WeaponSplash.cs:49) so OnTouch uses `couldDamage = f*damage>0 || f*edge>0` (Crylink.cs:408,414). Reachable for secondary (linkexplode 1): a secondary spike striking a WALL with no damageable target nearby chain-detonates in the port (couldDamage true, WouldHitFriendly false) where Base would not (totaldamage 0). Needs a RadiusDamage signature change. ; RadiusDamage now passes accuracyWeapon:this so splash HITS credit accuracy; but the FIRE"
+  ]
+ },
+ {
+  "unit": "weapon-devastator",
+  "tier": "opus",
+  "notes": [
+   "[logic/values/timing] weapon-devastator.bot.aim: wr_aim is STILL entirely unported: no WrAim override on Devastator. Bots fire via the generic brain (BotBrain.cs:335 still explicitly defers the per-weapon wr_aim). ; Missing: guide-rate-scaled projectile-speed lead (simulating guiding by aiming as if faster), shot-accuracy relaxation for guidable rockets, skill>=2 detonation decision from predicted self/team/enemy splash damage, skill>=7 self-kill veto, and the 'don't fire a new shot while detonating' interlock."
+  ]
+ },
+ {
+  "unit": "weapon-electro",
+  "tier": "haiku",
+  "notes": [
+   "[logic] electro.ammo_reload: Neither CheckAmmoPrimary nor CheckAmmoSecondary includes the clip-load OR-term (weapon_load[m_id] >= ammo) Base's wr_checkammo1/2 add for the reloadable weapon. A no-op while reload_ammo defaults 0 (clip never loaded), so it never affects stock play. ; No Electro-specific wr_reload override (Base's is W_Reload(min(pri,sec) ammo, SND_RELOAD)); relies on the generic WeaponFireGate.WrReload, acceptable since reload_ammo defaults 0."
+  ]
+ },
+ {
+  "unit": "weapon-fireball",
+  "tier": "opus",
+  "notes": [
+   "[timing] weapon-fireball.primary.shootable: Depletion explode is SYNCHRONOUS (fired inside the damage call) rather than Base's deferred next-frame W_PrepareExplosionByDamage (nextthink=time; setthink), and the port does NOT reassign realowner:=attacker nor call the PrepareExplosionByDamage mutator hook. Shared Projectiles.MakeShootable simplification (Devastator/Electro/Hagar/Arc/Minelayer/Mortar/Seeker/OkRpc all share it). Only observable when a server raises g_balance_fireball_primary_health > 0 — at the stock health 0 the whole path is a faithful no-op. ; find/LaserPlay are still plain radius (warpzone-unaware) — unrelated to this ro",
+   "[logic/values] weapon-fireball.bot.obituary: Bot wr_aim still unported: bots have no Fireball-specific aim (no lead for the slow projectile, no primary/secondary mode switching). No per-weapon bot aim driver exists in the port."
+  ]
+ },
+ {
+  "unit": "weapon-hagar",
+  "tier": "haiku",
+  "notes": [
+   "[logic/values] hagar.load_lifecycle: wr_gonethink (hagar.qc:422-430): when the player switches AWAY from the Hagar with rockets loaded, Base sets WS_READY and calls W_Hagar_Attack2_Load_Release to fire the charged salvo. NOT ported — the driver has no wr_gonethink dispatch, so a switch-away mid-charge silently drops the loaded rockets (ammo already deducted, never fired, never given back). ; wr_playerdeath (hagar.qc:465-470): on death with rockets loaded AND load_releasedeath=1 (stock), Base releases the salvo. NOT ported. ; wr_resetplayer (hagar.qc:456-463): clears hagar_load on every weaponslot when the player is reset (round r"
+  ]
+ },
+ {
+  "unit": "weapon-hlac",
+  "tier": "haiku",
+  "notes": [
+   "[logic] weapon-hlac.ammo.checkreload: Port wr_checkammo is reserve-only (cells >= ammo); Base also passes if weapon_load[m_id] >= ammo (clip OR reserve). No observable effect at default reload_ammo 0 (HLAC ships un-clipped). Unchanged by Wave-2. ; Forced-reload branch in wr_think (hlac.qc:163-167) not ported; dormant at default reload_ammo 0. Unchanged by Wave-2."
+  ]
+ },
+ {
+  "unit": "weapon-hook",
+  "tier": "opus",
+  "notes": [
+   "[values] weapon-hook.primary.state_machine: No W_WeaponRateFactor scaling on hook_refire. ; No 1-second health-regen inhibit (pauseregen_finished) while hooked. ; No offhand best-weapon switch (W_SwitchWeapon_Force/w_getbestweapon) when fuel runs out mid-reel.",
+   "[logic] weapon-hook.primary.fire_grapplinghook: No muzzle flash on hook fire (Base calls W_MuzzleFlash here; port emits none). ; No dedicated hook entity stream (GrapplingHookSend / ENT_CLIENT_HOOK with hook_start/hook_end). The chain HEAD IS networked via the generic projectile feed (ServerNet.Classify -> Projectile: FL_PROJECTILE/Item + Owner + MoveType.Fly) and renders as a red Hookbomb spike — but with no rope-endpoint stream there is no rope line (see weapon-hook.presentation.rope_line). ; grapplehook_gravity TOSS-mode movetype not honoured (always FLY). ; No WarpZone refsys tracking (WarpZone_RefSys_SpawnSameRefSys).",
+   "[logic] weapon-hook.primary.remove_reset: No central RemoveGrapplingHooks reset on freezetag-freeze / teleport / vehicle-enter / wr_resetplayer; the hook is cleared only via the weapon's own state machine. ; Shoot-down credits no pusher/pushltime/istypefrag frag attribution (QC GrapplingHook_Damage sets realowner.pusher=attacker). ; RemoveHook does not explicitly restore the owner from MOVETYPE_FLY to MOVETYPE_WALK (Base does); deferred to the movement system. (The tarzan branch now does flip FLY->WALK each think while reeling, partially covering this for the elastic path.)",
+   "[timing] weapon-hook.offhand.mutator: Residual 1-tick read/publish latency: OffhandFirePressed is published in PlayerPostThink (WeaponFireDriver.Frame, line 66) but read in PlayerPreThink (HookMutator.OnPlayerPreThink), which runs EARLIER in the same OnClientMove tick — so the offhand-think observes the +hook button one server tick (~1/72 s) stale. QC dispatches offhand_think inside W_WeaponFrame same-frame. Functionally castable; minor latency (timing: partial). ; No useammo ammo_factor toggle on the Hook weapon (handled via fuel top-up instead) — behaviourally equivalent; only matters with g_grappling_hook_useammo on. ; No in-mu",
+   "[logic/values/timing] weapon-hook.presentation.rope_line: No hook ROPE line is drawn. There is no GrapplingHookSend/ENT_CLIENT_HOOK stream (with hook_start/hook_end), no Draw_CylindricLine, and no team-coloured rope texture/WarpZone-traced segment in game/. The chain HEAD is networked + rendered as a Hookbomb spike while in flight (and disappears once latched), but the connecting rope between the firer's gun and the latch point is entirely absent."
+  ]
+ },
+ {
+  "unit": "weapon-minelayer",
+  "tier": "sonnet",
+  "notes": [
+   "[logic] minelayer.fire.remote_detonate: Sound semantics differ: Base plays SND_MINE_DET if W_MineLayer_PlacedMines newly set minelayer_detonate on ANY mine (i.e. as soon as you have a placed mine), whereas the port plays mine_det only if at least one mine actually passed the spawnshield+team-safety gate and detonated. With detonatedelay=-1 + proximity safety, pressing secondary while standing on your own mines plays the sound in Base but is silent in the port. ; Port detonates inline in RemoteDetonate rather than flagging minelayer_detonate=true and letting each mine's own W_MineLayer_Think call W_MineLayer_RemoteExplode the next ti",
+   "[logic] minelayer.bot.aim: Per-weapon wr_aim is not ported (deferred for all weapons per BotBrain). Bots lay mines via the generic primary fire path but never set BUTTON_ATCK2 to remote-detonate, and ignore the over-limit fire suppression + the skill-gated (skill>=2) detonation-desirability math (selfdamage/teamdamage/enemydamage weighting, the 0.75*coredamage group-detonate threshold, the skill>6.5 self-preservation veto)."
+  ]
+ },
+ {
+  "unit": "weapon-porto",
+  "tier": "opus",
+  "notes": [
+   "[logic] weapon-porto.fire.refire_gate: porto_forbidden is still dead: WrThink reads st.PortoForbidden but nothing in src/ ever sets it (no race respawn setter) or decrements it (no porto_ticker SV_StartFrame mutator port). Confirmed by grep: PortoForbidden (EntityWeaponState.cs:26,279) has only the reader at Porto.cs:89. In Race/CTS, Base blocks re-firing a porto across a respawn; the port does not.",
+   "[logic] weapon-porto.fire.aim_hold: The hold is set on a Secondary tick and cleared when the held-angle shot is consumed (Porto.cs:117-132), but the QC release condition `if (!(fire & 2)) porto_v_angle_held = 0` cannot be reproduced from a Primary-only tick — the port can't observe an 'ATCK2 released' edge — so the hold is never released until a shot consumes it, which diverges from Base when the player taps then releases secondary without firing primary. ; Only reachable when g_balance_porto_secondary=0 (non-default); dormant in stock play.",
+   "[logic] weapon-porto.touch.placement_tree: Surface-flag gating logic differs from Base in WHERE the flags come from: Base reads trace_dphit* off the ORIGINAL bouncemissile collision trace; the port re-probes with a short worldonly traceline (ProbeImpact, Porto.cs:302-320) because the engine touch carries no per-contact flags. The TraceService genuinely fills DpHitQ3SurfaceFlags/DpHitContents from the BSP surface (TraceService.cs:627), so the slick/clip + noimpact branches are now reachable and play the right cues — but the re-trace can disagree with the true contact face (e.g. on a glancing bounce the probe ray may miss or hit an adjac",
+   "[logic] weapon-porto.lifecycle.lifetime_self_destruct: No throwable-drop: when a combined porto fails softly Base can drop it as a pickup (W_ThrowNewWeapon) with CENTER_PORTO_FAILED; the port just cleans up. ; No center-print notifications (CENTER_PORTO_CREATED_IN/OUT/FAILED) anywhere.",
+   "[logic/values/timing] weapon-porto.lifecycle.death_reset_cleanup: On player death/reset Base clears porto_current and hard-fails the live projectile (W_Porto_Remove, porto.qc:151) and on respawn clears porto_current via wr_resetplayer (porto.qc:409). The port STILL has no such hook (no wr_resetplayer / W_Porto_Remove port found; grep shows PortoCurrent only touched inside Porto.cs): a porto in flight or a placed portal can survive its owner's death.",
+   "[logic/values/timing] weapon-porto.presentation.trajectory_preview: While holding porto (non-secondary mode), Base draws a reflecting red/blue cylindric-line polyline (with the same slick-continue / noimpact-stop / CheckWireframeBox size checks the placement uses) predicting where the in/out portals will land. The port STILL renders nothing — the signature porto view feature is absent."
+  ]
+ },
+ {
+  "unit": "weapon-rifle",
+  "tier": "sonnet",
+  "notes": [
+   "[logic] rifle.deathtype.secondary: STILL OPEN (UNCHANGED this pass). Secondary rifle kills still print WEAPON_RIFLE_MURDER instead of WEAPON_RIFLE_MURDER_HAIL because Rifle.FireBullets builds deathType=RegistryId (Rifle.cs:305) and calls WeaponFiring.FireBullet (Rifle.cs:311-313) WITHOUT a deathTag. The HITTYPE-carrying channel EXISTS and is wired: WeaponFiring.FireBullet has a `deathTag` param (cs:239) that flows to ApplyDamage (cs:319,667), and MachineGun's mode-0 snipe secondary already uses it. DeathMessages.cs:82-85 has the faithful RIFLE HAIL/PIERCING branch keyed off sec/bounce. So this is a ONE-LINE omission in the rifl",
+   "[logic] rifle.zoom_eye: UNCHANGED by Wave-2. When zoomed, Base re-aims the rifle shot straight from the eye (w_shotdir = v_forward) for pixel-accurate long shots; the port keeps the trueaim origin (the headless server input has no zoom button). Low impact: only matters while scoped, and the secondary-zoom path is OFF at stock secondary 1."
+  ]
+ },
+ {
+  "unit": "weapon-seeker",
+  "tier": "haiku",
+  "notes": [
+   "[logic/values] weapon-seeker.missile_shootdown: Self-damage scaling NOT ported: Base drains RES_HEALTH by damage*0.25 when realowner==attacker (the firer shooting their own missile) vs full damage for everyone else; Projectiles.ShootDown (Projectiles.cs:90) subtracts full `damage` unconditionally. So a firer's own splash/shot depletes the missile 4x faster than Base."
+  ]
+ },
+ {
+  "unit": "weapon-shotgun",
+  "tier": "opus",
+  "notes": [
+   "[logic/values] weapon-shotgun.primary.spread_style: STILL OPEN (untouched): CalculateSpread only does style 0 (dir + randomvec()*spread, normalized — calculations.qc case 0); Base default is style 4 (gauss-2D: per-axis ugaussian * sigma, clamped, cliptoplane onto the aim plane). The pellet cone has a different (denser-centre, plane-constrained) density profile than Base.",
+   "[values] weapon-shotgun.primary.firebullet_falloff: STILL OPEN: g_ballistics_mindistance hardcoded to 1f (WeaponFiring.cs:235) instead of cfg default 2 — bullets penetrate walls thinner than Base allows. Untouched by the fix-up. ; g_ballistics_penetrate_clips (default 1) / weapclip handling still not modeled.",
+   "[values] weapon-shotgun.primary.setupshot_recoil: STILL OPEN: trueaim minrange clamp (g_trueaim_minrange=44) not implemented; at point-blank the shot direction can differ slightly from Base. ; Antilag takeback at the SetupShot level deferred (antilag is per-shot LagComp inside FireBullet). Accuracy FIRED credit IS wired (WeaponAccuracyEvents.Fired, WeaponFiring.cs:112-113).",
+   "[logic/values/timing] weapon-shotgun.secondary.melee_swing: STILL OPEN: swing executes as a single pass over the whole arc on one tick instead of Base spreading melee_traces across melee_time (0.15s) via a re-scheduled think (shotgun.qc:88-191); damage lands instantly with no mid-swing ramp, so a target can't move out of a partially-completed swing. ; STILL OPEN: melee_delay (0.25s wind-up — Base schedules W_Shotgun_Melee_Think at time + melee_delay, shotgun.qc:201) is read into the balance struct (MeleeDelay=0.25) but NOT applied; the slap lands the same tick. The class docstring explicitly acknowledges this is left out. ; STILL OPEN: melee_no_doubles",
+   "[logic/values] weapon-shotgun.secondary.melee_routing: Alt triple-shot (secondary==2) still fires a single Attack (W_Shotgun_Attack) instead of the staged Frame1->Frame2 3-blast sequence + its dry-fire W_SwitchWeapon_Force. Non-default mode. ; When secondary==2 the port schedules with Secondary.Refire/Animtime (1.25/1.15) but Base uses the SEPARATE alt_refire/alt_animtime (1.2/0.2, shotgun.qc:334-335) — the single-blast triple path still has the wrong refire/anim timing.",
+   "[values] weapon-shotgun.ammo.checkammo_reload: wr_checkammo1/2 in Base also OR the clip load (weapon_load[m_id] >= ammo) (shotgun.qc:357,370); the port's CheckAmmoPrimary checks only GetResource >= ammo. reload_ammo defaults 0 so no clip is used by default — moot for default play, latent if reload_ammo is ever set. ; pickup_ammo (15) still not read in Shotgun.cs (item-pickup concern, not the weapon's checkammo).",
+   "[logic/values] weapon-shotgun.bot.wr_aim: STILL MISSING: no WrAim override on Shotgun (only WrThink/Configure/Attack/Melee/CheckAmmo*). Bots do not press ATCK2 (melee) when an enemy is within melee_range (vdist <= 120), nor the bot_aim ranged tuning for the pellet fan. Untouched.",
+   "[logic/values/timing] weapon-shotgun.fx.impact_ricochet_audio: STILL OPEN: ricochet sound plays on every pellet impact (~12/shot) with NO w_random<0.05 / 0.25 s prevric throttle (shotgun.qc:404-409 re-verified). BulletImpactFx calls SoundSystem.PlayRic unconditionally, so the ricochet over-plays vs Base. ; STILL OPEN (latent): no per-actor prevric state field; adding the throttle needs one (mirroring .prevric in Base)."
+  ]
+ },
+ {
+  "unit": "weapon-tuba",
+  "tier": "opus",
+  "notes": [
+   "[logic/values/timing] weapon-tuba.note.sustain_lifetime: Port spawns a tuba_note marker and refreshes/deletes it on hold/release, but the keep-alive MaxHealth is never read (no NoteThink) — the entity has no self-expiry or re-origin/SendFlags logic; it exists only to track current note pitch/instrument for restart detection. ; W_WeaponRateFactor scaling on the keep-alive is omitted (only matters under haste/rate modifiers). ; No W_Tuba_NoteThink server-side per-listener volume/angle re-origin + SendFlags (moot until sound networking exists). ; W_Tuba_NoteOff does not record tuba_lastnotes (see weapon-tuba.melody.recognition).",
+   "[logic/values/timing] weapon-tuba.audio.note_sound: NoteSample builds the correct per-pitch/instrument asset NAME (closing the baseline's flat 'tuba_loopnote.wav' which existed for NO file), but it looks up the RAW GetNote note with no cl_tuba_pitchstep rounding. The on-disk samples exist ONLY at multiples of 6 (-18,-12,-6,0,6,12,18,24); GetNote's common outputs (2,3,4,5,1,7,9,10,11,-1,-5,-4) have NO matching file, so the majority of played notes still resolve to a missing asset (likely silent). Only note 0 / +-6 (and the rare +-12/etc) hit a real sample. ; No pitch-step crossfade / sound7 speed shift: Base picks the nearest available multiple-",
+   "[logic/values/timing] weapon-tuba.melody.recognition: No tuba_lastnotes history is recorded on note-off (Tuba.NoteOff comments the omission explicitly), so W_Tuba_HasPlayed (map magic-ear melody triggers) cannot work. ; No 'NAME played on the @!#%'n Tuba/Accordeon/Klein Bottle: ...' chat line on a recognized melody."
+  ]
+ },
+ {
+  "unit": "weapon-vaporizer",
+  "tier": "opus",
+  "notes": [
+   "[values] weapon-vaporizer.primary.beam_particle: Beam is a generic networked trail effect (TE_TEI_G3 / _HIT), not the Base cylindric gauntletbeam/lgbeam beam; no team-color (cl_vaporizerbeam_teamcolor) or colorboost tint, no 0.8 beam lifetime cvar.",
+   "[logic/values] weapon-vaporizer.primary.achievements: Never announces YODA (airshot on a flying enemy) or IMPRESSIVE; the every-2nd-hit vaporizer_lasthit gate (wr_setup/wr_resetplayer reset) is absent. (ELECTROBITCH airshot announce on the RM laser is likewise absent — see rm.laser_barrage.)",
+   "[logic/timing] weapon-vaporizer.rm.laser_barrage: Hold-to-rapid acceleration (jump_interval2 / g_rm_laser_rapid / rapid_delay / rapid_refire) and the mode-1 single rapid bolt are absent — Vaporizer.cs always fires the mode-0 fan (no hagar_load/jump_interval2 state). ; Bolts skip W_CalculateProjectileVelocity (shooter-velocity inheritance) — port sets velocity = (shotdir + lateral*spread)*speed only. ; No CSQCProjectile(PROJECTILE_ROCKETMINSTA_LASER) per-bolt visual; no weapon_thinkf animtime. ; ELECTROBITCH airshot announce (W_RocketMinsta_Laser_Explode notif) not emitted on a flying-enemy laser kill.",
+   "[logic/values] weapon-vaporizer.ammo.consumption: Instagib flag is hardcoded true on the class default; in non-instagib play the default loadout/CheckAmmoPrimary treat it as instagib (1 cell). Attack/CheckAmmoPrimary DO re-read g_instagib via InstagibActive for the actual decrement/check, so under the mutator it is correct — but the bare class default is wrong. ; wr_reload + the wr_think forced-reload branch are not ported (latent: reload_ammo/reload_time default 0). ; wr_aim (bot aim toggle primary/secondary) not ported on this class — bots cannot aim/fire the Vaporizer."
+  ]
+ },
+ {
+  "unit": "weapon-vortex",
+  "tier": "opus",
+  "notes": [
+   "[logic/values] weapon-vortex.fx.beam: Beam is emitted at a constant intensity: alpha/fade/trail-spacing are NOT scaled by sqrt(charge), so a barely-charged shot and a full shot look identical. ; In team modes (cl_tracers_teamcolor), the beam is NOT tinted to the shooter's team color via vortex_glowcolor — it always uses the default beam color. ; cl_particles_oldvortexbeam does not switch to the legacy EFFECT_VORTEX_BEAM_OLD beam.",
+   "[logic] weapon-vortex.fx.charge_glow: QC's wr_glow brightens the wielder's player model proportionally to vortex_charge (via vortex_glowcolor, team-tinted, f scaled by charge_animlimit). The port has no wr_glow override and emits no charge-driven player-model glow — the carrier looks identical regardless of charge. Also blocked by charge not being networked to clients."
+  ]
+ }
+]

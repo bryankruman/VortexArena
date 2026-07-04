@@ -45,6 +45,10 @@ public sealed class EntityMovementStep : IMovementStep
         // local player crosses a teleporter — which is when NetGame snaps the view (one-shot, replay-safe).
         _carrier.FixAngle = false;
 
+        // Key the predictors' one-shot pulses by this command's sequence (see TriggerTouch.PredictionSeq): a
+        // reconcile REPLAY re-runs the same seq, so a seq-keyed pulse fires exactly once per real crossing.
+        XonoticGodot.Engine.Simulation.TriggerTouch.PredictionSeq = cmd.Seq;
+
         // build the per-tick movement input from the command (the same conversion the server applies).
         InputButtons b = cmd.TypedButtons;
         // The InputCommand carries the wish-move normalized to ±1 (see NetGame.SampleInput); the move code must
@@ -64,6 +68,9 @@ public sealed class EntityMovementStep : IMovementStep
             ButtonAttack1 = (b & InputButtons.Attack) != 0,
             ButtonAttack2 = (b & InputButtons.Attack2) != 0,
             ButtonUse = (b & InputButtons.Use) != 0,
+            // PHYS_INPUT_BUTTON_CHAT — keep the predictor in lockstep with ServerNet.ToMovementInput so the typing
+            // movement block (PM_check_blocked zeroes the wish-move) is predicted identically to the authority.
+            Typing = (b & InputButtons.Chat) != 0,
             // This is client-side prediction (and its reconciliation replays) — suppress the server-owned
             // footstep/landing sounds so a predicted landing doesn't fire (and replays don't multiply) them.
             Predicted = true,
@@ -83,6 +90,13 @@ public sealed class EntityMovementStep : IMovementStep
         // run one authoritative movement tick (gravity + friction/accel + slide/step collision).
         Movement.Move(_carrier, input);
 
+        // Mirror the server (GameWorld: `p.Angles = input.ViewAngles`): the carrier's .Angles MUST carry the
+        // live view angles. The warpzone/teleport predictors below rotate the EXIT facing via
+        // TransformAngles(carrier.Angles); without this the carrier kept a stale/zero angle, so a warpzone snapped
+        // the view to a FIXED wrong facing (the reported "comes out at the wrong angle") instead of the player's
+        // actual view rotated into the exit plane. (Movement.Move already set .ViewAngles, not .Angles.)
+        _carrier.Angles = input.ViewAngles;
+
         // Client-side jump-pad prediction (CSQC trigger_push): after the move, apply the launch of any jump-pad
         // the carrier now overlaps — exactly as the server does in its post-move TouchAreaGrid pass
         // (SimulationLoop) — so the predicted local player feels pads IN LOCKSTEP with authority. Without this
@@ -96,6 +110,15 @@ public sealed class EntityMovementStep : IMovementStep
         // origin error and hard-snap). It also stamps the carrier's .fixangle so the host can snap the local view
         // to the exit facing this tick. Predicted mode = no sound/telefrag/targets (server-authoritative).
         XonoticGodot.Engine.Simulation.TriggerTouch.PredictTeleportsAmbient(_carrier);
+
+        // Client-side warpzone prediction (CSQC WarpZone_FixPMove): warp the carrier through any linked
+        // trigger_warpzone it now overlaps — origin/velocity/angles rotated by the seam transform — IN LOCKSTEP
+        // with the server's post-move WarpZone_Touch, so a seamless-portal crossing doesn't rubber-band the camera
+        // (the reconcile would otherwise measure a warp-sized origin error and hard-snap). Like the teleporter
+        // predictor it stamps the carrier's .fixangle so the host snaps the local view to the rotated exit facing
+        // this tick. Gate matches the authoritative WarpzoneManager.Teleport plane-side test exactly; predicted
+        // mode = no SUB_UseTargets/projectile/stuck-recovery side effects (server-authoritative).
+        XonoticGodot.Engine.Simulation.TriggerTouch.PredictWarpzonesAmbient(_carrier);
 
         // read the result back into the predicted state.
         state.Origin = _carrier.Origin;

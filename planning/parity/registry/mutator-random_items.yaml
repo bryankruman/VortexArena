@@ -1,0 +1,324 @@
+unit: mutator-random_items
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-27"
+summary:
+  feature_count: 11
+  worst_gaps:
+    - "Item_IsDefinitionAllowed is approximated by def.ItemDef.IsAllowed (MutatorBlocked spawnflag only), not the broader QC allow-list / gametype gates — a latent narrow divergence under mutator-restricted item sets, harmless for stock pools."
+    - "No real gameplay-logic gaps remain. The mod-injection hook is now FULLY wired: BOTH the Overkill AND the Instagib RandomItems_GetRandomItemClassName overrides are live (Instagib substitutes vaporizer_cells/extralife/invisibility/speed — its items are now ported and resolve to real pickups). Only minor caveat: Item_IsDefinitionAllowed is approximated by the MutatorBlocked spawnflag."
+features:
+  - id: random_items.gate.enable
+    name: "Enable gate + mutator registration (g_random_items || g_random_loot)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qh:44 (REGISTER_MUTATOR)"
+      - "mutators.cfg:550 (g_random_items 0); :551 (g_random_loot 0)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:76 (IsEnabled)"
+    constants:
+      - { name: "g_random_items", base: "0", port: "0", match: true }
+      - { name: "g_random_loot", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "IsEnabled reads both cvars (RandomItemsMutator.cs:76-78); [Mutator] auto-discovery + MutatorActivation.Apply (called live from GameWorld.cs:535) calls Hook() when IsEnabled. mutators.cfg:550/551 ship both at 0.", result: pass }
+    confidence: high
+    notes: "Gate identical to Base (either cvar). Verified the mutator is genuinely activated on the real match path via MutatorActivation.Apply()."
+
+  - id: random_items.engine.type_weighted_pick
+    name: "Type-weighted classname pick (RandomItems_GetRandomVanillaItemClassName)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qc:64 (RandomItems_GetRandomVanillaItemClassName)"
+      - "common/mutators/mutator/random_items/sv_random_items.qc:54 (RandomItems_GetRandomItemClassName)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:317 (GetRandomVanillaItemClassName)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:302 (GetRandomItemClassName)"
+    constants:
+      - { name: "type prob cvar pattern", base: "g_{prefix}_{type}_probability", port: "g_{prefix}_{type}_probability (ProbCvar:404)", match: true }
+      - { name: "weighted-reservoir rule", base: "random()*total <= prob (RandomSelection_AddFloat)", port: "Prandom.Float()*total <= prob", match: true }
+      - { name: "RANDOM_ITEM_TYPE_ALL", base: "BITS(5)", port: "(1<<5)-1", match: true }
+      - { name: "empty-type retry (types &= ~item_type)", base: "present", port: "types &= ~chosenType (:339)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "On a prefix where NO type has a positive probability cvar the port breaks out via the chosenType==None guard (:340) and returns empty; Base logs a per-cvar warning and returns empty too — same end result, the warnings are diagnostics only (not flagged)."
+    verification:
+      - { kind: code, ref: "All five type branches resolve: WEAPON -> GetRandomWeaponClassName (:350), the other four -> GetRandomItemClassNameWithProperty (:373). Live caller SpawnLootItem (:244) fires on the live PlayerDies path; GetRandomItemClassName (:302) also feeds the now-live ReplaceMapItem path.", result: pass }
+    confidence: high
+    notes: "Per-type resolution complete over all five types; both callers (loot + map-replace) now live. Weighted-reservoir scaffolding verified against RandomSelection_AddFloat."
+
+  - id: random_items.engine.weapon_prob_cvar
+    name: "Per-weapon probability lookup + weapon classname construction"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qc:159-178 (WEAPON case; sprintf g_%s_%s_probability with it.m_canonical_spawnfunc)"
+      - "common/weapons/weapon/vortex.qh (m_canonical_spawnfunc = \"weapon_vortex\")"
+      - "randomitems-xonotic.cfg:74 (g_random_items_weapon_vortex_probability 1)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:350 (GetRandomWeaponClassName)"
+    constants:
+      - { name: "weapon prob cvar name", base: "g_{prefix}_weapon_{netname}_probability", port: "g_{prefix}_weapon_{netname}_probability ($\"g_{prefix}_{spawnFunc}_probability\", spawnFunc=\"weapon_\"+netname)", match: true }
+      - { name: "emitted classname", base: "\"weapon_\"+netname (== m_canonical_spawnfunc)", port: "\"weapon_\"+NetName", match: true }
+      - { name: "mutatorblocked filter", base: "!(spawnflags & WEP_FLAG_MUTATORBLOCKED)", port: "!(SpawnFlags & WeaponFlags.MutatorBlocked)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value, ref: "GetRandomWeaponClassName builds spawnFunc=\"weapon_\"+NetName then $\"g_{prefix}_{spawnFunc}_probability\" = g_random_items_weapon_vortex_probability, matching shipped randomitems-xonotic.cfg:74 (exec'd from mutators.cfg:552). The 'weapon_' segment is present.", result: pass }
+    confidence: high
+    notes: "Weight-lookup cvar name includes the 'weapon_' segment, matching Base's sprintf with m_canonical_spawnfunc and the shipped per-weapon cvars."
+
+  - id: random_items.engine.item_prob_by_property
+    name: "Health/armor/resource/powerup classname pick (GetRandomItemClassNameWithProperty)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qc:211 (RandomItems_GetRandomItemClassNameWithProperty)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:373 (GetRandomItemClassNameWithProperty)"
+    constants:
+      - { name: "item prob cvar pattern", base: "g_{prefix}_{m_canonical_spawnfunc}_probability (e.g. g_random_loot_item_health_small_probability)", port: "g_{prefix}_{CanonicalSpawnFunc(def)}_probability", match: true }
+      - { name: "filter", base: "it.<prop> && (spawnflags & ITEM_FLAG_NORMAL) && Item_IsDefinitionAllowed(it)", port: "MatchesType(def,type) && (def.ItemDef.SpawnFlags & GameItemSpawnFlag.Normal) && def.ItemDef.IsAllowed", match: true }
+      - { name: "weighted reservoir", base: "RandomSelection_AddString(spawnfunc, cvar, 1)", port: "Prandom.Float()*total <= prob -> chosen=spawnFunc", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Item_IsDefinitionAllowed is approximated by def.ItemDef.IsAllowed, which only checks the MutatorBlocked spawnflag (not the broader QC allow-list / gametype gates). Adequate for the stock pools but a latent narrow divergence under mutator-restricted item sets."
+    verification:
+      - { kind: code, ref: "GetRandomItemClassNameWithProperty enumerates Items.All, filters by MatchesType + Normal spawnflag + IsAllowed, weights by g_{prefix}_{CanonicalSpawnFunc}_probability, returns the canonical classname. CanonicalSpawnFunc('health_small') = 'item_health_small', matching randomitems-xonotic.cfg:115. ResolvePickup scans Items.All for that canonical name.", result: pass }
+    confidence: high
+    notes: "Item registry enumerated (Items.All) for all four non-weapon types via the canonical spawnfunc classname."
+
+  - id: random_items.engine.mod_injection_hook
+    name: "Mod-injection hook (RandomItems_GetRandomItemClassName MUTATOR_HOOKABLE; overkill/instagib override)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qh:41 (MUTATOR_HOOKABLE RandomItems_GetRandomItemClassName)"
+      - "common/mutators/mutator/random_items/sv_random_items.qc:56 (CALLHOOK at entry of RandomItems_GetRandomItemClassName)"
+      - "common/mutators/mutator/overkill/sv_overkill.qc:58 (ok override); common/mutators/mutator/instagib/sv_instagib.qc:102 (instagib override)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:858 (RandomItemsGetClassName HookChain); :865 (FireRandomItemsGetClassName)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:305 (CALLHOOK at GetRandomItemClassName entry)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:131 (hook Add); :193 (OnRandomItemsGetClassName override)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/InstagibMutator.cs:152 (hook Add); :773 (OnRandomItemsGetClassName override)"
+    constants:
+      - { name: "hook event EV_RandomItems_GetRandomItemClassName(prefix -> classname)", base: "present", port: "RandomItemsGetClassName HookChain (MutatorHooks.cs:858)", match: true }
+      - { name: "overkill pool override (g_overkill_items + okhmg/okrpc)", base: "RandomItems_GetRandomOverkillItemClassName (sv_overkill.qc:21)", port: "OnRandomItemsGetClassName (OverkillMutator.cs:193)", match: true }
+      - { name: "instagib pool override (vaporizer_cells/extralife/invisibility/speed)", base: "RandomItems_GetRandomInstagibItemClassName (sv_instagib.qc:24); hook at :102", port: "OnRandomItemsGetClassName (InstagibMutator.cs:773-799)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "GetRandomItemClassName (:302) fires MutatorHooks.FireRandomItemsGetClassName(prefix) BEFORE the vanilla fallback. OverkillMutator.OnRandomItemsGetClassName (:193) subscribes (Add at :131) and substitutes g_overkill_items + okhmg/okrpc. InstagibMutator.OnRandomItemsGetClassName (:773) subscribes (Add at :152) and weighted-picks over the fixed instagib pool {vaporizer_cells, extralife, invisibility, speed} by g_{prefix}_{canonical}_probability, returning true to consume the pick. Both Hook() calls run ONLY when the mutator IsEnabled (MutatorActivation.Apply gates on IsEnabled at MutatorActivation.cs:84, called live from GameWorld.cs:614). The 4 instagib items are now ported (InstagibItems.cs:27/70, PowerupItem.cs:126/155, registered ItemSpawnFuncs.cs:62/63/72/74) so their classnames resolve to real pickups via RandomItemsMutator.ResolvePickup.", result: pass }
+    confidence: high
+    notes: "FIX vs baseline: the Instagib override is now WIRED and live (baseline recorded it as missing/deferred, liveness=partial). InstagibMutator.OnRandomItemsGetClassName subscribes when instagib is enabled and substitutes the instagib pool; its items (vaporizer_cells/extralife/invisibility/speed) are ported and resolve. Both mod-injection overrides (Overkill + Instagib) are now live → liveness=live, instagib constant match=true, gap cleared."
+
+  - id: random_items.map.filter_replace
+    name: "Map-item replacement on spawn (FilterItem -> RandomItems_ReplaceMapItem)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qc:323 (FilterItem hook, CBC_ORDER_LAST)"
+      - "common/mutators/mutator/random_items/sv_random_items.qc:233 (RandomItems_ReplaceMapItem)"
+      - "common/mutators/mutator/random_items/sv_random_items.qc:200 (RandomItems_GetItemReplacementClassNames)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:129 (OnFilterItem)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:160 (ReplaceMapItem)"
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:119 (FireFilterItem caller)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:805 (FilterItem HookChain); :812 (FireFilterItem)"
+    constants:
+      - { name: "g_random_items_replace_* default", base: "\"random\"", port: "read from cvar g_random_items_replace_{classname} (RandomItemsMutator.cs:165)", match: true }
+      - { name: "new_item.lifetime", base: "-1 (permanent)", port: "ItemIsLoot=false; SpawnFuncs.TrySpawn (non-loot StartItem path) (:191-196)", match: true }
+      - { name: "replace-list pick", base: "tokenize + argv(floor(random()*n))", port: "Split(' ') + toks[Prandom.RangeInt(0,n)] (:178-180)", match: true }
+      - { name: "chosen==current -> NULL", base: "present", port: "if (newClassname == item.ClassName) return null (:183)", match: true }
+      - { name: "Item_CopyFields placement", base: "origin/angles/spawnflags/target(name)/team/noalign", port: "CopyMapPlacement (:205-217)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "StartItem.SpawnInternal:116 fires MutatorHooks.FireFilterItem(item) AFTER FilterItemDefinition; a true return deletes the original (RemoveItem:118). OnFilterItem (:129) guards on RandomItems/_isSpawning/ItemIsLoot then ReplaceMapItem (:160): reads g_random_items_replace_<classname>, 'random' -> weighted tables, else tokenized uniform pick, spawns the replacement via SpawnFuncs.TrySpawn under the _isSpawning recursion guard copying the original placement.", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (was missing): the entity-level FilterItem seam now exists (StartItem.cs:116) and map items are replaced on spawn. The replace-cvar machinery (literal 'random' vs tokenized list, chosen==current no-op) is fully ported."
+
+  - id: random_items.map.item_touched_rerandom
+    name: "Re-randomize map item on respawn (ItemTouched -> replace + ScheduleRespawn + delete)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qc:347 (ItemTouched hook, CBC_ORDER_LAST)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:140 (OnItemTouched)"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:418 (FireItemTouched caller)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:832 (ItemTouched HookChain); :839 (FireItemTouched)"
+    constants:
+      - { name: "Item_ScheduleRespawn(new_item) + delete(item)", base: "respawn the replacement, drop original", port: "ScheduleRespawn(newItem) + RemoveItem(item) (:147-148)", match: true }
+      - { name: "ITEM_IS_LOOT skip", base: "present (:355)", port: "if (item.ItemIsLoot) return false (:144)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "ItemPickupRules.ItemTouch:417 fires MutatorHooks.FireItemTouched(item, toucher) AFTER the give + pickup sound, then bails on item.IsFreed (:418). OnItemTouched (:140) guards on RandomItems/ItemIsLoot, ReplaceMapItem, ScheduleRespawn(newItem), RemoveItem(item) — matching the QC respawn-the-replacement / delete-original sequence.", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (was missing): the ItemTouched mutator-hook chain now exists and is fired live from ItemPickupRules (the prior ':364 no ItemTouch hook chain yet' comment is gone). Picked-up map items re-randomize."
+
+  - id: random_items.loot.player_dies_count
+    name: "Loot count on death: floor(min + random()*max) items at corpse"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qc:369 (PlayerDies hook)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:223 (OnPlayerDies)"
+    constants:
+      - { name: "g_random_loot_min", base: "0", port: "0 (from cvar)", match: true }
+      - { name: "g_random_loot_max", base: "4", port: "4 (from cvar)", match: true }
+      - { name: "count formula", base: "floor(min + random()*max)", port: "floor(LootMin + Prandom.Float()*LootMax)", match: true }
+      - { name: "loot position", base: "victim.origin + '0 0 32'", port: "victim.Origin + (0,0,32)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "MutatorHooks.PlayerDies.Call fired live from DamageSystem.cs:658; OnPlayerDies count/position math matches QC. The items it spawns are real pickups (random_items.loot.spawn_item).", result: pass }
+    confidence: high
+    notes: "Count + spawn position faithful, hook genuinely live; the loot it drops is functional."
+
+  - id: random_items.loot.spawn_item
+    name: "Loot-item spawn (RandomItems_SpawnLootItem): classname + spread + lifetime"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qc:286 (RandomItems_SpawnLootItem)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:244 (SpawnLootItem)"
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:71 (SpawnLoot)"
+    constants:
+      - { name: "g_random_loot_spread", base: "200", port: "200 (field default 200; cvar override only if !=0)", match: true }
+      - { name: "g_random_loot_time", base: "10", port: "10 (field default 10; cvar override only if !=0)", match: true }
+      - { name: "spread.z bias", base: "spread/2", port: "LootSpread/2", match: true }
+      - { name: "spread vec", base: "randomvec()*spread (each axis [-1,1])", port: "Prandom.Vec()*LootSpread (Signed = Float()*2-1 in [-1,1])", match: true }
+      - { name: "makes a real pickup", base: "Item_Initialise => MOVETYPE_TOSS, touch-pickupable, despawns", port: "StartItem.SpawnLoot => MoveType.Toss, Touch=ItemTouch, despawn at lifetime", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "LootTime field default = 10f (RandomItemsMutator.cs:68), matching Base/cfg; cvar override applies only when non-zero (:106-107). SpawnLootItem resolves the chosen classname to its Pickup via ResolvePickup and spawns through StartItem.SpawnLoot (MOVETYPE_TOSS, Touch=ItemTouch, despawn timer). Spread math matches QC; Prandom.Vec verified [-1,1] per axis. ok_item tag set under Overkill (:265-266).", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (values was partial): the loot_time field default is 10 (not 20), matching Base — the prior latent values divergence is resolved. Loot is a real touch-pickupable item via StartItem.SpawnLoot."
+
+  - id: random_items.spawn.recursion_guard_ok_flag
+    name: "Spawn-mechanics correctness: random_items_is_spawning recursion guard, ITEM_IS_LOOT skip, ok_item flag"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qc:42 (random_items_is_spawning); :268/:296 (set/clear around spawn)"
+      - "common/mutators/mutator/random_items/sv_random_items.qc:330/335/355 (random_items_is_spawning + ITEM_IS_LOOT skips in FilterItem/ItemTouched)"
+      - "common/mutators/mutator/random_items/sv_random_items.qc:274/303 (if MUTATOR_IS_ENABLED(ok) new_item.ok_item = true)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:85 (_isSpawning guard); :132/:144 (skips); :193/:265 (ok_item set)"
+      - "src/XonoticGodot.Common/Gameplay/Items/EntityItemState.cs:54 (Entity.OkItem field)"
+    constants:
+      - { name: "recursion guard", base: "random_items_is_spawning bool", port: "static bool _isSpawning (set/restored around ReplaceMapItem + SpawnLootItem)", match: true }
+      - { name: "ITEM_IS_LOOT skip in FilterItem/ItemTouched", base: "present", port: "if (item.ItemIsLoot) return false (OnFilterItem:134, OnItemTouched:144)", match: true }
+      - { name: "ok_item flag on spawned/replaced/loot item", base: "set when MUTATOR_IS_ENABLED(ok)", port: "if (OverkillEnabled()) newItem.OkItem = true (:193, :265)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "_isSpawning (RandomItemsMutator.cs:85) is set true around both ReplaceMapItem (:187-197) and SpawnLootItem (:259-271) and consumed by OnFilterItem:132 (matching QC's re-entry guard). ITEM_IS_LOOT skips at :134/:144. ok_item: Entity.OkItem (EntityItemState.cs:54) set when OverkillEnabled() on replaced (:193) and loot (:265) items; OverkillMutator.cs:347 reads OkItem||ItemIsLoot to qualify Overkill items. OverkillEnabled() reads Mutators.ByName('overkill').IsEnabled (QC MUTATOR_IS_ENABLED(ok)).", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (was missing): the recursion guard, ITEM_IS_LOOT skips, and the ok_item flag are all ported and live. A random-loot item dropped under Overkill is now properly tagged Entity.OkItem (the OverkillMutator.cs ItemIsLoot stand-in gap is closed)."
+
+  - id: random_items.string.mutator_labels
+    name: "Active-mutators string hooks (BuildMutatorsString / BuildMutatorsPrettyString)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/random_items/sv_random_items.qc:312 (BuildMutatorsString -> ':random_items')"
+      - "common/mutators/mutator/random_items/sv_random_items.qc:317 (BuildMutatorsPrettyString -> ', Random items')"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:121 (BuildMutatorsString)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs:124 (BuildMutatorsPrettyString)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:108/121 (BuildMutatorsString/PrettyString chains)"
+    constants:
+      - { name: "mutator net id", base: ":random_items", port: "s + \":random_items\" (:121)", match: true }
+      - { name: "pretty label", base: ", Random items", port: "s + \", Random items\" (:124)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "RandomItemsMutator overrides BuildMutatorsString (:121 -> ':random_items') and BuildMutatorsPrettyString (:124 -> ', Random items'). MutatorActivation.BuildMutatorsString (:108) iterates active mutators and is run live from GameWorld.cs:876 (GameLogInit). The generic NetName-based... rather, the per-mutator virtual-override chain now exists and this mutator participates.", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (was missing): the active-mutators string chain exists (MutatorActivation.BuildMutatorsString/PrettyString) and this mutator contributes ':random_items' / ', Random items'. Live via GameWorld GameLogInit."

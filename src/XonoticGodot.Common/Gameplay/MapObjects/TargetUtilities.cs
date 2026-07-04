@@ -269,7 +269,7 @@ public static class TargetUtilities
     //  target_changelevel (target/changelevel.qc) — end / switch the level
     // ===================================================================
 
-    public const int ChangeLevelMultiplayer = 1 << 0; // CHANGELEVEL_MULTIPLAYER
+    public const int ChangeLevelMultiplayer = 1 << 1; // CHANGELEVEL_MULTIPLAYER = BIT(1) (changelevel.qh)
 
     /// <summary>
     /// Host seam (XonoticGodot.Server): end the current match / advance to the next level (QC <c>NextLevel()</c>),
@@ -291,6 +291,13 @@ public static class TargetUtilities
     public static System.Func<Entity /*target*/, (int real, int voted)>? RealPlayerVoteCount;
 
     /// <summary>
+    /// Host seam (XonoticGodot.Server): apply the next map's gametype (QC <c>MapInfo_SwitchGameType</c>) when a
+    /// <c>target_changelevel</c> carries a <c>.gametype</c> NetName. On the listen server this sets the live
+    /// <c>gametype</c> cvar so the rebooted level comes up in that mode. Null = no switch (degrade to no-op).
+    /// </summary>
+    public static System.Action<string /*gametype NetName*/>? SwitchGameTypeHandler;
+
+    /// <summary>
     /// <c>spawnfunc(target_changelevel)</c> — ends the match (empty <c>.chmap</c>) or switches to <c>.chmap</c>.
     /// CHANGELEVEL_MULTIPLAYER requires a fraction (<c>.count</c>, default 0.7) of real players to trigger it.
     /// </summary>
@@ -301,12 +308,11 @@ public static class TargetUtilities
         this_.ClassName = "target_changelevel";
 
         // QC: if(!this.count) this.count = 0.7 — a fraction of real players. QC's .count is a FLOAT; the port
-        // splits QC's .count into Count (int, what the BSP loader binds the "count" key into) and the float
-        // MoverCnt used here. Seed the fraction from the int Count when a map gave one (an integer like 1 = "all
-        // players"), else use the 0.7 default. (A FRACTIONAL map "count" can't survive the int binder — that
-        // needs a float-count binder in the map loader; recorded in crossTaskNeeds. Maps virtually always use
-        // CHANGELEVEL_MULTIPLAYER with the default fraction, so this is the faithful common path.)
-        this_.MoverCnt = this_.Count != 0 ? this_.Count : 0.7f;
+        // binds the raw "count" key as a float onto ParticleCount (MapObjectFieldsExtra) AND truncated onto the
+        // int Count. Seed the fraction from the FLOAT count so a fractional map value (e.g. 0.5) survives — fall
+        // back to the int Count, then the 0.7 default. (Maps virtually always use the default fraction.)
+        float countKey = this_.ParticleCount != 0f ? this_.ParticleCount : this_.Count;
+        this_.MoverCnt = countKey != 0f ? countKey : 0.7f;
 
         MapMover.IndexRegister(this_);
         // QC: this.reset = target_changelevel_reset — dormant until reset infra exists.
@@ -346,10 +352,16 @@ public static class TargetUtilities
                 return;
         }
 
-        // QC: if(this.gametype != "") MapInfo_SwitchGameType(...) — MapInfo_SwitchGameType isn't ported; the
-        // next-map gametype switch is degradable. Record the request so a host can honor it.
+        // QC: if(this.gametype != "") MapInfo_SwitchGameType(MapInfo_Type_FromString(this.gametype)). On the
+        // listen server the host seam sets the live `gametype` cvar so the next changelevel boots that mode
+        // (the port's MapInfo_SwitchGameType equivalent). Unwired → degrades to no-op.
         if (!string.IsNullOrEmpty(self.ChLevelGameType))
-            Log.Trace($"target_changelevel: gametype switch to '{self.ChLevelGameType}' requested (not ported).");
+        {
+            if (SwitchGameTypeHandler is not null)
+                SwitchGameTypeHandler(self.ChLevelGameType);
+            else
+                Log.Trace($"target_changelevel: gametype switch to '{self.ChLevelGameType}' requested (unwired).");
+        }
 
         if (string.IsNullOrEmpty(self.ChMap))
         {
@@ -453,13 +465,24 @@ public static class TargetUtilities
 
     /// <summary>
     /// <c>spawnfunc(target_items)</c> — caches the give-token list (<c>.netname</c>) so a later use applies it.
-    /// The original re-serializes a normalized token string (with max/min/minus prefixes) from the spawn keys;
-    /// we keep the raw netname and parse it directly on use (behaviorally equivalent for the common path).
+    /// <para>
+    /// QC target/items.qc:spawnfunc re-serializes the human token list into a normalized give-string with
+    /// a per-spawnflag operator prefix (spawnflags 0 = set/give, 1 = max, 2 = min, 4 = minus/max dual).
+    /// The port reproduces this normalization for spawnflags 0/1/2 by injecting the operator token before
+    /// each non-numeric, non-operator name token in the raw <c>.netname</c>. Spawnflags==4 (dual minus/max
+    /// prefix: item bits use "minus", resource values use "max") is not fully reproduced — left partial.
+    /// </para>
+    /// <para>
+    /// If <c>.netname</c> begins with <c>"give "</c> (a pre-formatted give string from a QC-aware mapper
+    /// or the cheat console), the "give " prefix is stripped so the remainder parses as a raw give-grammar
+    /// string directly, matching QC's <c>if(argv(0) == "give") str = substring(netname, …)</c> branch.
+    /// </para>
     /// </summary>
     public static void ItemsSetup(Entity this_)
     {
         this_.Use = ItemsUse;
         this_.ClassName = "target_items";
+        // NOTE: loot-toucher delete is modelled in ItemsUse (see QC items.qc:8-26).
 
         // QC seeds the powerup durations from the balance cvars when unset (so a bare "strength" token grants
         // the default duration). Mirror that onto the world-item timer fields the applier reads.
@@ -474,27 +497,166 @@ public static class TargetUtilities
         if (this_.SuperweaponsFinished == 0f)
             this_.SuperweaponsFinished = CvarOr("g_balance_superweapons_time", 30f);
 
+        // QC items.qc:spawnfunc(target_items): normalize .netname based on spawnflags.
+        this_.NetName = NormalizeItemsNetname(this_.NetName, this_.SpawnFlags);
+
         MapMover.IndexRegister(this_);
+    }
+
+    // QC operator-prefix tokens — these are NOT name tokens; they set the op and continue without resetting.
+    // "no" is also an operator (sets op=Max, val=0) but is unusual in target_items .netname; included here
+    // so it is not double-prefixed if a mapper happens to write it.
+    private static readonly System.Collections.Generic.HashSet<string> s_giveOpTokens =
+        new(System.StringComparer.Ordinal) { "max", "min", "plus", "minus", "no" };
+
+    // QC items.qc reserialization splits the give-tokens into two prefix classes for spawnflags 4
+    // (itemprefix="minus " vs valueprefix="max "). The ITEM-class (itemprefix) tokens are the held-item BITS:
+    // the unlimited_* flags, jetpack, fuel_regen (items.qc:124-132) and every weapon netname (items.qc:142).
+    // Everything else — the powerup-duration names, resources, and buffs (items.qc:126-141) — is VALUE-class
+    // (valueprefix). For spawnflags 1/2 itemprefix==valueprefix so the split is moot; it only matters for 4.
+    private static readonly System.Collections.Generic.HashSet<string> s_itemBitNames =
+        new(System.StringComparer.Ordinal)
+        {
+            "unlimited_ammo", "unlimited_weapon_ammo", "unlimited_superweapons", "jetpack", "fuel_regen",
+        };
+
+    /// <summary>
+    /// QC <c>spawnfunc(target_items)</c> normalization (items.qc:47-155): re-serialize the raw
+    /// <paramref name="netname"/> with the operator prefix dictated by <paramref name="spawnFlags"/>.
+    /// <list type="bullet">
+    ///   <item>If <paramref name="netname"/> starts with <c>"give "</c>: strip the prefix — the remainder
+    ///     is already in give-grammar format (QC <c>if(argv(0)=="give") str = substring(netname,…)</c>).</item>
+    ///   <item><paramref name="spawnFlags"/>==0 (set/give): no prefix — token list is already valid input
+    ///     for <c>GiveItems.Apply</c> as written.</item>
+    ///   <item><paramref name="spawnFlags"/>==1 (max/cap): inject <c>"max"</c> before each name token so
+    ///     <c>GiveItems.Apply</c> uses <c>GiveOp.Max</c> — cap resources to at most the given value
+    ///     (<c>MathF.Min(current, val)</c>). Useful for a draining/limiting trigger.</item>
+    ///   <item><paramref name="spawnFlags"/>==2 (min/floor): inject <c>"min"</c> before each name token so
+    ///     <c>GiveItems.Apply</c> uses <c>GiveOp.Min</c> — ensure resources are at least the given value
+    ///     (<c>MathF.Max(current, val)</c>). Useful for a setup/ensure-minimum trigger.</item>
+    ///   <item><paramref name="spawnFlags"/>==4 (minus/max dual): QC uses <c>itemprefix="minus "</c> for the
+    ///     held-item bits (unlimited_*, jetpack, fuel_regen, weapons) and <c>valueprefix="max "</c> for the
+    ///     resource/powerup-duration/buff values (items.qc:112-116). The port honors that split: item-bit name
+    ///     tokens get <c>"minus"</c>, all other name tokens get <c>"max"</c>.</item>
+    /// </list>
+    /// <para>
+    /// NOTE: this is an APPROXIMATION of QC's spawnfunc — QC parses the netname into <c>this.items</c> bits +
+    /// resource fields and then re-serializes a canonical string from those (value tokens for resources come
+    /// from the entity's <c>GetResource</c> fields, not the netname). The port instead reuses the netname's own
+    /// value tokens and only injects the operator prefix, which is faithful for the common resource/powerup
+    /// give-string but does not reproduce the bit-parse-then-reserialize for non-give-string inputs (documented
+    /// partial gap; reproducing it needs the full items-bit/resource-field serialization subsystem).
+    /// </para>
+    /// </summary>
+    public static string NormalizeItemsNetname(string? netname, int spawnFlags)
+    {
+        if (string.IsNullOrWhiteSpace(netname))
+            return "";
+
+        // QC items.qc:47-51: if argv(0)=="give", strip it and keep the rest as a raw give-string.
+        // This handles a pre-formatted give-grammar string like "give 100 health 30 strength".
+        const string GivePrefix = "give ";
+        if (netname.StartsWith(GivePrefix, System.StringComparison.Ordinal))
+            return netname.Substring(GivePrefix.Length).Trim();
+
+        // spawnflags 0: no-op — the raw token list "N name N name …" is already valid GiveItems input
+        // with OP_SET (the default), matching QC's itemprefix=="" / valueprefix=="" branch.
+        if (spawnFlags == 0)
+            return netname;
+
+        // Determine the operator prefix(es) for spawnflags 1/2/4 (items.qc:97-121).
+        // spawnflags 1 → itemprefix=valueprefix="max " (GiveOp.Max = MathF.Min(v0, val): cap to at most N).
+        // spawnflags 2 → itemprefix=valueprefix="min " (GiveOp.Min = MathF.Max(v0, val): floor to at least N).
+        // spawnflags 4 → itemprefix="minus " (held-item bits), valueprefix="max " (resource/duration values).
+        // anything else → QC error("invalid spawnflags"); the port leaves the netname unchanged.
+        string itemPrefix, valuePrefix;
+        switch (spawnFlags)
+        {
+            case 1: itemPrefix = valuePrefix = "max"; break;
+            case 2: itemPrefix = valuePrefix = "min"; break;
+            case 4: itemPrefix = "minus"; valuePrefix = "max"; break;
+            default: return netname;
+        }
+
+        // Rebuild the token list by injecting the prefix token before each name token (non-numeric,
+        // non-operator). Numeric tokens (e.g. "30") and existing operator tokens are passed through as-is.
+        string[] tokens = netname.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries);
+        var sb = new System.Text.StringBuilder(netname.Length * 2);
+        foreach (string tok in tokens)
+        {
+            if (sb.Length > 0)
+                sb.Append(' ');
+
+            // A token is "numeric" if it parses as a float (covers "100", "0", "30.5", "-1", etc.).
+            bool isNumeric = float.TryParse(tok, System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out _);
+            // An operator prefix token (max/min/plus/minus/no) must not be double-prefixed.
+            bool isOp = s_giveOpTokens.Contains(tok);
+
+            if (!isNumeric && !isOp)
+            {
+                // Name token: pick the QC prefix class. Held-item bits (unlimited_*, jetpack, fuel_regen, and
+                // weapon netnames) use itemprefix; resources / powerup durations / buffs use valueprefix. For
+                // spawnflags 1/2 the two are identical so the classification is a no-op.
+                bool isItemBit = s_itemBitNames.Contains(tok)
+                    || Weapons.ByName(tok) is not null;
+                sb.Append(isItemBit ? itemPrefix : valuePrefix);
+                sb.Append(' ');
+            }
+
+            sb.Append(tok);
+        }
+
+        return sb.ToString();
     }
 
     /// <summary>
     /// QC <c>target_items_use</c> + the give-token apply (a scoped GiveItems): give the activator the held-item
     /// flags, powerup status effects, and resources named in <c>.netname</c>. The weapon-set tokens (wr_init,
-    /// per-weapon ammo) and the loot-item delete branch are out of scope (no Inventory token applier here).
+    /// per-weapon ammo) are out of scope (no Inventory token applier here). The loot-toucher delete branch is
+    /// now modelled: an ITEM_IS_LOOT actor deletes itself (items.qc:8-13) and a player actor deletes all loot
+    /// items whose .enemy points at them (items.qc:23-26 IL_EACH delete-by-enemy pass).
     /// </summary>
     private static void ItemsUse(Entity self, Entity actor)
     {
-        if ((actor.Flags & EntFlags.Item) != 0)
-            return; // QC deletes a loot toucher here — not modelled (target_items is .use-only in the port).
+        // QC target_items_use items.qc:8-13:
+        //   if(ITEM_IS_LOOT(actor)) { EXACTTRIGGER_TOUCH(this, trigger); delete(actor); return; }
+        // A loot entity (dropped weapon / monster loot) that triggers target_items is simply deleted.
+        // EXACTTRIGGER_TOUCH validates the touch geometry — the port skips it (target_items has no bmodel,
+        // so the touch-validation is a no-op on the .use path, matching the QC comment "bones_was_here").
+        if (actor.ItemIsLoot)
+        {
+            MapMover.RemoveEntity(actor);
+            return;
+        }
+
         if ((actor.Flags & EntFlags.Client) == 0 || MapMover.IsDead(actor))
             return;
+
+        // QC items.qc:23-26: IL_EACH(g_items, it.enemy == actor && ITEM_IS_LOOT(it), { delete(it); })
+        // For a player activator, also delete any loot items that are "owned by" (enemy == actor) them —
+        // e.g. a weapon the player dropped before picking up from this target. Uses Api.Entities.All when
+        // available (the live server path); no-ops on headless test fakes that don't supply a full entity list.
+        if (Api.Services is not null && Api.Entities.All is { } allEnts)
+        {
+            List<Entity>? toLoot = null;
+            foreach (Entity it in allEnts)
+            {
+                if (it.ItemIsLoot && ReferenceEquals(it.Enemy, actor))
+                    (toLoot ??= new List<Entity>()).Add(it);
+            }
+            if (toLoot is not null)
+                foreach (Entity it in toLoot)
+                    MapMover.RemoveEntity(it);
+        }
 
         bool gave = ApplyGiveTokens(self, actor, self.NetName);
         if (gave)
         {
-            // QC: centerprint(actor, this.message) — text is presentation-side; play the audible half.
-            if (!string.IsNullOrEmpty(self.Message))
-                MapMover.Sound(actor, SoundChannel.Voice, "misc/talk.wav");
+            // QC: if(GiveItems(...)) centerprint(actor, this.message). The give has no sound in Base — route the
+            // text through the centerprint seam, which delivers it to the activator's HUD via the CenterRaw
+            // notification channel (→ CenterPrintPanel.Add), the same path chat /tell and other map .message text use.
+            MapMover.Centerprint(actor, self.Message);
         }
     }
 
@@ -587,13 +749,9 @@ public static class TargetUtilities
         if (!MapMover.InitMovingBrushTrigger(this_))
             return;
 
-        // soundpack (QC: sounds > 0 -> medieval/metal plat sounds)
-        if (this_.Sounds > 0)
-        {
-            this_.Noise1 = "plats/medplat1.wav";
-            this_.Noise2 = "plats/medplat1.wav";
-            this_.Noise3 = "plats/medplat2.wav";
-        }
+        // soundpack (QC: sounds > 0 -> medieval/metal plat sounds). Routed through the Wave-1 seam so the
+        // promoted `sounds` map key is honored (the inline default-pack hardcode is gone).
+        MapMover.ApplySecretSounds(this_);
         if (string.IsNullOrEmpty(this_.Noise))
             this_.Noise = "misc/talk.wav"; // sound on touch
 
@@ -623,7 +781,9 @@ public static class TargetUtilities
         if (this_.Wait == 0f)
             this_.Wait = 5f; // seconds before closing
 
-        // QC: this.reset = secret_reset; this.reset(this) — call the resetter once now (initial placement).
+        // QC: this.reset = secret_reset; this.reset(this) — call the resetter once now (initial placement),
+        // and leave it installed so GameWorld.ResetMapObjects re-arms it on a round/match restart.
+        this_.Reset = SecretReset;
         SecretReset(this_);
 
         MapMover.IndexRegister(this_);
@@ -793,8 +953,10 @@ public static class TargetUtilities
 
         if (!string.IsNullOrEmpty(self.Message))
         {
-            // centerprint text is presentation-side; play the audible half (QC play2(toucher, this.noise)).
-            MapMover.Sound(toucher, SoundChannel.Voice, self.Noise);
+            // QC door_secret.qc:163-166: if(IS_CLIENT(toucher)) centerprint(toucher, this.message);
+            // play2(toucher, this.noise) — a per-recipient 2D send (VOL_BASE/ATTEN_NONE), not positional.
+            MapMover.Centerprint(toucher, self.Message);
+            MapMover.Play2(toucher, self.Noise);
         }
     }
 

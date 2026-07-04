@@ -1,0 +1,375 @@
+unit: turret-plasma_dual
+category: turret
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 11
+  worst_gaps:
+    - "Head-bone CLIENT render still absent: plasmad.md3 head model + two-barrel tag_fire alternation are NOT modeled (single computed ShotOrg muzzle). The server-authoritative head-frame wheel (Entity.Frame 0..6) and the head-angle headshake jolt ARE ported and live; only the visible head model/spin remain unrendered (no turret CSQC head-bone layer; base.md3 has no spin frames)."
+    - "Instagib FireBullet is a single trace; QC FireRailgunBullet penetration/distance falloff deferred (shared TurretCombat documented gap)."
+    - "Death FX (rocket-impact sound + ROCKET_EXPLODE + base/head-gib debris) + the EF_NODRAW hide/respawn split are now MODELED + LIVE on every death (matching cl_turrets.qc turret_die); the only residual is that they emit server-side rather than via a CSQC turret edict (no client turret draw layer), behaviorally equivalent but not yet runtime-confirmed on a live placement."
+features:
+  - id: turret-plasma_dual.spawn.registration
+    name: "Map spawnfunc + turret_initialize (registration, model, hitbox, lifecycle)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/plasma_dual.qc:spawnfunc(turret_plasma_dual)"
+      - "common/turrets/sv_turrets.qc:turret_initialize"
+      - "common/turrets/turret/plasma_dual.qh:DualPlasmaTurret"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:PlasmaDual"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:231"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaDualTurret.cs:Spawn"
+    constants:
+      - { name: "health", base: "500", port: "500", match: true }
+      - { name: "mins", base: "'-32 -32 0'", port: "(-32,-32,0)", match: true }
+      - { name: "maxs", base: "'32 32 64'", port: "(32,32,64)", match: true }
+      - { name: "model", base: "models/turrets/base.md3", port: "models/turrets/base.md3", match: true }
+      - { name: "head_model", base: "models/turrets/plasmad.md3", port: "models/turrets/plasmad.md3 (PlasmaDualTurret ctor; consumed server-side by TossDeathGibs head gib)", match: true }
+      - { name: "respawntime", base: "60", port: "60", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "head_model plasmad.md3 is now set on the descriptor and consumed server-side (TossDeathGibs head gib); the live tur_head/tag_head CLIENT render attachment + spin is still absent (no turret CSQC head-bone layer) — tracked under presentation.head_frame_anim."
+    verification:
+      - { kind: code-trace, ref: "MapObjectsRegistry.cs:231 RegisterAll -> SpawnFuncs.Register('turret_plasma_dual', TurretSpawnFuncs.PlasmaDual) -> def.Spawn -> TurretSpawn.Init -> Turrets registry + per-frame Think. Live BSP dispatch: GameWorld.cs SpawnFuncs.TrySpawn(cls,e).", result: pass }
+      - { kind: code-read, ref: "PlasmaDualTurret ctor now sets HeadModel='models/turrets/plasmad.md3'; consumed by TurretAI.TossDeathGibs:1243 (head gib) so plasma_dual death tosses its own head gib like every standard turret.", result: pass }
+    confidence: high
+    notes: "RE-AUDITED 2026-06-28: head_model now CONSTANT-matches Base — the ctor sets HeadModel='plasmad.md3' (this wave) and it is read server-side by TossDeathGibs for the head gib. Constant flipped match:false->true. Registration chain unchanged + still live (master-switch gated). The CLIENT head-bone render/spin attachment remains absent (tracked in presentation.head_frame_anim), so logic/values/timing/liveness stay faithful/live as before."
+
+  - id: turret-plasma_dual.ai.think_loop
+    name: "Per-frame AI: ammo regen, target scan throttle, validate, aim, track, firecheck, fire"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_think"
+      - "common/turrets/sv_turrets.qc:turret_firecheck"
+      - "common/turrets/sv_turrets.qc:turret_fire"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:RunCombat"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Fire"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaDualTurret.cs:Think"
+    constants:
+      - { name: "targetscan_mindelay", base: "0.1", port: "0.1 (Cvar g_turrets_targetscan_mindelay fallback)", match: true }
+      - { name: "targetscan_maxdelay", base: "1 (autocvar default; turrets.cfg)", port: "1 (Cvar g_turrets_targetscan_maxdelay fallback)", match: true }
+      - { name: "aimidle_delay", base: "5", port: "5 (Cvar g_turrets_aimidle_delay fallback)", match: true }
+      - { name: "nofire_master", base: "autocvar_g_turrets_nofire short-circuits fire", port: "Cvar g_turrets_nofire gate in Fire()", match: true }
+      - { name: "ammo_recharge_per_s", base: "40", port: "40", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "RunCombat scan-throttle cvar-backed (maxdelay default 1); g_turrets_nofire master gate in Fire(); gate order matches turret_firecheck", result: pass }
+    confidence: high
+    notes: "Unchanged. Fire gate order matches turret_firecheck (refire/ammo, target-of-opportunity, distances, AFF, aimdist, volley)."
+
+  - id: turret-plasma_dual.attack.plasma_ball
+    name: "tr_attack non-instagib: electro-style splash plasma projectile"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/plasma_dual.qc:tr_attack (SUPER PlasmaTurret)"
+      - "common/turrets/turret/plasma_weapon.qc:PlasmaAttack.wr_think"
+      - "common/turrets/sv_turrets.qc:turret_projectile"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaDualTurret.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaTurret.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Projectile"
+    constants:
+      - { name: "shot_dmg", base: "80", port: "80", match: true }
+      - { name: "shot_radius", base: "150", port: "150", match: true }
+      - { name: "shot_speed", base: "2000", port: "2000", match: true }
+      - { name: "shot_force", base: "100", port: "100", match: true }
+      - { name: "shot_spread", base: "0.015", port: "0.015 (DualShotSpread)", match: true }
+      - { name: "edge_damage", base: "0", port: "0", match: true }
+      - { name: "lifetime_s", base: "9", port: "9", match: true }
+      - { name: "fire_sound", base: "hagar_fire (SND_PlasmaAttack_FIRE)", port: "weapons/hagar_fire.wav", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Two-barrel tag_fire alternation (plasmad.md3) not modeled — single computed ShotOrg muzzle (a head-bone render detail; the muzzleflash + projectile trail themselves are now emitted)."
+    verification:
+      - { kind: value-diff, ref: "turrets.cfg:366 g_turrets_unit_plasma_dual_shot_spread=0.015 == DualShotSpread 0.015f; PlasmaDualTurret.Attack re-emits its own TurretSpawn.Projectile with spread:DualShotSpread", result: pass }
+      - { kind: code-trace, ref: "PlasmaDualTurret.Attack:125-134 emits TurretSpawn.Projectile(... projType:'electro_bolt') then EffectEmitter.Emit('BLASTER_MUZZLEFLASH', ShotOrg, dir*1000, 1) (== plasma_weapon.qc:23). EffectEmitter.Sink wired LIVE on the host boot path: ServerNet.cs:303 `EffectEmitter.Sink = new EffectNetSink(this)` + ClientWorld.cs:393 `EffectEmitter.Sink = new RenderSink(this, Sink)`. EffectsList.cs:40 registers BLASTER_MUZZLEFLASH=laser_muzzleflash.", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-27: presentation faithful CONFIRMED (not inflated). Read PlasmaDualTurret.Attack:125-134 — the EFFECT_BLASTER_MUZZLEFLASH Emit call and electro_bolt projType stamp are real; the effect IS registered (EffectsList.cs:40); the EffectEmitter sink IS installed on the live host (ServerNet.cs:303 server-net + ClientWorld.cs:393 in-process render mirror). Sink line refs corrected 299->303 / 384->393 (stale-by-a-few, wiring substantively LIVE). Dual re-emits the ball with DualShotSpread 0.015; shot_dmg/radius/speed/force/edge0/9s lifetime + hagar_fire all match. Only the two-barrel tag muzzle-origin alternation (a head-bone detail) remains unmodeled."
+
+  - id: turret-plasma_dual.attack.instagib_rail
+    name: "tr_attack instagib branch: instant instakill railgun beam"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/plasma_dual.qc:tr_attack (MUTATOR_IS_ENABLED mutator_instagib)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaTurret.cs:FireInstagibBeam"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaDualTurret.cs:Attack (instagib branch)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretCombat.cs:FireBullet"
+    constants:
+      - { name: "instagib_rail_damage", base: "1e10 (10000000000 — an instakill)", port: "1e10 (InstagibRailDamage)", match: true }
+      - { name: "instagib_force", base: "800", port: "800 (InstagibRailForce)", match: true }
+      - { name: "instagib_spread", base: "0 (no spread)", port: "0", match: true }
+      - { name: "instagib_enable", base: "MUTATOR_IS_ENABLED(mutator_instagib)", port: "g_instagib != 0", match: true }
+      - { name: "instagib_fire_sound", base: "none in tr_attack", port: "none", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "FireBullet is a single trace; QC FireRailgunBullet penetration/distance falloff deferred (matches WeaponFiring/TurretCombat documented gaps)."
+    verification:
+      - { kind: value-diff, ref: "plasma_dual.qc FireRailgunBullet(it,...,10000000000 /*dmg*/, false, 800 /*force*/,...) vs InstagibRailDamage=1e10 + InstagibRailForce=800", result: pass }
+      - { kind: code-read, ref: "Dual inlines the instagib branch (does NOT call SUPER): FireInstagibBeam(spread 0, damage 1e10, force 800); no fire sound (Base passes none)", result: pass }
+      - { kind: code-trace, ref: "FireInstagibBeam (PlasmaTurret.cs:159-179) emits EFFECT_VORTEX_MUZZLEFLASH (shotOrg, dir*1000, 1) + team-coloured EFFECT_VAPORIZER_BEAM (shotOrg->endPos, rgb=Teams.ColorRgb(turret.Team)) == plasma_dual.qc:27-32. Both registered EffectsList.cs:104 (nex_muzzleflash) / 107 (TE_TEI_G3, isTrail) and emitted via the live EffectEmitter sink (ServerNet.cs:303 EffectNetSink + ClientWorld.cs:393 RenderSink).", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-27: presentation faithful CONFIRMED. Read PlasmaTurret.FireInstagibBeam:172-178 — VORTEX_MUZZLEFLASH + the team-coloured VAPORIZER_BEAM Emit calls are real; both registered (EffectsList.cs:104/107); the live sink is installed (ServerNet.cs:303 + ClientWorld.cs:393). Registration line refs corrected (88/91 -> 104/107). Dual inlines the instagib branch (PlasmaDualTurret.Attack:118 calls FireInstagibBeam directly, not base.Attack, to skip the single-plasma frame=1 start-kick). damage 1e10 / force 800 match Base; no fire sound. FireBullet single-trace penetration falloff still deferred (gaps)."
+
+  - id: turret-plasma_dual.values.engagement_envelope
+    name: "Engagement envelope: refire, ranges, ammo, aim/track tunables"
+    layer: [authority]
+    base_refs:
+      - "turrets.cfg:g_turrets_unit_plasma_dual_* (lines 359-394)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaDualTurret.cs"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaDualTurret.cs:Think (direct TurretParams ctor)"
+    constants:
+      - { name: "shot_refire", base: "0.35", port: "0.35 (DualRefire)", match: true }
+      - { name: "target_range", base: "3000", port: "3000 (DualTargetRange)", match: true }
+      - { name: "target_range_min", base: "80", port: "80 (DualTargetRangeMin)", match: true }
+      - { name: "target_range_optimal", base: "1000", port: "1000 (DualTargetRangeOptimal)", match: true }
+      - { name: "ammo_max", base: "640", port: "640 (DualAmmoMax)", match: true }
+      - { name: "ammo_recharge", base: "40", port: "40 (DualAmmoRecharge)", match: true }
+      - { name: "aim_speed", base: "100", port: "100 (DualAimSpeed)", match: true }
+      - { name: "aim_firetolerance_dist", base: "200", port: "200 (DualFireTolerance)", match: true }
+      - { name: "aim_maxpitch", base: "30", port: "30 (AimMaxPitch)", match: true }
+      - { name: "aim_maxrot", base: "360", port: "360 (AimMaxRot)", match: true }
+      - { name: "track_type", base: "3 (FLUIDINERTIA)", port: "3 (TrackFluidInertia)", match: true }
+      - { name: "track_accel_pitch", base: "0.5", port: "0.5 (DualTrackAccelPitch)", match: true }
+      - { name: "track_accel_rot", base: "0.7", port: "0.7 (DualTrackAccelRot)", match: true }
+      - { name: "track_blendrate", base: "0.2", port: "0.2 (DualTrackBlendRate)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value-diff, ref: "turrets.cfg:359-394 plasma_dual block vs PlasmaDualTurret consts; Think builds the TurretParams DIRECTLY so rangeOptimal 1000 + track accel_rot 0.7 + blendrate 0.2 are all passed explicitly", result: pass }
+    confidence: high
+    notes: "Unchanged. All balance numbers faithful via the dual's own TurretParams ctor in Think."
+
+  - id: turret-plasma_dual.target.scoring_biases
+    name: "Target scoring biases (rangebias/samebias/anglebias/playerbias/missilebias)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_targetscore_generic"
+      - "turrets.cfg:g_turrets_unit_plasma_dual_target_select_* (lines 376-380)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:ScoreTarget"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:SelectTarget"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaDualTurret.cs:Think"
+    constants:
+      - { name: "target_select_rangebias", base: "0.2", port: "0.2 (DualRangeBias)", match: true }
+      - { name: "target_select_samebias", base: "0.4", port: "0.4 (DualSameBias)", match: true }
+      - { name: "target_select_anglebias", base: "0.4", port: "0.4 (DualAngleBias)", match: true }
+      - { name: "target_select_playerbias", base: "1", port: "1 (DualPlayerBias)", match: true }
+      - { name: "target_select_missilebias", base: "0", port: "0 (DualMissileBias; moot — SelectMissiles flag not set)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "ScoreTarget consumes p.RangeBias/AngleBias/MissileBias/PlayerBias; SelectTarget seeds with *p.SameBias; PlasmaDualTurret.Think passes DualRangeBias 0.2 / DualSameBias 0.4 / DualAngleBias 0.4 / DualMissileBias 0 / DualPlayerBias 1", result: pass }
+    confidence: high
+    notes: "Unchanged. missilebias still moot — Select lacks SelectMissiles."
+
+  - id: turret-plasma_dual.aim.lead_splash_predict
+    name: "Aiming: lead + shot-time compensation + z-predict + splash (aim at feet)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_aim_generic"
+      - "common/turrets/turret/plasma.qc:tr_setup (aim_flags = LEAD|SHOTTIMECOMPENSATE|SPLASH)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:AimPoint"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaDualTurret.cs:Think"
+    constants:
+      - { name: "aim_lead", base: "TFL_AIM_LEAD set", port: "lead:true", match: true }
+      - { name: "aim_shottimecompensate", base: "TFL_AIM_SHOTTIMECOMPENSATE set", port: "shotTimeCompensate:true", match: true }
+      - { name: "aim_splash", base: "TFL_AIM_SPLASH set", port: "aimSplash:true", match: true }
+      - { name: "aim_zpredict", base: "TFL_AIM_ZPREDICT NOT set (plasma tr_setup omits it)", port: "zPredict:false (dual Think)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "plasma.qc tr_setup aim_flags omits TFL_AIM_ZPREDICT; PlasmaDualTurret.Think passes zPredict:false (matches single plasma MakeParams + Base)", result: pass }
+    confidence: high
+    notes: "Unchanged. lead/shottime/splash faithful; zPredict false matches Base plasma tr_setup."
+
+  - id: turret-plasma_dual.track.head_motor
+    name: "Head tracking: FLUIDINERTIA motor, pitch/rot clamps"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_track"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Track"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaDualTurret.cs:Think"
+    constants:
+      - { name: "aim_maxpitch_clamp", base: "30", port: "30", match: true }
+      - { name: "aim_maxrot_clamp", base: "360", port: "360", match: true }
+      - { name: "track_type", base: "3 FLUIDINERTIA", port: "3 TrackFluidInertia", match: true }
+      - { name: "track_accel_pitch", base: "0.5", port: "0.5 (DualTrackAccelPitch, passed)", match: true }
+      - { name: "track_accel_rot", base: "0.7", port: "0.7 (DualTrackAccelRot, passed)", match: true }
+      - { name: "track_blendrate", base: "0.2", port: "0.2 (DualTrackBlendRate, passed)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code-read, ref: "Track FLUIDINERTIA branch uses p.TrackAccelPitch/Rot/BlendRate; PlasmaDualTurret.Think passes 0.5/0.7/0.2 explicitly", result: pass }
+    confidence: high
+    notes: "Unchanged. Motor algorithm faithful (per-axis accel*frametime clamp + avelocity blend + brake-at-limit); all constants match plasma_dual.cfg."
+
+  - id: turret-plasma_dual.damage.gating_die_respawn
+    name: "Damage handling: friendly-fire scale, MOVE-shove, die + timed respawn"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_damage"
+      - "common/turrets/sv_turrets.qc:turret_die"
+      - "common/turrets/sv_turrets.qc:turret_hide"
+      - "common/turrets/sv_turrets.qc:turret_respawn"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:EventDamage"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Damage"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Die"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Respawn"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init (GtEventDamage wiring)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:331 (EventDamage routing)"
+    constants:
+      - { name: "respawntime", base: "60", port: "60", match: true }
+      - { name: "friendlyfire_scale", base: "g_friendlyfire (default 0 => no team dmg)", port: "g_friendlyfire honored", match: true }
+      - { name: "death_blast", base: "RadiusDamage COMMENTED OUT in turret_die (no blast)", port: "none (RadiusDamage removed to match Base)", match: true }
+      - { name: "inactive_takes_damage", base: "no (return)", port: "no (Damage returns 0 if !Active)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Death FX/gibs are emitted SERVER-side at the death site (rocket-impact sound + ROCKET_EXPLODE + TossDeathGibs) rather than from a CSQC turret edict — the port has no client turret draw layer, so the FX/sound network to every viewer via the temp-entity/effect feed and the gibs render as physics entities through the entity feed (the VehicleCommon.TossGib idiom). Behaviorally equivalent to cl_turrets.qc turret_die; not yet runtime-confirmed on a live plasma_dual placement (code-trace only)."
+    verification:
+      - { kind: code-trace, ref: "Damage gate LIVE: TurretSpawn.Init:93 sets e.GtEventDamage=TurretAI.EventDamage; DamageSystem routes a non-player edict with a GtEventDamage to it -> EventDamage -> Damage() gate + TakeResource + Combat.Death.Call (health<=0) -> OnAnyDeath (TurretAI.cs:952, subscribed via EnsureDeathHook:949) -> Die", result: pass }
+      - { kind: code-read, ref: "TurretAI.Die:1124 no death blast (matches sv_turrets.qc:182 //RadiusDamage commented out). Die->Hide->Respawn now models the QC two-step: Hide (TurretAI.cs:1167) sets Effects|=EF_NODRAW + schedules Respawn at respawntime-0.2; Respawn:1189 clears EF_NODRAW. Net dead time 0.2+(60-0.2)=60.", result: pass }
+      - { kind: code-trace, ref: "Death presentation now LIVE on EVERY death (cl_turrets.qc turret_die runs client-side on TNSF_STATUS health==0, not just NORESPAWN): Die:1136-1138 Api.Sound.Play(rocket_impact.wav)=SND_ROCKET_IMPACT + EffectEmitter.Emit('ROCKET_EXPLODE')=EFFECT_ROCKET_EXPLODE + TossDeathGibs. TossDeathGibs:1235 consumes Turrets.ByName(NetName).HeadModel (now 'plasmad.md3') for the head gib + base-gib coin flip; effect sinks live (ServerNet.cs:303 + ClientWorld.cs:393).", result: pass }
+      - { kind: code-read, ref: "TurretAI.Damage does NOT set turret.Enemy=attacker; matches Base turret_damage (TFL_DMG_RETALIATE set but never read)", result: pass }
+    confidence: high
+    notes: "RE-AUDITED THIS WAVE: presentation/audio missing->faithful and BOTH prior gaps CLOSED. (1) EF_NODRAW hide-frame split is now modeled — Die->Hide (EF_NODRAW + respawntime-0.2)->Respawn (clears NoDraw), net dead time still exactly 60. (2) Death FX/sound is NO LONGER unreachable: the port emits SND_ROCKET_IMPACT + EFFECT_ROCKET_EXPLODE + the cl_turrets.qc base-gib/head-gib debris toss on EVERY death (not just NORESPAWN), faithful to the client-side cl_turrets.qc turret_die which runs on every death. HeadModel='plasmad.md3' (constructor) feeds the head gib. Remaining nuance (now the only gap): FX emitted server-side rather than via a CSQC turret edict (port has no client turret draw layer) — behaviorally equivalent, code-traced not runtime-verified. logic/values/timing unchanged faithful; no retaliation; no death blast."
+
+  - id: turret-plasma_dual.damage.headshake
+    name: "TFL_DMG_HEADSHAKE: jolt head angles by random*damage on hit"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_damage (TFL_DMG_HEADSHAKE branch, line 226)"
+      - "common/turrets/turret/plasma.qc:tr_setup (damage_flags |= TFL_DMG_HEADSHAKE)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:EventDamage (HeadShake branch, lines 1056-1060)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init:79 (headShake param -> TurretState.HeadShake)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaDualTurret.cs:Spawn (headShake: true)"
+    constants:
+      - { name: "headshake_jitter", base: "tur_head.angles.x/y += (random()-0.5)*damage", port: "stHit.HeadAngles.X/Y += (Prandom.Float()-0.5f)*take", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Server-side head-angle jolt is now applied, but the CLIENT-rendered head model (plasmad.md3) is not attached, so the visible flinch is not drawn (the head-angle state nudges the next shot's aim, which IS the gameplay effect). Base also nets TNSF_ANG to CSQC; the port has no turret CSQC net layer."
+    verification:
+      - { kind: code-read, ref: "TurretAI.EventDamage:1056-1060: `if (stHit.HeadShake) { stHit.HeadAngles.X += (Prandom.Float()-0.5f)*take; .Y += ... }` — matches sv_turrets.qc TFL_DMG_HEADSHAKE (random()-0.5)*damage on pitch+yaw, using post-friendlyfire-scaled `take` (gated in Damage() just above). PlasmaDualTurret.Spawn passes headShake:true -> TurretSpawn.Init:79 -> TurretState.HeadShake (inherits plasma tr_setup TFL_DMG_HEADSHAKE).", result: pass }
+      - { kind: code-trace, ref: "LIVE damage path re-confirmed: TurretSpawn.Init:93 sets e.GtEventDamage=TurretAI.EventDamage; the headshake branch is INSIDE EventDamage after the TakeResource, so any hit that passes the Damage() gate jolts the head. Not test-only.", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-27 (still faithful/live; not inflated): read EventDamage:1056-1060 directly — the HeadShake branch jolts HeadAngles ±take/2 on pitch+yaw on the live GtEventDamage path, bit-faithful to Base. Line ref corrected 893-896 -> 1056-1060. presentation stays MISSING: the server-side head-angle state nudges the next shot's aim (the gameplay effect IS present) but the CLIENT head model (plasmad.md3) is not attached, so the visible flinch is not drawn. No turret CSQC net layer."
+
+  - id: turret-plasma_dual.presentation.head_frame_anim
+    name: "Head-frame wheel animation (tr_think 0..6 + ++frame on fire)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/turrets/turret/plasma_dual.qc:tr_think (frame!=0 && frame!=3 -> ++frame; >6 -> 0)"
+      - "common/turrets/turret/plasma_dual.qc:tr_attack (++it.tur_head.frame)"
+      - "common/turrets/turret/plasma.qc:tr_attack (SUPER: if frame==0 frame=1)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaDualTurret.cs:Think (Entity.Frame wheel)"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaDualTurret.cs:Attack (frame==0 -> 1; ++Frame)"
+    constants:
+      - { name: "head_frame_cycle", base: "0..6 (idle at 0 and 3, advance on fire)", port: "Entity.Frame 0..6 (idle at 0 and 3, advance on fire)", match: true }
+      - { name: "frame_start_kick", base: "SUPER: if frame==0 frame=1 (non-instagib only)", port: "if (turret.Frame==0) Frame=1 (else branch only)", match: true }
+      - { name: "frame_advance_on_fire", base: "++it.tur_head.frame (unconditional)", port: "turret.Frame += 1 (unconditional after if/else)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Server-authoritative head-frame state (Entity.Frame) is now ported and live, but the CLIENT render of the spinning plasmad.md3 head bone is absent — the static base.md3 body has no spin frames and there is no tur_head sub-entity / CSQC turret net layer, so the wheel is not visibly drawn."
+      - "Two-barrel tag_fire alternation (tag_fire on plasmad.md3) not modeled — single computed ShotOrg muzzle."
+    verification:
+      - { kind: code-read, ref: "PlasmaDualTurret.Think:74-75: `if (e.Frame!=0 && e.Frame!=3) e.Frame+=1; if (e.Frame>6) e.Frame=0` == plasma_dual.qc tr_think. Attack:139,145: `if (turret.Frame==0) Frame=1` (non-instagib SUPER kick) then unconditional `turret.Frame += 1` (dual ++frame) == plasma_dual.qc tr_attack + SUPER plasma.qc. instagib branch skips the frame=1 kick (inlined, no SUPER) — matches Base.", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-27 (still faithful/live; not inflated): read Think:74-75 + Attack:139,145 directly. The server-authoritative Frame cycle (0..6, idle at 0 AND 3, kick to 1 on the non-instagib branch only, ++ each shot, advance+wrap each think) runs live on the turret edict's own Entity.Frame (HellionTurret/HkTurret pattern) — logic/values/timing faithful. presentation stays MISSING: the static base.md3 body has no spin frames and there is no tur_head sub-entity / CSQC turret net layer, so the wheel is not visibly drawn; two-barrel tag_fire alternation also unmodeled (single ShotOrg muzzle)."

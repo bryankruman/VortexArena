@@ -342,6 +342,93 @@ public class MenuDataSourceTests
         Assert.Equal(1, reads); // second Get hits the cache (QC MapInfo_Cache_Retrieve)
     }
 
+    [Fact]
+    public void MapInfo_ForcedDuelOnDmMap_Default_Active()
+    {
+        // QC Duel.m_isForcedSupported (duel.qh:15-28): a map with "gametype dm" but NO "gametype duel"
+        // is auto-promoted to also support duel when g_duel_not_dm_maps=0 (default).
+        // MapInfoBackend.ForceDuelOnDmMaps defaults to true (matching the Base default).
+        var backend = new MapInfoBackend(
+            _ => "title Boil\ngametype dm\ngametype tdm\n",
+            _ => false);
+        // default: ForceDuelOnDmMaps = true
+        MapInfo info = backend.Get("boil");
+        Assert.True(info.Supports("dm"));
+        Assert.True(info.Supports("duel"));   // forced-in by m_isForcedSupported
+        Assert.True(info.Supports("tdm"));
+    }
+
+    [Fact]
+    public void MapInfo_ForcedDuelOnDmMap_Suppressed_By_Flag()
+    {
+        // When g_duel_not_dm_maps=1 (ForceDuelOnDmMaps=false), duel must NOT be auto-added for DM maps.
+        var backend = new MapInfoBackend(
+            _ => "title Boil\ngametype dm\ngametype tdm\n",
+            _ => false)
+        {
+            ForceDuelOnDmMaps = false, // g_duel_not_dm_maps 1
+        };
+        MapInfo info = backend.Get("boil");
+        Assert.True(info.Supports("dm"));
+        Assert.False(info.Supports("duel"));  // not forced — g_duel_not_dm_maps is set
+    }
+
+    [Fact]
+    public void MapInfo_ForcedDuelOnDmMap_NotAdded_When_Explicit()
+    {
+        // If the .mapinfo already lists "gametype duel", the forced-support logic is a no-op (HashSet → no dup).
+        var backend = new MapInfoBackend(
+            _ => "title Darkzone\ngametype dm\ngametype duel\n",
+            _ => false);
+        MapInfo info = backend.Get("darkzone");
+        Assert.True(info.Supports("dm"));
+        Assert.True(info.Supports("duel")); // explicitly listed — still present after forced-support pass
+    }
+
+    [Fact]
+    public void MapInfo_ForcedDuelOnDmMap_NonDmMap_Unaffected()
+    {
+        // A map without DM (e.g. CTF-only) must NOT get duel forced in.
+        var backend = new MapInfoBackend(
+            _ => "title Dance\ngametype ctf\n",
+            _ => false);
+        MapInfo info = backend.Get("dance");
+        Assert.False(info.Supports("dm"));
+        Assert.False(info.Supports("duel"));  // CTF-only map → no forced duel
+    }
+
+    [Fact]
+    public void MapInfo_ForcedDuelOnDmMap_Suppressed_When_DiameterTooLarge()
+    {
+        // QC Duel.m_isAlwaysSupported diameter guard (mirrored by MapInfoBackend.ApplyForcedGametypes +
+        // MapInfo.Diameter, MapInfoBackend.cs:51-60): a "size" line whose bounding diameter >= 3250
+        // suppresses forced duel even on a DM map. This mirrors the implosion case — gametype dm, no
+        // gametype duel, size line giving diameter ~8874 (vlen of (6336, 5888, 1984)).
+        var backend = new MapInfoBackend(
+            _ => "title Implosion\ngametype dm\nsize -960 -5888 -576 5376 0 1408\n",
+            _ => false);
+        MapInfo info = backend.Get("implosion");
+        Assert.True(info.Supports("dm"));
+        Assert.NotNull(info.Diameter);              // size line was parsed
+        Assert.True(info.Diameter!.Value >= 3250f); // well above the duel threshold
+        Assert.False(info.Supports("duel"));        // forced-duel suppressed by the diameter gate
+    }
+
+    [Fact]
+    public void MapInfo_ForcedDuelOnDmMap_AllowedWhenDiameterSmall()
+    {
+        // The other branch of the diameter guard (MapInfoBackend.cs:51-60): a small DM map whose size
+        // line gives a diameter below 3250 still gets forced duel. Bounds (1000, 1000, 600) → ~1536.
+        var backend = new MapInfoBackend(
+            _ => "title Tiny\ngametype dm\nsize -500 -500 -300 500 500 300\n",
+            _ => false);
+        MapInfo info = backend.Get("tiny");
+        Assert.True(info.Supports("dm"));
+        Assert.NotNull(info.Diameter);              // size line was parsed
+        Assert.True(info.Diameter!.Value < 3250f);  // below threshold
+        Assert.True(info.Supports("duel"));         // small map → forced duel still allowed
+    }
+
     // -------------------------------------------------------------------------------------------------
     //  MenuTextFormat — strdecolorize + glob
     // -------------------------------------------------------------------------------------------------

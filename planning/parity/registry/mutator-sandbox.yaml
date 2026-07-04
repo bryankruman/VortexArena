@@ -1,0 +1,488 @@
+unit: mutator-sandbox
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-27"
+summary:
+  feature_count: 15
+  worst_gaps:
+    - "OPUS re-audit 2026-06-27 (branch claude/parity-port-waves): the prior baseline UNDER-claimed — reading the CURRENT code, FOUR gaps it still listed as open have actually been closed, plus the one it already credited. (1) touch_material_fx presentation missing→faithful: the four impact effects are registered in EffectsList.cs:303-306 (Effects.Register(\"IMPACT_METAL\",\"impact_metal\")+stone/wood/flesh), so EmitByEffectInfoName(\"impact_<mat>\") (SandboxMutator.cs:410) resolves a non-null Effect (Effect.ByEffectInfoName matches NetName, Effect.cs:87) and Emit (count 1..10 >0) is no longer dropped at ServerNet.WriteEffect; effectinfo.txt has the four blocks (5529+), unknown materials render nothing both ends. NOTE: networks-by-id is code-verified; the in-game particle was not visually re-confirmed (no kind:visual)."
+    - "(2) object.spawn ModelExists: NO LONGER permissive on the live path — NetGame.WireSandbox:952-953 wires ModelExistsProvider = _vfs.Exists, so object_spawn rejects a non-existent model (Base fexists). (3) object.attach presentation missing→faithful: ObjectAttachSet now calls Api.Models.SetAttachment (SandboxMutator.cs:298-299) → EngineServices.SetAttachment (:796) sets Aiment+tag; MOVETYPE_FOLLOW child tracked each step by FlyMove.PhysicsFollow (:483) → real tag-follow (bone-precise offset is a renderer detail, not visually re-confirmed). (4) object_info mesh: tag enumeration no longer stubbed — MeshTagNamesProvider wired to ModelService.Tags (NetGame.cs:958-961), SandboxMutator.cs:890-893 prints the real tag list."
+    - "CORRECTED: object.duplicate COPY clipboard is NOT an empty no-op (baseline was stale). SandboxObjectStore.SetClipboard → SetSandboxClipboard (NetGame.cs:948/971-983) sets cl_sandbox_clipboard (un-escaped, +MarkArchived) for the LOCAL-HOST player, so copy→paste works on a listen server. Residual: a remote client on a dedicated server is skipped (no svc_stufftext channel) → liveness stays partial. Command surface still GENUINELY LIVE: g_sandbox client-callable (Commands.cs:843), routed CmdSandbox (Commands.cs:2275, gated on sandbox.Added) → HandleCommand; WireSandbox (NetGame.cs:911, on the live setup path NetGame.cs:843) injects PrintTo/Trace/CryptoIdfp(=PersistentId)/NetName/ViewYaw/RealClients/Store/ModelExists/MeshTagNames; MutatorActivation.Apply at GameWorld.cs:631. All 15 g_sandbox* cfg defaults byte-identical (mutators.cfg:95-109)."
+    - "The Sandbox_* veto hooks remain FULLY PORTED + fired at SandboxMutator.cs:358 (think grab) / :555 (DatabaseSave) / :632 (command gate) with no subscriber (Base-faithful empty MUTATOR_CALLHOOK). physics-2 → MoveType.Physics=32 (:823) == Base MOVETYPE_PHYSICS=32. Touch FX SOUND live (settouch equiv :204, dispatched by FlyMove.cs:107). STILL DEAD/MISSING (genuinely unchanged): drag/grab (+button8) entirely absent — no Drag/Drag_Begin/Drag_Finish; .Grab is computed (:359/361/363) but nothing consumes it; objects cannot be physically carried. CSQC object→client networking (CSQCMODEL_AUTOINIT/AUTOUPDATE) has no port seam (:236/376), so a spawned object's client render is unverified. (Several baseline line-number refs were stale by ~10-15 lines; refreshed where load-bearing.)"
+features:
+  - id: mutator-sandbox.core.registration
+    name: "Mutator activation via g_sandbox + onadd autoload"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:REGISTER_MUTATOR"
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:MUTATOR_ONADD"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:IsEnabled"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:Hook"
+      - "src/XonoticGodot.Server/GameWorld.cs:614 (MutatorActivation.Apply)"
+      - "game/net/NetGame.cs:902/938 (WireSandbox → Store)"
+    constants:
+      - { name: "g_sandbox", base: "0", port: "0", match: true }
+      - { name: "g_sandbox_storage_autoload", base: "1", port: "1", match: true }
+      - { name: "g_sandbox_storage_autosave", base: "5", port: "5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Fully wired: NetGame.WireSandbox (live setup path, NetGame.cs:793) assigns Store (file IO under ~/XonData/sandbox/storage_*.txt), so MUTATOR_ONADD autoload genuinely reads the per-map storage file at activation."
+      - "Base REGISTER_MUTATOR(sandbox) has NO instagib/arena/ok exclusion (unlike NIX) — port IsEnabled = g_sandbox != 0 is faithful."
+    verification:
+      - { kind: code, ref: "SandboxMutator is [Mutator]-attributed; MutatorActivation.Apply() (live at GameWorld.cs:602) reconciles IsEnabled→Hook(). IsEnabled = g_sandbox != 0. Hook() seeds autosave_time = Now + StorageAutosave, clears object list, autoloads, subscribes SvStartFrame.", result: pass }
+      - { kind: code, ref: "all 15 g_sandbox* defaults in port assets/.../mutators.cfg:95-109 byte-identical to Base mutators.cfg:95-109 (re-diffed this audit)", result: pass }
+      - { kind: code, ref: "NetGame.WireSandbox:877 assigns sandbox.Store = new SandboxObjectStore(); DatabaseLoad() reads a real file. WireSandbox() called at NetGame.cs:794 on the live setup path.", result: pass }
+    confidence: high
+    notes: "Confirmed faithful + live (na→live persistence). The Store seam is wired; the only residual is the readonly/SaveAllowed veto-hook chain (separate row)."
+
+  - id: mutator-sandbox.object.spawn
+    name: "object_spawn — create object entity from a model in front of player"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectSpawn"
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand(object_spawn)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:ObjectSpawn"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:HandleCommand(object_spawn)"
+      - "src/XonoticGodot.Server/Commands.cs:CmdSandbox"
+      - "game/net/NetGame.cs:SandboxTraceProvider"
+    constants:
+      - { name: "g_sandbox_editor_distance_spawn", base: "200", port: "200", match: true }
+      - { name: "g_sandbox_editor_flood (s)", base: "1", port: "1", match: true }
+      - { name: "g_sandbox_editor_maxobjects", base: "1000", port: "1000", match: true }
+      - { name: "spawn_solid", base: "SOLID_BBOX", port: "Solid.BBox", match: true }
+      - { name: "spawn_movetype", base: "MOVETYPE_TOSS", port: "MoveType.Toss", match: true }
+      - { name: "spawn_takedamage", base: "DAMAGE_AIM", port: "DamageMode.Aim", match: true }
+      - { name: "damageforcescale", base: "1", port: "1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "WIRED + LIVE: `g_sandbox` client-callable (ClientCommandRegistry:105) → CmdSandbox → HandleCommand; NetGame.WireSandbox assigns Trace (SandboxTraceProvider — real crosshair forward TraceService), so object_spawn lands at the trace endpoint with a real edict (Api.Entities.Spawn + SetModel + SetOrigin)."
+      - "ObjectSpawn now DOES register the engine touch callback (e.Edict.Touch = ObjectTouch, SandboxMutator.cs:204) — the port equivalent of Base settouch (sv_sandbox.qc:180); see touch_material_fx row (now live). Think (setthink, sv_sandbox.qc:181) is driven externally by OnStartFrame over all objects rather than the per-edict engine think, which is faithful enough."
+      - "FIXED (re-audit 2026-06-27): ModelExists is NO LONGER unconditionally permissive — NetGame.WireSandbox:952-953 wires sandbox.ModelExistsProvider = path => _vfs.Exists(path) when the asset VFS is present (it is, on the live setup path), so object_spawn now rejects a non-existent model path like Base fexists(argv(2)). Headless/tests (no VFS) stay permissive by design."
+      - "STILL OPEN — presentation: CSQCMODEL_AUTOINIT (object→client networking) has no port seam (TODO SandboxMutator.cs:236) — client-side render of a spawned object is unverified (the object carries a real edict+model, so the generic entity feed MIGHT show it, but this was not confirmed in-game)."
+    verification:
+      - { kind: code, ref: "ObjectSpawn + HandleCommand(object_spawn) implement flood timer (Now+EditorFlood), maxobjects cap, model-arg check, forward-trace placement, view-yaw angles, owner-UID/info setup — logic/values match Base line-by-line", result: pass }
+      - { kind: code, ref: "Commands.cs:843 Register(\"g_sandbox\", …, CmdSandbox); CmdSandbox (Commands.cs:2275); commands.cfg alias sandbox → cmd g_sandbox; CmdSandbox routes to HandleCommand when sandbox.Added.", result: pass }
+      - { kind: code, ref: "ModelExistsProvider wired to _vfs.Exists in NetGame.WireSandbox:952-953; HandleCommand(object_spawn) calls ModelExists(A(2)) (SandboxMutator.cs:669) and rejects a non-existent path — Base fexists rejection now enforced on the live path.", result: pass }
+    confidence: high
+    notes: "Confirmed: logic/values/timing faithful AND liveness live (command path + Trace genuinely wired). FIX vs baseline: ModelExists no longer permissive on the live path (VFS provider wired). STILL OPEN: presentation (CSQC AUTOINIT seam — object→client render unverified)."
+
+  - id: mutator-sandbox.object.think_grab
+    name: "Per-object think: grab-class assignment + owner UID resync + CSQC update"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectFunction_Think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:ObjectThink"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:OnStartFrame"
+      - "game/net/NetGame.cs:WireSandbox (CryptoIdfpProvider/RealClientsProvider)"
+    constants:
+      - { name: "g_sandbox_editor_free", base: "1", port: "1", match: true }
+      - { name: "grab_values", base: "0 none / 1 owner / 3 anyone", port: "0/1/3", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "WIRED + LIVE: OnStartFrame is subscribed to MutatorHooks.SvStartFrame (fired in the server tick) and ticks ObjectThink for every object over the live RealClientsProvider roster (NetGame.WireSandbox — non-bot players); CryptoIdfpProvider(=PersistentId) resolves realowner from UID and clears it on disconnect."
+      - "Sandbox_DragAllowed veto hook ported and fired (MutatorHooks.FireSandboxDragAllowed, SandboxMutator.cs:346) — the grab-class branch is bit-faithful to Base (readonly OR DragAllowed→0). No subscriber exists, identical to Base's empty MUTATOR_CALLHOOK."
+      - "presentation: CSQCMODEL_AUTOUPDATE has no port seam (TODO SandboxMutator.cs:364); .Grab is computed but never consumed (no drag system)."
+    verification:
+      - { kind: code, ref: "ObjectThink computes grab (readonly||FireSandboxDragAllowed→0, free<2 && uid→1, else 3) and resyncs realowner from UID — faithful; OnStartFrame fires it per-object each tick over RealClients()", result: pass }
+      - { kind: code, ref: "NetGame.WireSandbox assigns CryptoIdfpProvider + RealClientsProvider (live non-bot roster); RealClients() prefers the provider over the empty snapshot.", result: pass }
+      - { kind: code, ref: "MutatorHooks.SandboxDragAllowed hook chain exists (MutatorHooks.cs:1121); FireSandboxDragAllowed (:1128) called at SandboxMutator.cs:346 — DragAllowed veto present.", result: pass }
+    confidence: high
+    notes: "FIX vs baseline: logic partial→faithful (DragAllowed veto hook now ported + fired). liveness live; presentation missing (CSQC + no drag consumer of .Grab)."
+
+  - id: mutator-sandbox.object.touch_material_fx
+    name: "Object touch: material impact particles + impact sounds (velocity-scaled)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectFunction_Touch"
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:180 (settouch wiring)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:ObjectTouch"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:204 (e.Edict.Touch = ObjectTouch wiring in ObjectSpawn)"
+      - "src/XonoticGodot.Engine/Simulation/FlyMove.cs:107 (Impact dual-dispatch e1.Touch)"
+      - "src/XonoticGodot.Engine/Simulation/SimulationLoop.cs:243 (RunEntity over all edicts)"
+    constants:
+      - { name: "g_sandbox_object_material_velocity_min", base: "100", port: "100", match: true }
+      - { name: "g_sandbox_object_material_velocity_factor", base: "0.002", port: "0.002", match: true }
+      - { name: "touch_timer_rate_s", base: "0.1", port: "0.1", match: true }
+      - { name: "impact_sound_variants", base: "5 (impact_<mat>_1..5.wav)", port: "ceil(random()*5)", match: true }
+      - { name: "effect_count_range", base: "1..10 (ceil(intensity*10))", port: "ceil(intensity*10)", match: true }
+      - { name: "sound_channel/atten", base: "CH_TRIGGER / VOL_BASE*intensity / ATTEN_NORM", port: "TriggerAuto / 1*intensity / 1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "WIRED + LIVE: ObjectSpawn assigns e.Edict.Touch = (self,other)=>ObjectTouch(e, other.Velocity) (SandboxMutator.cs:204), the port equivalent of Base settouch(e, sandbox_ObjectFunction_Touch) (sv_sandbox.qc:180). The object carries a real MOVETYPE_TOSS edict; the engine physics loop dual-dispatches e1.Touch on collision, so the velocity-scaled impact SOUND fires on the live match path. Touch averaging (object+toucher vel), >=min gate, offset, *factor clamp(0,1), 0.1s rate-limit all bit-faithful."
+      - "presentation: FIXED (was missing) — the four impact effects are now REGISTERED in EffectsList.cs:303-306 (Effects.Register(\"IMPACT_METAL\",\"impact_metal\") + stone/wood/flesh, point effects). ObjectTouch's EffectEmitter.EmitByEffectInfoName(\"impact_<mat>\") (SandboxMutator.cs:410) now resolves a real Effect via Effect.ByEffectInfoName (matches NetName ordinal, Effect.cs:87-93) → Emit(effect,…) with a non-null Effect (EffectEmitter.cs:240-242) → networked by ServerNet.WriteEffect (no longer the null-Effect drop). Count = ceil(intensity*10) ∈ 1..10 (>0, survives Emit's point-effect count==0 guard, EffectEmitter.cs:241). Base effectinfo.txt has impact blocks for exactly metal/stone/wood/flesh (effectinfo.txt:5529+); an unknown material renders nothing on both ends, matching Base's __pointparticles(-1) fallthrough. CAVEAT: this is CODE-verified (registered → networks by id, no longer dropped); the in-game particle render was NOT visually re-confirmed this pass (no kind:visual) — consistent with the sibling casing/beam rows' bar. (NB: the SandboxMutator.cs:405-407 source comment still claims by-name fallback works 'regardless of which effects are registered' — that comment is now stale but harmless; the live path takes the registered-Effect branch.)"
+      - "audio: sound playback uses the right cue (object/impact_<mat>_N.wav, channel TriggerAuto, vol VOL_BASE*intensity, atten ATTEN_NORM) and is reachable; precache of the 5 variants is deferred to lazy Play (intentional)."
+    verification:
+      - { kind: code, ref: "ObjectTouch: intensity=avg(|vel|), >=min gate, offset+factor clamp, 0.1s rate-limit, ceil(random*5) variant, count=ceil(intensity*10), Api.Sound.Play(object/impact_<mat>_N.wav) — all faithful to Base sv_sandbox.qc touch", result: pass }
+      - { kind: code, ref: "e.Edict.Touch assigned in ObjectSpawn (SandboxMutator.cs:204); engine dispatches e1.Touch for the MOVETYPE_TOSS object edict. Sound path is live.", result: pass }
+      - { kind: code, ref: "impact_metal/stone/wood/flesh registered in EffectsList.cs:303-306; EmitByEffectInfoName(\"impact_<mat>\") at SandboxMutator.cs:410 resolves a non-null Effect (Effect.ByEffectInfoName matches NetName, Effect.cs:87) → Emit networks it (EffectEmitter.cs:240-242), no longer dropped. Networks-by-id verified by code; in-game particle render not visually re-confirmed.", result: pass }
+    confidence: high
+    notes: "FIX vs baseline: presentation missing→faithful (matches the casing/beam registered-Effect bar). The four impact_<mat> effects are registered (EffectsList.cs:303-306), so the burst resolves to a real Effect and networks instead of being dropped at ServerNet.WriteEffect. Touch callback wired (settouch equivalent :204, dispatched FlyMove.cs:107), audio + sound path live, logic/values/timing faithful. Honest residual: in-game visual not re-confirmed (kind:code only)."
+
+  - id: mutator-sandbox.object.edit_get
+    name: "Edit-target trace + ownership permission check"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectEdit_Get"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:ObjectEditGet"
+      - "game/net/NetGame.cs:SandboxTraceProvider"
+    constants:
+      - { name: "g_sandbox_editor_distance_edit", base: "300", port: "300", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "WIRED + LIVE: Trace seam assigned (SandboxTraceProvider — crosshair forward TraceService, resolves a hit object by ReferenceEquals(o.Edict, tr.Ent)) + reachable via CmdSandbox → HandleCommand, so edit-target selection works on the live path."
+    verification:
+      - { kind: code, ref: "ObjectEditGet: range + classname-via-hit + per-owner gate (unowned OR free>=2 OR mine) — faithful to Base permission ladder", result: pass }
+      - { kind: code, ref: "NetGame.SandboxTraceProvider.TraceForward (NetGame.cs:1008) traces eye+forward*distance via ITraceService and matches tr.Ent to a live object edict; Trace assigned at WireSandbox:931.", result: pass }
+    confidence: high
+    notes: "Confirmed: logic/values faithful AND liveness live (Trace genuinely wired + command path reaches it)."
+
+  - id: mutator-sandbox.object.edit_properties
+    name: "object_edit — skin/alpha/color_main/color_glow/frame/scale/solidity/physics/force/material"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand(object_edit)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:HandleCommand(object_edit)"
+    constants:
+      - { name: "solidity_map", base: "0->SOLID_TRIGGER / 1->SOLID_BBOX", port: "0->Trigger / 1->BBox", match: true }
+      - { name: "physics_map", base: "0->MOVETYPE_NONE(0) / 1->MOVETYPE_TOSS(6) / 2->MOVETYPE_PHYSICS(32)", port: "0->None(0) / 1->Toss(6) / 2->Physics(32)", match: true }
+      - { name: "force_field", base: "damageforcescale", port: "DamageForceScale", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "WIRED + LIVE: object_edit reachable via CmdSandbox → HandleCommand on the live path."
+      - "physics-2 maps to MoveType.Physics (EntityEnums.cs:21, value 32) at SandboxMutator.cs:811, matching Base MOVETYPE_PHYSICS=32 (dpextensions.qc:1707) — the serialized movetype byte is Base-identical. (Behaviorally still think-only since the port has no ODE integrator, same as Base without ODE.)"
+      - "The faithful Base solidity→physics fall-through (missing break;) IS preserved (re-verified Base sv_sandbox.qc:685-697 has no break on solidity; port reproduces via goto case \"physics\" at SandboxMutator.cs:797)."
+    verification:
+      - { kind: code, ref: "all property cases present; solidity-falls-into-physics quirk reproduced via goto case; material precache deferred (intentional)", result: pass }
+      - { kind: code, ref: "Base MOVETYPE_PHYSICS=32 (dpextensions.qc:1707) == port MoveType.Physics=32 (EntityEnums.cs:21); physics-2 maps to it at SandboxMutator.cs:811 → movetype byte matches", result: pass }
+    confidence: high
+    notes: "FIX vs baseline: values partial→faithful (physics-2 movetype now 32, Base-identical). logic faithful incl. break-fallthrough quirk. liveness live."
+
+  - id: mutator-sandbox.object.scale
+    name: "Object scale clamp + mins/maxs resize"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectEdit_Scale"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:ObjectEditScale"
+    constants:
+      - { name: "g_sandbox_object_scale_min", base: "0.1", port: "0.1", match: true }
+      - { name: "g_sandbox_object_scale_max", base: "2", port: "2", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "WIRED + LIVE: reached from object_edit (live via CmdSandbox) and ObjectPortLoad (live via Store load/paste)."
+      - "Model re-set + mins/maxs resize depend on the entity service (Edict); now that objects carry a real edict the SetModel/SetSize path executes."
+    verification:
+      - { kind: code, ref: "ObjectEditScale: clamp(0.1,f,2), SetModel reset, RoundPerfectVector(mins*scale)/(maxs*scale) (#2742) via Round-to-1/8 — faithful", result: pass }
+      - { kind: code, ref: "callers ObjectEditScale<-object_edit(live)/ObjectPortLoad(live); objects now have a real Edict so SetModel/SetSize run.", result: pass }
+    confidence: high
+    notes: "Confirmed: logic/values faithful AND liveness live; RoundPerfectVector reproduced."
+
+  - id: mutator-sandbox.object.attach
+    name: "object_attach get/set/remove — child object attachment to tag/bone"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectAttach_Set"
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectAttach_Remove"
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand(object_attach)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:ObjectAttachSet"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:ObjectAttachRemove"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:HandleCommand(object_attach)"
+    constants:
+      - { name: "attach_movetype", base: "MOVETYPE_FOLLOW(12)", port: "MoveType.Follow(12)", match: true }
+      - { name: "attach_solid", base: "SOLID_NOT", port: "Solid.Not", match: true }
+      - { name: "MAX_STORAGE_ATTACHMENTS", base: "16", port: "16", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "WIRED + LIVE: object_attach get/set/remove reachable via CmdSandbox → HandleCommand."
+      - "FIXED (re-audit 2026-06-27): the setattachment seam is NO LONGER a TODO — ObjectAttachSet calls Api.Models.SetAttachment(e.Edict, parent.Edict, tag) (SandboxMutator.cs:298-299) and ObjectAttachRemove clears it (SandboxMutator.cs:315-316). EngineServices.SetAttachment (EngineServices.cs:796-803) sets e.Aiment=parent + records the tag; the child is set MOVETYPE_FOLLOW=12, and FlyMove.PhysicsFollow (SV_Physics_Follow, FlyMove.cs:483) rigidly tracks the parent's origin each server step — so the child genuinely follows the parent on the live physics path (same FOLLOW seam vehicles/heads use). Residual nuance: bone-precise tag OFFSET application is a renderer detail (SetAttachment stores the tag name for the renderer; the server follow tracks the parent ORIGIN), not runtime-verified in-game — but the attach is no longer a no-op."
+    verification:
+      - { kind: code, ref: "Set persists OldSolid/OldMoveType, sets Follow(12)/Not/takedamage=false + Api.Models.SetAttachment(e,parent,tag); Remove restores per-child state, freezes angles, clears attachment; 16-slot cap honored in save", result: pass }
+      - { kind: code, ref: "EngineServices.SetAttachment (:796) sets Aiment+tag; FlyMove.PhysicsFollow (:483) moves a MOVETYPE_FOLLOW child to its Aiment each step → real tag-follow on the live path. MOVETYPE_FOLLOW=12 (dpextensions.qc:549) == MoveType.Follow=12.", result: pass }
+    confidence: high
+    notes: "FIX vs baseline: presentation missing→faithful. Real engine tag-follow now wired (Api.Models.SetAttachment + MOVETYPE_FOLLOW PhysicsFollow), so attached children actually follow the parent. logic/values faithful, liveness live. (Bone-precise tag offset is a renderer concern, not visually re-verified.)"
+
+  - id: mutator-sandbox.object.remove
+    name: "object_remove — delete object + detach children + clear selections"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectRemove"
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand(object_remove)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:ObjectRemove"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:HandleCommand(object_remove)"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "WIRED + LIVE: object_remove reachable via CmdSandbox → HandleCommand; now deletes a real edict (Api.Entities.Remove)."
+    verification:
+      - { kind: code, ref: "ObjectRemove: detach children (ObjectAttachRemove), clear stale _attachSelection entries pointing at e, delete edict, --object_count — faithful to Base", result: pass }
+      - { kind: code, ref: "HandleCommand(object_remove) reachable via CmdSandbox on the live path.", result: pass }
+    confidence: high
+    notes: "Confirmed: logic faithful AND liveness live."
+
+  - id: mutator-sandbox.object.duplicate
+    name: "object_duplicate copy/paste via clipboard cvar"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand(object_duplicate)"
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectPort_Save"
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_ObjectPort_Load"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:HandleCommand(object_duplicate)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:ObjectPortSave"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:ObjectPortLoad"
+    constants:
+      - { name: "clipboard_cvar", base: "cl_sandbox_clipboard", port: "cl_sandbox_clipboard", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "WIRED: copy/paste reachable via CmdSandbox → HandleCommand; PASTE is fully live (flood/cap/ObjectPortLoad)."
+      - "CORRECTED (re-audit 2026-06-27): COPY clipboard is NO LONGER an empty no-op — SandboxObjectStore.SetClipboard now calls SetSandboxClipboard (NetGame.cs:948/971-983), which, FOR THE LOCAL-HOST player (ReferenceEquals(player, LocalServerPlayer)), un-escapes the serialized value and sets cl_sandbox_clipboard directly in the shared cvar store (+MarkArchived). So on a listen server, `object_duplicate copy` genuinely fills the local console's clipboard cvar, and a following paste reads it. Residual (now the only gap): a REMOTE client on a dedicated server is silently skipped — the port has no svc_stufftext channel to set a remote client's cvar. Hence liveness:partial (local-host live, remote dead)."
+      - "Paste shares the flood + maxobjects gates with object_spawn (faithful)."
+    verification:
+      - { kind: code, ref: "copy: ObjectPortSave(e,false) + escape quotes + SetClipboard; paste: flood/empty/cap checks then ObjectPortLoad — faithful; serializer reproduces slot layout, %.9v vectors, ftos, db columns", result: pass }
+      - { kind: code, ref: "SandboxObjectStore.SetClipboard → SetSandboxClipboard (NetGame.cs:971): sets cl_sandbox_clipboard (un-escaped) on _sharedCvars for the local-host player; remote players skipped (no stufftext channel). COPY now LIVE for the listen-server host; paste fully live.", result: pass }
+    confidence: high
+    notes: "CORRECTED vs baseline: COPY clipboard is NOT inert — SetClipboard now sets cl_sandbox_clipboard for the local host (NetGame.cs:971-983), so copy→paste works on a listen server. logic/values/timing faithful (incl. serializer); PASTE live; COPY live for local host, dead for remote-dedicated → liveness stays partial."
+
+  - id: mutator-sandbox.object.claim_info
+    name: "object_claim + object_info object/mesh/attachments"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand(object_claim)"
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand(object_info)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:HandleCommand(object_claim)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:HandleCommand(object_info)"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "WIRED + LIVE: claim/info reachable via CmdSandbox → HandleCommand; CryptoIdfpProvider(=PersistentId)/NetNameProvider/PrintTo(=SendChatToPlayer) assigned in NetGame.WireSandbox, so claim/owner-name/info-print all work."
+      - "FIXED (re-audit 2026-06-27): object_info mesh tag enumeration (FOR_EACH_TAG) is NO LONGER stubbed — NetGame.WireSandbox:958-961 wires sandbox.MeshTagNamesProvider from ModelService.TryGetModel(...).Tags.Keys, and HandleCommand(object_info mesh) iterates it (SandboxMutator.cs:890-893) to print the ^3tag^7, … list. The mesh subcommand now prints the real tag (bone) list, not just the header."
+    verification:
+      - { kind: code, ref: "claim: UID check, owner-name update, already-mine short-circuit, crypto_idfp set — faithful; info object/attachments faithful; info mesh now enumerates real tags via MeshTagNamesProvider", result: pass }
+      - { kind: code, ref: "CryptoIdfpProvider/NetNameProvider/PrintTo all assigned in WireSandbox; MeshTagNamesProvider wired to ModelService.Tags (NetGame.cs:958-961); command reachable via CmdSandbox.", result: pass }
+    confidence: high
+    notes: "FIX vs baseline: mesh tag-enumeration TODO closed (MeshTagNamesProvider wired to ModelService.Tags). logic faithful, liveness live, presentation na (text print). All info subcommands now print real data."
+
+  - id: mutator-sandbox.storage.persist
+    name: "Per-map object storage: save/load + 5s auto-save + autoload at map start"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_Database_Save"
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:sandbox_Database_Load"
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:MUTATOR_HOOKFUNCTION(sandbox, SV_StartFrame)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:DatabaseSave"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:DatabaseLoad"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:OnStartFrame"
+      - "game/net/NetGame.cs:SandboxObjectStore"
+    constants:
+      - { name: "g_sandbox_storage_name", base: "default", port: "default", match: true }
+      - { name: "g_sandbox_storage_autosave", base: "5", port: "5", match: true }
+      - { name: "g_sandbox_storage_autoload", base: "1", port: "1", match: true }
+      - { name: "storage_path", base: "sandbox/storage_<name>_<map>.txt", port: "~/XonData/sandbox/storage_<name>_<map>.txt", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "WIRED + LIVE: NetGame.WireSandbox:877 assigns IObjectStore = SandboxObjectStore (real file IO via UserPaths.Resolve(\"sandbox/storage_<name>_<map>.txt\") under ~/XonData). DatabaseSave writes, DatabaseLoad reads — so the 5s autosave tick (OnStartFrame on the live SvStartFrame) + autoload at activation genuinely persist objects per map."
+      - "Sandbox_SaveAllowed mutator-hook veto IS ported + fired: FireSandboxSaveAllowed() at DatabaseSave head (SandboxMutator.cs:543); chain MutatorHooks.cs:1035, no subscriber (Base-faithful empty chain)."
+    verification:
+      - { kind: code, ref: "OnStartFrame: gate on autosave==0, time<autosave_time, reschedule, DatabaseSave; header line + per-parent ObjectPortSave(true) — faithful. DatabaseLoad parses lines, skips //#, ObjectPortLoad(true). Subscribed to live SvStartFrame.", result: pass }
+      - { kind: code, ref: "SandboxObjectStore.Read/Write do real System.IO.File IO at UserPaths.Resolve(...) (NetGame.cs:965-984); assigned at WireSandbox:877. Path matches Base layout (writable-root analogue).", result: pass }
+    confidence: high
+    notes: "Confirmed: logic/values/timing faithful AND persistence live (file-IO Store wired, autosave + autoload genuinely persist). SaveAllowed veto hook IS ported + fired (corrected: baseline gap claiming it absent was stale)."
+
+  - id: mutator-sandbox.drag.grab
+    name: "Drag/grab integration: carry objects with +button8 gated by .grab"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:Drag (grab switch on e.grab)"
+      - "server/cheats.qc:Drag_Begin"
+      - "server/cheats.qc:Drag_Finish"
+    port_refs: []
+    constants:
+      - { name: "g_grab_range", base: "200", port: "none", match: false }
+      - { name: "drag_movetype", base: "MOVETYPE_WALK (gravity ~0.00001)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "STILL MISSING: no Drag/Drag_Begin/Drag_Finish system. ObjectThink computes .Grab (e.Grab, written at SandboxMutator.cs:343-347) but nothing consumes it; +button8 does nothing; objects cannot be physically carried. (grep: no Drag_Begin/Drag_Finish/button8 grab consumer anywhere; e.Grab is written but never read.)"
+    verification:
+      - { kind: grep, ref: "no Drag_Begin/Drag_Finish/+button8 grab consumer in src/ or game/; e.Grab is written by ObjectThink but never read", result: fail }
+    confidence: high
+    notes: "UNCHANGED from baseline (still missing). The shared generic drag system (also used by g_monsters_edit) was not ported. Only the .grab classification half exists."
+
+  - id: mutator-sandbox.hooks.gating
+    name: "readonly mode + Sandbox_DragAllowed/SaveAllowed/EditAllowed mutator hooks"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/sandbox/sv_sandbox.qc:SV_ParseClientCommand (readonly/EditAllowed gate)"
+      - "server/mutators/events.qh:Sandbox_DragAllowed"
+      - "server/mutators/events.qh:Sandbox_SaveAllowed"
+      - "server/mutators/events.qh:Sandbox_EditAllowed"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs:HandleCommand (ReadOnly + FireSandboxEditAllowed gate)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:1121/1142/1165 (SandboxDragAllowed/SaveAllowed/EditAllowed hook chains + Fire* dispatchers :1128/1148/1172)"
+    constants:
+      - { name: "g_sandbox_readonly", base: "0", port: "0", match: true }
+      - { name: "g_sandbox_info", base: "1", port: "1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "WIRED + LIVE: HandleCommand is reachable (CmdSandbox), so the g_sandbox_readonly gate (commands rejected with the read-only notice) fires on the live path; g_sandbox_info gates LOG verbosity faithfully."
+      - "The three Sandbox_* veto hooks (DragAllowed/SaveAllowed/EditAllowed) are FULLY PORTED as MutatorHooks hook chains (MutatorHooks.cs:1121/1142/1165) and fired at all three Base-equivalent call sites: FireSandboxEditAllowed at the command gate (SandboxMutator.cs:620), FireSandboxSaveAllowed at DatabaseSave (:543), FireSandboxDragAllowed at the think grab branch (:346). No subscriber currently exists — identical to Base, whose MUTATOR_CALLHOOK returns 0 with no handler — so the gating is bit-faithful, not 'readonly-only'."
+    verification:
+      - { kind: code, ref: "ReadOnly/Info cvars read; HandleCommand prints the readonly message and bails on (ReadOnly || FireSandboxEditAllowed); ObjectThink (ReadOnly || FireSandboxDragAllowed)→grab 0; DatabaseSave returns early on FireSandboxSaveAllowed — all faithful, reachable via CmdSandbox.", result: pass }
+      - { kind: code, ref: "MutatorHooks.SandboxDragAllowed/SaveAllowed/EditAllowed hook chains defined (MutatorHooks.cs:1121/1142/1165) with FireSandbox* dispatchers; called at SandboxMutator.cs:346/543/620. Empty-chain Call() returns false, matching Base empty MUTATOR_CALLHOOK.", result: pass }
+    confidence: high
+    notes: "FIX vs baseline: logic partial→faithful. The three Sandbox_* veto hooks are now ported + fired at all live call sites with Base-faithful empty-chain semantics; readonly/info gates live."
+
+  - id: mutator-sandbox.menu.tools_dialog
+    name: "Sandbox Tools menu dialog (cvar inputs + command buttons)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_sandboxtools.qc:XonoticSandboxToolsDialog_fill"
+    port_refs:
+      - "game/menu/dialogs/DialogSandboxTools.cs:BuildUi"
+      - "game/menu/framework/MenuCommand.cs:232 (case \"sandbox\")"
+      - "game/Shell.cs:188 (\"sandbox\" => new DialogSandboxTools())"
+    constants:
+      - { name: "slider_skin_frame", base: "0..99 step 1", port: "0..99 step 1", match: true }
+      - { name: "slider_alpha", base: "0.1..1 step 0.05", port: "0.1..1 step 0.05", match: true }
+      - { name: "slider_scale", base: "0.25..2 step 0.05", port: "0.25..2 step 0.05", match: true }
+      - { name: "slider_force", base: "0..10 step 0.5", port: "0..10 step 0.5", match: true }
+      - { name: "clipboard_cvar", base: "cl_sandbox_clipboard", port: "cl_sandbox_clipboard", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "WIRED + LIVE: MenuCommand has a `sandbox` case (MenuCommand.cs:232) that expands the cfg alias (`sandbox … → g_sandbox …`) and routes through SendGame → the live-match channel. So the dialog's action buttons genuinely drive the SandboxMutator backend (CmdSandbox → HandleCommand) when g_sandbox is enabled. Object_duplicate COPY still inert (clipboard stuffcmd gap)."
+      - "No in-game entry point: the Shell `\"sandbox\"` factory key (Shell.cs:188) is reached ONLY via the dev/CI `--menu-screen sandbox` flag. No menu button or keybind opens it in a normal match (Base uses the `menu_showsandboxtools` keybind, no port equivalent)."
+    verification:
+      - { kind: code, ref: "DialogSandboxTools.cs: all cvar names, slider ranges (skin/frame 0..99/1, alpha 0.1..1/0.05, scale 0.25..2/0.05, force 0..10/0.5), command strings match Base exactly", result: pass }
+      - { kind: code, ref: "MenuCommand.cs:232 `case \"sandbox\"` → SendGame(\"g_sandbox …\") routes to the live server command; CmdSandbox → HandleCommand handles it. Button-to-backend path is live.", result: pass }
+      - { kind: code, ref: "Shell.cs:188 `\"sandbox\"` factory is the only reference; no button/keybind pushes it (dev --menu-screen only)", result: fail }
+    confidence: high
+    notes: "Confirmed: button-to-backend routing live (MenuCommand sandbox case → CmdSandbox). UI itself faithful. STILL OPEN: no normal-match entry point (dev-flag only)."

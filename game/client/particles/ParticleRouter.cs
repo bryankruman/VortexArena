@@ -56,7 +56,7 @@ public sealed class ParticleRouter
     /// <paramref name="velocity"/> are Quake space; for trails <paramref name="velocity"/> is the END point.
     /// </summary>
     public bool Route(string effectName, IReadOnlyList<EffectInfoEmitter> blocks,
-        NVec3 origin, NVec3 velocity, int count, bool isTrail, Color? color)
+        NVec3 origin, NVec3 velocity, float count, bool isTrail, Color? color)
     {
         if (Faithful is null && Modern is null)
             return false;
@@ -102,7 +102,7 @@ public sealed class ParticleRouter
     }
 
     private void SpawnFaithful(string effectName, IReadOnlyList<EffectInfoEmitter> blocks,
-        EffectStyleEntry style, ModernPreset preset, NVec3 origin, NVec3 velocity, int count, bool isTrail, Color? color)
+        EffectStyleEntry style, ModernPreset preset, NVec3 origin, NVec3 velocity, float count, bool isTrail, Color? color)
     {
         // The blocks passed in are the effect's REAL effectinfo definition (Route is only called with a
         // non-empty upstream lookup) — the faithful backend always renders those verbatim, even when the

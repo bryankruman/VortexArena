@@ -119,7 +119,7 @@ public partial class BeamRenderer : Node3D
         if (pathQuake.Count < 2)
             return null;
 
-        var mesh = BuildCrossRibbon(pathQuake, width);
+        var mesh = CylindricLine.BuildCrossRibbonMesh(pathQuake, width);
         var mat = BeamMaterial(color);
         var mi = new MeshInstance3D
         {
@@ -132,61 +132,6 @@ public partial class BeamRenderer : Node3D
 
         AnimateAndFree(mi, mat, lifetime, flicker);
         return mi;
-    }
-
-    /// <summary>
-    /// Build a "+"-section ribbon along the path: per segment, two camera-independent quads on perpendicular
-    /// side axes, so the beam glows as a line from any viewpoint (the cheap stand-in for a view-facing cylinder).
-    /// UVs run [0..1] across the width (the glow gradient) and along the length (so the texture reads as a core).
-    /// </summary>
-    private ArrayMesh BuildCrossRibbon(List<NVec3> pathQuake, float width)
-    {
-        var verts = new List<Vector3>();
-        var uvs = new List<Vector2>();
-        var indices = new List<int>();
-        float half = width * 0.5f;
-
-        for (int i = 0; i < pathQuake.Count - 1; i++)
-        {
-            Vector3 a = Coords.ToGodot(pathQuake[i]);
-            Vector3 b = Coords.ToGodot(pathQuake[i + 1]);
-            Vector3 seg = b - a;
-            if (seg.LengthSquared() < 1e-6f)
-                continue;
-            Vector3 dir = seg.Normalized();
-
-            // Two side axes perpendicular to the segment (and to each other) → a cross cross-section.
-            Vector3 side1 = dir.Cross(Vector3.Up);
-            if (side1.LengthSquared() < 1e-4f) side1 = dir.Cross(Vector3.Right);
-            side1 = side1.Normalized() * half;
-            Vector3 side2 = dir.Cross(side1).Normalized() * half;
-
-            AddQuad(verts, uvs, indices, a, b, side1);
-            AddQuad(verts, uvs, indices, a, b, side2);
-        }
-
-        var arrays = new Godot.Collections.Array();
-        arrays.Resize((int)Mesh.ArrayType.Max);
-        arrays[(int)Mesh.ArrayType.Vertex] = verts.ToArray();
-        arrays[(int)Mesh.ArrayType.TexUV] = uvs.ToArray();
-        arrays[(int)Mesh.ArrayType.Index] = indices.ToArray();
-
-        var mesh = new ArrayMesh();
-        mesh.AddSurfaceFromArrays(Mesh.PrimitiveType.Triangles, arrays);
-        return mesh;
-    }
-
-    private static void AddQuad(List<Vector3> verts, List<Vector2> uvs, List<int> indices,
-        Vector3 a, Vector3 b, Vector3 side)
-    {
-        int baseIdx = verts.Count;
-        verts.Add(a - side); uvs.Add(new Vector2(0f, 0f));
-        verts.Add(a + side); uvs.Add(new Vector2(1f, 0f));
-        verts.Add(b + side); uvs.Add(new Vector2(1f, 1f));
-        verts.Add(b - side); uvs.Add(new Vector2(0f, 1f));
-        // two triangles (double-sided handled by the material's cull-disabled)
-        indices.Add(baseIdx + 0); indices.Add(baseIdx + 1); indices.Add(baseIdx + 2);
-        indices.Add(baseIdx + 0); indices.Add(baseIdx + 2); indices.Add(baseIdx + 3);
     }
 
     private StandardMaterial3D BeamMaterial(Color color)

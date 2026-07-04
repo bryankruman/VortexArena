@@ -466,24 +466,22 @@ public partial class WeaponsPanel : HudPanel
         float ammoAlpha = fgAlpha * Mathf.Clamp(CvarF("ammo_alpha", 1f), 0f, 1f);
         ammoCol.A = ammoAlpha;
 
-        // The bar fills along the longer dimension to match the cell's orientation: in a vertical strip cells
-        // tend to be wider-than-tall icons; QC clips along the bar art's x by `barsize.x * frac`. We grow the
-        // filled rect from the bottom edge (vertical) or left edge, picking the cell's dominant axis.
-        Rect2 barRect;
-        if (cell.Size.Y >= cell.Size.X) // taller cell → vertical bar (bottom-up)
+        // QC (weapons.qc:613-630): the weapon_ammo art is drawn at the FULL cell, but the draw is CLIPPED to
+        // `barsize.x * frac` width via drawsetcliparea — i.e. the icon is revealed left-to-right, NOT stretched
+        // into a fraction-width rect (which distorts the art). Emulate the clip with a source-UV region blit:
+        // dest = the frac-width left slice of the cell, src = the same frac-portion of the texture's width.
+        var tex = TextureCache.GetFirst(
+            $"gfx/hud/{HudSkin.SkinName}/weapon_ammo", "gfx/hud/default/weapon_ammo");
+        if (tex is null)
         {
-            float h = cell.Size.Y * frac;
-            barRect = new Rect2(cell.Position.X, cell.Position.Y + (cell.Size.Y - h), cell.Size.X, h);
+            DrawRect(new Rect2(cell.Position, new Vector2(cell.Size.X * frac, cell.Size.Y)),
+                new Color(ammoCol.R, ammoCol.G, ammoCol.B, ammoAlpha * 0.5f));
+            return;
         }
-        else // wider cell → horizontal bar (left-to-right)
-        {
-            float ww = cell.Size.X * frac;
-            barRect = new Rect2(cell.Position.X, cell.Position.Y, ww, cell.Size.Y);
-        }
-
-        // Prefer the skin art tinted; fall back to a flat colored bar so it always reads.
-        if (!DrawSkinPicMod("weapon_ammo", barRect, ammoCol))
-            DrawRect(barRect, new Color(ammoCol.R, ammoCol.G, ammoCol.B, ammoAlpha * 0.5f));
+        Vector2 ts = tex.GetSize();
+        var dst = new Rect2(cell.Position, new Vector2(cell.Size.X * frac, cell.Size.Y));
+        var src = new Rect2(0f, 0f, ts.X * frac, ts.Y);
+        DrawTextureRectRegion(tex, dst, src, ammoCol);
     }
 
     /// <summary>

@@ -1,0 +1,573 @@
+unit: cl-strafehud
+category: client
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-07-02"
+# Fine-grained supersession of registry/cl-hud.yaml row cl-hud.panel.strafehud ("faithful-to-stock
+# detail unverified", confidence low). This unit resolves that uncertainty per-feature. The movement
+# math the panel VISUALIZES (friction/accel/aircontrol themselves) is owned by physics-player.yaml —
+# rows here only score how the HUD *reads* those inputs, not the movement simulation.
+summary:
+  feature_count: 18
+  worst_gaps:
+    - "Strafe sonar (audible strafe-quality feedback: interval/volume/pitch ramps + sound7 call, extra.qc StrafeHUD_Sonar) is entirely missing — no port code, none of the 13 hud_panel_strafehud_sonar_* cvars registered."
+    - "Live feed is Player-only (NetGame.cs:4382): WishDir/JumpHeld/OnSlick/FovX/RaceCheckpointTime/SpeedUnit are never fed, so the live panel permanently runs the QC non-local fallback (wishangle fixed 45°, movespeed=maxspeed, no jump-held anti-flicker, no slick, start-speed text never latches); on a pure network client LocalServerPlayer is null and the panel never draws at all."
+    - "Ground friction-replica constant wrong: port dtR = 1/60 vs Base PHYS_FRICTION_REPLICA_DT = 0.00390625 (1/256) — on-ground strafespeed/frictionspeed and thus ground zone angles are computed with the wrong geometric base."
+    - "PHYS_* mappings: PhysSlickAccelerate reads sv_airaccelerate (stock 2) instead of sv_slickaccelerate (stock 15); PhysAirStopAccelerateFull reads sv_aircontrol==0 instead of sv_airstopaccelerate_full; raw global cvars mean per-player stat modifiers (haste, crouch 0.5 maxspeed_mod) never reach the HUD."
+    - "DetermineFrameTime always returns ticrate — the Base prediction path (weighted arithmetic mean of input_timelength with the 50 ms DarkPlaces frame-split, refreshed every fps_update=0.5 s) is not ported, so bestspeed/maxaccel-per-tick and every zone width assume server tick length instead of real client frame dt."
+features:
+
+  - id: cl-strafehud.gate.show_mode
+    name: "Panel show gate (hud_panel_strafehud 0-4, observer hide, Race/CTS showoptional hook) + dynamichud/bg/padding"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/strafehud.qc:HUD_StrafeHUD (21-52)"
+      - "client/hud/panel/strafehud.qh:autocvar_hud_panel_strafehud (5)"
+    port_refs:
+      - "game/hud/StrafeHudPanel.cs:ResolveVisible (121)"
+      - "game/hud/HudPanel.cs:ResolveShowMode (108)"
+      - "game/hud/HudManager.cs:269 (RaceOrCts = gametype rc/cts)"
+      - "game/hud/HudLayoutDefaults.cs:82 (strafehud default enable \"3\")"
+    constants:
+      - { name: "hud_panel_strafehud default", base: "3 (Race/CTS only, hidden observing)", port: "3", match: true }
+      - { name: "mode-4 semantics", base: "4 falls through all Base gates = always on incl. observing", port: "4 = Race/CTS incl. observing", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Out-of-range value 4: Base's gate conditions (==1||==3 observer hide, ==3 hook) all miss, so 4 behaves like 2 (always on); port defines 4 as Race/CTS incl. observing. Cosmetic divergence on a non-default value."
+    verification:
+      - { kind: code, ref: "Base gate: !cvar || (spectatee_status==-1 && (1|3)) || (==3 && !HUD_StrafeHUD_showoptional); hook implemented by cl_race.qc/cl_cts.qc = port ctx.RaceOrCts; HudManager drives Visible per frame (memory: hud-panel-show-mode-gating)", result: pass }
+    confidence: high
+    notes: "Supersedes cl-hud.panel.strafehud enable-gate claim (now verified in detail). dynamichud scale + panel bg/padding are the generic HudPanel plumbing (cl-hud unit owns that)."
+
+  - id: cl-strafehud.input.player_state
+    name: "Strafeplayer state acquisition: onground/jump-held/waterlevel/onslick + ground timeout for slick ramps"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/strafehud.qc:HUD_StrafeHUD (54-122)"
+      - "client/hud/panel/strafehud/util.qc:StrafeHUD_GetStrafeplayer (109)"
+      - "client/hud/panel/strafehud/util.qc:StrafeHUD_DetermineJumpHeld (316)"
+      - "client/hud/panel/strafehud/util.qc:StrafeHUD_DetermineOnGround (334)"
+      - "client/hud/panel/strafehud/util.qc:StrafeHUD_DetermineOnSlick (341)"
+      - "client/hud/panel/strafehud/util.qc:StrafeHUD_DetermineWaterLevel (118)"
+      - "client/hud/panel/strafehud/util.qh"
+    port_refs:
+      - "game/hud/StrafeHudPanel.cs:DrawPanel (285-343)"
+      - "game/hud/StrafeHudPanel.cs:44-60 (Player/JumpHeld/OnSlick feed properties)"
+      - "game/net/NetGame.cs:4382 (feeds Player = LocalServerPlayer only)"
+    constants:
+      - { name: "hud_panel_strafehud_timeout_ground", base: "0.1", port: "0.1 (registered + read)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "JumpHeld/OnSlick are properties that NO live caller sets (NetGame only sets Player) — jump-held ground-flicker suppression and the slick ground-accel switch never engage in a real match."
+      - "Waterlevel is never determined (Base _Movetype_CheckWater probe): swimming never resets onground_lasttime and never suppresses the jump-height capture."
+      - "The onslick ground trace (tracebox 1qu down, Q3SURFACEFLAG_SLICK) is not performed anywhere on the panel's behalf."
+      - "Spectator/demo path missing: Base resolves the spectated player via CSQCModel_server2csqc and keeps working; port draws only for the local listen-server Player and self-blanks on a pure client (LocalServerPlayer null) — the panel never renders in network-client play."
+    verification:
+      - { kind: code, ref: "grep WishDir|JumpHeld|OnSlick over game/: only declarations + NetGame comment 'not fed'; NetGame.cs:4356 'null on a pure client'", result: fail }
+    confidence: high
+    notes: "Ground-timeout state machine itself (onground_lasttime/onslick_last/expiry) is a faithful transcription."
+
+  - id: cl-strafehud.input.wishangle_keys
+    name: "Wish-angle + forward/backward key derivation (local movement vector vs non-local pressed-keys fallback)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/strafehud/util.qc:StrafeHUD_DetermineWishAngle (178)"
+      - "client/hud/panel/strafehud/util.qc:StrafeHUD_DetermineForwardKeys (216)"
+      - "client/hud/panel/strafehud.qc:HUD_StrafeHUD (124-148 movespeed + strafekeys)"
+    port_refs:
+      - "game/hud/StrafeHudPanel.cs:DetermineWishAngle (888)"
+      - "game/hud/StrafeHudPanel.cs:DetermineForwardKeys (905)"
+      - "game/hud/StrafeHudPanel.cs:DrawPanel (346-363)"
+    constants:
+      - { name: "local wishangle", base: "RAD2DEG*atan2(movement.y, movement.x), wrapped past ±90", port: "identical formula", match: true }
+      - { name: "non-local wishangle", base: "45 if fwd/back key else 90; sign from left/right keys; 0 if neither", port: "always 45 (no pressed-keys STAT)", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Local branch is ported faithfully but is DEAD live: WishDir is never fed, so isLocal is always false and the panel always runs the fallback."
+      - "Non-local fallback diverges: Base still reads STAT(PRESSED_KEYS) (45°/90° ± left/right sign, 0 when no side key); port hardcodes wishangle=45, keysFwd=FORWARD — pure-A/D side strafing and backwards strafing are misclassified on the live path."
+    verification:
+      - { kind: code, ref: "StrafeHudPanel.cs:901-903 comment 'assume the standard W+A strafe'; PRESSED_KEYS exists in port (PressedKeysPanel) but is not consumed here", result: fail }
+    confidence: high
+    notes: null
+
+  - id: cl-strafehud.input.phys_cvars
+    name: "Movement-physics input surface (PHYS_* stat reads -> maxspeed/accel/friction/aircontrol/etc.)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/strafehud.qc:HUD_StrafeHUD (100-122, 179-185, 205, 334, 434-439, 463)"
+    port_refs:
+      - "game/hud/StrafeHudPanel.cs:261-280 (PhysMaxSpeed..PhysAirAccelQw shim over global cvar store)"
+    constants:
+      - { name: "PHYS_SLICKACCELERATE source", base: "STAT(MOVEVARS_SLICKACCELERATE) <- sv_slickaccelerate (stock physicsX 15)", port: "reads sv_airaccelerate (stock 2)", match: false }
+      - { name: "PHYS_AIRSTOPACCELERATE_FULL source", base: "STAT(MOVEVARS_AIRSTOPACCELERATE_FULL) <- sv_airstopaccelerate_full", port: "reads sv_aircontrol == 0 (self-described 'conservative' guess)", match: false }
+      - { name: "ducked maxspeed_mod", base: "0.5 when IS_DUCKED(csqcplayer)", port: "ducked hardcoded false (mod always 1)", match: false }
+      - { name: "fallback defaults (unregistered store)", base: "stock physicsX: maxspeed 360, accelerate 15, airaccelerate 2, friction 6, airaccel_qw -0.8, aircontrol 100", port: "800 / 5.5 / 1 / 5 / 1 / 0 fallbacks (live store normally supplies real values via MoveVarsBlock/PhysicsPreset)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "PhysSlickAccelerate() maps to the wrong cvar (sv_airaccelerate instead of sv_slickaccelerate; sv_slickaccelerate IS in the port's MoveVarsBlock/PhysicsPreset) — slick-ground zone angles use accel 2 instead of 15."
+      - "PhysAirStopAccelerateFull() maps to sv_aircontrol==0 instead of sv_airstopaccelerate_full (also present in MoveVarsBlock)."
+      - "Base PHYS_* are per-entity stats: haste/speed-mutator/gametype modifiers and crouch (0.5) reach the HUD; the port's raw global cvar reads never reflect per-player modifiers."
+    verification:
+      - { kind: code, ref: "Base common/physics/player.qh:96 PHYS_SLICKACCELERATE=STAT(MOVEVARS_SLICKACCELERATE); physicsX.cfg sv_slickaccelerate 15; port StrafeHudPanel.cs:265,270", result: fail }
+    confidence: high
+    notes: "The movement cvar VALUES themselves are physics-player.yaml territory; this row scores only the HUD's read path. Cross-ref physics-player.air.strafe_blends / physics-player.air.cpm_aircontrol for the simulated counterparts."
+
+  - id: cl-strafehud.math.frametime
+    name: "Frame-time estimator (weighted-mean of input_timelength, 50ms DP frame split, fps_update window)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/strafehud/util.qc:StrafeHUD_DetermineFrameTime (138)"
+      - "client/hud/panel/strafehud.qh:autocvar_hud_panel_strafehud_fps_update (19)"
+    port_refs:
+      - "game/hud/StrafeHudPanel.cs:DetermineFrameTime (881)"
+    constants:
+      - { name: "hud_panel_strafehud_fps_update", base: "0.5", port: "0.5 registered but UNREAD (estimator not ported)", match: false }
+      - { name: "DP frame split threshold", base: "0.05 s (halve frames > 50 ms)", port: "absent", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Port always returns ticrate (the Base spectate branch). The predicted-player path — weighted arithmetic mean (sum dt² / sum dt) refreshed every fps_update seconds with the 50 ms split — is not ported, so maxaccel*dt (and therefore bestspeed and every zone angle) is computed for the server tick, not the client's real frame cadence."
+    verification:
+      - { kind: code, ref: "StrafeHudPanel.cs:883-885 comment: HUD layer lacks input_timelength; returns Ticrate()", result: fail }
+    confidence: high
+    notes: "At 60 Hz tick vs high-fps client this skews bestangle by the dt ratio; racers running uncapped fps see systematically wrong sweet-spot width."
+
+  - id: cl-strafehud.math.friction_replica
+    name: "On-ground friction-speed replica (geometric per-tick friction, stopspeed cases)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/strafehud.qc:HUD_StrafeHUD (200-235)"
+    port_refs:
+      - "game/hud/StrafeHudPanel.cs:DrawPanel (399-420)"
+    constants:
+      - { name: "PHYS_FRICTION_REPLICA_DT", base: "0.00390625 (1/256, common/physics/player.qh:331)", port: "1/60 (StrafeHudPanel.cs:407)", match: false }
+      - { name: "sv_stopspeed", base: "100 (stock)", port: "GlobalF sv_stopspeed fallback 100", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "dt_r constant wrong (1/60 vs 1/256): independent_geometric = (1 - friction*dt_r)^(dt/dt_r) and the stopspeed-band log term both use the wrong base, so frictionspeed/strafespeed — and every ground zone angle derived from them — deviate from Base for all on-ground frames."
+    verification:
+      - { kind: code, ref: "Base player.qh:331 PHYS_FRICTION_REPLICA_DT 0.00390625; port hardcodes const float dtR = 1f/60f", result: fail }
+    confidence: high
+    notes: "The three-case structure (S<speed<S/geo log-branch / speed>=S geometric / speed<S linear) is otherwise a verbatim transcription."
+
+  - id: cl-strafehud.math.strafe_angle
+    name: "Current strafe angle (velocity yaw vs view yaw, interior-angle wrap, fwd/backwards ±180 shift, v_flipped)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/strafehud.qc:HUD_StrafeHUD (237-332)"
+    port_refs:
+      - "game/hud/StrafeHudPanel.cs:DrawPanel (422-479)"
+    constants:
+      - { name: "fwd detection at |wishangle|==90", base: "sign-of-wishangle comparison vs angle", port: "identical", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "line-by-line diff HUD_StrafeHUD 241-332 vs DrawPanel 425-479: vel_angle wrap, fwd key/angle cases, backwards ±180 shift, wishangle inversion, v_flipped negation all present; v_flipped read live from store", result: pass }
+    confidence: high
+    notes: "Runtime behavioral check not done (code-diff only)."
+
+  - id: cl-strafehud.math.zone_angles
+    name: "Best/prebest/overturn angle math (ground-friction, airborne, high-speed-landing onground_mode branches)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/strafehud.qc:HUD_StrafeHUD (334-432)"
+      - "client/hud/panel/strafehud.qh:STRAFEHUD_ONGROUND_* (118-120)"
+    port_refs:
+      - "game/hud/StrafeHudPanel.cs:DrawPanel (481-543)"
+    constants:
+      - { name: "hud_panel_strafehud_onground_mode", base: "2 (AIR)", port: "2 registered + read", match: true }
+      - { name: "hud_panel_strafehud_onground_friction", base: "1", port: "1 registered + read", match: true }
+      - { name: "airstopaccel==0 -> 1 equivalence; no airstopaccel while side strafing", base: "yes", port: "yes (line 481-482)", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Formula structure is faithful, but the inputs are tainted upstream: wrong friction-replica dt_r (see math.friction_replica), wrong slick accel + no ducked mod (input.phys_cvars), ticrate dt (math.frametime) — so the drawn angles differ from Base numerically even though the algebra matches."
+    verification:
+      - { kind: code, ref: "acos cases 1/2/3 for bestangle/prebestangle/overturnangle incl. the k9er high-speed-landing OVERTURN/GROUND/AIR triage match Base 349-428 line-for-line", result: pass }
+    confidence: high
+    notes: "k9er's documented physics (gitlab.com/otta8634/xonotic-physics) transcribed intact."
+
+  - id: cl-strafehud.math.turn_sidestrafe
+    name: "Air side-strafe (A/D turn) detection: strafity, GeomLerp maxspeed/maxaccel blends, timeout_turn retention"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/strafehud.qc:HUD_StrafeHUD (150-187)"
+    port_refs:
+      - "game/hud/StrafeHudPanel.cs:DrawPanel (365-388)"
+      - "game/hud/StrafeHudPanel.cs:GeomLerp (818)"
+    constants:
+      - { name: "hud_panel_strafehud_timeout_turn", base: "0.1", port: "0.1 registered + read", match: true }
+      - { name: "strafity", base: "1 - (90-|wishangle|)/45", port: "identical", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Reachable only with strafekeys (|wishangle|>45) — which requires the never-fed WishDir; on the live path wishangle is pinned at 45 so side-strafe mode NEVER activates (turn stays false, strafity stays 0, range_sidestrafe never engages)."
+    verification:
+      - { kind: code, ref: "GeomLerp a*(b/a)^t matches QC GeomLerp; turn state machine identical; liveness fail traced to NetGame Player-only feed", result: fail }
+    confidence: high
+    notes: null
+
+  - id: cl-strafehud.math.wturn
+    name: "W-turn best-angle (aircontrol power==2 cubic, acos(sqrt(2/3)) asymptote, proper/unrestricted modes)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/strafehud.qc:HUD_StrafeHUD (434-502, 708-745)"
+      - "client/hud/panel/strafehud.qh:ACOS_SQRT2_3_DEG (154)"
+    port_refs:
+      - "game/hud/StrafeHudPanel.cs:DrawPanel (545-595, 753-775)"
+    constants:
+      - { name: "ACOS_SQRT2_3_DEG", base: "35.2643896827546543153", port: "35.2643896827546543153f", match: true }
+      - { name: "wturn_a", base: "32 * |aircontrol| * dt (crouch-flag maxspeed scale)", port: "identical", match: true }
+      - { name: "hud_panel_strafehud_wturn / _proper / _unrestricted", base: "1 / 0 / 0", port: "1 / 0 / 0 registered + read", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "wturning requires wishangle==0 && keysFwd==FORWARD-ish — live feed pins wishangle to 45/keysFwd to FORWARD (non-local fallback), so wturning is never true and the wturn indicators only appear via the WTURN_NORMAL/SIDESTRAFE always-modes, with dt = ticrate skewing the proper-formula variant."
+      - "PhysAirAccelQw gate reads sv_airaccel_qw as a global (stock -0.8 -> gate correctly closed by default), but PhysAirControlPenalty/Power/Flags are also raw globals (no per-player stats)."
+    verification:
+      - { kind: code, ref: "cubic acos(-v/a*(cos((acos(V)+2pi)/3)*2+1)) and the power>=0 asymptote acos(sqrt(p/(p+1))) transcribed exactly; port adds a float.IsFinite NaN guard (DrawAngleIndicator 1043)", result: pass }
+    confidence: high
+    notes: "The NaN guard is a port-side robustness addition with no Base analogue (QC tolerates NaN draws); behaviorally inert for valid inputs."
+
+  - id: cl-strafehud.bar.zones_render
+    name: "Strafe-meter bar rendering: zone layout, 360° wrap/mirror, drawfill/progressbar/gradient/soft-gradient styles"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/strafehud/draw_core.qc:StrafeHUD_DrawStrafeMeter (5)"
+      - "client/hud/panel/strafehud/draw.qc:StrafeHUD_DrawStrafeHUD (8)"
+      - "client/hud/panel/strafehud/draw.qc:StrafeHUD_DrawGradient (183)"
+      - "client/hud/panel/strafehud/draw.qc:StrafeHUD_DrawSoftGradient (245)"
+      - "client/hud/panel/strafehud/draw.qc:StrafeHUD_IsGradient (341)"
+      - "client/hud/panel/strafehud/draw.qh"
+      - "client/hud/panel/strafehud/draw_core.qh"
+    port_refs:
+      - "game/hud/StrafeHudPanel.cs:DrawStrafeMeter (977)"
+      - "game/hud/StrafeHudPanel.cs:DrawStrafeBar (1107)"
+      - "game/hud/StrafeHudPanel.cs:DrawSoftGradient (1221)"
+    constants:
+      - { name: "hud_panel_strafehud_style", base: "2 (gradient)", port: "2 registered + read", match: true }
+      - { name: "bar zone colors/alphas", base: "preaccel '0 1 0'/0.5, neutral '1 1 1'/0.1, accel '0 1 0'/0.5, overturn '1 0 1'/0.5", port: "identical registered defaults + fallbacks", match: true }
+      - { name: "zone order/offsets", base: "preaccelR, accelR, overturn(360-2*ot), accelL, preaccelL, neutral(remainder); shift = neutral/2 - wishangle", port: "identical", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "STYLE_GRADIENT (the default) is rendered through the per-segment soft-gradient loop instead of Base's accelerated two-polygon vertex gradient (R_BeginPolygon), with projection applied up-front — self-documented as visually equivalent at HUD sizes (StrafeHudPanel.cs:1157-1160, 1207-1209). STYLE_PROGRESSBAR falls back to a flat fill because the skin's progressbar art is unavailable in the HUD layer (1182)."
+    gaps:
+      - "STYLE_PROGRESSBAR (style 1) loses the progressbar texture: color/alpha faithful but the skin art is not drawn."
+      - "Not-moving neutral full-bar draw collapses the drawfill/progressbar distinction into one DrawRect (draw_core.qc 14-35 has separate paths)."
+    verification:
+      - { kind: code, ref: "wrap/mirror/overflow bookkeeping, gradient_start triage (0/1/2), per-segment ratio + alpha/color combine match draw.qc exactly; % sign semantics C# == QC noted at 1114", result: pass }
+    confidence: high
+    notes: "Port adds float.IsFinite bail-outs on zone angles (1113) — robustness only."
+
+  - id: cl-strafehud.bar.projection_range
+    name: "Projection modes (linear/perspective/panoramic) + HUD angle range resolution (range / range_sidestrafe / FOV modes)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/strafehud/util.qc:StrafeHUD_Project (24)"
+      - "client/hud/panel/strafehud/util.qc:StrafeHUD_ProjectOffset (61)"
+      - "client/hud/panel/strafehud/util.qc:StrafeHUD_ProjectWidth (73)"
+      - "client/hud/panel/strafehud/util.qc:StrafeHUD_DetermineHudAngle (238)"
+      - "client/hud/panel/strafehud/util.qc:StrafeHUD_AngleToWidth (12)"
+      - "client/hud/panel/strafehud/util.qc:StrafeHUD_AngleToOffset (18)"
+    port_refs:
+      - "game/hud/StrafeHudPanel.cs:Project (832)"
+      - "game/hud/StrafeHudPanel.cs:ProjectOffset (852)"
+      - "game/hud/StrafeHudPanel.cs:ProjectWidth (860)"
+      - "game/hud/StrafeHudPanel.cs:DetermineHudAngle (916)"
+      - "game/hud/StrafeHudPanel.cs:AngleToWidth (828)"
+    constants:
+      - { name: "hud_panel_strafehud_range / _range_sidestrafe / _projection", base: "90 / -2 / 0", port: "90 / -2 / 0 registered + read", match: true }
+      - { name: "projection clamps", base: "perspective 170°, panoramic 350°", port: "identical", match: true }
+      - { name: "VF_FOVX source (range -1 mode)", base: "live getproperty(VF_FOVX)", port: "FovX property, default 90, never fed", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "range -1 / range_sidestrafe -1 ('use current FOV') modes use the never-fed FovX default of 90 — wrong whenever the player's fov/zoom differs from 90 (grep: no assignment to strafe.FovX anywhere in game/)."
+      - "range_sidestrafe GeomLerp path is unreachable live because strafity is pinned 0 (see math.turn_sidestrafe)."
+    verification:
+      - { kind: code, ref: "tan/atan perspective + half-angle panoramic forward/reverse forms match; AngleToWidth adds a range!=0/finite guard vs QC (documented, 824-827)", result: pass }
+    confidence: high
+    notes: null
+
+  - id: cl-strafehud.indicators.angle_markers
+    name: "Angle indicators: current-angle (ratio-colored), best-angle ghost, switch/opposite-switch, dashes + 45° arrows, minspeed gate"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/strafehud.qc:HUD_StrafeHUD (484-573, 582-706, 747-791)"
+      - "client/hud/panel/strafehud/draw_core.qc:StrafeHUD_DrawAngleIndicator (140)"
+      - "client/hud/panel/strafehud/draw_core.qc:StrafeHUD_DrawAngleIndicatorLine (163)"
+      - "client/hud/panel/strafehud/draw_core.qc:StrafeHUD_DrawAngleIndicatorArrow (184)"
+      - "client/hud/panel/strafehud/draw.qc:StrafeHUD_DrawStrafeArrow (284)"
+      - "client/hud/panel/strafehud/util.qc:StrafeHUD_MixColors (351)"
+      - "client/hud/panel/strafehud/util.qc:StrafeHUD_DetermineDirection (296)"
+    port_refs:
+      - "game/hud/StrafeHudPanel.cs:DrawPanel (597-801)"
+      - "game/hud/StrafeHudPanel.cs:DrawAngleIndicator (1040)"
+      - "game/hud/StrafeHudPanel.cs:DrawAngleIndicatorLine (1055)"
+      - "game/hud/StrafeHudPanel.cs:DrawStrafeArrow (1250)"
+      - "game/hud/StrafeHudPanel.cs:DetermineDirection (946)"
+    constants:
+      - { name: "angle indicator defaults", base: "angle_alpha 0.8, arrows mode 1, line_width 0.001, arrow_size 0.5", port: "identical registered + read", match: true }
+      - { name: "switch_minspeed", base: "-1 (auto = bestspeed + frictionspeed)", port: "-1, same auto rule", match: true }
+      - { name: "ratio colors", base: "neutral '1 1 0', accel/preaccel '0 1 1', overturn '1 0 1'; gradient styles blend by |strafe_ratio|", port: "identical", match: true }
+      - { name: "antiflicker_angle", base: "0.01 (bound 0..180)", port: "identical", match: true }
+      - { name: "hud_panel_strafehud_mode (view/velocity centered)", base: "0 (view-centered); out-of-range clamps to 0 (strafehud.qc:526-529)", port: "0 registered + read; identical clamp + shiftangle/currentangle branches (StrafeHudPanel.cs:615-616, 639-647, 699-702)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Strafe-ratio + colors are computed from the numerically-tainted zone angles (see upstream rows); the marker plumbing itself is faithful."
+    verification:
+      - { kind: code, ref: "text-offset extrusion bookkeeping (max_line_height/arrow sizes -> text_offset_top/bottom) matches 775-791; dash segmentation size.y/(bound(1,n,size.y)*2-1) identical; velocity-centered antiflicker hold at ±180 identical", result: pass }
+    confidence: high
+    notes: null
+
+  - id: cl-strafehud.indicators.direction
+    name: "Direction indicator (side cap + top/bottom rails showing strafe direction, backwards/opposite inversion)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/strafehud/draw_core.qc:StrafeHUD_DrawDirectionIndicator (200)"
+      - "client/hud/panel/strafehud.qc:HUD_StrafeHUD (578-579)"
+    port_refs:
+      - "game/hud/StrafeHudPanel.cs:DrawDirectionIndicator (1079)"
+      - "game/hud/StrafeHudPanel.cs:DrawPanel (660-661)"
+    constants:
+      - { name: "hud_panel_strafehud_direction / _color / _alpha / _width / _length", base: "0 / '0 0.5 1' / 1 / 0.25 / 0.02", port: "identical registered + read", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "double-inversion rule (!fwd != opposite_direction) and the three drawfills (vertical cap + two horizontal rails) transcribed exactly; default off in both", result: pass }
+    confidence: high
+    notes: null
+
+  - id: cl-strafehud.extra.slick_detector
+    name: "Slick detector (hemispherical trace fan below the player, top/bottom warning bars)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/strafehud/extra.qc:StrafeHUD_DrawSlickDetector (23)"
+      - "client/hud/panel/strafehud/extra.qc:SLICKDETECT_STEPS_EPSILON (18)"
+      - "client/hud/panel/strafehud/extra.qh"
+    port_refs:
+      - "game/hud/StrafeHudPanel.cs:DrawSlickDetector (1314)"
+    constants:
+      - { name: "slickdetector defaults", base: "on, range 200, granularity 1 (bound 0..4), color '0 1 1', alpha 0.5, height 0.125", port: "identical registered; range/granularity are display-gates only (no trace)", match: false }
+      - { name: "all-slick shortcut", base: "PHYS_FRICTION(e)==0 && real_onground", port: "sv_friction==0 && realOnGround", match: true }
+    status:
+      logic: stub
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The detector's substance — the traceline fan (90°/2^granularity steps over a hemisphere of radius slickdetector_range, Q3SURFACEFLAG_SLICK check) — is not implemented; the port only displays a fed OnSlick flag that no live caller sets. Warning bars can therefore only ever appear on an all-slick (sv_friction 0) map."
+      - "The reserved text-offset height IS returned when the cvar gate passes (matching Base), so text placement is unaffected."
+    verification:
+      - { kind: code, ref: "port comment 1318-1319 'trace fan itself is fed via OnSlick rather than traced client-side'; grep OnSlick: never assigned outside the class", result: fail }
+    confidence: high
+    notes: null
+
+  - id: cl-strafehud.extra.text_indicators
+    name: "Fading text readouts: race start speed, jump height, vertical angle, strafe efficiency (+ unit conversion)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/strafehud/extra.qc:StrafeHUD_DrawStartSpeed (186)"
+      - "client/hud/panel/strafehud/extra.qc:StrafeHUD_DrawJumpHeight (127)"
+      - "client/hud/panel/strafehud/extra.qc:StrafeHUD_DrawVerticalAngle (108)"
+      - "client/hud/panel/strafehud/extra.qc:StrafeHUD_DrawStrafeEfficiency (168)"
+      - "client/hud/panel/strafehud/draw.qc:StrafeHUD_DrawTextIndicator (308)"
+      - "client/hud/panel/strafehud/util.qc:StrafeHUD_GetLengthUnitFactor (82)"
+      - "client/hud/panel/strafehud/util.qc:StrafeHUD_GetLengthUnit (95)"
+      - "client/hud/panel/strafehud/util.qc:StrafeHUD_CalculateTextIndicatorPosition (360)"
+    port_refs:
+      - "game/hud/StrafeHudPanel.cs:DrawStartSpeed (1387)"
+      - "game/hud/StrafeHudPanel.cs:DrawJumpHeight (1346)"
+      - "game/hud/StrafeHudPanel.cs:DrawVerticalAngle (1336)"
+      - "game/hud/StrafeHudPanel.cs:DrawStrafeEfficiency (1378)"
+      - "game/hud/StrafeHudPanel.cs:DrawTextIndicator (1275)"
+      - "game/hud/StrafeHudPanel.cs:GetLengthUnitFactor/GetSpeedUnitFactor (866-879)"
+    constants:
+      - { name: "startspeed defaults", base: "on, fade 4, color '1 0.75 0', pos '0 -1 0', size 1.5", port: "identical registered + read", match: true }
+      - { name: "jumpheight defaults", base: "off, fade 4, min 50, color '0 1 0.75', pos '0 -2 0', size 1.5", port: "identical", match: true }
+      - { name: "unit factors", base: "qu/m/km/mi/nmi 1/.0254/.0000254/…*0.6213711922/…*0.5399568035; speed adds *3.6 km/h + 1.943844492 knots", port: "identical tables", match: true }
+      - { name: "unit source", base: "autocvar_hud_speed_unit (live cvar)", port: "SpeedUnit property, default 1, never fed and hud_speed_unit not read", match: false }
+      - { name: "fade curve", base: "cos(time_frac * pi/2)", port: "identical", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Start-speed capture is dead live: RaceCheckpointTime/RaceStartSpeed are never fed (the RaceTimer panel gets its own feed but nobody mirrors it to the strafehud), so the default-on startspeed readout never displays."
+      - "hud_speed_unit is ignored: the SpeedUnit property stays 1 (qu), so unit selection via the real cvar (which PhysicsPanel honors) does not affect strafehud text."
+      - "Jump-height capture runs but 'swimming' is hardcoded false (no waterlevel probe) and the start-latch resets rely on Player-only data; the Base start-trigger latch GATE (race_nextcheckpoint==1 || checkpoint 254/nextcheckpoint 255, extra.qc:191) is un-ported entirely — the port latches on ANY RaceCheckpointTime change (StrafeHudPanel.cs:1390), so even if the race feed existed it would re-latch startspeed at every checkpoint, not just the start trigger."
+      - "drawstring_aspect approximated by DrawTextCentered with font clamp 8..64 px — aspect-fit sizing differs from Base's exact box fit."
+    verification:
+      - { kind: code, ref: "grep RaceStartSpeed/RaceCheckpointTime/SpeedUnit over game/: only RaceTimerPanel's own copies; no strafehud feed", result: fail }
+    confidence: high
+    notes: "Positioning math (±1 pos.y bands, offset_top/bottom extrusion) matches DrawTextIndicator + CalculateTextIndicatorPosition."
+
+  - id: cl-strafehud.audio.sonar
+    name: "Strafe sonar (audible strafe-quality beeps: interval/volume/pitch ramp by strafe ratio)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/strafehud/extra.qc:StrafeHUD_Sonar (216)"
+      - "client/hud/panel/strafehud/extra.qc:StrafeHUD_UpdateSonarSound (246)"
+      - "client/hud/panel/strafehud.qh:autocvar_hud_panel_strafehud_sonar* (102-113)"
+    port_refs: []
+    constants:
+      - { name: "sonar defaults", base: "off; audio 'misc/talk'; start 0.5; interval 0.333333/-0.222222/1; volume 0.333333/0.666666/1; pitch 0.9/0.1/1", port: "none (cvars not registered)", match: false }
+      - { name: "sound call", base: "sound7(csqcplayer, CH_INFO, snd, vol*VOL_BASE, ATTN_NONE, pitch*100, 0)", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: na
+      audio: missing
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Entire feature absent: no sonar code, none of the 13 hud_panel_strafehud_sonar_* cvars registered, no sound path/precache handling. Default-off in Base, but racers who enable it get nothing."
+    verification:
+      - { kind: code, ref: "grep -i sonar over src/ game/ tests/: zero hits in StrafeHudPanel.cs or anywhere", result: fail }
+    confidence: high
+    notes: null
+
+  - id: cl-strafehud.coverage.infra
+    name: "Infra/coverage: _mod include shims, skin-export stub, demo sweep for the HUD editor"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/strafehud/_mod.inc"
+      - "client/hud/panel/strafehud/_mod.qh"
+      - "client/hud/panel/strafehud.qc:HUD_StrafeHUD_Export (16)"
+      - "client/hud/panel/strafehud.qc:HUD_StrafeHUD (295-321 demo triangle wave)"
+    port_refs:
+      - "game/hud/StrafeHudPanel.cs:DrawPanel (457-475 demo sweep)"
+      - "game/hud/StrafeHudPanel.cs:RegisterDefaults (127)"
+    constants:
+      - { name: "demo sweep", base: "maxangle 55, turnspeed 40 deg/s, position init -37/55, triangle wave mod 4", port: "identical incl. init and %4 wrap", match: true }
+      - { name: "_hud_panel_strafehud_demo", base: "false", port: "0 registered + read from store", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: partial
+    intended_divergence: true
+    divergence_rationale: "_mod.inc/_mod.qh are genmod.sh build-glue with no behavior (C# has no include-shim analogue); HUD_StrafeHUD_Export is an empty QC stub in Base itself (skin-file export hook) — nothing to port. Cited here so the coverage ledger counts every scoped file."
+    gaps:
+      - "Demo sweep runs only under _hud_configure; the port's HUD-configure editor integration determines whether it is reachable (cl-hud unit owns the editor)."
+    verification:
+      - { kind: code, ref: "demo constants diffed 295-321 vs 457-475: match; HudPanelRegistryTests.cs:334 pins the core behaviour-cvar defaults", result: pass }
+    confidence: high
+    notes: "Also anchors client/hud/panel/strafehud.qh (cvar-default surface) via the gate/zone rows; the full 100-cvar default table is pinned by tests/XonoticGodot.Tests/HudPanelRegistryTests.cs (StrafeHud_CoreBehaviourCvarDefaults_MatchBase)."

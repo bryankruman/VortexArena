@@ -1,3 +1,4 @@
+using System.Numerics;
 using XonoticGodot.Common.Framework;
 
 namespace XonoticGodot.Common.Gameplay;
@@ -33,4 +34,61 @@ public static class Teams
     }
 
     public static bool SameTeam(Entity a, Entity b) => a.Team != 0 && a.Team == b.Team;
+
+    /// <summary>
+    /// QC <c>Team_ColorRGB(teamid)</c> (common/teams.qh:76) — the BRIGHT per-team RGB used to tint particle
+    /// bursts (the spawn-event flash, client/spawnpoints.qc:58) and waypoint sprites. Switches on the CSQC team
+    /// numbering (NUM_TEAM_1..4 = 4/13/12/9), which is exactly the port's <see cref="Red"/>/<see cref="Blue"/>/
+    /// <see cref="Yellow"/>/<see cref="Pink"/> constants, so no team-id offset is needed (Entity.Team already
+    /// holds the CSQC value). Any other team (incl. <see cref="None"/>) falls through to white, matching Base's
+    /// <c>return '1 1 1'</c>. Distinct from the darker radar palette — these are the saturated flash colors.
+    /// </summary>
+    public static Vector3 ColorRgb(int team) => team switch
+    {
+        Red    => new Vector3(1f, 0.0625f, 0.0625f),   // 0xFF0F0F
+        Blue   => new Vector3(0.0625f, 0.0625f, 1f),   // 0x0F0FFF
+        Yellow => new Vector3(1f, 1f, 0.0625f),        // 0xFFFF0F
+        Pink   => new Vector3(1f, 0.0625f, 1f),        // 0xFF0FFF
+        _      => new Vector3(1f, 1f, 1f),
+    };
+
+    /// <summary>
+    /// QC <c>colormapPaletteColor(c, isPants:true)</c> (lib/color.qh) over the 0..15 colormap palette — the
+    /// player's individual pants-nibble color, used to tint the spawn-event flash in NON-team play
+    /// (<c>entcs_GetColor</c>, client/spawnpoints.qc:58). <paramref name="c"/> is the low colormap nibble
+    /// (<c>clientcolors &amp; 15</c>). Cases 0..14 are the static palette; case 15 is the animated rainbow, which
+    /// needs <paramref name="time"/> (the sim clock) for its phase. Mirrors the Engine-layer
+    /// <c>CsqcModelAppearance.ColormapPaletteColor</c> table exactly (the Engine copy can't be referenced from
+    /// here — Common must not depend on Engine — so the pure 16-entry table is duplicated for the server emit).
+    /// </summary>
+    public static Vector3 ColormapPaletteColor(int c, float time) => (c & 15) switch
+    {
+        0  => new Vector3(1.000000f, 1.000000f, 1.000000f),
+        1  => new Vector3(1.000000f, 0.333333f, 0.000000f),
+        2  => new Vector3(0.000000f, 1.000000f, 0.501961f),
+        3  => new Vector3(0.000000f, 1.000000f, 0.000000f),
+        4  => new Vector3(1.000000f, 0.000000f, 0.000000f),
+        5  => new Vector3(0.000000f, 0.666667f, 1.000000f),
+        6  => new Vector3(0.000000f, 1.000000f, 1.000000f),
+        7  => new Vector3(0.501961f, 1.000000f, 0.000000f),
+        8  => new Vector3(0.501961f, 0.000000f, 1.000000f),
+        9  => new Vector3(1.000000f, 0.000000f, 1.000000f),
+        10 => new Vector3(1.000000f, 0.000000f, 0.501961f),
+        11 => new Vector3(0.000000f, 0.000000f, 1.000000f),
+        12 => new Vector3(1.000000f, 1.000000f, 0.000000f),
+        13 => new Vector3(0.000000f, 0.333333f, 1.000000f),
+        14 => new Vector3(1.000000f, 0.666667f, 0.000000f),
+        // case 15: the animated rainbow (lib/color.qh:32-40), isPants phase (M_E period).
+        _  => RainbowPants(time),
+    };
+
+    private static Vector3 RainbowPants(float time)
+    {
+        const float ME = 2.718281828459045f;
+        const float MPI = 3.141592653589793f;
+        return new Vector3(
+            0.502f + 0.498f * System.MathF.Sin(time / ME + 0f),
+            0.502f + 0.498f * System.MathF.Sin(time / ME + MPI * 2f / 3f),
+            0.502f + 0.498f * System.MathF.Sin(time / ME + MPI * 4f / 3f));
+    }
 }

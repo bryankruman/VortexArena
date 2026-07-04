@@ -1,0 +1,791 @@
+unit: items-pickups
+category: item
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 24
+  worst_gaps:
+    - "NEW (2026-07-02 coverage fold): the map-superweapon tail of weapon_defaultspawnfunc is unported — a map-spawned superweapon never gets superweapons_finished seeded (g_balance_superweapons_time, spawning.qc:104-106) so its pickup applies a 0s superweapon timer, and the +/-10s superweapon respawn jitter (g_pickup_respawntimejitter_superweapon) is never set on weapon items."
+    - "NEW (2026-07-02 coverage fold): give/target_give POSTGIVE feedback is silent (GiveSound/GiveRot not ported); the menu Guide's Items topic lists no entries (health/armor/ammo describe() text unported); dumpitems command missing."
+    - "simple items (sv_simple_items, Base default 1) STILL not ported: always renders the 3D model, never the flat _simple sprite (no _simple model resolver, no bob suppression). The only remaining ITS_* bit Item_Show doesn't honor."
+    - "stay-weapon COLORMOD (cl_weapon_stay_color) + vehicle-hud item tint (cl_items_vehicle_*) still not applied — item meshes have no per-instance colormod uniform (player-skin-shader-only). The stay-weapon ALPHA (cl_weapon_stay_alpha 0.75) IS now applied (Wave 16 DriveItemStayFx)."
+    - "q3compat item-origin offset (z += -15 - mins.z) + item_armor1->ArmorSmall(shard) on Q3 maps remain DEAD: code present (StartItem) but gated on Q3CompatProvider, never wired."
+    - "small-item clustering (setItemGroup / setItemGroupCount, 120qu radius -> item_group/item_group_count) still MISSING — itemstime HUD can't show a single 'xN' badge for a packed cluster. Presentation-only, low impact."
+    - "RE-AUDIT 2026-06-28 (parity-port-waves Phases 1-4): this wave touched NO items-pickups code — git diff fbb18fd..HEAD shows zero changes under Gameplay/Items/* (only ClientWorld.cs gained the cosmetic add-on layer / crosshair-chase body-fade / cylindric-line pool / raptor pitch-roll, none of them item paths). All 4 remaining gaps (simple items, stay-weapon colormod + vehicle tint, q3compat origin/shard via unwired Q3CompatProvider, item_group clustering) re-verified UNCHANGED in the current port. NB: ClientWorld now applies a frozen ICE colormod to PLAYER meshes (ModelTint.SetColormod, cosmetic layer) — this does NOT contradict the 'item meshes have no per-instance colormod' claim; the colormod uniform stays player-skin-shader-only for items. Nothing closed, nothing regressed."
+features:
+  - id: items-pickups.def.resource_items
+    name: "Health / Armor / Ammo item definitions, models, colors, sounds, bboxes"
+    layer: [shared]
+    base_refs:
+      - "common/items/item/health.qh:CLASS(Health)"
+      - "common/items/item/armor.qh:CLASS(Armor)"
+      - "common/items/item/ammo.qh:CLASS(Ammo)"
+      - "common/items/item/pickup.qh:CLASS(Pickup)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/HealthItem.cs:HealthPickup"
+      - "src/XonoticGodot.Common/Gameplay/Items/ArmorItem.cs:ArmorPickup"
+      - "src/XonoticGodot.Common/Gameplay/Items/AmmoItem.cs:AmmoPickup"
+      - "src/XonoticGodot.Common/Gameplay/Items/PickupItemDef.cs:Pickup"
+    constants:
+      - { name: "health models", base: "g_h1/g_h25/g_h50/g_h100.md3", port: "same", match: true }
+      - { name: "armor models", base: "item_armor_small/medium/big/large.md3", port: "same", match: true }
+      - { name: "ammo models", base: "a_shells.md3/a_bullets.mdl/a_rockets.md3/a_cells.md3/g_fuel.md3", port: "same", match: true }
+      - { name: "health color", base: "'1 0 0'", port: "(1,0,0)", match: true }
+      - { name: "armor color", base: "'0 1 0'", port: "(0,1,0)", match: true }
+      - { name: "ITEM_S_MAXS/D_MAXS/L_MAXS", base: "'24 24 48'/'30 30 48'/'30 30 70'", port: "same", match: true }
+      - { name: "mega/big bbox", base: "Mega=ITEM_L_MAXS; Big=small box (no m_maxs)", port: "same", match: true }
+      - { name: "health sounds", base: "minihealth/mediumhealth/mediumhealth/megahealth", port: "HealthSmall/Medium/Big/MEGAHEALTH", match: true }
+      - { name: "armor sounds", base: "armor1/armor10/armor17_5/armor25", port: "ArmorSmall/Medium/Big/Mega", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "health/armor/ammo.qh ATTRIBs vs *Item.cs ctors", result: pass }
+      - { kind: unit_test, ref: "ItemSpawnTouchTests.SpawnFunc_RegistersAllItemClassnames + ItemModelGetsItemsDirPrefix", result: pass }
+    confidence: high
+    notes: "Mega health correctly does NOT glow (no m_glow ATTRIB; only powerups glow). Big health/armor keep the small box like medium (QC sets m_maxs only on megas)."
+
+  - id: items-pickups.def.amounts_and_caps
+    name: "Per-item give amounts and pickup caps (g_pickup_* cvars, seeded by m_iteminit)"
+    layer: [authority]
+    base_refs:
+      - "common/items/item/health.qh:item_health*_init"
+      - "common/items/item/armor.qh:item_armor*_init"
+      - "common/items/item/ammo.qh:ammo_*_init"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/HealthItem.cs:ItemInit"
+      - "src/XonoticGodot.Common/Gameplay/Items/ArmorItem.cs:ItemInit"
+      - "src/XonoticGodot.Common/Gameplay/Items/AmmoItem.cs:ItemInit"
+    constants:
+      - { name: "g_pickup_health small/medium/big/mega", base: "5/25/50/100", port: "5/25/50/100", match: true }
+      - { name: "g_pickup_health*_max", base: "200", port: "200", match: true }
+      - { name: "g_pickup_armor small/medium/big/mega", base: "5/25/50/100", port: "5/25/50/100", match: true }
+      - { name: "g_pickup_armor*_max", base: "200", port: "200", match: true }
+      - { name: "g_pickup_shells / _max", base: "15 / 60", port: "15 / 60", match: true }
+      - { name: "g_pickup_nails(bullets) / _max", base: "80 / 320", port: "80 / 320", match: true }
+      - { name: "g_pickup_rockets / _max", base: "40 / 160", port: "40 / 160", match: true }
+      - { name: "g_pickup_cells / _max", base: "30 / 180", port: "30 / 180", match: true }
+      - { name: "g_pickup_fuel / _max", base: "50 / 100", port: "50 / 100", match: true }
+      - { name: "q3compat .count override (health)", base: "count ? count : amount", port: "Count != 0 ? Count : amount", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value_diff, ref: "balance-xonotic.cfg g_pickup_* vs *Item.cs ctor defaults + CvarOr fallbacks", result: pass }
+      - { kind: unit_test, ref: "ItemSpawnTouchTests.HealthSmall_SpawnAndTouch_GivesHealth / HealthMega_*", result: pass }
+    confidence: high
+    notes: "Amounts come from g_pickup_* cvars with the stock value as a CvarOr fallback; ammo has no per-item max field, capping at the resource limit (GetResourceLimit -> g_pickup_X_max) exactly like QC."
+
+  - id: items-pickups.give.item_giveto
+    name: "Item_GiveTo / Item_GiveAmmoTo — the type-agnostic give toward a cap"
+    layer: [authority]
+    base_refs:
+      - "server/items/items.qc:Item_GiveTo"
+      - "server/items/items.qc:Item_GiveAmmoTo"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ItemGiveTo"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:GiveAmmoTo"
+    constants:
+      - { name: "7 resource gives (health/armor/shells/bullets/rockets/cells/fuel)", base: "Item_GiveAmmoTo x7", port: "GiveAmmoTo x7", match: true }
+      - { name: "at-cap refusal (live item)", base: "player>=ammomax && pickup_anyway<=0 -> false", port: "same", match: true }
+      - { name: "negative amount = take", base: "TakeResourceWithLimit(player,res,-amount,ammomax)", port: "TakeResourceWithLimit(res,-amount,cap)", match: true }
+      - { name: "IT_PICKUPMASK held-flag transfer", base: "items & ~player.items & IT_PICKUPMASK", port: "same", match: true }
+      - { name: "team item always eaten", base: "if(item.team) pickedup=true", port: "if(Team!=0) pickedUp=true", match: true }
+      - { name: "cl_autoswitch / CTS autoswitch on weapon give", base: "Item_GiveTo head+tail (_switchweapon, w_getbestweapon, W_SwitchWeapon_Force)", port: "logic ported (ItemGiveTo head ll.68-84 + tail ll.137-158); providers WIRED in Commands.cs:394-397 (ctor per GameWorld) -> AutoswitchEnabled() live; CTS branch reads cl_autoswitch_cts via GetClientCvarFloat", match: true }
+      - { name: "FuelRegen/Jetpack pickup center-print", base: "CENTER_ITEM_FUELREGEN_GOT / CENTER_ITEM_JETPACK_GOT", port: "ItemGiveTo ll.110-117: NotificationSystem.Center(ITEM_FUELREGEN_GOT/ITEM_JETPACK_GOT) on the live give path", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "ItemGiveTo (ItemPickupRules.cs:63-161) vs Item_GiveTo (items.qc:522-684): autoswitch logic matches QC head/tail AND is wired (Commands.cs:394-397 assigns AutoswitchProvider/CtsAutoswitchProvider/CtsActiveProvider beside Inventory.PriorityProvider); fuelregen/jetpack Center(player,...) live; negative-take TakeResourceWithLimit(res,-amount,cap) matching items.qc:507", result: pass }
+      - { kind: code_read, ref: "Inventory.GetBestWeapon/SwitchWeapon/ClientHasWeapon all exist; GetAutoswitch (Commands.cs) reads live _autoswitch dict", result: pass }
+      - { kind: unit_test, ref: "ItemSpawnTouchTests.HealthMega_AtCap_NotTaken + WeaponPickup_GivesWeaponInBothReps + Jetpack_Touch_GivesBitAndFuel", result: pass }
+    confidence: high
+    notes: "Autoswitch providers re-verified at Commands.cs:394-397 (line shift from the prior 351-354; wiring intact). GiveAmmoTo negative-take, fuelregen/jetpack center-prints, resource gives, dual-rep weapon-grant, powerup timers, IT_PICKUPMASK transfer all remain faithful + live."
+
+  - id: items-pickups.give.powerup_stack
+    name: "Powerup timer application (stack vs refresh, g_powerups_stack)"
+    layer: [authority]
+    base_refs:
+      - "server/items/items.qc:Item_GiveTo (strength/invincible/speed/invisibility/superweapons blocks)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ApplyPowerupTimers"
+    constants:
+      - { name: "g_powerups_stack", base: "0", port: "reads cvar, default false", match: true }
+      - { name: "stack mode", base: "t += item.*_finished", port: "total = existing + duration", match: true }
+      - { name: "non-stack mode", base: "t = max(t, time + item.*_finished)", port: "total = max(existing, duration)", match: true }
+      - { name: "superweapons always add", base: "t + item.superweapons_finished (no stack gate)", port: "existing + duration", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: unit_test, ref: "ItemSpawnTouchTests.Powerup_Touch_AppliesStatusEffect", result: pass }
+    confidence: medium
+    notes: "Status-effect application flows through StatusEffectsCatalog (audited under the status_effects/powerups units). Timer math matches QC."
+
+  - id: items-pickups.touch.gate
+    name: "Item_Touch gate (FL_PICKUPITEMS / dead / SOLID_TRIGGER / owner / spawnshield) + ItemTouch/ItemTouched hooks"
+    layer: [authority]
+    base_refs:
+      - "server/items/items.qc:Item_Touch"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ItemTouch"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:FireItemTouch / FireItemTouched"
+    constants:
+      - { name: "gate conditions", base: "FL_PICKUPITEMS && !IS_DEAD && SOLID_TRIGGER && owner!=toucher && time>=item_spawnshieldtime", port: "same", match: true }
+      - { name: "loot NODROP/sky kill on touch", base: "ITEM_TOUCH_NEEDKILL -> RemoveItem (DPCONTENTS_NODROP | Q3SURFACEFLAG_SKY)", port: "LootInNoDrop (ItemPickupRules.cs:969-976) -> RemoveItem: (tr.DpHitContents & NoDropContents) | (tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagSky) — BOTH halves now tested; DpHitQ3SurfaceFlags is populated by TraceService.BuildResult (l.627)", match: true }
+      - { name: "expiring-timer relativize/restore", base: "subtract time then restore if !gave", port: "same", match: true }
+      - { name: "MUTATOR_CALLHOOK(ItemTouch) before give", base: "items.qc:706", port: "MutatorHooks.FireItemTouch (ItemPickupRules.cs:372) — LIVE; subscribers Instagib/LMS/SuperSpec", match: true }
+      - { name: "MUTATOR_CALLHOOK(ItemTouched) after give + wasfreed guard", base: "items.qc:746", port: "MutatorHooks.FireItemTouched (ItemPickupRules.cs:417) + IsFreed re-check — LIVE; subscribers Powerups/RandomItems", match: true }
+      - { name: "pickup-sound channel", base: "powerup (non-resource) = CH_TRIGGER_SINGLE; else CH_TRIGGER", port: "all items on TriggerAuto (channel distinction dropped)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The only remaining divergence is the pickup-sound CHANNEL: QC plays a non-resource powerup's pickup sound on CH_TRIGGER_SINGLE (self-cutting) and everything else on CH_TRIGGER; the port plays all items on the auto/TriggerAuto channel so two quick pickups stack instead of one cutting the other off — a deliberate, documented choice in ItemPickupRules.PlayPickupSound."
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "Item_Touch (items.qc:686-781) vs ItemTouch (ItemPickupRules.cs:354-478) — gate + give + tail match; ItemTouch (l.378) + ItemTouched (l.424) hooks FIRED and have live subscribers (Instagib/LMS/SuperSpec ItemTouch.Add; Powerups/RandomItems ItemTouched.Add); pickup sound on TriggerAuto not CH_TRIGGER[_SINGLE]", result: pass }
+      - { kind: code_read, ref: "LootInNoDrop (ItemPickupRules.cs:969-976) NOW tests BOTH NODROP (DpHitContents) AND sky (DpHitQ3SurfaceFlags & Q3SurfaceFlagSky=0x4); fields populated by TraceService.BuildResult (l.626-627); identical idiom to BuffsMutator.cs:376 / MonsterFramework.cs:396", result: pass }
+      - { kind: unit_test, ref: "ItemSpawnTouchTests.ItemTouch_Gate_RejectsNonPickerAndDeadAndOwner", result: pass }
+    confidence: high
+    notes: "Sky-surface loot kill CLOSED (drift fix): the prior baseline still recorded NODROP-only/no-sky as a gap, but LootInNoDrop has tested DpHitQ3SurfaceFlags&SKY since Wave 13 (commit 5427e74) on the live touch path — the row was stale, not regressed. The ItemTouch/ItemTouched mutator hook chain (fired in order, IsFreed re-check) is live with real subscribers (RandomItems re-randomize, SuperSpec pass-through, Instagib/LMS filtering). Only remaining divergence is the pickup-sound channel (intended)."
+
+  - id: items-pickups.respawn.scheduling
+    name: "Respawn scheduling (ScheduleRespawn/In, countdown-vs-think split, player-count scaling, jitter, countdown waypoint+sound)"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/items/items.qc:Item_ScheduleRespawn"
+      - "server/items/items.qc:Item_ScheduleRespawnIn"
+      - "server/items/items.qc:adjust_respawntime"
+      - "server/items/items.qc:Item_Respawn / Item_RespawnThink / Item_RespawnCountdown"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ScheduleRespawn"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ScheduleRespawnIn"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:AdjustRespawnTime"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:Respawn / RespawnThink / RespawnCountdown"
+    constants:
+      - { name: "ITEM_RESPAWN_TICKS", base: "10", port: "10", match: true }
+      - { name: "respawntime health s/m/b/mega", base: "15/15/20/30", port: "15/15/20/30", match: true }
+      - { name: "respawntime armor s/m/b/mega", base: "15/20/30/30", port: "15/20/30/30", match: true }
+      - { name: "respawntime ammo", base: "10", port: "10", match: true }
+      - { name: "jitter (crandom*respawntimejitter)", base: "crandom()=[-1,1)", port: "Prandom.Signed()", match: true }
+      - { name: "scaling curve reciprocal/offset/linear", base: "0/0/1 (active >=2 players)", port: "same", match: true }
+      - { name: "respawntime <= 0 = never", base: "Item_Show(-1)", port: "Show(item,-1)", match: true }
+      - { name: "countdown waypoint sprite", base: "WP_Weapon (weapon) / WP_Item (else) at '0 0 64', RADARICON_*, SPRITERULE_SPECTATOR for itemstime SpectatorOnly", port: "WaypointSprites.Spawn name Weapon/Item, offset (0,0,64), SpriteRule.Spectator for IsSpectatorOnlyItem, else Default (ItemPickupRules.cs:784-811)", match: true }
+      - { name: "per-second ITEMRESPAWNCOUNTDOWN sound + waypoint ping", base: "soundto(MSG_ONE, this, CH_TRIGGER, SND(ITEMRESPAWNCOUNTDOWN)) per visible client + WaypointSprite_Ping", port: "Api.Sound.Play(item, TriggerAuto, ITEMRESPAWNCOUNTDOWN) + WaypointSprites.Ping every tick (ItemPickupRules.cs:815-825)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "QC's per-second sound uses soundto(MSG_ONE) gated to each client the waypoint is visible to; the port's Common layer has no per-client soundto seam, so it emits ONE positional ITEMRESPAWNCOUNTDOWN cue on the item entity (ATTEN_NORM falloff approximates the proximity gate). For SpectatorOnly items (Mega/Big Health+Armor) this over-broadcasts slightly to nearby live players vs QC's strict waypoint-visibility gate — a documented, minor presentation divergence."
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "RespawnCountdown (ItemPickupRules.cs:771-826) vs Item_RespawnCountdown (items.qc:257-313): first-tick WP_Weapon/WP_Item spawn + UpdateBuildFinished + per-tick sound + ping all ported; WaypointSprites.Spawn/Kill/Ping/UpdateBuildFinished verified to exist", result: pass }
+      - { kind: code_read, ref: "git: waypoint+ITEMRESPAWNCOUNTDOWN added in 412ca19 (Wave 8e), after the 2026-06-23 baseline — genuinely NEW", result: pass }
+      - { kind: unit_test, ref: "ItemSpawnTouchTests.ItemRespawn_EmitsRespawnEffectAndReshows + Powerup_DoesNotSpawnAtMatchStart (no countdown-waypoint-specific test)", result: pass }
+    confidence: high
+    notes: "FIXED 2026-06-25 (Wave 8e): the respawn-countdown WP_Item/WP_Weapon waypoint sprite (with SPECTATOR rule for the itemstime SpectatorOnly set) AND the per-second ITEMRESPAWNCOUNTDOWN tick sound + radar ping are now ported and live on the long-respawn path — closing what the prior baseline listed as presentation:partial / audio:missing. Respawn timer + countdown branch timing remain faithful."
+
+  - id: items-pickups.respawn.initial
+    name: "Initial respawn (powerups/superweapons don't spawn at start; shared-random initial timing)"
+    layer: [authority]
+    base_refs:
+      - "server/items/items.qc:Item_ScheduleInitialRespawn"
+      - "server/items/items.qc:Item_Reset"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ScheduleInitialRespawn"
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:Item_Reset"
+    constants:
+      - { name: "g_pickup_respawntime_initial_random", base: "1", port: "1", match: true }
+      - { name: "mode 1 shared random (floor(time)+random)", base: "static float shared_random", port: "_initialRespawnSharedRandom (process-static)", match: true }
+      - { name: "initial range (respawntime>=TICKS)", base: "TICKS .. respawntime+jitter", port: "same", match: true }
+      - { name: "game_starttime offset", base: "max(0, game_starttime-time) + spawn_in", port: "max(0, GameStartTime-Now) + spawnIn", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: unit_test, ref: "ItemSpawnTouchTests.Powerup_DoesNotSpawnAtMatchStart", result: pass }
+      - { kind: code_read, ref: "Item_ScheduleInitialRespawn vs ScheduleInitialRespawn", result: pass }
+    confidence: high
+    notes: "GameStartTime is a host seam (GameStartTimeProvider); headless default 0 = immediate, matching a no-countdown listen server."
+
+  - id: items-pickups.show.visibility
+    name: "Item_Show — model/solid/effects toggle + weapon-stay translucent path"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/items/items.qc:Item_Show"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:Show"
+    constants:
+      - { name: "mode>0 available", base: "model + SOLID_TRIGGER + shield=1 + ITS_AVAILABLE", port: "same", match: true }
+      - { name: "mode<0 hidden", base: "no model + SOLID_NOT", port: "same", match: true }
+      - { name: "mode==0 weapon-stay", base: "translucent EF_STARDUST, still SOLID_TRIGGER, shield=0 stay marker", port: "same", match: true }
+      - { name: "g_weapon_stay", base: "0", port: "reads cvar", match: true }
+      - { name: "ITS_GLOW (powerup) -> EF_ADDITIVE|EF_FULLBRIGHT while available", base: "client/items/items.qc:255", port: "Show ll.512-513 emits Additive|FullBright when Glow && available", match: true }
+      - { name: "g_nodepthtestitems -> EF_NODEPTHTEST", base: "items.qc:181", port: "Show ll.517-518 sets NoDepthTest from cvar", match: true }
+      - { name: "g_fullbrightitems (ITS_ALLOWFB) -> EF_FULLBRIGHT", base: "client/items/items.qc:242", port: "Show ll.522-523 sets FullBright from cvar", match: true }
+      - { name: "sv_simple_items (ITS_ALLOWSI) -> _simple sprite swap", base: "client/items/items.qc:78 (default 1)", port: "NOT ported — no _simple model resolver, bit left unset (Show ll.525-528)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "ITS_ALLOWSI (sv_simple_items, Base default 1) not honored — no simple-item model swap (no client resolver for the *_simple variants, no bob suppression). The bit is left unset rather than faked."
+    verification:
+      - { kind: code_read, ref: "Item_Show (items.qc:130-189) vs Show (ItemPickupRules.cs:448-533): EF_ADDITIVE/EF_FULLBRIGHT/EF_NODEPTHTEST now emitted directly on .Effects (ll.453,512-523, honoured by CsqcModelEffects); only ITS_ALLOWSI simple-items unmapped", result: pass }
+      - { kind: code_read, ref: "git: EF_NODEPTHTEST/glow additive added in 412ca19 (Wave 8e), after the 2026-06-23 baseline that recorded SI+NODEPTHTEST 'dropped'", result: pass }
+      - { kind: unit_test, ref: "ItemSpawnTouchTests.WeaponStay_GivesOnlyWeaponNoAmmo_AndNoRespawn", result: pass }
+    confidence: high
+    notes: "FIXED 2026-06-25 (Wave 8e): EF_NODEPTHTEST (g_nodepthtestitems), EF_FULLBRIGHT (g_fullbrightitems), and powerup ITS_GLOW (EF_ADDITIVE|EF_FULLBRIGHT while available) are now emitted directly on the world item's .Effects and honoured by CsqcModelEffects — closing the prior 'SI+NODEPTHTEST dropped' / 'EF_ADDITIVE not confirmed' gaps. Only simple-items (ITS_ALLOWSI) remains. Weapon-stay operator-precedence quirk (nostay = isWeapon ? super : team) is faithfully reproduced."
+
+  - id: items-pickups.loot.toss_despawn
+    name: "Loot toss lifecycle (MOVETYPE_TOSS, anti-instant-pick, Item_Think despawn window)"
+    layer: [authority]
+    base_refs:
+      - "server/items/items.qc:StartItem (loot branch)"
+      - "server/items/items.qc:Item_Think"
+      - "server/items/spawning.qc:Item_Initialise"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:SetupLoot / SpawnLoot"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ItemThink"
+    constants:
+      - { name: "g_items_dropped_lifetime", base: "20", port: "20", match: true }
+      - { name: "anti-instant-pick shield", base: "item_spawnshieldtime = time + 0.5", port: "Now + 0.5f", match: true }
+      - { name: "IT_DESPAWNFX_TIME", base: "1.5", port: "1.5", match: true }
+      - { name: "IT_UPDATE_INTERVAL", base: "0.0625", port: "0.0625", match: true }
+      - { name: "NODROP-brush kill at spawn", base: "trace dpstartcontents & DPCONTENTS_NODROP", port: "Trace DpHitContents & NoDropContents", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: unit_test, ref: "ItemSpawnTouchTests.Loot_TossLifecycle_NoInstantPick_ThenRemovedOnPickup + Loot_DespawnsAfterLifetime + Loot_ItemThink_FlagsExpiring_*", result: pass }
+    confidence: high
+    notes: "Live producers are thrown weapons (WeaponThrowing) + death drops. Expiring powerup-loot timer handling on touch is ported. Loot's takedamage=YES + the event_damage=Item_Damage handler are now BOTH wired (Wave 12b) — see items-pickups.loot.item_damage (now faithful/live)."
+
+  - id: items-pickups.loot.item_damage
+    name: "Item_Damage — loot destroyed by NEEDKILL damage (lava/sky jets)"
+    layer: [authority]
+    base_refs:
+      - "server/items/items.qc:Item_Damage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ItemDamage"
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:SetupLoot (GtEventDamage wiring)"
+    constants:
+      - { name: "ITEM_DAMAGE_NEEDKILL(deathtype) -> RemoveItem", base: "items.qc:981-985 event_damage handler", port: "ItemPickupRules.ItemDamage ll.889-895: DeathTypes.ItemDamageNeedKill -> RemoveItem", match: true }
+      - { name: "NEEDKILL deathtype set", base: "DEATH_HURTTRIGGER/SLIME/LAVA/SWAMP (items.qh:123)", port: "DeathTypes.ItemDamageNeedKill: Void(HurtTrigger)/Slime/Lava/Swamp", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "StartItem.SetupLoot (StartItem.cs:217-218) sets TakeDamage=Yes AND item.GtEventDamage = ItemPickupRules.ItemDamage; DamageSystem.EventDamage (DamageSystem.cs:358-360) routes every non-player edict with a GtEventDamage to it -> live dispatch", result: pass }
+      - { kind: code_read, ref: "ItemPickupRules.ItemDamage (ll.889-895) calls DeathTypes.ItemDamageNeedKill(deathType)->RemoveItem; helper (DeathTypes.cs:264) matches the items.qh:123 deathtype set", result: pass }
+      - { kind: code_read, ref: "git: added in commit 6da9e80 (Wave 12b), AFTER the prior 2026-06-25 baseline that recorded this missing — genuinely a new fix", result: pass }
+    confidence: high
+    notes: "FIXED 2026-06-25 (Wave 12b): the Item_Damage NEEDKILL handler is now wired on loot via Entity.GtEventDamage and live (DamageSystem.EventDamage dispatches it for non-player edicts), exactly the seam monsters/turrets/vehicles/CTF-flag use. A loot item pushed into a lava/slime/swamp/hurt volume by damage is now removed. (No dedicated unit test, but the wiring + dispatch are code-read confirmed.)"
+
+  - id: items-pickups.target.use_setactive
+    name: "item_use / item_setactive — targeted-item trigger-to-spawn + active toggle"
+    layer: [authority]
+    base_refs:
+      - "server/items/items.qc:item_use"
+      - "server/items/items.qc:item_setactive"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ItemUse"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ItemSetActive"
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:SetupPermanent (Use/SetActive wiring)"
+    constants:
+      - { name: "item_use: spawnflags&16 -> gettouch()(this,actor); else Item_Respawn (q3compat)", base: "items.qc:987-993", port: "ItemPickupRules.ItemUse ll.912-924: spawnflags&16 -> item.Touch(item,actor); else Respawn(item)", match: true }
+      - { name: "item_setactive: ACTIVE_TOGGLE/ACTIVE_ACTIVE/ACTIVE_NOT -> Item_Show(1/-1)", base: "items.qc:995-1006", port: "ItemPickupRules.ItemSetActive ll.933-944: toggle/set Active then Show(1/-1) on change", match: true }
+      - { name: "use wired only on targetname'd items; setactive on all permanent items", base: "items.qc:1152-1156", port: "StartItem.SetupPermanent ll.297-300: Use=ItemUse iff TargetName set; SetActive=ItemSetActive always; Active=ACTIVE_ACTIVE", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "StartItem.SetupPermanent (StartItem.cs:297-300) wires item.Use=ItemPickupRules.ItemUse on targetname'd items and item.SetActive=ItemSetActive + Active=ActiveActive on all permanent items; matches items.qc:1152-1156", result: pass }
+      - { kind: code_read, ref: "live dispatch: MapObjectsCommon.UseTargets (l.447-465) invokes t.Use(t, actor); the relay path (LogicGates.cs:392) invokes trg.SetActive(trg, cnt) — so a trigger/relay firing an item's targetname reaches ItemUse/ItemSetActive", result: pass }
+      - { kind: code_read, ref: "git: added in commit 6da9e80 (Wave 12b), AFTER the prior 2026-06-25 baseline that recorded this missing", result: pass }
+    confidence: high
+    notes: "FIXED 2026-06-25 (Wave 12b): trigger-spawned/use-toggled map pickups now work. ItemUse honors the spawnflags&16 q3compat immediate-touch path and the normal Item_Respawn path; ItemSetActive handles ACTIVE_TOGGLE/ACTIVE_ACTIVE/ACTIVE_NOT. Both reachable via the live UseTargets / relay-setactive dispatch. (No dedicated unit test, code-read confirmed.)"
+
+  - id: items-pickups.team.finditem
+    name: "Item_FindTeam — team-item random one-at-a-time spawn/respawn group"
+    layer: [authority]
+    base_refs:
+      - "server/items/items.qc:Item_FindTeam"
+      - "server/items/items.qc:Item_Touch (team-respawn branch, items.qc:762-780)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:FindTeam"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ItemTouch (team-respawn branch ll.436-467)"
+    constants:
+      - { name: "group by .team, pick one random weighted (.cnt) member to show, hide the rest", base: "items.qc:813-849 RandomSelection by it.cnt", port: "StartItem.FindTeam ll.432-496: RandomSelection over Api.Entities.All by it.Cnt; Show(-1) the rest, Item_Reset the chosen", match: true }
+      - { name: "respawn re-picks a random sibling (hide all, show+schedule chosen)", base: "items.qc:762-780", port: "ItemPickupRules.ItemTouch ll.436-467: Show(-1)+scheduledrespawn=0 all teamed, RandomSelection chosen, Show(1)+ScheduleRespawn", match: true }
+      - { name: "default member weight cnt=1 if unset", base: "if(!this.cnt) this.cnt = 1", port: "StartItem.cs:170 item.Cnt = item.Cnt != 0 ? item.Cnt : 1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base defers Item_FindTeam via InitializeEntity(INITPRIO_FINDTARGET) so it runs after all map entities spawn; the port has no INITPRIO queue and calls FindTeam directly from the spawn tail. This is safe because the BSP entity lump is fully parsed before the first gameplay tick — all same-team members exist in Api.Entities.All by the time any spawn tail runs. The only edge case (a teamed item spawned mid-game) has no stock-map producer. Same end state, no Base-behavior change."
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "StartItem.SpawnInternal tail (StartItem.cs:168-172): if(!isLoot && item.Team != 0f) FindTeam(item) else Item_Reset; FindTeam (ll.432-496) does the RandomSelection group pick + hide-others", result: pass }
+      - { kind: code_read, ref: "ItemPickupRules.ItemTouch (ll.436-467) team branch: RandomSelection over Api.Entities.All sharing item.Team, Show(-1) all + clear scheduledrespawn, Show(1)+ScheduleRespawn the chosen — matches items.qc:762-780", result: pass }
+      - { kind: code_read, ref: "git: FindTeam + team-respawn added in commit 6da9e80 (Wave 12b), AFTER the prior 2026-06-25 baseline that recorded this missing", result: pass }
+    confidence: high
+    notes: "FIXED 2026-06-25 (Wave 12b): maps grouping items under one .team key now spawn ONLY one randomly-chosen member, and each pickup re-rolls which sibling respawns (hiding the others). Both the spawn-time group pick (StartItem.FindTeam) and the touch-time respawn re-pick (ItemTouch team branch) are ported and live on Api.Entities.All. (No dedicated unit test; code-read confirmed.)"
+
+  - id: items-pickups.spawn.driver
+    name: "StartItem spawn driver + spawnfuncs + map-lump wiring (liveness)"
+    layer: [authority]
+    base_refs:
+      - "server/items/items.qc:StartItem"
+      - "server/items/items.qc:have_pickup_item"
+      - "common/items/item.qh:SPAWNFUNC_ITEM"
+      - "server/items/spawning.qc:Item_Initialise"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:Spawn"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemSpawnFuncs.cs:Register"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:RegisterAll"
+      - "src/XonoticGodot.Server/GameWorld.cs:SpawnMapEntities"
+    constants:
+      - { name: "g_pickup_items", base: "-1 (gametype dflt)", port: "Cvars seed 1; unset treated as -1", match: partial }
+      - { name: "have_pickup_item gate", base: "MUTATORBLOCKED / ==0 none / weaponarena weapons+ammo", port: "same", match: true }
+      - { name: "FilterItem hook (delete on true)", base: "MUTATOR_CALLHOOK(FilterItem)", port: "MutatorHooks.FilterItemDefinition + FireFilterItem", match: true }
+      - { name: "animation class (ANIMATE1/2, spawnflag 1024)", base: "powerup/weapon=1, health/armor=2, 1024 suppresses", port: "same", match: true }
+      - { name: "###item### findnearest target", base: "powerup/weapon/non-small health+armor/keys", port: "same", match: true }
+      - { name: "q3compat origin z += -15 - mins.z", base: "applied", port: "code ADDED (StartItem.cs:249-256) but gated on Q3CompatProvider which is NEVER WIRED -> no-op; DEAD", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "q3compat item origin offset (z += -15 - mins.z): code ADDED (StartItem.cs:249-256) but gated on Q3CompatProvider, declared at StartItem.cs:50 and NEVER assigned — so it no-ops. Items on pure Quake3/QL maps still sit ~15qu low. Faithful the moment a host wires Q3CompatProvider to real .arena/.defi detection."
+      - "item_armor1 always maps to ArmorMedium; Base spawns ArmorSmall (shard) on a Q3 map (autocvar_sv_mapformat_is_quake3) — same unwired Q3CompatProvider story."
+      - "g_pickup_items shipped default is 1 in the port's Cvars seed vs Base -1; live DM behavior matches (the -1/unset path proceeds), but a gametype relying on the -1 gametype-default branch differs from the seeded value."
+    verification:
+      - { kind: code_read, ref: "GameWorld.SpawnMapEntities -> SpawnFuncs.TrySpawn; MapObjectsRegistry.RegisterAll -> ItemSpawnFuncs.Register (booted by GameInit)", result: pass }
+      - { kind: unit_test, ref: "ItemSpawnTouchTests.SpawnFunc_RegistersAllItemClassnames + StartItem_TagsAnimationClass + Spawnflag1024_SuppressesAnimation + Powerup_Blocked_WhenDisabled_IsDeleted", result: pass }
+    confidence: high
+    notes: "Items are confirmed LIVE: spawned from the BSP entity lump on the real match path. The team-item branch (Item_FindTeam) is now wired (StartItem.cs:168-172) — see items-pickups.team.finditem (now faithful/live). q3compat origin/shard offsets remain dead (Q3CompatProvider unwired)."
+
+  - id: items-pickups.presentation.bob_ghost_despawn
+    name: "Client bob/spin, ghost-on-pickup fade, loot despawn fade + puffs, pickup/respawn particles, distance fade"
+    layer: [presentation]
+    base_refs:
+      - "client/items/items.qc:ItemDraw"
+      - "client/items/items.qc:ENT_CLIENT_ITEM (ITS transitions)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemBobAnim.cs:Sample"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemDespawnFx.cs:Tick"
+      - "game/EntityNode.cs:SyncFromEntity"
+      - "game/client/ClientWorld.cs:DriveItemGhostFx / DriveItemDespawnFx / DriveItemStayFx / ItemDistanceAlpha"
+    constants:
+      - { name: "ANIMATE1 bob/spin", base: "10 + 8*sin(2t) ; +180 deg/s", port: "same", match: true }
+      - { name: "ANIMATE2 bob/spin", base: "8 + 4*sin(3t) ; -90 deg/s", port: "same", match: true }
+      - { name: "cl_ghost_items", base: "0.45", port: "0.45", match: true }
+      - { name: "cl_items_animate", base: "7 (bob|fade|particles)", port: "7", match: true }
+      - { name: "despawn puff cadence", base: "0.25 -> 0.0625 halving", port: "same", match: true }
+      - { name: "pickup/respawn particles", base: "EFFECT_ITEM_PICKUP/_RESPAWN at (absmin+absmax)*0.5", port: "EmitItemEffect at origin+(mins+maxs)*0.5", match: true }
+      - { name: "distance fade (g_items_maxdist/cl_items_fadedist)", base: "4500 / 500 (client/items/items.qc:147-158)", port: "ClientWorld.ItemDistanceAlpha reproduces the QC formula, composed as base alpha under ghost/despawn/stay (ll.1171-1206); LIVE per-frame", match: true }
+      - { name: "stay-weapon alpha (cl_weapon_stay_alpha)", base: "0.75 (ItemDraw availability branch)", port: "DriveItemStayFx (ClientWorld.cs:1227-1244) applies 0.75 alpha on a weapon_* item carrying server-set EF_STARDUST (the networked weapon-stay marker); composed under distance fade — NEW in Wave 16", match: true }
+      - { name: "simple items (sv_simple_items/cl_simple_items)", base: "swap to _simple sprite, no bob", port: "NOT ported (always 3D)", match: false }
+      - { name: "stay-weapon COLOR + vehicle-hud tint (cl_weapon_stay_color, cl_items_vehicle_*)", base: "colormod multiply in ItemDraw availability branch", port: "NOT applied — item meshes have no per-instance colormod path (player-skin-shader-only); alpha-only for stay weapons, no vehicle tint", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Pickup/respawn particles + ghost/despawn fades are driven from the authoritative server pickup/respawn EVENT + the client render flags rather than the CSQC ITS_AVAILABLE net transition (with its isnew/PVS guards). Documented in ItemPickupRules.EmitItemEffect as equivalent-but-guard-free: it fires only on the real gameplay event, never when an item merely streams into a client's PVS."
+    gaps:
+      - "stay-weapon COLORMOD (cl_weapon_stay_color '2 0.5 0.5') and the vehicle-hud item tint (cl_items_vehicle_*) are still not applied — item meshes have no per-instance colormod uniform (it is player-skin-shader-only). The stay-weapon ALPHA (cl_weapon_stay_alpha 0.75) is now applied (Wave 16 DriveItemStayFx); only the color multiply + vehicle tint remain."
+      - "simple items (sv_simple_items default 1 + cl_simple_items) not ported — always renders the full 3D model with bob, never the flat non-bobbing _simple sprite."
+      - "distance-fade edge: ItemDistanceAlpha only runs for entities IsItemEntity accepts (ItemAnimate!=0 || expiring || !available). A non-animating, available item (e.g. spawnflag 1024 suppressing animation) skips the distance branch. Stock items animate, so this is a corner case."
+    verification:
+      - { kind: code_read, ref: "EntityNode.SyncFromEntity bob/spin + ClientWorld.DriveItem*Fx + DriveItemStayFx (ClientWorld.cs:1185-1198 branch + 1227-1244 body) + ItemDistanceAlpha composed as base alpha; stay branch reads networked EF_STARDUST (server-set in Item_Show ll.531); matches client/items/items.qc:144-210", result: pass }
+      - { kind: code_read, ref: "git: DriveItemStayFx added in Wave 16 (commit b3a9c06), AFTER the prior baseline that recorded the stay-weapon tint fully missing — genuinely new (alpha half only)", result: pass }
+      - { kind: unit_test, ref: "ItemSpawnTouchTests.ItemBobAnim_MatchesQcWaveforms + ItemDespawnFx_FirstTick_* + ItemTouch_TakenItem_EmitsPickupEffectAtBboxCentre", result: pass }
+    confidence: high
+    notes: "PARTIAL drift fix (Wave 16): the stay-weapon ALPHA tint (cl_weapon_stay_alpha 0.75) is now applied live via DriveItemStayFx — branched on weapon_* classname + the networked EF_STARDUST weapon-stay marker, composed under the distance fade, placed after the unavailable-ghost branch (a stay weapon stays AVAILABLE). Presentation stays PARTIAL: the cl_weapon_stay_color colormod (no item colormod path), the vehicle-hud tint, and simple items are all still unported. Distance alpha-fade, bob/spin, ghost-on-pickup + loot despawn fade+puffs all remain live."
+
+  - id: items-pickups.itemstime.hud_feed
+    name: "itemstime mutator — timed-item respawn-countdown table for the HUD"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/itemstime/itemstime.qc:Item_ItemsTime_SetTime"
+      - "common/mutators/mutator/itemstime/itemstime.qc:Item_ItemsTime_UpdateTime"
+      - "common/mutators/mutator/itemstime/itemstime.qc:Item_ItemsTime_Allow"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/ItemstimeMutator.cs:Recompute"
+    constants:
+      - { name: "sv_itemstime", base: "1 (2 = also alive players)", port: "reads cvar; default 1", match: true }
+      - { name: "timed set", base: "powerups + Mega/Big Health + Mega/Big Armor + superweapons aggregate", port: "same (TimedItemClasses + superweapon weapon-pickups)", match: true }
+      - { name: "negative 'available now' encoding", base: "send -t when another copy is up", port: "avail ? -t : t", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Per-player visibility tiers (sv_itemstime 1 spectators-only vs 2 also-alive-players) reduce to the client panel's own hud_panel_itemstime gate in this single-view port; the server-side producer is identical, and the tier choice is enforced client-side. Recompute runs every server frame (a small scan) rather than on the QC reset/spawn/connect events, kept allocation-free."
+    gaps:
+      - "hidebig (hud_panel_itemstime_hidebig) toggling whether Big Health/Armor are in the timed set is a client cvar not modeled server-side; the port always includes big health/armor in CurrentTimes."
+    verification:
+      - { kind: code_read, ref: "itemstime.qc SVQC half vs ItemstimeMutator.Recompute; IsSpectatorOnlyItem now also consumed by RespawnCountdown's waypoint SPECTATOR rule", result: pass }
+    confidence: medium
+    notes: "The CSQC HUD panel draw (HUD_ItemsTime, panel #22 with blink/progressbar/checkmark) is a HUD-unit concern; only the server-side time table producer is audited here. Not separately unit-tested."
+
+  - id: items-pickups.itemgroup.networking
+    name: "setItemGroup / setItemGroupCount — cluster nearby small items for the itemstime 'N items' HUD label"
+    layer: [authority]
+    base_refs:
+      - "server/items/items.qc:setItemGroup"
+      - "server/items/items.qc:setItemGroupCount"
+    port_refs: []
+    constants:
+      - { name: "group small items within 120qu radius into a shared item_group id", base: "items.qc:1250-1283 FOREACH_ENTITY_RADIUS 120, IS_SMALL", port: "none", match: false }
+      - { name: "item_group_count per group = member count", base: "items.qc:1285-1294", port: "none", match: false }
+    status:
+      logic: missing
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Small-item clustering is not ported: Base groups small health/armor/ammo within 120qu into one item_group (networked via item_group/item_group_count) so the itemstime HUD can show a single 'xN' badge for a tightly-packed cluster instead of overlapping timers. The port has no item_group field, no setItemGroup/setItemGroupCount pass, and the itemstime producer (ItemstimeMutator) doesn't aggregate clustered smalls. Presentation-only effect on the timed-item HUD."
+    verification:
+      - { kind: code_read, ref: "grep item_group / setItemGroup / ItemGroup across src: no matches in gameplay code (only .csproj false-positives). ItemstimeMutator.Recompute has no clustering pass", result: pass }
+    confidence: high
+    notes: "Newly mapped 2026-06-25 (registry coverage gap; the function existed in items.qc but had no row). Small-item-only; large/timed items (which dominate the itemstime panel) are unaffected. Low impact — cosmetic HUD clustering for stacked small pickups."
+
+  - id: items-pickups.menu.item_describe
+    name: "Menu Guide describe() text for Health/Armor/Ammo/Fuel items (MENUQC tooltips from g_pickup_* cvar defaults)"
+    layer: [presentation]
+    base_refs:
+      - "common/items/item/health.qc:METHOD(HealthSmall/Medium/Big/Mega, describe)"
+      - "common/items/item/armor.qc:METHOD(ArmorSmall/Medium/Big/Mega, describe)"
+      - "common/items/item/ammo.qc:METHOD(Ammo, describe) / METHOD(Fuel, describe)"
+    port_refs:
+      - "game/menu/dialogs/DialogMediaGuide.cs:OnTopicSelected (Items topic stub, ll.128-169)"
+    constants:
+      - { name: "amount/cap text from cvar_defstring(g_pickup_<item>[_max])", base: "generated per item (ammo uses netname, bullets->nails)", port: "none", match: false }
+    status:
+      logic: stub
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The Guide dialog's Items (and Powerups) topic lists NO entries: DialogMediaGuide only enumerates Weapons + some Mutators; selecting Items shows '(entry list / descriptions for this topic — guide registry enumeration pending)'. The Base per-item describe() prose (incl. the g_pickup_* default amounts pulled via cvar_defstring and the Ammo 'used by the:' weapon cross-reference) is unported."
+    verification:
+      - { kind: code_read, ref: "DialogMediaGuide.cs:116-169 — Items topic falls to the 'enumeration pending' branch; no item describe() text anywhere in game/menu", result: fail }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). Menu-only prose; zero gameplay impact. The dialog scaffold (three-pane Guide) is live, so liveness=partial rather than na."
+
+  - id: items-pickups.registry.items_contract
+    name: "Items registry contract — REGISTRY(Items,32), m_id assignment, sort order (CSQC default_order_items), dumpitems command"
+    layer: [shared]
+    base_refs:
+      - "common/items/all.qh:REGISTRY(Items,32) / REGISTRY_SORT / STATIC_INIT(Items) m_id"
+      - "common/items/all.qh:GENERIC_COMMAND(dumpitems)"
+      - "common/items/all.qc:Dump_Items"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemSpawnFuncs.cs:Register (classname-keyed def table)"
+      - "game/hud/ItemsTimePanel.cs:l.43 (hand-ordered timed-item display list = the CSQC default_order_items consumer)"
+    constants:
+      - { name: "registry capacity / numeric m_id", base: "32 slots, m_id = registry index (24 usable as .items bits)", port: "no numeric item-id registry — per-class Pickup singletons keyed by classname", match: false }
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "QC's REGISTRY macro infrastructure (numeric m_id, alphabetical REGISTRY_SORT with a CSQC category-order snapshot) is replaced by C# per-class Pickup defs + ItemSpawnFuncs' classname-keyed spawn table. Each Base consumer of the id contract is handled at behavior level instead: itemstime HUD ordering is a hand-maintained list in ItemsTimePanel (matching the Base category order), and the pickup-HUD inventory networking is replaced by stat-delta inference (see items-pickups.give.pickup_dispatch_inventory)."
+    gaps:
+      - "The dumpitems console command (GENERIC_COMMAND in all.qh -> Dump_Items) is not ported — no equivalent item-dump diagnostic exists (grep dumpitems/Dump_Items: zero matches)."
+    verification:
+      - { kind: code_read, ref: "grep 'Registry<' under Gameplay/Items — no item registry type; ItemSpawnFuncs.Register is the classname table; ItemsTimePanel.cs:43 documents its explicit display order", result: pass }
+      - { kind: code_read, ref: "grep -i dumpitems/Dump_Items across repo: no matches", result: fail }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). The 24-bit .items ceiling comment in all.qh is moot in the port (ItemFlag is a plain int enum, held-item bits audited in items-pickups.give.item_giveto)."
+
+  - id: items-pickups.registry.model_sound_resolution
+    name: "Item_Model / Item_Sound path resolution (models/items/ + misc/ prefixes, ItemModel/ItemSound mutator hooks)"
+    layer: [shared]
+    base_refs:
+      - "common/items/all.qc:Item_Model"
+      - "common/items/all.qc:Item_Sound"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:l.199 (models/items/ vs models/weapons/ prefix)"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:PlayPickupSound (ll.866-876, sound-registry names)"
+    constants:
+      - { name: "model path prefix", base: "\"models/items/\" + m_model (weapons via W_Model = models/weapons/)", port: "IsWeaponPickup ? models/weapons/ : models/items/", match: true }
+      - { name: "sound path prefix", base: "\"misc/\" + it_snd", port: "pickup sounds resolved by Sound-registry name (misc/*.wav mapping audited in items-pickups.def.resource_items)", match: true }
+      - { name: "ItemModel/ItemSound MUTATOR_CALLHOOKs", base: "hookable but ZERO subscribers at v0.8.6-1779 (grep MUTATOR_HOOKFUNCTION: none)", port: "no hook seam", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: unit_test, ref: "ItemSpawnTouchTests.SpawnFunc_ItemModelGetsItemsDirPrefix (6 classname->path cases)", result: pass }
+      - { kind: code_read, ref: "Base grep: MUTATOR_HOOKABLE(ItemModel/ItemSound) declared (server/mutators/events.qh:136,144) but no MUTATOR_HOOKFUNCTION subscriber in the whole qcsrc tree — hook absence in the port is non-behavioral at this rev", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). If a future mutator wants to reskin item models/sounds (the hooks' purpose), the port needs a seam; at the pinned rev nothing consumes them."
+
+  - id: items-pickups.give.pickup_dispatch_inventory
+    name: "Pickup.giveTo dispatch + Inventory_pickupitem (per-item-id inventory count net + STAT(LAST_PICKUP) pickup-HUD/crosshair feed)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/items/item/pickup.qc:METHOD(Pickup, giveTo)"
+      - "common/items/inventory.qh:Inventory_pickupitem"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ItemTouch (l.393 calls ItemGiveTo directly)"
+      - "game/net/NetGame.cs:UpdatePickupFeed (ll.3403-3456, stat-delta inference)"
+      - "game/hud/PickupPanel.cs:Push"
+    constants:
+      - { name: "giveTo -> Item_GiveTo give dispatch", base: "ITEM_HANDLE(Pickup) -> this.giveTo -> Item_GiveTo", port: "ItemTouch -> ItemGiveTo direct call (no virtual per-def giveTo; no def overrides exist)", match: true }
+      - { name: "STAT(LAST_PICKUP) -> pickup panel + crosshair pulse", base: "Inventory_pickupitem stamps LAST_PICKUP; CSQC panel #26 + crosshair_pickup react", port: "client infers pickups from stat deltas (new weapon bit / resource jump) -> PickupPanel.Push + Crosshair.PulsePickup", match: true }
+      - { name: "per-item-id inv_items[] count networked (ENT_CLIENT_INVENTORY)", base: "++inv_items[m_id] + delta net", port: "none", match: false }
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The ENT_CLIENT_INVENTORY per-item-id count networking is replaced by pure client-side stat-delta inference (NetGame.UpdatePickupFeed), documented in PickupPanel.cs as deliberate so the feed works on a pure --connect client with no local server entity; spawn re-baselining prevents loadout false-positives."
+    gaps:
+      - "The pickup feed shows GENERIC labels for resources — a Mega Health reads 'Health', any armor reads 'Armor' — where Base's inventory net carries the itemdef id (specific name + icon). Weapons are the only per-def entries."
+      - "Powerups/held items (strength/shield/jetpack/fuelregen/buffs) and fuel never feed the panel: UpdatePickupFeed tracks only the weapon set + health/armor/shells/bullets/rockets/cells deltas."
+    verification:
+      - { kind: code_read, ref: "ItemTouch (ItemPickupRules.cs:393) is the single give dispatch; UpdatePickupFeed (NetGame.cs:3403-3456) drives PickupPanel.Push + crosshair pulse on the live client frame", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). The panel's own draw fidelity (window/fade/iconsize) is documented in PickupPanel.cs and belongs to the HUD unit; this row covers the pickup.qc giver dispatch + the Inventory_pickupitem feed contract."
+
+  - id: items-pickups.spawn.weapon_respawn_defaults
+    name: "weapon_defaultspawnfunc tail — weapon/superweapon respawn defaults, jitter, weapons_anyway, superweapons_finished + pickup-ammo seeding"
+    layer: [authority]
+    base_refs:
+      - "server/weapons/spawning.qh:weapon_defaultspawnfunc / W_Apply_Weaponreplace (decls + autocvars)"
+      - "server/weapons/spawning.qc:weapon_defaultspawnfunc (ll.90-113 tail)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemSpawnFuncs.cs:WeaponSpawn (ll.360-368)"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemSpawnFuncs.cs:WeaponPickup.ItemInit (ll.435-457)"
+    constants:
+      - { name: "g_pickup_respawntime_weapon / _superweapon", base: "10 / 120", port: "10 / 120 (Cvars.cs:567-568 + CvarOr fallback 10)", match: true }
+      - { name: "g_pickup_respawntimejitter_weapon / _superweapon", base: "0 / 10 (balance-xonotic.cfg:144-145; stamped on the item, spawning.qc:95,101)", port: "never set — weapon items keep jitter 0 (WeaponSpawn sets only ItemRespawnTime; WeaponPickup def has no RespawnTimeJitter)", match: false }
+      - { name: "g_pickup_weapons_anyway", base: "1 (balance-xonotic.cfg:94)", port: "live path faithful (cfg tree loaded, GameWorld.cs:470-474); headless seed 0 (Cvars.cs:523) + CvarBoolOr fallback false diverge", match: true }
+      - { name: "superweapons_finished default", base: "g_balance_superweapons_time (30) stamped on a map superweapon (spawning.qc:104-106)", port: "not seeded anywhere on the map-spawn path (only WeaponThrowing loot + target_give set it)", match: false }
+      - { name: ".count-scaled pickup ammo", base: "count>0 ? rint(count*GetAmmoConsumption) : WEP_CVAR pickup_ammo", port: "WEP pickup_ammo cvar else flat g_pickup_<res> fallback; no .count scaling", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Map-spawned SUPERWEAPON items never get superweapons_finished seeded (QC spawning.qc:104-106 stamps g_balance_superweapons_time=30) — ApplyPowerupTimers then adds item.SuperweaponsFinished=0, so picking up a map fireball/minstanex-style superweapon applies a 0s superweapon timer. (Thrown superweapon loot IS seeded, WeaponThrowing.cs:66.)"
+      - "Superweapon respawn jitter (g_pickup_respawntimejitter_superweapon 10) never applied: WeaponSpawn sets only ItemRespawnTime, so superweapon respawns are deterministic vs Base's +/-10s spread. (Regular weapons: Base jitter 0, so they match by accident.)"
+      - "Base's q3-style .count pickup-ammo scaling (rint(count * GetAmmoConsumption)) unported — an edict-set count is ignored for weapon ammo."
+    verification:
+      - { kind: code_read, ref: "WeaponSpawn (ItemSpawnFuncs.cs:360-368) vs spawning.qc:90-113: respawntime + weapons_anyway ported; jitter + superweapons_finished + count-scaling absent. grep 'SuperweaponsFinished =' src: only ItemTouch relativize, TargetUtilities:497, WeaponThrowing:66-89 — no map-spawn seed", result: fail }
+      - { kind: value_diff, ref: "balance-xonotic.cfg:94,131-132,144-145 vs Cvars.cs:523,567-568 + live cfg-tree load (GameWorld.cs:470-474)", result: pass }
+    confidence: medium
+    notes: "added 2026-07-02 (coverage fold). Confidence medium on the superweapon-timer gap: no compensating seed found under Gameplay/, but the superweapons status-effect application path is audited in the powerups/status-effects units and could mask it. The weaponreplace/SetWeaponreplace half of this function is already audited in items-pickups.spawn.driver + mutator-new_toys."
+
+  - id: items-pickups.give.give_grammar
+    name: "GiveItems op-aware give grammar (cheat give / target_items / target_give) + POSTGIVE GiveSound/GiveRot feedback"
+    layer: [authority]
+    base_refs:
+      - "server/items/items.qh:GiveItems / GiveWeapon / GiveSound / GiveRot decls + PREGIVE/POSTGIVE macros"
+      - "server/items/items.qc:GiveItems"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/GiveItems.cs:Apply"
+      - "src/XonoticGodot.Server/Cheats.cs:382-383 (give command)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs (target_items / target_give)"
+    constants:
+      - { name: "operator grammar", base: "val dflt 999, op dflt SET; no/max/min/plus/minus prefixes; numeric token sets val without reset", port: "same (GiveItems.cs:40-70)", match: true }
+      - { name: "ALL cascade", base: "all -> allweapons -> allammo fallthrough", port: "explicit goto-case cascade", match: true }
+      - { name: "POSTGIVE GiveSound cues (item pickup sounds on gained resources/weapons)", base: "GiveSound per resource/weapon/bit", port: "none", match: false }
+      - { name: "GiveRot rot/regen timer reset on give", base: "GiveRot(pauserot*/pauseregen* fields)", port: "none", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: partial
+      presentation: na
+      audio: missing
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "POSTGIVE GiveSound feedback not ported: `give`, target_items and target_give apply items silently — Base plays the matching pickup sound (armor25, weaponpickup, ...) per gained resource/weapon/bit."
+      - "GiveRot not ported: a give that raises health/armor doesn't reset the rot/regen pause timers (pauserothealth/pauseregen), so a target_give health bonus can start rotting/regenerating immediately vs Base's grace window."
+    verification:
+      - { kind: unit_test, ref: "ItemSpawnTouchTests GiveItems grammar tests (max/min/plus/minus/all/allammo/no jetpack/weapon token)", result: pass }
+      - { kind: code_read, ref: "grep GiveSound/GiveRot/POSTGIVE in GiveItems.cs: zero matches; live callers Cheats.cs:141 + TargetUtilities target_items/target_give", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). The grammar core was already tested but had no registry row citing items.qh. Low-traffic paths (cheats + two map entities)."
+
+  - id: items-pickups.presentation.client_render_defaults
+    name: "Client item-render autocvar bare defaults (client/items/items.qh) as live inputs to the ItemDraw port"
+    layer: [presentation]
+    base_refs:
+      - "client/items/items.qh (autocvar_cl_items_* / cl_ghost_items* / cl_weapon_stay_* / cl_simple*)"
+    port_refs:
+      - "game/client/ClientWorld.cs:1431,1439,1454,1495 (live CvarF fallbacks on the per-frame item pass)"
+      - "game/menu/dialogs/DialogSettingsGame.cs:383-397 (cl_simple_items / cl_ghost_items[_color] menu bindings)"
+    constants:
+      - { name: "cl_items_animate", base: "7", port: "7 (ClientWorld.cs:1454, live)", match: true }
+      - { name: "cl_items_fadedist", base: "500", port: "500 (ClientWorld.cs:1495, live)", match: true }
+      - { name: "cl_ghost_items", base: "0.45", port: "0.45 (ClientWorld.cs:1439, live)", match: true }
+      - { name: "cl_weapon_stay_alpha", base: "0.75", port: "0.75 (ClientWorld.cs:1431, live)", match: true }
+      - { name: "cl_ghost_items_color", base: "'-1 -1 -1' (= no tint)", port: "cvar bound in menu but tint NOT applied (ClientWorld doc l.1417 'left for a follow-up') — default-equivalent, non-default values dead", match: false }
+      - { name: "cl_simple_items / cl_simpleitems_postfix", base: "0 / \"_simple\"", port: "menu checkbox exists (DialogSettingsGame.cs:383) but NO consumer — simple items unported", match: false }
+      - { name: "cl_items_vehicle_alpha / _color", base: "0.75 / '2 0.5 0.5'", port: "not applied (no vehicle-hud item tint)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "cl_ghost_items_color: the ghost tint multiply is not applied — Base default '-1 -1 -1' means no tint so stock behavior matches, but a user-set color does nothing (the menu still offers the slider)."
+      - "cl_simple_items (+_simpleitems_postfix) and cl_items_vehicle_* are dead cvars: bound in the settings menu / declared but with no render consumer (the simple-items + colormod gaps tracked in items-pickups.show.visibility and .presentation.bob_ghost_despawn)."
+    verification:
+      - { kind: code_read, ref: "ClientWorld.cs live CvarF reads: animate 7 (l.1454), fadedist 500 (l.1495), ghost 0.45 (l.1439), stay_alpha 0.75 (l.1431) — all on the per-frame item pass; ghost-color/simple/vehicle have no consumer", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). This row pins the BARE defaults of the wired inputs (all four match Base) and records which client/items/items.qh cvars are dead; the behaviors they feed are audited in items-pickups.presentation.bob_ghost_despawn."
+
+  - id: items-pickups.spawn.item_initialise_api
+    name: "Item_Initialise generic init API (lifetime semantics, noalign keep-position, expiring flag) + Item_RandomFromList"
+    layer: [authority]
+    base_refs:
+      - "server/items/spawning.qh:Item_Initialise / .lifetime / ITEM_IS_LOOT / ITEM_SHOULD_KEEP_POSITION / ITEM_IS_EXPIRING"
+      - "server/items/spawning.qc:Item_RandomFromList"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs:Spawn / SpawnLoot"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterFramework.cs:ItemRandomFromList (l.249)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs:RandomFromList (l.387)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs (permanent-replacement path)"
+    constants:
+      - { name: "lifetime semantics", base: "<0 permanent, >0 overrides g_items_dropped_lifetime, 0 default loot", port: "SpawnLoot(lifetime) for loot, Spawn for permanent (callers pass QC's lifetime through)", match: true }
+      - { name: "noalign | spawnflags&1 keep-position", base: "ITEM_SHOULD_KEEP_POSITION", port: "StartItem suspension branch (audited in items-pickups.spawn.driver)", match: true }
+      - { name: "ITEM_IS_EXPIRING gate", base: ".m_isexpiring", port: "Entity.ItemIsExpiring (consumed live in ItemTouch l.383 + ItemThink)", match: true }
+      - { name: "Item_RandomFromList uniform pick over space-separated netnames", base: "spawning.qc:71", port: "TWO parallel ports: MonsterFramework.ItemRandomFromList + OverkillMutator.RandomFromList (tokenize + uniform roll)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "QC funnels loot AND permanent through the single Item_Initialise entry; the port splits it into StartItem.SpawnLoot (loot) / StartItem.Spawn (permanent) and lets each caller (monster drops, overkill loot, random_items, weapon throwing) call the right half directly. Same observable states; the classname-based half of Item_Initialise is the SpawnFuncs dispatch (documented in RandomItemsMutator.cs:195)."
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "MonsterFramework.cs:222-249 + OverkillMutator.cs:362-387 both document + implement the Item_RandomFromList contract; live callers = monster loot drops + overkill superweapon loot + random_items loot; loot lifecycle itself unit-tested (items-pickups.loot.toss_despawn)", result: pass }
+    confidence: medium
+    notes: "added 2026-07-02 (coverage fold). Confidence medium: Item_RandomFromList exists as two parallel implementations (code-read matched, not diffed token-by-token against spawning.qc:71, and neither is unit-tested); consider consolidating."

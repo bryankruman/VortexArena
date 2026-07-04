@@ -210,6 +210,13 @@ public static class MenuCommand
                 OpenDialog?.Invoke("quitdialog");
                 break;
 
+            // QC commands.cfg aliases `menu_showsandboxtools "menu_cmd directmenu SandboxTools"` (bound to F7 in
+            // binds-xonotic.cfg). The alias normally expands through the directmenu verb above, but route the bare
+            // command here too so the keybind opens the Sandbox Tools dialog even if the cfg alias isn't loaded.
+            case "menu_showsandboxtools":
+                OpenDialog?.Invoke("SandboxTools");
+                break;
+
             // The HUD-panel configuration host (the port's stand-in for QC's in-game HUD editor entry):
             // menu_showhudoptions is what the Game→HUD "Enter HUD editor" button issues.
             case "menu_showhudpanels":
@@ -223,6 +230,14 @@ public static class MenuCommand
             // leading "cmd" and send the remainder (e.g. "cmd selectteam red", "cmd spectate").
             case "cmd":
                 if (t.Count > 1) SendGame(string.Join(' ', t.GetRange(1, t.Count - 1)));
+                break;
+
+            // "sandbox <rest>" — DP cfg alias `sandbox "cmd g_sandbox ${* ?}"` (commands.cfg). The Sandbox Tools
+            // dialog buttons issue these. Expand the alias here (prepend the g_sandbox server verb, route through
+            // the live-match channel) so the buttons drive the SandboxMutator backend (Commands.CmdSandbox →
+            // HandleCommand) instead of falling through to the inert default.
+            case "sandbox":
+                SendGame(t.Count > 1 ? "g_sandbox " + string.Join(' ', t.GetRange(1, t.Count - 1)) : "g_sandbox");
                 break;
 
             // Direct gameplay verbs the pause-menu / team-select buttons issue. These are real server commands

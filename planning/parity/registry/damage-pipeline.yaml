@@ -1,0 +1,319 @@
+unit: damage-pipeline
+category: damage
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-25"
+summary:
+  feature_count: 9
+  worst_gaps:
+    - "Damage() front gate still omits the QC game_stopped check (damage.qc:46) AND the spectator killcount==FRAGS_SPECTATOR early-out (damage.qc:485) inside DamageSystem.Apply — both still gated at the gametype/caller layer. Unchanged (low-risk seam gap)."
+    - "RadiusDamage MIN_DAMAGEEXTRARADIUS/damageextraradius per-target dist shrink (QC damage.qc:767 bound(0.1, damageextraradius, 16)) is still not applied — a target with a custom damageextraradius (rare) hits at a slightly different range. Unchanged."
+    - "Pain/death anim keyframe selection (ANIMACTION_PAIN1/2) is host-side, not driven by the damage seam (presentation, by design)."
+features:
+  - id: damage-pipeline.dispatch.front_gate
+    name: "Damage() front gate + hook/sound same-team rule + always-lethal kill/teamchange"
+    layer: [authority]
+    base_refs:
+      - "server/damage.qc:Damage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:Apply"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DeathTypes.cs:IsAlwaysLethal"
+    constants:
+      - { name: "kill/teamchange damage", base: "100000 (lethal)", port: "100000", match: true }
+      - { name: "teamchange pre-set health", base: "0.9 (<1)", port: "0.9", match: true }
+      - { name: "teamchange pre-set armor", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC game_stopped early-out (damage.qc:46/485) is still NOT checked inside Apply — gating lives at the gametype/caller layer; a damage call made while game_stopped would still apply."
+      - "Spectator killcount==FRAGS_SPECTATOR early-out (damage.qc:485) is still gated at the gametype layer, not in Apply; functionally covered (observers get TakeDamage==No) but not at this seam."
+    verification:
+      - { kind: code, ref: "DamageSystem.Apply:130-159 — IsFreed/TakeDamage gate, soundOrHook same-team return, IsAlwaysLethal block clears SpawnShield + GodMode then sets damage 100000", result: pass }
+      - { kind: code, ref: "GameInit installs Combat.System = new DamageSystem(); broad live Combat.Damage / WeaponSplash.RadiusDamage caller fan-out", result: pass }
+    confidence: high
+    notes: "Unchanged from baseline. Hook/sound same-team rule via HITTYPE_SOUND flag + 'hook' weapon-name tag. game_stopped/spectator gating still external — a known but low-risk seam gap."
+
+  - id: damage-pipeline.dispatch.teamplay_shaping
+    name: "Teamplay friendly-fire / mirror-damage shaping (teamplay_mode 1-4, virtual ff/mirror)"
+    layer: [authority]
+    base_refs:
+      - "server/damage.qc:Damage"
+      - "server/client.qc:PlayerFrame (dmg_team decay + teamkill_soundtime voice)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:Apply"
+      - "src/XonoticGodot.Server/PlayerFrameLogic.cs:Regen"
+    constants:
+      - { name: "teamplay_mode (team games)", base: "4 (xonotic-server.cfg:279)", port: "in-code fallback 4 (read live)", match: true }
+      - { name: "g_friendlyfire", base: "0.5", port: "0.5", match: true }
+      - { name: "g_mirrordamage", base: "0.7", port: "0.7", match: true }
+      - { name: "g_mirrordamage_virtual", base: "1", port: "1 (read live)", match: true }
+      - { name: "g_friendlyfire_virtual", base: "1", port: "1 (read live)", match: true }
+      - { name: "g_friendlyfire_virtual_force", base: "1 (xonotic-server.cfg:285)", port: "in-code fallback 1 (read live)", match: true }
+      - { name: "g_mirrordamage_onlyweapons", base: "0", port: "0", match: true }
+      - { name: "g_teamdamage_threshold", base: "40", port: "40", match: true }
+      - { name: "g_teamdamage_resetspeed", base: "20", port: "20 (PlayerFrameLogic.Regen decay)", match: true }
+      - { name: "teamkill_complain cooldown / soundtime delay", base: "+5s / +0.4s", port: "+5s / +0.4s", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "DamageSystem.Apply:166-294 — modes 1/2/3/4, virtual ff + virtual mirror routing into DmgTake/DmgSave; mode-4 complaint/mirror math; teamkill_complain/soundtime/soundsource now SET on the attacker (Apply:282-294)", result: pass }
+      - { kind: code, ref: "PlayerFrameLogic.Regen:121-125 applies dmg_team = max(0, dmg_team - g_teamdamage_resetspeed*frametime); Regen:127-149 fires the deferred 'teamshoot' victim voice when now>TeamKillSoundTime — called live GameWorld.cs:1699 per player per frame", result: pass }
+      - { kind: code, ref: "In-code fallbacks now match stock: DefTeamplayMode=4 (DamageSystem.cs:73), DefFriendlyFireVirtualForce=1 (DamageSystem.cs:74) — a headless run with no cfg now behaves correctly", result: pass }
+    confidence: high
+    notes: "FIXED since baseline (3 gaps closed). (1) teamkill complaint SOUND now fully wired end-to-end: Apply sets TeamKillComplainTime/SoundTime/SoundSource, PlayerFrameLogic.Regen plays the offender's 'teamshoot' voice on the victim 0.4s later (audio na->faithful). (2) g_teamdamage_resetspeed decay of dmg_team now applied per frame in Regen (missing->faithful). (3) in-code fallbacks corrected to stock (teamplay_mode 4 / ff_virtual_force 1) so a no-cfg headless run is right (values partial->faithful)."
+
+  - id: damage-pipeline.dispatch.factors_selfdamage
+    name: "Global weapon damage/force factors + self-damage percent + Damage_Calculate hook"
+    layer: [authority]
+    base_refs:
+      - "server/damage.qc:Damage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:Apply"
+    constants:
+      - { name: "g_weapondamagefactor", base: "1", port: "1", match: true }
+      - { name: "g_weaponforcefactor", base: "1", port: "1", match: true }
+      - { name: "g_balance_selfdamagepercent", base: "0.65", port: "0.65", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "DamageSystem.Apply:249-270 — global factors gated on !IsSpecial; Damage_Calculate hook (MutatorHooks.DamageCalculate) fires after global factors / before self-damage; self-damage percent applied once when attacker==targ", result: pass }
+      - { kind: code, ref: "WeaponSplash.RadiusDamage comment confirms selfdamage NOT scaled in splash (DMG1)", result: pass }
+    confidence: high
+    notes: "Unchanged from baseline (already faithful). Factors gated on !IsSpecial like QC; Damage_Calculate mutator hook lets mutators rewrite damage/mirror/force."
+
+  - id: damage-pipeline.resource.healtharmor_split
+    name: "Armor<->health damage split (healtharmor_applydamage, drown/armorpierce bypass)"
+    layer: [authority]
+    base_refs:
+      - "common/util.qc:healtharmor_applydamage"
+      - "server/player.qc:PlayerDamage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:HealthArmorApplyDamage"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:ArmorBlockPercent"
+    constants:
+      - { name: "g_balance_armor_blockpercent", base: "0.7 (stock xonotic balance)", port: "0.7", match: true }
+      - { name: "save formula", base: "bound(0, dmg*armorblock, armor)", port: "QClamp(dmg*armorBlock,0,armor)", match: true }
+      - { name: "take formula", base: "bound(0, dmg-save, dmg)", port: "QClamp(dmg-save,0,dmg)", match: true }
+      - { name: "drown armorblock", base: "0 (armor never helps)", port: "0 (BypassesArmor)", match: true }
+      - { name: "HITTYPE_ARMORPIERCE armorblock", base: "0", port: "0 (BypassesArmor)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "DamageSystem.HealthArmorApplyDamage + ArmorBlockPercent + DeathTypes.BypassesArmor (Drown || ArmorPierce)", result: pass }
+      - { kind: test, ref: "GameplaySystemsTests.Damage_SplitsBetweenArmorAndHealth (0.7 block: 50 dmg -> save 35 / take 15)", result: pass }
+    confidence: high
+    notes: "Unchanged from baseline. Exact port. healtharmor_maxdamage (predictive autoswitch variant) still not ported but not part of live damage application."
+
+  - id: damage-pipeline.resource.player_damage
+    name: "PlayerDamage resource math: handicap, spawnshield, godmode tab, regen pause, pusher window, pain/death feedback"
+    layer: [authority]
+    base_refs:
+      - "server/player.qc:PlayerDamage"
+      - "server/player.qc:PlayerCorpseDamage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:PlayerDamage"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:PlayerCorpseDamage"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:HandicapTotal"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:EmitPainSound"
+    constants:
+      - { name: "g_spawnshield_blockdamage", base: "1 (full block)", port: "1", match: true }
+      - { name: "g_maxpushtime", base: "8 s", port: "8 s", match: true }
+      - { name: "g_balance_pause_health_regen", base: "5 s", port: "5 s", match: true }
+      - { name: "pain debounce", base: "0.5 s", port: "0.5 s", match: true }
+      - { name: "voluntary handicap (cl_handicap*)", base: "forced x voluntary, bound [1,10]", port: "VoluntaryHandicapProvider * forced (wired)", match: true }
+      - { name: "armorimpact sound gate", base: "save>10 & non-fatal", port: "save>10 & (initialHealth-take)>0", match: true }
+      - { name: "bodyimpact2 / bodyimpact1 gate", base: "take>30 / take>10", port: "take>30 / take>10", match: true }
+      - { name: "sv_gibhealth (corpse gib floor)", base: "100", port: "100", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Pain anim selection (ANIMACTION_PAIN1/2) is host-side and not driven here (presentation); pain/death VOICE volume matches QC (VOL_BASE). The corpse upright/view-from-floor/MOVETYPE_TOSS state IS set here; only the keyframe anim picker is host-side."
+    verification:
+      - { kind: code, ref: "DamageSystem.PlayerDamage + Killed — handicap (forced x voluntary), shield, split, godmode tab, regen pause, pusher window, SplitHealthArmor hook, armor/body-impact + pain sounds, corpse setup, gib", result: pass }
+      - { kind: code, ref: "HandicapTotal multiplies forced HandicapTake/Give by VoluntaryHandicapProvider (cl_handicap*); ModelSoundDir resolves the real per-model .sounds manifest (Sounds.ModelSoundsFile)", result: pass }
+      - { kind: code, ref: "IsTypeFrag now WIRED: PlayerDamage:436 sets targ.IsTypeFrag = targ.ButtonChat (matches QC player.qc:304 this.istypefrag = PHYS_INPUT_BUTTON_CHAT(this)); ButtonChat is written live per-frame in PlayerPhysics.cs:243 from input.Typing; Scores.cs consumes it. Producer is now live. Landed Wave 8e (412ca19).", result: pass }
+      - { kind: code, ref: "Bot-aim shake now PORTED: PlayerDamage:509-527 jitters botTarg.ViewAngles by damage*5/(bound(0,skill,100)+1) on bot targets with HP>=1, clamped [-90,90] — exact port of player.qc:388-395. Landed Wave 8e (412ca19).", result: pass }
+      - { kind: test, ref: "MonsterDamageDeathTests / GameplaySystemsTests death-hook coverage", result: pass }
+    confidence: high
+    notes: "FIXED since baseline (presentation partial->faithful). Both presentation gaps closed in Wave 8e (412ca19, 2026-06-26): (1) IsTypeFrag now reads the live victim ButtonChat (PHYS_INPUT_BUTTON_CHAT) instead of being hardwired false — producer live, consumer (Scores.cs) already plumbed; (2) bot-aim shake (v_angle jitter scaled by damage/skill) now ported. Only the host-side ANIMACTION_PAIN keyframe picker remains out of this seam (presentation, by design)."
+
+  - id: damage-pipeline.knockback.calcpush
+    name: "Knockback application + damage_explosion_calcpush momentum projection"
+    layer: [authority]
+    base_refs:
+      - "server/damage.qc:Damage"
+      - "common/weapons/calculations.qc:damage_explosion_calcpush"
+      - "common/weapons/calculations.qc:explosion_calcpush_getmultiplier"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:ApplyKnockback"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:DamageExplosionCalcPush"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:ExplosionCalcPushGetMultiplier"
+    constants:
+      - { name: "g_balance_damagepush_speedfactor", base: "2.5 (stock)", port: "2.5", match: true }
+      - { name: "speedfactor<1 bypass", base: "return raw force", port: "return raw force", match: true }
+      - { name: "multiplier a = ev.(ev-tv)", base: "a<=0 -> 0 else a/(ev.ev)", port: "same", match: true }
+      - { name: "g_player_damageforcescale (player fallback)", base: "2 (xonotic-server.cfg)", port: "2", match: true }
+      - { name: "spawn-shield knockback block (unless self)", base: "yes", port: "yes", match: true }
+      - { name: "MOVETYPE_NOCLIP no-push / UNSET_ONGROUND", base: "yes", port: "yes", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "MOVETYPE_PHYSICS path: QC spawns a transient FORCETYPE_FORCEATPOS entity (mass+pos aware, 0.1s) to nudge the rigid body; the headless port has no rigid body, so ApplyKnockback applies a mass-scaled impulse directly to velocity. Equivalent for the headless sim; deliberately not bit-identical for rotation/point-of-application."
+    gaps:
+      - "MOVETYPE_PHYSICS force-at-pos approximated as a direct mass-scaled velocity impulse (covered by divergence_rationale; not a sim-result gap for the headless model)."
+    verification:
+      - { kind: code, ref: "DamageSystem.DamageExplosionCalcPush + ExplosionCalcPushGetMultiplier match calculations.qc projection exactly (a=dot(ev,ev-tv); a<=0->0 else a/dot(ev,ev))", result: pass }
+      - { kind: test, ref: "SplashDamageSingleApplicationTests.SelfBlasterJump_GetsFullKnockback_OnOpenGround", result: pass }
+    confidence: high
+    notes: "Unchanged from baseline. Energy-conserving projection; players without an assigned damageforcescale fall back to g_player_damageforcescale."
+
+  - id: damage-pipeline.radius.splash
+    name: "RadiusDamage: core->edge falloff, falloff-scaled knockback, per-axis force shaping, through-floor LOS, warpzone propagation, HITTYPE_SPLASH tagging"
+    layer: [authority]
+    base_refs:
+      - "server/damage.qc:RadiusDamageForSource"
+      - "server/damage.qc:RadiusDamage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:RadiusDamage"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:ApplyDamage"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:SplashDeathType"
+    constants:
+      - { name: "falloff", base: "finaldmg = core*f + edge*(1-f), f=1-dist/rad", port: "same", match: true }
+      - { name: "distance metric", base: "nearest-point bbox to (portal-shifted) blast origin", port: "Vector3.Clamp nearest-point to bbox", match: true }
+      - { name: "MAX_DAMAGEEXTRARADIUS broadphase pad", base: "16", port: "16", match: true }
+      - { name: "knockback magnitude", base: "(finaldmg/max(core,edge))*force", port: "same", match: true }
+      - { name: "g_player_damageplayercenter", base: "1 (bbox center others, eye self)", port: "1 (read live)", match: true }
+      - { name: "force_xyzscale per-axis (0 = unscaled)", base: "yes", port: "yes", match: true }
+      - { name: "g_throughfloor_damage / _force", base: "0.75 / 0.75", port: "0.75 / 0.75", match: true }
+      - { name: "throughfloor max_stddev dmg/force", base: "2 / 10", port: "2 / 10", match: true }
+      - { name: "throughfloor steps player/other", base: "1..100 / 1..10", port: "1..100 / 1..10", match: true }
+      - { name: "HITTYPE_SPLASH on indirect/non-special victim (damage.qc:917-920)", base: "OR'd (incl. indirect weapon-blast hits)", port: "OR'd via SplashDeathType on BOTH the special-deathTag path AND the int weapon-id indirect path", match: true }
+      - { name: "MIN_DAMAGEEXTRARADIUS per-target dist shrink", base: "bound(0.1, damageextraradius, 16) (damage.qc:767)", port: "not applied", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "MIN_DAMAGEEXTRARADIUS/damageextraradius per-target shrink (QC damage.qc:767 bound(0.1, damageextraradius, 16) subtracted from dist) is still not applied — targets with a custom damageextraradius (rare) hit at a slightly different range. Unchanged from baseline."
+      - "RadiusDamage_running recursion guard (damage.qc:715-724) is replaced by per-call method-local target buffers (safe re-entry), so the explicit backtrace-on-recursion warning is gone (intentional, harmless)."
+    verification:
+      - { kind: code, ref: "WeaponSplash.RadiusDamage — falloff, force ref point gated by g_player_damageplayercenter, multi-sample through-floor LOS, warpzone find+trace, Prandom box sampling; MaxDamageExtraRadius=16 broadphase pad", result: pass }
+      - { kind: code, ref: "HITTYPE_SPLASH WIRED: isIndirect=!ReferenceEquals(e,directHit); special-deathTag path AND the int weapon-id indirect path both resolve to a string tag and OR HITTYPE_SPLASH via DamageSystem.SplashDeathType; direct hits keep the plain int fast path", result: pass }
+      - { kind: code, ref: "Live consumers of the bit confirm the channel is exercised: DeathMessages.cs, Devastator.cs, Breakable/Buttons/Doors/Triggers HasHitType(Splash) gates", result: pass }
+      - { kind: test, ref: "SplashDamageSingleApplicationTests.OneBlast_AppliesDamageAndKnockbackExactlyOnce; DevastatorForceXyScaleTests", result: pass }
+    confidence: high
+    notes: "Unchanged from baseline. HITTYPE_SPLASH closed and LIVE; RadiusDamage is the single central splash path for every blast weapon. Remaining: MIN_DAMAGEEXTRARADIUS shrink (minor). Damage_DamageInfo blast broadcast remains a deliberate headless no-op."
+
+  - id: damage-pipeline.fire.burning
+    name: "Burning damage-over-time (Fire_AddDamage / Fire_ApplyDamage + fire transfer)"
+    layer: [authority]
+    base_refs:
+      - "server/damage.qc:Fire_AddDamage"
+      - "server/damage.qc:Fire_ApplyDamage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:FireAddDamage"
+      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:FireApplyDamage"
+      - "src/XonoticGodot.Common/Gameplay/StatusEffects.cs:Tick"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterFramework.cs:AddFireDamage"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Fireball.cs:337"
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeNapalmBoom.cs:218"
+    constants:
+      - { name: "g_balance_firetransfer_damage", base: "0.8", port: "0.8 (read live, fallback 0.8)", match: true }
+      - { name: "g_balance_firetransfer_time", base: "0.9", port: "0.9 (read live, fallback 0.9)", match: true }
+      - { name: "min ignite time", base: "max(t, 0.1) s (Fire_AddDamage:972)", port: "FireAddDamage: max(t,0.1) (faithful); all callers route through it", match: true }
+      - { name: "per-tick damage", base: "fire_damagepersec * min(frametime, remaining) (Fire_ApplyDamage:1081-1082)", port: "FireApplyDamage: dps*min(frametime,fireend-now), dps = FireDamagePerSec else Strength fallback", match: true }
+      - { name: "ignition Strength convention", base: "dps stored in .fire_damagepersec, ticked by frametime", port: "CONSISTENT: fireball + monster/wyvern + inferno + napalm all route through FireAddDamage (FireDamagePerSec=raw dps)", match: true }
+      - { name: "overlap-ignition merge (LEMMA)", base: "combine without exceeding maxdps (Fire_AddDamage:975-1058)", port: "FireAddDamage implements the LEMMA; ALL ignition sites (fireball/monster/wyvern/inferno/napalm) now route through it", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "StatusEffects.Tick runs per active effect: PERSISTENT recompute + OnTick (BurningTick -> FireApplyDamage) + TIMEOUT expiry; called live GameWorld.cs per non-dead player per frame", result: pass }
+      - { kind: code, ref: "FireApplyDamage:365-432 deals dps*min(frametime,remaining), THEN fire TRANSFER (firetransfer_damage 0.8 over firetransfer_time 0.9): FindInRadius + boxesoverlap re-ignites every adjacent non-frozen, non-independent, damageable entity via FireAddDamage — the baseline's 'entirely missing' transfer is now implemented", result: pass }
+      - { kind: code, ref: "MonsterFramework.AddFireDamage routes through FireAddDamage with raw totalDamage/burnTime; Wyvern.cs / BuffsMutator inferno pass a real deathType — full-strength burns with correct attribution", result: pass }
+      - { kind: code, ref: "Fireball.cs calls FireAddDamage (FireDamagePerSec=raw dps). NadeNapalmBoom.cs:218 now calls FireAddDamage(chosen, owner, dd*burnTime, burnTime, NadeDeathTypes.Napalm) -> gets the LEMMA merge AND the nade_napalm FireDeathType (no longer the raw Apply path)", result: pass }
+      - { kind: code, ref: "Lava-contents ignition now WIRED: PlayerFrameLogic.HotLiquids (PlayerFrameLogic.cs:375-379) reads g_balance_contents_playerdamage_lava_burn and, when nonzero, calls StatusEffectsCatalog.FireAddDamage(p, null, lavaBurn*waterlevel, lava_burn_time*waterlevel, DeathTypes.Lava) after the instant lava Damage — exact port of main.qc:104-105; the per-tick re-ignition is absorbed by the LEMMA merge. Landed Wave 8e (412ca19).", result: pass }
+    confidence: high
+    notes: "FIXED since baseline (lava-ignition gap closed in Wave 8e, 412ca19, 2026-06-26). All three known burning gaps are now closed: fire TRANSFER (FindInRadius + boxesoverlap, firetransfer 0.8/0.9), napalm routed through FireAddDamage with NadeDeathTypes.Napalm, and now the lava-contents burn-over-time feeder (main.qc:104-105) wired in PlayerFrameLogic.HotLiquids. Default g_balance_contents_playerdamage_lava_burn is 0 (disabled stock), so the feeder only ignites on maps/configs that set it — matching QC."
+
+  - id: damage-pipeline.heal.dispatcher
+    name: "Central Heal() dispatcher (game_stopped/frozen/dead gate + event_heal route + limit cap)"
+    layer: [authority]
+    base_refs:
+      - "server/damage.qc:Heal"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageContracts.cs:Heal"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/EntityGametypeState.cs:GtEventHeal"
+    constants:
+      - { name: "Heal gate", base: "game_stopped / spectator / frozen / dead reject; .event_heal route", port: "freed / TakeDamage==No (spectator) / FrozenStat|STATUSEFFECT_Frozen / dead reject; GtEventHeal route", match: true }
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC game_stopped early-out (damage.qc:951) is NOT checked inside Heal — same pragmatic split as Damage(); the gate lives at the gametype caller layer. Low-risk."
+      - "The .event_heal callback returns the healed bool; the per-target limit cap is the responsibility of the GtEventHeal sink (GeneratorHeal/IconHeal/HealVehicle clamp to max_health), matching QC where event_heal owns the cap — Heal() itself does not re-clamp."
+    verification:
+      - { kind: code, ref: "DamageContracts.Heal:79-103 — rejects freed / TakeDamage==No (spectator) / FrozenStat or STATUSEFFECT_Frozen / IS_DEAD; dispatches to target.GtEventHeal (QC event_heal route)", result: pass }
+      - { kind: code, ref: "LIVE callers: Arc.cs:333 Combat.Heal(hit, actor, hps*coeff, hpLimit) for non-player heal targets; GtEventHeal SET on Onslaught generators/icons (OnslaughtControlPoint.cs:135/330) and vehicles (VehicleCommon.cs:379); GameWorld.cs:2396 routes generator heal", result: pass }
+    confidence: high
+    notes: "FIXED since baseline (missing->faithful, live). The central Heal() dispatcher now exists as Combat.Heal/DamageContracts.Heal, the symmetric counterpart to Damage(): it rejects frozen/dead/spectator/freed targets and routes through the GtEventHeal (event_heal) callback, which is wired on Onslaught generators/icons and vehicles. Live from Arc healgun + objective heal paths. The game_stopped gate stays external (same as Damage())."

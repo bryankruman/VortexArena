@@ -88,6 +88,13 @@ public sealed class ClientNet : IDisposable
     /// <summary>The current predicted local origin (Quake space) — what the camera follows.</summary>
     public NVec3 PredictedOrigin => _reconciler.Predicted.Origin;
 
+    /// <summary>The local player's own latest decoded entity state (kind/model/health/team/flags), captured from
+    /// the snapshot before it is skipped for interpolation (we predict our own origin, not interpolate it). Lets
+    /// the own name tag (chase_active + hud_shownames_self) read the same entcs slice QC iterates for self. Null
+    /// until the first snapshot carrying the local entity arrives. Origin/angles here are the last SERVER values —
+    /// the camera/own-tag should pair this with <see cref="PredictedOrigin"/> for the live position.</summary>
+    public NetEntityState? LocalState { get; private set; }
+
     /// <summary>The current predicted local velocity (Quake space).</summary>
     public NVec3 PredictedVelocity => _reconciler.Predicted.Velocity;
 
@@ -105,6 +112,11 @@ public sealed class ClientNet : IDisposable
     /// camera without skewing where shots go. Owner-replicated; zero while not recently fired.</summary>
     public NVec3 PunchAngle { get; private set; }
 
+    /// <summary>QC view punch ORIGIN kick (<c>punchvector</c>, PM_check_punch, decayed 30u/s): the weapon-recoil
+    /// origin kick added to the rendered view ORIGIN ONLY (<c>vieworg += view_punchvector</c>, cl_player.qc:570),
+    /// not the aim. Owner-replicated; zero while not recently fired (stock content never drives it non-zero).</summary>
+    public NVec3 PunchVector { get; private set; }
+
     /// <summary>
     /// QC <c>STAT(RESPAWN_TIME)</c>: the absolute sim time the local player becomes/became respawnable while
     /// dead, NEGATED while a respawn is imminent (DEAD_RESPAWNING) and 0 while alive. The HUD shows the
@@ -118,6 +130,11 @@ public sealed class ClientNet : IDisposable
     /// HUD should track that entity). See <see cref="IsObserving"/> / <see cref="SpectatingNetId"/>.
     /// </summary>
     public int SpectateeStatus { get; private set; }
+
+    /// <summary>QC <c>spectatee_status_changed_time</c>: the client clock time at which <see cref="SpectateeStatus"/>
+    /// last changed. Drives the 1-second shownames grace window in which the freshly-followed player's own name tag
+    /// stays visible even with <c>hud_shownames_self</c> off (<c>Draw_ShowNames</c>).</summary>
+    public float SpectateeStatusChangedTime { get; private set; }
 
     /// <summary>QC STAT(MOVEVARS_HIGHSPEED) per-player: the server's resolved top-speed multiplier for the local
     /// player (Speed powerup / speed·disability buffs / entrap nade folded in). 1 while none are active. The host
@@ -165,6 +182,19 @@ public sealed class ClientNet : IDisposable
     /// on a change.</summary>
     public int LocalAccuracyGeneration { get; private set; }
 
+    /// <summary>[W-wepent-charges] The owner-only weapon-HUD ring scalars (QC the networked wepent.* fields:
+    /// vortex charge/chargepool, clip load/size, hagar load/max, mine count/limit, arc heat), replicated on the
+    /// owner block. <see cref="NetGame.UpdateCrosshairWeaponRings"/> feeds these to the crosshair on a pure
+    /// remote / dedicated-server client (a listen host reads the same values off its LocalServerPlayer instead).
+    /// Defaults to the panel's "no data" sentinels until the first snapshot.</summary>
+    public XonoticGodot.Net.OwnerWeaponRings LocalWeaponRings { get; private set; } = XonoticGodot.Net.OwnerWeaponRings.None;
+
+    /// <summary>QC STAT(PRESSED_KEYS): the view-player's held-key bitset (KEY_FORWARD..KEY_ATCK2, bits 0..7),
+    /// replicated on the owner block — the local player's own keys while playing, the spectatee's keys while
+    /// following. Feeds <see cref="NetGame"/>'s pressedkeys/strafe HUD cluster on a remote client (a listen host
+    /// can read its own input locally).</summary>
+    public int OwnerPressedKeys { get; private set; }
+
     /// <summary>The stair-smoothing Z offset to subtract from <see cref="PredictedOrigin"/> Z when placing the
     /// camera (so it glides over steps). Advanced by the REAL frame delta <paramref name="frameDt"/> (clamped),
     /// NOT the server-synced render clock — the rebasing clock's quantized jumps made the view jitter up/down.</summary>
@@ -178,6 +208,13 @@ public sealed class ClientNet : IDisposable
     /// gate the airborne snap on vertical speed and scale the catch-up so a fast climb doesn't yank the camera.
     /// Cheap (a few field writes); call once per render frame so live cvar edits take effect immediately.
     /// </summary>
+    /// <summary>DP <c>CL_RotateMoves</c> (builtin #638): rotate the view angles of every UNACKED pending input
+    /// command by a warpzone crossing's transform, so post-warp reconcile replays use post-warp view angles
+    /// (see <see cref="PredictionBuffer.RotatePendingViewAngles"/>). Called by the host the frame the predicted
+    /// crossing happens, together with the client-side view rotation.</summary>
+    public void RotatePendingMoves(System.Func<System.Numerics.Vector3, System.Numerics.Vector3> rotate)
+        => _inputBuffer.RotatePendingViewAngles(rotate);
+
     public void ConfigureStairSmoothing(float smoothSpeed, float stepHeight, float snapSpeed, float catchupTime)
     {
         if (smoothSpeed <= 0f)
@@ -228,14 +265,17 @@ public sealed class ClientNet : IDisposable
     /// <summary>A decoded effect event (the client-side counterpart of <see cref="EffectRequest"/>).</summary>
     public readonly struct EffectEvent
     {
-        public readonly Effect? Effect;       // resolved from the registry id; null if unknown
+        public readonly Effect? Effect;       // resolved from the registry id; null if unknown / by-name fallback
+        public readonly string EffectName;    // effectinfo name carried on the by-name engine-fallback path (Effect null)
         public readonly NVec3 Origin;
         public readonly NVec3 Velocity;
         public readonly int Count;
         public readonly NVec3 ColorMin;
         public readonly NVec3 ColorMax;
         public EffectEvent(Effect? effect, NVec3 origin, NVec3 velocity, int count, NVec3 colorMin, NVec3 colorMax)
-        { Effect = effect; Origin = origin; Velocity = velocity; Count = count; ColorMin = colorMin; ColorMax = colorMax; }
+            : this(effect, effect?.Name ?? "", origin, velocity, count, colorMin, colorMax) { }
+        public EffectEvent(Effect? effect, string effectName, NVec3 origin, NVec3 velocity, int count, NVec3 colorMin, NVec3 colorMax)
+        { Effect = effect; EffectName = effectName; Origin = origin; Velocity = velocity; Count = count; ColorMin = colorMin; ColorMax = colorMax; }
     }
 
     /// <summary>A decoded positional sound (the client-side counterpart of the engine's <c>SoundEvent</c>). Kept
@@ -341,10 +381,13 @@ public sealed class ClientNet : IDisposable
         _wasConnected = false;
         Accepted = false;
         _remotes.Clear();
+        LocalState = null; // drop the captured local entcs slice across reconnect/map change
         // session-scoped replication state: a fresh session re-sends all cvars and starts override-free.
         MovementParameters.PredictionOverride = null;
         _replicatedLastSent.Clear();
         _replicateSendAll = false;
+        _radarPingTimes.Clear(); // drop stale per-waypoint radar ping stamps across reconnect/map change
+        _radarLinks.Clear();     // drop stale Onslaught radar links across reconnect/map change
         // Reset the echoed snapshot clock so the first post-reconnect input frame doesn't carry a stale large
         // server-time the server would read as a near-zero/negative RTT (it self-heals via the rtt<0 clamp, but
         // this avoids the brief under-report). 0 = "no snapshot yet", which the server treats as "measure nothing".
@@ -517,6 +560,10 @@ public sealed class ClientNet : IDisposable
             case NetControl.MinigameState: HandleMinigameState(ref r); break;
             case NetControl.MatchState: HandleMatchState(ref r); break;
             case NetControl.Waypoints: HandleWaypoints(ref r); break;
+            case NetControl.ItemsTime: HandleItemsTime(ref r); break;
+            case NetControl.RadarLinks: HandleRadarLinks(ref r); break;
+            case NetControl.ClientInit: HandleClientInit(ref r); break;
+            case NetControl.MapVote: HandleMapVote(ref r); break;
             default: break;
         }
     }
@@ -556,6 +603,25 @@ public sealed class ClientNet : IDisposable
     /// <summary>End-of-match intermission/scoreboard-freeze flag.</summary>
     public bool MatchIntermission { get; private set; }
 
+    /// <summary>QC GET_NEXTMAP / the <c>_nextmap</c> the server broadcasts (Send_NextMap_To_Player) — the upcoming
+    /// map name shown on the scoreboard's "Next map:" line. Empty until the server has a queued/rotation pick.</summary>
+    public string NextMap { get; private set; } = "";
+
+    /// <summary>QC STAT(OVERTIMES) (common/stats.qh): 0 = none, N = the Nth overtime, OVERTIME_SUDDENDEATH (1&lt;&lt;24)
+    /// = sudden death. Drives the TIMER panel's persistent "Overtime #N" / "Sudden Death" subtext.</summary>
+    public int MatchOvertimes { get; private set; }
+
+    /// <summary>[W14a] QC <c>randomseed.cnt</c> (server/world.qc): the server's networked deterministic-RNG seed
+    /// (0..65535), re-rolled every 5s and delivered on the match-state channel. The client reseeds
+    /// <see cref="RandomRng"/> from it so a future predicting effect can reproduce the server's random stream. There
+    /// is no client effect consuming it yet (the seam is shipped additive); 0 until the first match-state arrives.</summary>
+    public int RandomSeed { get; private set; }
+
+    /// <summary>[W14a] The client's per-instance deterministic RNG (QC psrandom), reseeded from the networked
+    /// <see cref="RandomSeed"/>. Per-instance (NOT the static <see cref="XonoticGodot.Common.Math.Prandom"/> default)
+    /// so on a listen server the client's draws never corrupt the server world's stream. RESERVED — no consumer yet.</summary>
+    public XonoticGodot.Common.Math.PrandomContext RandomRng { get; } = new();
+
     private void HandleMatchState(ref BitReader r)
     {
         float gameStart = r.ReadFloat();
@@ -563,6 +629,11 @@ public sealed class ClientNet : IDisposable
         bool warmup = r.ReadBool();
         float warmupLimit = r.ReadFloat();
         bool intermission = r.ReadBool();
+        string nextMap = r.ReadString();
+        int overtimes = r.ReadLong();
+        // [W14a] QC randomseed.cnt — read in the SAME trailing position ServerNet.SendMatchState appended it (after
+        // overtimes). A truncated old-server packet leaves BadRead set; we guard below so a missing seed is harmless.
+        int randomSeed = r.ReadUShort();
         if (r.BadRead)
             return;
         MatchStartTime = gameStart;
@@ -570,7 +641,125 @@ public sealed class ClientNet : IDisposable
         MatchWarmup = warmup;
         MatchWarmupLimit = warmupLimit;
         MatchIntermission = intermission;
+        NextMap = nextMap ?? "";
+        MatchOvertimes = overtimes;
+        // [W14a] reseed the per-instance deterministic RNG only when the seed actually changes (every 5s server-side),
+        // so a steady ~1×/s match-state heartbeat doesn't keep resetting the stream mid-window.
+        if (randomSeed != RandomSeed)
+        {
+            RandomSeed = randomSeed;
+            RandomRng.Seed((uint)randomSeed);
+        }
         HasMatchState = true;
+    }
+
+    // ---- client init constants (S2C NetControl.ClientInit; QC ENT_CLIENT_INIT / ClientInit_misc) ----
+
+    /// <summary>[W14a-QW4] True once the one-shot <see cref="NetControl.ClientInit"/> constant bundle has arrived.</summary>
+    public bool HasClientInit { get; private set; }
+
+    /// <summary>QC <c>hook_shotorigin</c> — the grappling-hook muzzle offset (the port models a single offset, not the
+    /// Base per-cl_gunalign array; see ServerNet.SendClientInit). Used to position the hook reel/beam visual.</summary>
+    public NVec3 HookShotOrigin { get; private set; }
+
+    /// <summary>QC <c>autocvar_g_trueaim_minrange</c> — the min range below which true-aim crosshair correction is
+    /// skipped (the client crosshair true-aim trace reads it).</summary>
+    public float TrueAimMinRange { get; private set; }
+
+    /// <summary>QC <c>g_balance_damagepush_speedfactor</c> — the knockback velocity scale (decoded for the client-side
+    /// damage-push prediction; RESERVED until a client consumer reads it).</summary>
+    public float DamagePushSpeedFactor { get; private set; }
+
+    /// <summary>QC <c>g_balance_armor_blockpercent</c> (Base <c>armorblockpercent</c>) — the fraction of damage armor
+    /// absorbs; the client damage/HUD math reads it.</summary>
+    public float ArmorBlockPercent { get; private set; }
+
+    /// <summary>QC networked <c>serverflags</c> — the SERVERFLAG_* bitmap (fullbright / forbid-pickuptimer / teamplay).
+    /// The client gates fullbright player rendering + the HUD pickup timer off these bits.</summary>
+    public int ServerFlags { get; private set; }
+
+    /// <summary>QC <c>world.fog</c> (when <c>sv_foginterval</c>) — the server's fog string, or "" when none.</summary>
+    public string ServerFog { get; private set; } = "";
+
+    /// <summary>QC <c>g_nexball_meter_period</c> — the nexball powershot meter cycle period.</summary>
+    public float NexballMeterPeriod { get; private set; }
+
+    private void HandleClientInit(ref BitReader r)
+    {
+        // Same field order as ServerNet.SendClientInit.
+        NVec3 hookOrigin = r.ReadVector(NetPrecision.Float);
+        float trueAimMin = r.ReadFloat();
+        float damagePush = r.ReadFloat();
+        float armorBlock = r.ReadFloat();
+        int serverFlags = r.ReadLong();
+        string fog = r.ReadString();
+        float nexballMeter = r.ReadFloat();
+        if (r.BadRead)
+            return;
+        HookShotOrigin = hookOrigin;
+        TrueAimMinRange = trueAimMin;
+        DamagePushSpeedFactor = damagePush;
+        ArmorBlockPercent = armorBlock;
+        ServerFlags = serverFlags;
+        ServerFog = fog ?? "";
+        NexballMeterPeriod = nexballMeter;
+        HasClientInit = true;
+    }
+
+    // ---- end-of-match map / gametype vote ballot (S2C NetControl.MapVote) ----
+
+    /// <summary>The networked map/gametype-vote ballot for this client (QC the ReadMapVote net feed), or null when
+    /// no ballot is live. The client-side stand-in for the listen host's in-process <c>MapVoting</c>: on a pure
+    /// remote (--connect) client there is no server world, so NetGame.UpdateMapVotePanel renders the ballot from
+    /// this instead. Replaced wholesale each <see cref="NetControl.MapVote"/> message.</summary>
+    public NetMapVote? MapVote { get; private set; }
+
+    /// <summary>
+    /// Decode the end-of-match map/gametype-vote ballot (S2C <see cref="NetControl.MapVote"/>). Field order mirrors
+    /// the server writer (ServerNet map-vote send) exactly. Populates <see cref="MapVote"/>. Each control message is
+    /// its own datagram, so a short/bad read just drops this ballot (no stream desync).
+    /// </summary>
+    private void HandleMapVote(ref BitReader r)
+    {
+        bool showing = r.ReadBool();
+        bool finished = r.ReadBool();
+        bool isGametypeVote = r.ReadBool();
+        bool detail = r.ReadBool();
+        float remaining = r.ReadFloat();
+        int winner1Based = r.ReadShort();
+        int own = r.ReadShort();
+        bool abstain = r.ReadBool();
+        int n = r.ReadByte();
+        var cands = new List<NetMapVote.Cand>(n);
+        for (int i = 0; i < n; i++)
+        {
+            string mapName = r.ReadString();
+            int votes = r.ReadShort();
+            bool available = r.ReadBool();
+            string suggester = r.ReadString();
+            cands.Add(new NetMapVote.Cand
+            {
+                MapName = mapName ?? "",
+                Votes = votes,
+                Available = available,
+                Suggester = suggester ?? "",
+            });
+        }
+        if (r.BadRead)
+            return;
+        var ballot = new NetMapVote
+        {
+            Showing = showing,
+            Finished = finished,
+            IsGametypeVote = isGametypeVote,
+            Detail = detail,
+            Remaining = remaining,
+            Winner1Based = winner1Based,
+            Own = own,
+            AbstainPresent = abstain,
+        };
+        ballot.Candidates.AddRange(cands);
+        MapVote = ballot;
     }
 
     // ---- waypoint sprites (S2C NetControl.Waypoints; QC the networked ENT_CLIENT_WAYPOINT entities) ----
@@ -581,6 +770,47 @@ public sealed class ClientNet : IDisposable
     /// team/rule-filtered by the server. Drives the 3D in-world sprite layer + the radar icons. Replaced
     /// wholesale each <see cref="NetControl.Waypoints"/> message; empty in waypoint-less modes (plain DM).</summary>
     public IReadOnlyList<XonoticGodot.Common.Gameplay.Waypoints.WaypointNet> Waypoints => _waypoints;
+
+    /// <summary>Per-waypoint-id radar ping timestamps (server time of the last ping) — the C# analogue of QC's
+    /// per-icon <c>teamradar_times</c> array. The radar draws an expanding gfx/teamradar_ping ring for ~1s after
+    /// each stamp. Stamped on decode when bit 7 of the radar-icon byte is set; read by <see cref="Game.Hud.RadarPanel"/>.</summary>
+    private readonly Dictionary<int, float> _radarPingTimes = new();
+
+    /// <summary>The server time of the most recent radar ping for <paramref name="waypointId"/>, or 0 if none.</summary>
+    public float RadarPingTime(int waypointId)
+        => _radarPingTimes.TryGetValue(waypointId, out float t) ? t : 0f;
+
+    // ---- onslaught radar links (S2C NetControl.RadarLinks; QC the networked ENT_CLIENT_RADARLINK entities) ----
+
+    /// <summary>One Onslaught radar-link segment for the radar (QC draw_teamradar_link): the two endpoint world
+    /// XY positions plus each end's team color code (0 = neutral/white). Z is irrelevant to the top-down radar.</summary>
+    public readonly record struct RadarLink(NVec3 A, int TeamA, NVec3 B, int TeamB);
+
+    private readonly List<RadarLink> _radarLinks = new();
+
+    /// <summary>The live Onslaught control-point/generator connection lines (QC g_radarlinks). Drives the radar's
+    /// draw_teamradar_link pass. Replaced wholesale each <see cref="NetControl.RadarLinks"/> message; empty in any
+    /// non-Onslaught mode. Read by <see cref="Game.Hud.RadarPanel"/>.</summary>
+    public IReadOnlyList<RadarLink> RadarLinks => _radarLinks;
+
+    private void HandleRadarLinks(ref BitReader r)
+    {
+        int count = r.ReadByte();
+        // Decode into a temp so a truncated packet never leaves a half-updated list on screen.
+        var tmp = new List<RadarLink>(count);
+        for (int i = 0; i < count; i++)
+        {
+            float ax = r.ReadFloat(), ay = r.ReadFloat();
+            int ta = r.ReadByte();
+            float bx = r.ReadFloat(), by = r.ReadFloat();
+            int tb = r.ReadByte();
+            tmp.Add(new RadarLink(new NVec3(ax, ay, 0f), ta, new NVec3(bx, by, 0f), tb));
+        }
+        if (r.BadRead)
+            return;
+        _radarLinks.Clear();
+        _radarLinks.AddRange(tmp);
+    }
 
     private void HandleWaypoints(ref BitReader r)
     {
@@ -593,7 +823,17 @@ public sealed class ClientNet : IDisposable
             float x = r.ReadFloat(), y = r.ReadFloat(), z = r.ReadFloat();
             int team = r.ReadByte();
             string sprite = r.ReadString();
-            int radarIcon = r.ReadByte();
+            // QC: the radar-icon byte packs m_radaricon in the low 7 bits and a ping pulse in bit 7
+            // (waypointsprites.qc:187-192). Stamp a per-id ping time on a fresh ping so the radar can draw an
+            // expanding gfx/teamradar_ping ring; de-dupe within the 0.3s ping window (one ring per ping event).
+            int radarByte = r.ReadByte();
+            int radarIcon = radarByte & 0x7F;
+            if ((radarByte & 0x80) != 0)
+            {
+                float servTime = LatestServerTime;
+                if (!_radarPingTimes.TryGetValue(id, out float prev) || servTime - prev >= 0.3f)
+                    _radarPingTimes[id] = servTime;
+            }
             float cr = r.ReadByte() / 255f, cg = r.ReadByte() / 255f, cb = r.ReadByte() / 255f;
             float health = r.ReadFloat();
             float fade = r.ReadFloat();
@@ -608,6 +848,46 @@ public sealed class ClientNet : IDisposable
             return;
         _waypoints.Clear();
         _waypoints.AddRange(tmp);
+    }
+
+    // ---- items-time (S2C NetControl.ItemsTime; QC the CSQC itemstime net-temp message) ----
+
+    private readonly Dictionary<string, float> _itemTimes = new(StringComparer.Ordinal);
+
+    /// <summary>The item respawn-time table for this client (QC <c>ItemsTime_time[]</c>), already send-gated by
+    /// the server — keyed by the HUD panel's item names with the negative "available now" encoding. Fed to
+    /// <see cref="Game.Hud.ItemsTimePanel.SetItemTimes"/> on the remote-client path. Replaced wholesale per
+    /// message.</summary>
+    public IReadOnlyDictionary<string, float> ItemTimes => _itemTimes;
+
+    /// <summary>True once an <see cref="NetControl.ItemsTime"/> message has arrived (the panel feed waits for it
+    /// on the remote path, like <see cref="HasMatchState"/>).</summary>
+    public bool HasItemsTime { get; private set; }
+
+    /// <summary>The live <c>STAT(ITEMSTIME)</c> tier (= server <c>sv_itemstime</c>, 0/1/2), networked alongside the
+    /// table — drives the panel enable gate (mode 2 "also alive players when ==2") and the spectator waypoint
+    /// gate on a remote client.</summary>
+    public int ItemsTimeTier { get; private set; }
+
+    private void HandleItemsTime(ref BitReader r)
+    {
+        int tier = r.ReadByte();
+        int count = r.ReadByte();
+        var tmp = new List<KeyValuePair<string, float>>(count);
+        for (int i = 0; i < count; i++)
+        {
+            string name = r.ReadString();
+            float time = r.ReadFloat();
+            tmp.Add(new KeyValuePair<string, float>(name, time));
+        }
+        if (r.BadRead)
+            return;
+        ItemsTimeTier = tier;
+        _itemTimes.Clear();
+        foreach (KeyValuePair<string, float> kv in tmp)
+            if (!string.IsNullOrEmpty(kv.Key) && float.IsFinite(kv.Value) && kv.Value != -1f)
+                _itemTimes[kv.Key] = kv.Value; // -1 = item type not present / reset → omit so the panel hides it
+        HasItemsTime = true;
     }
 
     /// <summary>Raised with a line of server console output (a reply to <see cref="SendStringCommand"/> or a
@@ -658,12 +938,38 @@ public sealed class ClientNet : IDisposable
     // =====================================================================================
 
     /// <summary>
-    /// The client cvars automatically replicated to the server via <c>cmd sentcvar</c> — the ported slice of
-    /// the QC REPLICATE set with live server-side consumers (Commands.SentCvarAllowlist is the receiving gate):
-    /// weapon priority (selection), autoswitch (pickup), noantilag (lag-comp opt-out), physics (preset select).
+    /// The client cvars automatically replicated to the server via <c>cmd sentcvar</c> — the full QC REPLICATE
+    /// set (common/replicate.qh) plus two port-specific entries. The server-side gate (Commands.SentCvarAllowlist)
+    /// decides which it actually honours; a cvar unset locally reads "" and is skipped (see PushReplicatedSet), so
+    /// listing one the server doesn't yet consume is harmless. The set mirrors Base in field-for-field order:
+    /// <list type="bullet">
+    ///   <item><c>cl_autoswitch</c> — auto-switch to a better weapon on pickup;</item>
+    ///   <item><c>cl_autoscreenshot</c> — server-forced end-of-match screenshot opt-in (sv-intermission);</item>
+    ///   <item><c>cl_clippedspectating</c> — keep the spectator camera inside walls;</item>
+    ///   <item><c>cl_autoswitch_cts</c> — CTS weapon auto-switch;</item>
+    ///   <item><c>cl_handicap</c> + <c>cl_handicap_damage_given</c>/<c>_taken</c> — self-imposed damage handicap;</item>
+    ///   <item><c>cl_noantilag</c> — lag-compensation opt-out;</item>
+    ///   <item><c>g_xonoticversion</c> — the client's build version (server compat check).</item>
+    /// </list>
+    /// Two port additions follow Base's list: <c>cl_weaponpriority</c> (weapon selection order, replicated + live
+    /// in the port) and <c>cl_physics</c> (the T54 per-player physics-preset select cvar — not a Base REPLICATE
+    /// entry). The per-choice <c>notification_CHOICE_*</c> cvars are pushed separately (see ReplicatedChoiceCvars).
     /// </summary>
     private static readonly string[] ReplicatedCvars =
-        { "cl_weaponpriority", "cl_autoswitch", "cl_noantilag", "cl_physics" };
+    {
+        "cl_autoswitch",
+        "cl_autoscreenshot",
+        "cl_clippedspectating",
+        "cl_autoswitch_cts",
+        "cl_handicap",
+        "cl_handicap_damage_given",
+        "cl_handicap_damage_taken",
+        "cl_noantilag",
+        "g_xonoticversion",
+        // --- port-specific (not in Base REPLICATE) ---
+        "cl_weaponpriority",
+        "cl_physics",
+    };
 
     /// <summary>QC <c>notification_CHOICE_*</c> replicated cvars (notifications/all.qh:884 ReplicateVars): one per
     /// registered MSG_CHOICE notification (team variants collapse to a single shared cvar). Built LAZILY from the
@@ -768,8 +1074,19 @@ public sealed class ClientNet : IDisposable
         Armor = r.ReadShort();
         ActiveWeaponId = r.ReadShort(); // owner block — same order as ServerNet.WriteOwnerState (viewmodel selector)
         RespawnTimeStat = r.ReadFloat(); // QC STAT(RESPAWN_TIME): dead respawn countdown / "press fire" prompt
-        SpectateeStatus = r.ReadShort(); // QC spectatee_status: 0 playing, own id observing, other id spectating
+        int newSpectatee = r.ReadShort(); // QC spectatee_status: 0 playing, own id observing, other id spectating
+        if (newSpectatee != SpectateeStatus)
+            // QC client/main.qc: spectatee_status_changed_time is stamped whenever spectatee_status changes (the
+            // 1s shownames grace window after switching who you follow).
+            SpectateeStatusChangedTime = Api.Services is not null ? Api.Clock.Time : SpectateeStatusChangedTime;
+        SpectateeStatus = newSpectatee;
+        // QC STAT(PRESSED_KEYS) (server GetPressedKeys / SpectateCopy): the view-player's held-key bitset — the
+        // OWN keys while playing, the SPECTATEE's keys while following (the server copies them). Written by
+        // ServerNet.WriteOwnerState right after spectatee; MUST be read here to keep the owner block aligned for
+        // PunchAngle and everything after. Feeds the HUD pressedkeys/strafe cluster on a remote client.
+        OwnerPressedKeys = r.ReadShort();
         PunchAngle = r.ReadVector(NetPrecision.Float); // QC view punch (recoil kick) — added to the view angles
+        PunchVector = r.ReadVector(NetPrecision.Float); // QC view punch ORIGIN kick — added to the rendered origin
         LocalSpeedMultiplier = r.ReadFloat(); // QC STAT(MOVEVARS_HIGHSPEED) — mirrored onto the prediction carrier
 
         // [T57 accuracy] — the owner's own per-weapon accuracy bytes (QC ENT_CLIENT_ACCURACY, owner-only), read
@@ -792,6 +1109,14 @@ public sealed class ClientNet : IDisposable
         {
             LocalAccuracyGeneration = accGen; // no change this frame; keep the generation current
         }
+
+        // [W-wepent-charges] the owner-only weapon-HUD ring scalars (QC the networked wepent vortex_charge /
+        // vortex_chargepool_ammo / clip_load / clip_size / hagar_load (+max) / minelayer_mines (+limit) /
+        // arc_heat_percent), read in lockstep with ServerNet.WriteOwnerState's OwnerWeaponRings tail. Feeds the
+        // crosshair charge/clip/load/heat rings on a PURE remote / dedicated-server client (the listen host reads
+        // the same values straight off LocalServerPlayer). ALWAYS consumes the 9 floats so the owner block stays
+        // aligned for the movevars/scores/entity sections that follow — the server writes them unconditionally.
+        LocalWeaponRings = XonoticGodot.Net.OwnerWeaponRings.Read(ref r);
 
         // movevars: when the server's physics changed, stamp the replicated values into our cvar store so the
         // predictor's MovementParameters.FromCvars() matches authority (mid-match physics/mutator changes), then
@@ -951,7 +1276,12 @@ public sealed class ClientNet : IDisposable
         {
             int netId = kv.Key;
             if (netId == LocalNetId)
-                continue; // never interpolate our own entity (we predict it)
+            {
+                // Never interpolate our own entity (we predict it) — but keep its decoded slice so the own name tag
+                // (QC Draw_ShowNames self branch: chase_active + hud_shownames_self) can read kind/health/team/flags.
+                LocalState = kv.Value;
+                continue;
+            }
 
             NetEntityState s = kv.Value;
             RemoteEntity re = GetOrCreateRemote(netId);
@@ -1028,8 +1358,43 @@ public sealed class ClientNet : IDisposable
             ReadOnlySpan<byte> body = r.ReadBytes(bodyLen);
             if (r.BadRead)
                 return;
-            DecodeEffect(effectId, body);
+            if (effectId == EffectNetProtocol.ByNameSentinelId)
+                DecodeEffectByName(body);
+            else
+                DecodeEffect(effectId, body);
         }
+    }
+
+    /// <summary>
+    /// Decode an engine-fallback by-name effect record (the QC <c>Send_Effect_</c> →
+    /// <c>__pointparticles(_particleeffectnum(name))</c> path): the body is a length-prefixed effectinfo NAME
+    /// followed by the usual EFF_NET payload for a POINT effect. We resolve nothing through the registry; the name
+    /// is carried verbatim so the renderer can look it up in the effectinfo.txt catalog (DP's _particleeffectnum
+    /// equivalent), exactly as the listen-server in-process mirror already does.
+    /// </summary>
+    private void DecodeEffectByName(ReadOnlySpan<byte> body)
+    {
+        var br = new BitReader(body);
+        string name = br.ReadString();
+
+        NVec3 origin = new(br.ReadFloat(), br.ReadFloat(), br.ReadFloat());
+        int flags = br.ReadByte();
+
+        NVec3 velocity = default, colorMin = default, colorMax = default;
+        if ((flags & EffectNetProtocol.NetVelocity) != 0)
+            velocity = new NVec3(br.ReadFloat(), br.ReadFloat(), br.ReadFloat());
+        if ((flags & EffectNetProtocol.NetColorMin) != 0)
+            colorMin = ReadColor(ref br);
+        if ((flags & EffectNetProtocol.NetColorSame) != 0)
+            colorMax = colorMin;
+        else if ((flags & EffectNetProtocol.NetColorMax) != 0)
+            colorMax = ReadColor(ref br);
+
+        int count = br.ReadByte(); // __pointparticles is always a point effect → count present
+        if (br.BadRead || string.IsNullOrEmpty(name))
+            return;
+
+        EffectReceived?.Invoke(new EffectEvent(null, name, origin, velocity, count, colorMin, colorMax));
     }
 
     /// <summary>
@@ -1158,5 +1523,42 @@ public sealed class ClientNet : IDisposable
         // later session (or a local GameDemo) must not predict with a stale preset.
         MovementParameters.PredictionOverride = null;
         _transport.Dispose();
+    }
+}
+
+/// <summary>
+/// The end-of-match map/gametype-vote ballot as decoded on a remote client (<see cref="ClientNet.HandleMapVote"/>)
+/// — the client-side stand-in for the listen host's in-process <c>MapVoting</c>. NetGame.UpdateMapVotePanel renders
+/// the vote panel from this when there is no server world (a pure --connect client). All indices are the same
+/// abstain-stripped cell indices the server computed, so the panel highlights line up 1:1 with the candidate cells.
+/// </summary>
+public sealed class NetMapVote
+{
+    /// <summary>Whether the ballot should be shown (QC the server's showing gate: vote running, or finished with a winner).</summary>
+    public bool Showing;
+    /// <summary>The vote has ended (a winner is latched).</summary>
+    public bool Finished;
+    /// <summary>This is a gametype vote (cells are gametypes, not maps) rather than a map vote.</summary>
+    public bool IsGametypeVote;
+    /// <summary>QC mv_detail (sv_vote_gametype_detail): show the extended per-gametype description panel.</summary>
+    public bool Detail;
+    /// <summary>QC mv_abstain: the appended "Don't care" abstain slot is present on the ballot.</summary>
+    public bool AbstainPresent;
+    /// <summary>Seconds remaining on the vote countdown (the panel's timeout clock).</summary>
+    public float Remaining;
+    /// <summary>1-based winning cell (abstain-stripped), 0 = none decided yet.</summary>
+    public int Winner1Based;
+    /// <summary>This client's own vote as an abstain-stripped cell index, or -1 for none / abstain.</summary>
+    public int Own;
+    /// <summary>The ballot cells (abstain excluded — see <see cref="AbstainPresent"/>).</summary>
+    public readonly List<Cand> Candidates = new();
+
+    /// <summary>One ballot cell as it rides the wire.</summary>
+    public struct Cand
+    {
+        public string MapName;
+        public int Votes;
+        public bool Available;
+        public string Suggester;
     }
 }

@@ -66,6 +66,24 @@ public sealed class PredictionBuffer
         return cmd.Seq == seq; // guard against a wrapped slot whose seq no longer matches
     }
 
+    /// <summary>
+    /// DP <c>CL_RotateMoves</c> (builtin #638, cl_input.c:1746): rotate the view angles of every UNACKED
+    /// stored command (<c>Seq &gt; AckedSeq</c>) in place. Called when the client applies a warpzone crossing
+    /// to its own view: pending commands were recorded in the PRE-warp frame, and once the reconcile base
+    /// state is post-warp, replaying them un-rotated walks the predicted body back through the exit plane
+    /// (the spurious re-crossings observed live). <paramref name="rotate"/> maps a pre-warp Euler view to the
+    /// post-warp one (the zone's angle transform).
+    /// </summary>
+    public void RotatePendingViewAngles(System.Func<Vector3, Vector3> rotate)
+    {
+        for (uint seq = AckedSeq + 1; seq < NextSeq; seq++)
+        {
+            ref InputCommand c = ref _commands[seq & Mask];
+            if (c.Seq == seq) // skip wrapped slots (outrun ring) — those inputs are lost anyway
+                c.ViewAngles = rotate(c.ViewAngles);
+        }
+    }
+
     /// <summary>Serialize the most recent <paramref name="redundancy"/> commands (oldest-first) into a C2S
     /// packet — the "redundant send" the spec mandates over unreliable transport, so a single dropped
     /// datagram doesn't strand an input. Writes a count byte then each command body.</summary>

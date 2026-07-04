@@ -1,0 +1,428 @@
+unit: weapon-vaporizer
+category: weapon
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-27"
+summary:
+  feature_count: 14
+  worst_gaps:
+    - "Primary rail beam is a generic networked TE_TEI_G3/_HIT trail (now team-colored via cl_vaporizerbeam_teamcolor/colorboost), NOT the bespoke cylindric gauntletbeam/lgbeam CSQC draw; the 0.8 cl_vaporizerbeam_lifetime cvar is unmodeled."
+    - "MENUQC describe() guide omits only the trailing W_Guide_Keybinds / W_Guide_DPS helper lines (keybind hints + computed DPS); the four prose paragraphs ARE ported."
+    - "RM-laser rapid stream omits weapon_thinkf WFRAME_FIRE2 rapid_animtime (cosmetic view-model anim frame only; logic/timing/values/bolt visual all faithful)."
+  verifier_notes: "OPUS re-audit 2026-06-27 (post-Wave-16/17, skeptical re-verify against current Base+port on branch claude/parity-port-waves). The current Vaporizer.cs is substantially MORE complete than the 2026-06-22 spec text (which still lists beam/muzzle/impact/achievements as missing and Instagib hardcoded true) — those were closed in earlier waves and the spec prose is now stale (registry rows reflect the real code). TWO rows CLOSED this pass vs the prior baseline: (1) weapon-vaporizer.menu.describe — the Vaporizer NOW has a GuideDescription override (Vaporizer.cs:50-56, four describe() paragraphs) rendered live at DialogMediaGuide.cs:194; upgraded missing/na -> presentation faithful + live (residual: only the W_Guide_Keybinds/DPS helper lines). (2) weapon-vaporizer.ammo.consumption — the Instagib flag is NOT hardcoded (no Instagib bool field exists, grep); the lone InstagibActive (Vaporizer.cs:537) reads the live g_instagib cvar and ALL consumers (reload floor :95, Attack decrement :264, CheckAmmoPrimary :523) use it, so a bare non-instagib pickup spends the full primary_ammo (10) — values upgraded partial -> faithful, gap removed. ONE row REFINED: weapon-vaporizer.primary.beam_particle — the networked beam IS now team-colored (Vaporizer.cs:244-248 reads cl_vaporizerbeam_teamcolor + colorboost, emits via the RGB EffectEmitter.Emit overload EffectEmitter.cs:237); the two team-color constants flip false->true, but presentation stays partial (bespoke cylindric draw + 0.8 lifetime cvar still absent) and the stale EffectsList.cs:91-92 ref corrected to :107-108. NO regressions and NO new gaps; the RM bolt visual (ProjectileCatalog/ProjectileRenderer), kill/suicide-message liveness, RM dispatch liveness, instagib integration, achievements, reticle, impact effect, headshot, fire-sound and primary rail logic/values/timing all re-confirmed faithful+live. STILL OPEN: bespoke cylindric VaporizerBeam draw + 0.8 lifetime (primary.beam_particle), W_Guide_Keybinds/DPS helper lines (menu.describe), rapid_animtime view-model frame (rm.laser_barrage)."
+features:
+  - id: weapon-vaporizer.primary.rail_beam
+    name: "Primary rail beam (piercing hitscan + knockback + falloff)"
+    layer: [authority, shared]
+    base_refs:
+      - "common/weapons/weapon/vaporizer.qc:W_Vaporizer_Attack"
+      - "server/weapons/tracing.qc:FireRailgunBullet"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:FireRailgunBullet"
+    constants:
+      - { name: "primary_damage", base: "150 (<=0 => 10000 instakill)", port: "150 (<=0 => 10000)", match: true }
+      - { name: "primary_force", base: "800", port: "800", match: true }
+      - { name: "primary_refire", base: "1", port: "1", match: true }
+      - { name: "primary_animtime", base: "0.3", port: "0.3", match: true }
+      - { name: "damagefalloff_mindist/maxdist/halflife/forcehalflife", base: "0/0/0/0", port: "not passed (defaults 0)", match: true }
+      - { name: "max_shot_distance", base: "32768", port: "32768 (MaxShotDistance)", match: true }
+      - { name: "recoil", base: "0", port: "0 (recoil arg omitted)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Vaporizer.cs:195 SetupShot(actor, forward, wep: this, maxDamage: damage) credits the accuracy 'fired' denominator; FireRailgunBullet pierce/falloff/antilag/warpzone vs vaporizer.qc:131 + tracing.qc", result: pass }
+    confidence: high
+    notes: "Unchanged from the prior audit — faithful+live. Attack passes wep/maxDamage to SetupShot (accuracy credit). FireRailgunBullet remains a thorough headless port. Falloff all-0 in Base so omitting the args is harmless."
+
+  - id: weapon-vaporizer.primary.headshot
+    name: "Headshot head-AABB test + ANNCE_HEADSHOT"
+    layer: [shared]
+    base_refs:
+      - "server/weapons/tracing.qc:Headshot"
+      - "server/weapons/tracing.qc:FireRailgunBullet"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:Headshot"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:TraceHitsBox"
+    constants:
+      - { name: "head_box_horizontal", base: "0.6 * body box", port: "0.6 * mins/maxs", match: true }
+      - { name: "head_box_vertical", base: "1.3*view_ofs_z - 0.3*maxs_z .. maxs_z", port: "same", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    status_note: null
+    verification:
+      - { kind: code, ref: "WeaponFiring.cs:Headshot/TraceHitsBox vs tracing.qc Headshot + util.qc trace_hits_box", result: pass }
+      - { kind: code, ref: "Vaporizer.cs:200-201 FireRailgunBullet(headshotNotify:true) -> Headshot test -> NotificationSystem.Announce(actor,'HEADSHOT')", result: pass }
+    confidence: high
+    notes: "Unchanged — faithful+live. HEADSHOT announce wired end-to-end (Vaporizer passes headshotNotify:true). Living/unfrozen/damageable-player gate matches Base."
+
+  - id: weapon-vaporizer.primary.fire_sound
+    name: "Primary fire sound (minstanexfire)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/vaporizer.qc:W_Vaporizer_Attack"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:Attack"
+    constants:
+      - { name: "fire_sound", base: "weapons/minstanexfire.wav", port: "weapons/minstanexfire.wav", match: true }
+      - { name: "fire_volume", base: "VOL_BASE * 0.8", port: "SoundLevels.VolBase * 0.8f", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Vaporizer.cs:204 Api.Sound.Play(actor, Weapon, 'weapons/minstanexfire.wav', VolBase * 0.8f) vs vaporizer.qc:139", result: pass }
+    confidence: high
+    notes: "Unchanged — faithful+live. VOL_BASE*0.8 scale applied; sound played separately (bypassing the strength-fire sound) exactly as Base intends."
+
+  - id: weapon-vaporizer.primary.beam_particle
+    name: "Rail beam visual (cylindric beam) + muzzle flash"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/vaporizer.qc:SendCSQCVaporizerBeamParticle"
+      - "common/weapons/weapon/vaporizer.qc:VaporizerBeam_Draw"
+      - "common/weapons/weapon/vaporizer.qc:W_Vaporizer_Attack (W_MuzzleFlash thiswep)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:Attack (EffectEmitter.Emit VAPORIZER_BEAM/_HIT with team-color RGB + VORTEX_MUZZLEFLASH)"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:107-108 (VAPORIZER_BEAM/_HIT trails)"
+    constants:
+      - { name: "beam_tex", base: "particles/gauntletbeam (hit) / particles/lgbeam", port: "VAPORIZER_BEAM_HIT (TE_TEI_G3_HIT) / VAPORIZER_BEAM (TE_TEI_G3)", match: false }
+      - { name: "cl_vaporizerbeam_lifetime", base: "0.8", port: "engine trail default", match: false }
+      - { name: "cl_vaporizerbeam_teamcolor", base: "1", port: "read (Vaporizer.cs:244): tints the networked beam to the shooter team palette (Teams.ColorRgb), else weapon Color; honours an explicit 0", match: true }
+      - { name: "cl_vaporizerbeam_colorboost", base: "0.7", port: "read (Vaporizer.cs:246): beamRgb *= 1 + colorboost", match: true }
+      - { name: "muzzle_effect", base: "EFFECT_VORTEX_MUZZLEFLASH (W_MuzzleFlash thiswep)", port: "VORTEX_MUZZLEFLASH (reused)", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Beam is a generic networked trail effect (TE_TEI_G3 / _HIT) tinted with the team-color/colorboost RGB, NOT the Base bespoke cylindric gauntletbeam/lgbeam draw; the 0.8 cl_vaporizerbeam_lifetime cvar is unmodeled (engine trail default lifetime)."
+    verification:
+      - { kind: code, ref: "Vaporizer.cs:244-248 reads cl_vaporizerbeam_teamcolor (Teams.ColorRgb shooter team else Color) + cl_vaporizerbeam_colorboost (rgb *= 1+0.7), passes beamRgb,beamRgb to the EffectEmitter.Emit(effect,origin,velocity,count,colorMin,colorMax) RGB overload (EffectEmitter.cs:237); :249 Emit(VORTEX_MUZZLEFLASH); EffectsList.cs:107-108 registers the trails", result: pass }
+    confidence: high
+    notes: "REFINED vs the 2026-06-27 baseline (team-color/colorboost constants false->true): the networked beam IS now team-colored — Vaporizer.cs:244-248 reads cl_vaporizerbeam_teamcolor (default 1 -> shooter team palette via Teams.ColorRgb, else weapon Color, honouring an explicit 0 without the Cvar 0->fallback footgun) and cl_vaporizerbeam_colorboost (0.7, rgb *= 1+boost), then emits the trail with that tint range. Residual (presentation still partial): the bespoke CSQC cylindric gauntletbeam/lgbeam DRAW and the 0.8 beam-lifetime cvar are not reproduced — it remains a generic swept TE_TEI_G3 trail at the engine default lifetime. Muzzle flash reuses VORTEX_MUZZLEFLASH."
+
+  - id: weapon-vaporizer.primary.impact_effect
+    name: "Beam impact effect + sound (VORTEX_IMPACT / neximpact)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/vaporizer.qc:wr_impacteffect"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:Attack (EffectEmitter.Emit VORTEX_IMPACT + WeaponSplash.ImpactSoundAt neximpact)"
+    constants:
+      - { name: "impact_effect", base: "EFFECT_VORTEX_IMPACT", port: "VORTEX_IMPACT (nex_impact)", match: true }
+      - { name: "impact_sound", base: "weapons/neximpact.wav (SND_VAPORIZER_IMPACT) VOL_BASE ATTN_NORM", port: "weapons/neximpact.wav VolBase AttenNorm", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Impact is emitted server-side at the railgun world-trace endpoint rather than via the CSQC wr_impacteffect (w_org + w_backoff*2 offset) path — visually equivalent, minor positional nuance; w_issilent gate not modeled (port always plays the sound)."
+    verification:
+      - { kind: code, ref: "Vaporizer.cs:221-222 Emit(VORTEX_IMPACT, endpos) + ImpactSoundAt(endpos, 'weapons/neximpact.wav') vs vaporizer.qc:407-413 wr_impacteffect", result: pass }
+    confidence: high
+    notes: "Unchanged — impact spark (VORTEX_IMPACT) + neximpact sound at the fresh world-trace endpoint, networked. Mirrors the sister Vortex."
+
+  - id: weapon-vaporizer.primary.achievements
+    name: "Yoda (airshot) + Impressive (every-2nd headshot) announcer achievements"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/weapons/weapon/vaporizer.qc:W_Vaporizer_Attack (yoda/impressive_hits, vaporizer_lasthit)"
+      - "common/weapons/weapon/vaporizer.qc:wr_setup/wr_resetplayer"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:Announce"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:WrSetup/WrResetPlayer (vaporizer_lasthit reset)"
+    constants:
+      - { name: "impressive_cadence", base: "every 2nd qualifying hit (vaporizer_lasthit toggle)", port: "every 2nd hit via ConditionalWeakTable side-table", match: true }
+      - { name: "yoda_gate", base: "yoda && shooter-flying (victim flying PLAYER, cross-team)", port: "impressiveHit && shooterFlying && victim Client && IsFlying(hit)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Vaporizer.cs:239 Announce(actor, hit, flying); :257-285 emits ACHIEVEMENT_YODA + ACHIEVEMENT_IMPRESSIVE via vaporizer_lasthit side-table; WrSetup/WrResetPlayer (:165-166) reset it; driver calls WrSetup at WeaponFireDriver.cs:284 vs vaporizer.qc:141-167/357-360/379-382", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (was missing/na on all dimensions): yoda + impressive announces are now fully ported and live. The vaporizer_lasthit every-2nd-hit toggle is a ConditionalWeakTable<Entity,int> side-table (no Entity.cs field), reset on WrSetup (weapon becomes active) and WrResetPlayer (respawn/round restart), so the streak never carries across lives. The yoda gate samples shooter-flying BEFORE the FireRailgunBullet trace clobber, and re-derives yoda/impressive from the rail's first pierced victim (mirrors Vortex.Announce)."
+
+  - id: weapon-vaporizer.secondary.blaster_laser
+    name: "Secondary Blaster knockback laser (plain instagib)"
+    layer: [authority, shared]
+    base_refs:
+      - "common/weapons/weapon/vaporizer.qc:wr_think (fire&2 -> W_Blaster_Attack)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:WrThink"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:BlasterSecondary"
+    constants:
+      - { name: "blaster_refire", base: "0.7 (WEP_CVAR_PRI(BLASTER,refire)) * W_WeaponRateFactor", port: "0.7 * WeaponRateFactor(actor)", match: true }
+      - { name: "blaster_ammo_decrement", base: "WEP_CVAR_PRI(BLASTER,ammo) if set (default 0)", port: "not decremented (harmless at default 0)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Optional Blaster-ammo decrement (W_DecreaseAmmo if WEP_CVAR_PRI(BLASTER,ammo) set) is omitted — harmless at the default Blaster ammo 0."
+    verification:
+      - { kind: code, ref: "Vaporizer.cs:151 jump_interval = time + 0.7f * WeaponRateFactor(actor) + BlasterSecondary -> Blaster.FirePrimaryDirect vs vaporizer.qc:337-351; WeaponFireDriver calls WrThink(Secondary) when ATK2 held", result: pass }
+    confidence: high
+    notes: "Unchanged — secondary refire multiplies in W_WeaponRateFactor; driver calls WrThink(Secondary) every tick ATK2 held; manual jump_interval gate fires BlasterSecondary -> Blaster.FirePrimaryDirect. liveness partial because the bolt's visual/sound belongs to the Blaster weapon's own parity."
+
+  - id: weapon-vaporizer.rm.primary_explosion
+    name: "Rocket-Minsta: explosion at the rail endpoint"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/vaporizer.qc:W_RocketMinsta_Explosion"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:RocketMinstaExplosion"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:RadiusDamage"
+    constants:
+      - { name: "g_rm_damage", base: "70", port: "fallback 70", match: true }
+      - { name: "g_rm_edgedamage", base: "38", port: "fallback 38", match: true }
+      - { name: "g_rm_radius", base: "140", port: "fallback 140", match: true }
+      - { name: "g_rm_force", base: "400", port: "fallback 400", match: true }
+      - { name: "deathtype", base: "WEP_DEVASTATOR.m_id | HITTYPE_SPLASH", port: "Devastator death tag (devTag) + RadiusDamage ORs HITTYPE_SPLASH; accuracyWeapon=devastator", match: true }
+      - { name: "sky/noimpact guard", base: "!(trace_dphitq3surfaceflags & (SKY|NOIMPACT))", port: "(DpHitQ3SurfaceFlags & (Sky|NoImpact)) == 0 guard applied", match: true }
+      - { name: "explosion presentation", base: "blast tagged WEP_DEVASTATOR.m_id -> CSQC devastator wr_impacteffect: EFFECT_ROCKET_EXPLODE + SND_ROCKET_IMPACT", port: "EffectEmitter.Emit('ROCKET_EXPLODE') + ImpactSoundAt('weapons/rocket_impact.wav') at the endpoint", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Vaporizer.cs:232-234 sky/noimpact guard + RocketMinstaExplosion; :309-312 RadiusDamage(g_rm_* 70/38/140/400, accuracyWeapon=devastator, deathTag=devastator); :319-320 Emit('ROCKET_EXPLODE') + ImpactSoundAt('weapons/rocket_impact.wav') vs vaporizer.qc:108-129 + mutators.cfg:442-445. EffectsList.cs:122 registers ROCKET_EXPLODE.", result: pass }
+      - { kind: code, ref: "LIVENESS: WrThink->Attack->RocketMinstaExplosion runs on the live driver (WeaponFireDriver.cs:166) under the g_rm cvar gate; RocketMinstaMutator.cs is registered [Mutator] + hooked, the g_rm sub-mode activation matching Base REGISTER_MUTATOR(rm, autocvar_g_instagib)", result: pass }
+    confidence: high
+    notes: "LIVENESS upgraded unknown->live (presentation/audio already faithful at the 2026-06-25 baseline and re-confirmed). RocketMinstaExplosion emits the Devastator explosion presentation at the rail endpoint (ROCKET_EXPLODE particles + rocket_impact sound), matching how the QC blast — tagged WEP_DEVASTATOR.m_id — routes through the Devastator's CSQC wr_impacteffect. logic/values faithful (cvars 70/38/140/400, devastator death-tag + HITTYPE_SPLASH, sky/NOIMPACT guard). The g_rm path is reachable: WrThink is live every tick and RocketMinstaMutator is registered+hooked (rm sub-mode is a deliberate g_rm-gated cvar mode)."
+
+  - id: weapon-vaporizer.rm.laser_barrage
+    name: "Rocket-Minsta: secondary bouncing-laser fan + rapid-fire ladder"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/vaporizer.qc:W_RocketMinsta_Attack"
+      - "common/weapons/weapon/vaporizer.qc:wr_think (rapid ladder jump_interval2)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:RocketMinstaLaserBarrage"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:WrThink"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:RocketMinstaLaserExplode"
+    constants:
+      - { name: "g_rm_laser_count", base: "3", port: "fallback 3", match: true }
+      - { name: "g_rm_laser_damage", base: "80", port: "fallback 80", match: true }
+      - { name: "g_rm_laser_radius", base: "150", port: "fallback 150", match: true }
+      - { name: "g_rm_laser_force", base: "400", port: "fallback 400", match: true }
+      - { name: "g_rm_laser_speed", base: "6000", port: "fallback 6000", match: true }
+      - { name: "g_rm_laser_lifetime", base: "30", port: "fallback 30", match: true }
+      - { name: "g_rm_laser_refire", base: "0.7", port: "fallback 0.7", match: true }
+      - { name: "g_rm_laser_spread/zspread", base: "0.05 / 0", port: "fallback 0.05 / 0", match: true }
+      - { name: "rapid ladder", base: "g_rm_laser_rapid 1 / rapid_delay 0.6 / rapid_refire 0.35", port: "fallback 1 / 0.6 / 0.35 (hagar_load + jump_interval2 ported)", match: true }
+      - { name: "laser_deathtype", base: "WEP_ELECTRO.m_id (proj.projectiledeathtype)", port: "electro.RegistryId (fallback Vaporizer)", match: true }
+      - { name: "fire_sound (mode-0 fan / mode-1 stream)", base: "SND_CRYLINK_FIRE / SND_ELECTRO_FIRE2", port: "weapons/crylink_fire.wav / weapons/electro_fire2.wav", match: true }
+      - { name: "muzzle", base: "W_MuzzleFlash(WEP_ELECTRO)", port: "ELECTRO_MUZZLEFLASH", match: true }
+      - { name: "shooter-velocity inherit", base: "W_CalculateProjectileVelocity(actor, vel, true) — forceAbsolute, only g_weaponspeedfactor", port: "v * WeaponSpeedFactor() (g_weaponspeedfactor) — Newtonian inheritance bypassed in Base too", match: true }
+      - { name: "csqc_projectile", base: "PROJECTILE_ROCKETMINSTA_LASER (elaser model + EFFECT_ROCKETMINSTA_LASER trail + team colormod)", port: "ProjectileType.RocketMinstaLaser descriptor (elaser model + ROCKETMINSTA_LASER red trail + per-bolt team colormod); netname 'rocketminsta' classified before generic 'rocket'", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "RM-laser rapid stream omits the cosmetic weapon_thinkf WFRAME_FIRE2 rapid_animtime view-model frame (vaporizer.qc:334, commented out in Base too); purely a first-person anim frame, no gameplay/visual-bolt effect."
+    verification:
+      - { kind: code, ref: "Vaporizer.cs:316-444 RocketMinstaLaserBarrage (count 3/dmg 80/radius 150/force 400/speed 6000/lifetime 30/spread 0.05 + electro deathtype + ELECTRO_MUZZLEFLASH + crylink_fire/electro_fire2; netname 'rocketminsta' + team colormap) + WrThink:124-160 rapid ladder (hagar_load/jump_interval2) + RocketMinstaLaserExplode:450-462 ELECTROBITCH guard vs vaporizer.qc:222-276/316-335/194-205 + mutators.cfg:447-460", result: pass }
+      - { kind: code, ref: "DISTINCT CSQC BOLT VISUAL CONFIRMED: ProjectileCatalog.cs:222-224 RocketMinstaLaser descriptor (elaser model + ROCKETMINSTA_LASER red trail), :269 'rocketminsta' classified before generic 'rocket', EffectsList.cs:264 ROCKETMINSTA_LASER trail registered, ProjectileRenderer.cs:127-128 per-bolt team colormod vs projectile.qc:384,504-506", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (presentation partial->faithful, csqc_projectile false->true, liveness unknown->live): the distinct PROJECTILE_ROCKETMINSTA_LASER bolt visual is NOW fully ported — ProjectileCatalog.cs:222-224 registers a RocketMinstaLaser descriptor (models/elaser.mdl + the red ROCKETMINSTA_LASER trail, EffectsList.cs:264), the netname->type classifier matches 'rocketminsta' BEFORE the generic 'rocket' substring (ProjectileCatalog.cs:269, the bug the baseline feared), and ProjectileRenderer.cs:127-128 applies the per-bolt team colormod faithfully. So Vaporizer.cs:379's netname 'rocketminsta' tag resolves to the bespoke elaser/red-trail/team-colored bolt, not a generic plasma. Prior fixes re-confirmed: rapid ladder (WrThink fan-then-rapid-bolt), ELECTROBITCH timeout-NULL-directhit guard, and the g_weaponspeedfactor-only velocity (Base forceAbsolute=true). Liveness now live: WrThink runs every tick on the driver and the g_rm/g_rm_laser sub-mode is a reachable cvar gate (RocketMinstaMutator.cs registered + hooked). STILL OPEN: only the cosmetic rapid_animtime view-model frame."
+
+  - id: weapon-vaporizer.ammo.consumption
+    name: "Ammo consumption + checkammo + reload + bot aim"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/vaporizer.qc:W_Vaporizer_Attack (W_DecreaseAmmo)"
+      - "common/weapons/weapon/vaporizer.qc:wr_checkammo1/wr_checkammo2/wr_reload/wr_aim"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:CheckAmmoPrimary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:CheckAmmoSecondary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:WrThink (forced reload)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:BotWantsSecondary (wr_aim)"
+    constants:
+      - { name: "primary_ammo (non-instagib)", base: "10 (g_instagib ? 1 : primary_ammo)", port: "10 (InstagibActive reads live g_instagib; non-instagib pickup spends Primary.Ammo)", match: true }
+      - { name: "instagib_per_shot", base: "1 (g_instagib ? 1 : ammo)", port: "1 (InstagibActive re-reads g_instagib in Attack/CheckAmmoPrimary/WrThink)", match: true }
+      - { name: "reload_ammo / reload_time", base: "0 / 0", port: "ReloadingAmmo() default 0; forced-reload branch ported (latent at default)", match: true }
+      - { name: "wr_aim primary/secondary pick", base: "(items&UNLIMITED || ammo>0) ? ATCK : ATCK2", base_extra: "bot_aim 1000000 / blaster speed", port: "BotWantsSecondary returns !hasAmmo (unlimited||ammo>0)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Vaporizer.cs:264 TakeResource(InstagibActive?1:Primary.Ammo); :523 CheckAmmoPrimary (InstagibActive?1:Primary.Ammo); :527 CheckAmmoSecondary; :93-104 WrThink forced-reload via WrReload; :195 BotWantsSecondary (wr_aim); :537 InstagibActive => g_instagib cvar (no hardcoded field, grep) vs vaporizer.qc:173/362-392/278-284", result: pass }
+    confidence: high
+    notes: "FIX vs the 2026-06-27 baseline (values partial -> faithful, gap removed): the Instagib flag is NO LONGER hardcoded true — there is no Instagib bool field on the class (grep). The lone InstagibActive (Vaporizer.cs:537) reads the live g_instagib cvar, and EVERY consumer uses it consistently: the WrThink reload floor (:95), the Attack decrement (:264), and CheckAmmoPrimary (:523). So a bare non-instagib Vaporizer pickup correctly spends/checks the full primary_ammo (10 cells), and under the mutator it is 1 cell — matching Base's `g_instagib ? 1 : primary_ammo` everywhere. wr_aim (BotWantsSecondary), wr_reload, and the forced-reload branch all remain ported. liveness stays partial only because the non-instagib map-pickup equip path of the Vaporizer (vs the instagib loadout) is not separately confirmed live."
+
+  - id: weapon-vaporizer.instagib.integration
+    name: "InstaGib integration (start loadout, armor-as-lives, gib, blaster nullify, bleed-out)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/instagib/sv_instagib.qc:Damage_Calculate"
+      - "common/mutators/mutator/instagib/sv_instagib.qc:PlayerDies"
+      - "common/mutators/mutator/instagib/sv_instagib.qc:SetStartItems"
+      - "common/mutators/mutator/instagib/sv_instagib.qc:instagib_ammocheck"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/InstagibMutator.cs"
+    constants:
+      - { name: "g_instagib_ammo_start", base: "10", port: "10", match: true }
+      - { name: "g_instagib_extralives", base: "1", port: "1", match: true }
+      - { name: "start_health/armor", base: "100 / 0", port: "100 / 0", match: true }
+      - { name: "vaporizer_death_gib_damage", base: "1000", port: "1000", match: true }
+      - { name: "bleed_out_dmg", base: "5 (hp<=10) / 10", port: "5 / 10", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "InstagibMutator.cs:206-207/236 HitsoundDamageDealtTotal on attacker+target; :321 INSTAGIB_DOWNGRADE centerprint in AmmoCheck vs sv_instagib.qc (start items, Damage_Calculate, PlayerDies, ammocheck)", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (presentation/audio partial -> faithful): the +hitsound_damage_dealt hit-confirm cue is NOW raised on both attacker and target (lines 206-207 armor-hit, 236 mirror-damage), and the instagib_ammocheck downgrade-to-laser branch NOW emits the INSTAGIB_DOWNGRADE centerprint (line 321) instead of always bleeding. Core logic/values/liveness unchanged and faithful — this is what makes the body-shot one-shot work."
+
+  - id: weapon-vaporizer.messages.kill_suicide
+    name: "Kill / suicide death messages (WEAPON_VAPORIZER_MURDER / WEAPON_THINKING_WITH_PORTALS)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/vaporizer.qc:wr_killmessage"
+      - "common/weapons/weapon/vaporizer.qc:wr_suicidemessage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:SelectKillMessage"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:SelectSuicideMessage"
+    constants:
+      - { name: "kill_message", base: "WEAPON_VAPORIZER_MURDER", port: "WEAPON_VAPORIZER_MURDER", match: true }
+      - { name: "suicide_message", base: "WEAPON_THINKING_WITH_PORTALS", port: "WEAPON_THINKING_WITH_PORTALS", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "DeathMessages.cs case 'vaporizer'->WEAPON_VAPORIZER_MURDER; SelectSuicideMessage vaporizer default -> WEAPON_THINKING_WITH_PORTALS, vs vaporizer.qc:394-402", result: pass }
+      - { kind: code, ref: "LIVENESS: Scores.cs:744 SelectKillMessage / Scores.cs:650 SelectSuicideMessage called on the real obituary path with DeathTypes.WeaponNetNameOf(deathType)", result: pass }
+    confidence: high
+    notes: "LIVENESS upgraded unknown->live: the kill-feed call sites are now traced — Scores.cs:744 (kill) and Scores.cs:650 (suicide) invoke the DeathMessages selectors on the real obituary path. The Vaporizer wr_killmessage/wr_suicidemessage ARE ported, centralized in DeathMessages.cs (string lookup keyed by weapon NetName)."
+
+  - id: weapon-vaporizer.client.reticle
+    name: "Client reticle / zoom (wr_init precache + wr_zoom button_zoom)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/vaporizer.qc:wr_init"
+      - "common/weapons/weapon/vaporizer.qc:wr_zoom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:Reticle (=> gfx/reticle_nex)"
+      - "game/client/ReticleOverlay.cs:UpdateReticle"
+      - "game/net/NetGame.cs:_reticle.UpdateReticle (live call)"
+    constants:
+      - { name: "w_reticle", base: "precache_pic when cl_reticle && cl_reticle_weapon", port: "Reticle => gfx/reticle_nex; ReticleOverlay draws it under the same cl_reticle && cl_reticle_weapon gate (reticle_nex.tga asset present)", match: true }
+      - { name: "wr_zoom", base: "true if button_zoom || zoomscript_caught", port: "wepZoomed = buttonZoom || (attack2Held && ZoomOnSecondary); generic zoomscript path via buttonZoom || zoomScriptCaught; ZoomOnSecondary=false matches Base", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Vaporizer.cs:41 Reticle => 'gfx/reticle_nex'; ReticleOverlay.cs:75-130 UpdateReticle (cl_reticle/cl_reticle_weapon gate, button_zoom/zoomscript, weapon-scope type 2 -> reticleImage); NetGame.cs:2842 calls it live with the active weapon vs vaporizer.qc:415-427 wr_init/wr_zoom. reticle_nex.tga asset present.", result: pass }
+    confidence: high
+    notes: "FIX vs 2026-06-25 baseline (was missing on all dims, liveness na, port_refs []): the Vaporizer now declares its scope reticle (gfx/reticle_nex, same image as the sister Vortex), drawn by the central ReticleOverlay when zooming with the weapon out (button_zoom || zoomscript_caught) under the cl_reticle && cl_reticle_weapon gate — wired live from NetGame. ZoomOnSecondary=false faithfully reproduces wr_zoom returning false on plain ATTACK2 (no weapon-specific secondary zoom)."
+
+  - id: weapon-vaporizer.menu.describe
+    name: "MENUQC weapon-guide prose (describe)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/vaporizer.qc:describe (METHOD Vaporizer, describe)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs:GuideDescription"
+    constants:
+      - { name: "guide_paragraphs", base: "4 PAR (energy-beam superweapon overview + instagib/ExtraLife one-shot, Blaster-laser secondary, superweapon-rarity/instagib-spawn note, Cells ammo note)", port: "4 paragraphs (same content; COLORED_NAME(%s) substitutions pre-filled with plain literals, same convention as Electro/Shotgun/Tuba)", match: true }
+      - { name: "W_Guide_Keybinds / W_Guide_DPS_onlyOne", base: "appended by describe()", port: "not reproduced (guide-page helpers unported)", match: false }
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The trailing W_Guide_Keybinds(this) + W_Guide_DPS_onlyOne lines of describe() (keybind hints + a computed DPS figure) are not reproduced — those helpers aren't ported. The four prose paragraphs ARE present. Cosmetic/menu-only."
+    verification:
+      - { kind: code, ref: "Vaporizer.cs:50-56 GuideDescription override returns the four-paragraph weapon-guide prose; DialogMediaGuide.cs:194 reads w.GuideDescription for the active weapon and renders it live (non-blank). vs vaporizer.qc:436-448 METHOD(Vaporizer, describe)", result: pass }
+    confidence: high
+    notes: "FIX vs the 2026-06-27 baseline (was missing/na, port_refs []): the Vaporizer NOW carries a GuideDescription override (Vaporizer.cs:50-56) with the four describe() paragraphs, matching how Electro/Shotgun/Tuba/Devastator override it; DialogMediaGuide.cs:194 renders it live for the active weapon, so the menu weapon guide is no longer blank for the Vaporizer. Residual: only the W_Guide_Keybinds/W_Guide_DPS helper lines (keybind+DPS) are omitted (helpers unported) — pure menu prose, no logic/values/timing/audio."

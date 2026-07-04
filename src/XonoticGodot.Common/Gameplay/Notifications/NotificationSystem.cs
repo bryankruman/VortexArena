@@ -55,8 +55,16 @@ public readonly struct NotificationDispatch
     public readonly string[] StringArgs;
     public readonly float[] FloatArgs;
 
+    /// <summary>
+    /// The message family carried on the wire. Normally <see cref="Notification"/>'s own
+    /// <see cref="Notification.Type"/>, but a <see cref="MsgType.CenterKill"/> retraction overrides it (the
+    /// dispatch then borrows an arbitrary registered notification as a carrier — see
+    /// <see cref="NotificationSystem.SendCenterKill"/> — and the real intent is in <see cref="WireType"/>).
+    /// </summary>
+    public readonly MsgType WireType;
+
     public NotificationDispatch(Notification notification, NotifBroadcast broadcast, Entity? target,
-        string text, string[] stringArgs, float[] floatArgs)
+        string text, string[] stringArgs, float[] floatArgs, MsgType? wireType = null)
     {
         Notification = notification;
         Broadcast = broadcast;
@@ -64,6 +72,7 @@ public readonly struct NotificationDispatch
         Text = text;
         StringArgs = stringArgs;
         FloatArgs = floatArgs;
+        WireType = wireType ?? notification.Type;
     }
 
     public override string ToString()
@@ -190,6 +199,86 @@ public static class NotificationSystem
     /// <summary>Convenience: play an ANNCE sound for one client.</summary>
     public static bool Announce(Entity target, string name, params object[] args)
         => Send(NotifBroadcast.One, target, MsgType.Annce, name, args);
+
+    /// <summary>
+    /// Retract a centerprint group remotely — the C# successor to QC <c>Kill_Notification(..., MSG_CENTER_KILL,
+    /// cpid)</c> (Send_Notification with MSG_CENTER_KILL, notifications/all.qc:1481). The client routes this to
+    /// <c>centerprint_Kill(cpid)</c> (graceful group fade-out) or, when <paramref name="cpid"/> is empty/CPID_Null,
+    /// <c>centerprint_KillAll()</c>. Used on countdown abort (warmup/intermission) and CTF line retraction.
+    /// </summary>
+    /// <param name="cpid">The CPID_* group to retract (e.g. "CPID_ROUND"); empty/null clears every group.</param>
+    public static bool SendCenterKill(NotifBroadcast broadcast, Entity? target, string? cpid = null)
+    {
+        LastError = null;
+        if (broadcast == NotifBroadcast.OneOnly && target is null)
+            return false;
+
+        // The wire carries only the type (CenterKill) + the cpid (in Text); the registry id is unused by the
+        // client kill path, so we hang the dispatch off any always-registered center notification as a carrier.
+        var carrier = Notifications.ByName(MsgType.Center, "COUNTDOWN_BEGIN")
+                      ?? Notifications.ByName(MsgType.Center, "COUNTDOWN_GAMESTART");
+        if (carrier is null)
+            return false;
+
+        Sink.Dispatch(new NotificationDispatch(carrier, broadcast, target,
+            cpid ?? "", System.Array.Empty<string>(), System.Array.Empty<float>(), MsgType.CenterKill));
+        return true;
+    }
+
+    /// <summary>
+    /// Set (or clear) the centerprint gametype title — the C# successor to QC <c>centerprint_SetTitle</c> /
+    /// <c>centerprint_ClearTitle</c> (client/announcer.qc Announcer_Gamestart). Pass the already-formatted
+    /// title text (e.g. "^BGDeathmatch"); an empty/null title clears it. Routed through the notification
+    /// channel as <see cref="MsgType.CenterTitle"/>.
+    /// </summary>
+    public static bool SendCenterTitle(NotifBroadcast broadcast, Entity? target, string? title)
+    {
+        var carrier = Notifications.ByName(MsgType.Center, "COUNTDOWN_BEGIN")
+                      ?? Notifications.ByName(MsgType.Center, "COUNTDOWN_GAMESTART");
+        if (carrier is null)
+            return false;
+        Sink.Dispatch(new NotificationDispatch(carrier, broadcast, target,
+            title ?? "", System.Array.Empty<string>(), System.Array.Empty<float>(), MsgType.CenterTitle));
+        return true;
+    }
+
+    /// <summary>
+    /// Set the centerprint duel title — the C# successor to QC <c>centerprint_SetDuelTitle</c>
+    /// (client/announcer.qc Announcer_Duel). The two duelers' names travel as string args (s1=left, s2=right).
+    /// Routed through the notification channel as <see cref="MsgType.CenterDuelTitle"/>.
+    /// </summary>
+    public static bool SendCenterDuelTitle(NotifBroadcast broadcast, Entity? target, string left, string right)
+    {
+        var carrier = Notifications.ByName(MsgType.Center, "COUNTDOWN_BEGIN")
+                      ?? Notifications.ByName(MsgType.Center, "COUNTDOWN_GAMESTART");
+        if (carrier is null)
+            return false;
+        Sink.Dispatch(new NotificationDispatch(carrier, broadcast, target,
+            "", new[] { left ?? "", right ?? "" }, System.Array.Empty<float>(), MsgType.CenterDuelTitle));
+        return true;
+    }
+
+    /// <summary>
+    /// Push a raw centerprint line to a client — the C# successor to the engine <c>centerprint(client, text)</c>
+    /// builtin (QC chat /tell + team-message private centerprints, map/trigger/door/item <c>.message</c> text,
+    /// target_print, MOTD). The literal text is shown via <c>centerprint_AddStandard</c> with no cpid group.
+    /// Routed through the notification channel as <see cref="MsgType.CenterRaw"/>.
+    /// </summary>
+    public static bool SendCenterRaw(NotifBroadcast broadcast, Entity? target, string text)
+    {
+        LastError = null;
+        if (broadcast == NotifBroadcast.OneOnly && target is null)
+            return false;
+        if (string.IsNullOrEmpty(text))
+            return false;
+        var carrier = Notifications.ByName(MsgType.Center, "COUNTDOWN_BEGIN")
+                      ?? Notifications.ByName(MsgType.Center, "COUNTDOWN_GAMESTART");
+        if (carrier is null)
+            return false;
+        Sink.Dispatch(new NotificationDispatch(carrier, broadcast, target,
+            text, System.Array.Empty<string>(), System.Array.Empty<float>(), MsgType.CenterRaw));
+        return true;
+    }
 
     // =====================================================================================
     //  Internals

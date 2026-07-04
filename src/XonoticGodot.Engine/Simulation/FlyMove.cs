@@ -404,6 +404,15 @@ public sealed class PhysicsContext
             Vector3 movedFromAngles = check.Angles;
             moved.Add((check, movedFrom, movedFromAngles));
 
+            // MOVETYPE_PHYSICS riders run their own (better) collision solver; the pusher just translates them
+            // and relinks, skipping the PushEntity sweep + stuck-check entirely (push.qc:123-129).
+            if (check.MoveType == MoveType.Physics)
+            {
+                check.Origin += move;
+                LinkEdict(check);
+                continue;
+            }
+
             // push the rider with the pusher temporarily non-solid (so the rider's own trace ignores it).
             pusher.Solid = Solid.Not;
             bool teleported = !PushEntity(out TraceResult trace, check, move, doTouch: true);
@@ -421,18 +430,27 @@ public sealed class PhysicsContext
             TraceResult re = Trace.Trace(check.Origin, check.Mins, check.Maxs, check.Origin, MoveFilter.NoMonsters, check);
             if (re.StartSolid)
             {
-                // try to nudge the rider out of the pusher first.
+                // try to nudge the rider out of the pusher first. On success, fire a zero-length PushEntity
+                // (push.qc:157-158 "hack to invoke all necessary movement triggers") so the relinked rider
+                // runs its touch dual-dispatch, then continue.
                 if (TryNudgeOutOfSolid(check))
                 {
-                    LinkEdict(check);
+                    PushEntity(out _, check, Vector3.Zero, doTouch: true);
                     continue;
                 }
 
-                // zero-thickness corpses just get squashed (skipped) rather than blocking.
+                // still inside the pusher and couldn't be freed.
+                // zero-thickness riders just get squashed (skipped) rather than blocking (push.qc:166-167).
                 if (check.Mins.X == check.Maxs.X)
                     continue;
+                // corpses (SOLID_NOT/SOLID_TRIGGER) get their box flattened to zero and are skipped, not
+                // blocked (push.qc:168-173): mins.x = mins.y = 0; maxs = mins.
                 if (check.Solid == Solid.Not || check.Solid == Solid.Trigger)
+                {
+                    check.Mins = new Vector3(0f, 0f, check.Mins.Z);
+                    check.Maxs = check.Mins;
                     continue;
+                }
 
                 // really blocked: put the pusher back, move every already-moved rider back.
                 pusher.Origin = pushOrig;

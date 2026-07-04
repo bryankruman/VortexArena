@@ -65,6 +65,23 @@ namespace XonoticGodot.Common.Gameplay
         private static bool Cts => IsCtsActive?.Invoke() ?? false;
 
         // =====================================================================================
+        //  Global q3compat flag (QC server/compat/quake3.qh `int q3compat`, set in world.qc:964-965)
+        // =====================================================================================
+
+        /// <summary>
+        /// Host seam reporting whether the current map is a Q3/Q3DF import (QC the global <c>q3compat</c> int, set
+        /// during worldspawn from <c>_MapInfo_FindArenaFile(mapname, ".arena"/".defi")</c> — i.e. the existence of a
+        /// sibling <c>.arena</c> (Q3COMPAT_ARENA) or <c>.defi</c> (Q3COMPAT_DEFI) file in the map pack). The
+        /// orchestrator wires this from the map-config file probe at boot, BEFORE the spawnfuncs run; unwired it
+        /// defaults to <c>false</c> (a stock Xonotic map), so every q3compat branch stays off in a bare unit test —
+        /// matching QC's <c>q3compat == 0</c> default.
+        /// </summary>
+        public static System.Func<bool>? Q3CompatProvider;
+
+        /// <summary>QC <c>Q3COMPAT_COMMON</c> (truthy <c>q3compat</c>): the active map is a Q3/Q3DF import.</summary>
+        public static bool IsQ3Compat => Q3CompatProvider?.Invoke() ?? false;
+
+        // =====================================================================================
         //  GetAmmoConsumption (common/resources/sv_resources.qc:231) — ammo-per-shot, for .count scaling
         // =====================================================================================
 
@@ -161,6 +178,12 @@ namespace XonoticGodot.Common.Gameplay
             "weapon_imperius"       => Weapons.ByName("crylink"),
             _ => null,
         };
+
+        /// <summary>QC <c>autocvar_sv_mapformat_is_quake3</c> (set by the .bsp/.map format detect). Default true
+        /// (Q3 map format), so nailgun -> CRYLINK by default; a Q1 map sets it 0 -> ELECTRO. Public so the item
+        /// spawnfunc table (item_armor1 -> ArmorSmall on a Q3 map, ArmorMedium otherwise; spawning.qc:99) can read
+        /// the same flag at spawn time.</summary>
+        public static bool IsMapformatQuake3() => MapformatIsQuake3();
 
         // QC autocvar_sv_mapformat_is_quake3 (set by the .bsp/.map format detect). Default true (Q3 map format),
         // so nailgun -> CRYLINK by default; a Q1 map sets it 0 -> ELECTRO.
@@ -418,9 +441,11 @@ namespace XonoticGodot.Common.Gameplay
             }
             else if ((this_.SpawnFlags & FragsFilterSilent) == 0)
             {
-                // QC: centerprint(actor, "<N> more frag[s] needed"); play2(actor, SND(TALK)).
-                // The centerprint TEXT is client-side; headless we play the audible half.
-                MapMover.Sound(actor, SoundChannel.Voice, "misc/talk.wav");
+                // QC: centerprint(actor, "<N> more frag[s] needed"); play2(actor, SND(TALK)). Route the text
+                // through the raw-centerprint channel (→ CenterPrintPanel.Add) and play the audible half.
+                int more = req - actor.FragsFilterCnt;
+                MapMover.Centerprint(actor, more == 1 ? "1 more frag needed" : $"{more} more frags needed");
+                MapMover.Play2(actor, "misc/talk.wav"); // QC quake3.qc:226 play2(actor, SND(TALK)) — 2D VOL_BASE/ATTEN_NONE
             }
         }
 
@@ -458,14 +483,18 @@ namespace XonoticGodot.Common.Gameplay
             // priv vs broadcast both resolve to the same audible-half emit here, but the branch is kept
             // explicit so the spawnflag interpretation stays observable.
             if (priv)
-                TargetPrintMessage(actor);
+                TargetPrintMessage(actor, this_.Message);
             else
-                TargetPrintMessage(actor);
+                TargetPrintMessage(actor, this_.Message);
         }
 
-        // QC target_print_message (quake3.qc:243-247): centerprint + play2 SND(TALK).
-        private static void TargetPrintMessage(Entity actor)
-            => MapMover.Sound(actor, SoundChannel.Voice, "misc/talk.wav");
+        // QC target_print_message (quake3.qc:243-247): centerprint(actor, this.message) + play2 SND(TALK). The
+        // text routes through the raw-centerprint channel (→ CenterPrintPanel.Add); the audible half plays SND(TALK).
+        private static void TargetPrintMessage(Entity actor, string? message)
+        {
+            MapMover.Centerprint(actor, message);
+            MapMover.Play2(actor, "misc/talk.wav"); // QC quake3.qc:246 play2(actor, SND(TALK)) — 2D VOL_BASE/ATTEN_NONE
+        }
 
         // q3compat & Q3COMPAT_DEFI — the .defi-file flag the port never sets (default Q3 reading).
         private static bool IsDefi() => false;
