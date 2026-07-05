@@ -907,6 +907,49 @@ nudge-out-of-solid; see #9), **#14** flag jitter (user-deferred).
   name-matching nameless framegroups again, the exact #32 class of bug (see
   [[player-anim-framegroups-slot-index]]).
 
+### 37. Decals: render through walls/particles + don't wrap like DP — FIXED (needs playtest)
+- [x] **Status:** Implemented (`20bed1c`) — build + 2953 tests green. Verify: shoot walls near corners
+  (marks conform, no streaks, nothing floating), check marks are never visible from the far side, and
+  blood splats land ON surfaces.
+- **CONFIRMED root causes (the DecalSplats architecture itself was already DP-faithful —
+  Sutherland–Hodgman clipping of the real render triangles, multiplicative blend, depth-tested):**
+  1. **Per-miss flat-quad fallback:** `DecalSplats.Splat` emitted an UNCLIPPED flat quad whenever
+     the triangle clip found nothing — a mark floating in space, poking through the corner it
+     failed to conform to = the through-wall decals AND the corner streaks. Now: fallbacks only
+     when a geometry SOURCE is missing entirely; a clip miss on a real map = no mark (DP).
+  2. **Last live legacy caller:** blood splats still went through the Godot `Decal` PROJECTION BOX
+     (`Decals.SpawnProjected`) — projection volumes paint through thin geometry inside their box
+     and smear across corners. Rerouted through `Splats.SplatPoint` (CL_SpawnDecalParticleForPoint)
+     with the removal-color complement + DP's staintex/blood-band atlas cells.
+  3. **`cl_decals` master toggle dead** (2026-06-14 audit) — wired (unset = on; engine cvar).
+- **Deferred (registry-worthy, low impact):** `cl_decals_fadetime`/`r_drawdecals_drawdistance`
+  cvar wiring; decals on dynamic models (`cl_decals_models`, Base default 0 anyway).
+
+### 38. Electro + Blaster PRIMARY projectiles look flat — FIXED (needs playtest)
+- [x] **Status:** Implemented (`32ac05c`) — build + 2953 tests green. Verify: blaster/electro bolts glow
+  (bright additive core, visible in dark rooms), electro explosions brighter.
+- **CONFIRMED root cause (live material probe):** the bolt models load fine (magic-dispatched
+  `.mdl`→MD3; surface shaders `laser/electro_projectile_core|long` resolve; `blendfunc add` +
+  `autosprite` both compile) — but the compiled Add materials stayed at Godot's default
+  **PerPixel SHADED** mode: scene lighting multiplies the texture BEFORE the add, so in a dim room
+  the additive contribution is near-black → a flat dark blob. Q3 additive stages are UNLIT
+  self-luminous adds — `ApplyBlend` + `ApplyBaseBlend` now set Unshaded for Add (and Filter, which
+  multiplies the already-lit framebuffer). Also brightens every dim additive map/FX surface.
+- **Residual (documented):** `deformVertexes autosprite2` (the "long" streak quad) approximated as
+  a full camera billboard — Godot StandardMaterial3D has no axial billboard; a custom-shader axial
+  roll is a follow-up if the streak orientation still reads wrong.
+
+### 39. Electro explosion FX — plumbing VERIFIED WIRED; look re-judge after #38
+- [~] **Status:** Investigated (round 7) — the suspected gaps DON'T exist: effectinfo
+  `lightradius/lightcolor/lightradiusfade` rows ARE parsed (EffectInfoParser) and spawned as pooled
+  OmniLight3D flashes (EffectSystem.SpawnInfoLight — electro impact 250qu, combo 400qu, blue HDR
+  color); the flying bolt's 90qu blue dlight rides `TrailLightFor(TR_NEXUIZPLASMA)`
+  (ProjectileRenderer.BuildLight); additive particles use exact premultiplied math; scene glow is
+  enabled. The dominant LOOK bug was #38's shaded-additive (the explosion's additive sprites dimmed
+  the same way). **Re-judge after the round-8 playtest**; if still off, the ranked candidates are:
+  OmniLight falloff curve vs DP dlight falloff, the Energy normalization (`min(8,maxc)`), and the
+  scene glow HDR threshold (1.0) — each a cheap A/B, deliberately not changed blind.
+
 ---
 
 ## Pending
