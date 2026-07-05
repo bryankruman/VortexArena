@@ -301,6 +301,17 @@ public sealed partial class FaithfulParticleBackend : Node3D
         DecalSplats? splats = Splats;
         if (splats is null)
             return;
+        // cl_decals master toggle (DP CL_SpawnDecalParticleForSurface gates on cl_decals.integer; the
+        // 2026-06-14 graphics audit flagged the port's toggle as dead — playtest #37 wires it). cl_decals
+        // is a DP ENGINE cvar (default 1) that the shipped cfg tree never sets, so UNSET means ON — only an
+        // explicit 0 disables (the cl_autopause unset-is-on pattern).
+        XonoticGodot.Common.Services.ICvarService? cv = _pendingCvars;
+        if (cv is not null)
+        {
+            string dec = cv.GetString("cl_decals");
+            if (!string.IsNullOrEmpty(dec) && cv.GetFloat("cl_decals") == 0f)
+                return;
+        }
 
         // The event color is the raw INVMOD REMOVAL amount, exactly what DP feeds
         // R_DecalSystem_SplatEntities (the sim applies DP's per-path complements — see ParticleSim's

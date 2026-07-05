@@ -1321,24 +1321,32 @@ public partial class EffectSystem : Node3D
     /// </summary>
     private void SpawnBloodSplat(EffectInfoEmitter info, NVec3 center, Color? colorOverride)
     {
-        if (Decals is null)
+        // (playtest #37) Route through the DP-faithful surface-clipped splats (DecalSplats), NOT the legacy
+        // Godot Decal projection box: a projection volume paints THROUGH thin geometry inside its box and
+        // smears across corners — the reported through-wall/streaking marks. This was the last live caller
+        // of the legacy path. SplatPoint = CL_SpawnDecalParticleForPoint (probe rays, nearest surface, splat
+        // clipped to the real triangles).
+        if (Splats is null || !GodotObject.IsInstanceValid(Splats))
             return;
         // Use the declared stain (staintex/staincolor/stainsize/stainalpha) when present — that's the dedicated
         // blood-decal sprite (atlas 16-23) and tint DP leaves where blood hits. The blood particle color is
         // stored INVMOD-inverted (0xA8FFFF cyan -> dark red), so InfoDecalColor inverts it and folds in the
-        // neutral staincolor. Falls back to the emitter's own size/color when no stain was declared.
+        // neutral staincolor. The splat shader wants the REMOVAL amount (wall · (1 − tex·color)) — the
+        // complement of that display color. Falls back to the emitter's own size/color when no stain declared.
         Color blood = InfoDecalColor(info, colorOverride, useStain: true);
-        float radius = info.HasStain
-            ? MathF.Max(2f, info.StainMidSize() * 2f)         // stain half-size -> world radius
-            : MathF.Max(2f, info.SizeMax * 1.5f);
+        var removal = new Color(1f - blood.R, 1f - blood.G, 1f - blood.B);
+        float halfSize = info.HasStain
+            ? MathF.Max(1f, info.StainMidSize())
+            : MathF.Max(1f, info.SizeMax * 0.75f);
         float alpha = info.HasStain
             ? MathF.Max(0.4f, info.StainMidAlpha01())
             : MathF.Max(0.4f, info.MidAlpha01());
-        ImageTexture? sprite = info.HasStain
-            ? Font?.CellInRange(info.StainTex0, info.StainTex1, decal: true)
-            : Font?.CellInRange(16, 24, decal: true); // default blood-decal band when a blood block omitted staintex
+        // Atlas cell: the declared staintex band, else DP's blood-decal band 16..23 (cl_particles.c:3033).
+        int tex = info.HasStain && info.StainTex0 >= 0
+            ? info.StainTex0 + (info.StainTex1 > info.StainTex0 ? (int)(GD.Randi() % (uint)(info.StainTex1 - info.StainTex0)) : 0)
+            : 16 + (int)(GD.Randi() & 7);
         // Maxdist: a small surface-search radius so the stain stays local to the hit.
-        Decals.SpawnProjected(center, 32f, radius, blood, alpha, sprite);
+        Splats.SplatPoint(center, 32f, halfSize, removal, alpha, tex);
     }
 
     /// <summary>Build one GPU-particle emitter from a single parsed emitter block (the per-block spawn loop).</summary>
