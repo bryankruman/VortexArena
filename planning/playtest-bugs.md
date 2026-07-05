@@ -730,6 +730,63 @@ nudge-out-of-solid; see #9), **#14** flag jitter (user-deferred).
   confine releases within one frame without needing an edge, and the #19 auto-pause now also treats a
   never-focused background launch as unfocused (game waits paused until you click in — consistent defaults).
 
+### 29. Taken/unavailable ground weapons missing the ghost-item dark tint
+- [ ] **Status:** Not started (playtest 2026-07-05, round 5 — user judges NOT caused by cpuoptimization).
+- **Symptom:** when a weapon item on the ground is taken / not available (the weapons-stay "ghost"
+  state), the port's render effect is wrong — no dark tint is applied where Base clearly darkens
+  the ghosted item.
+- **Expected:** match Base's CSQC ghost-item look (likely `cl_ghost_items` alpha +
+  `cl_ghost_items_color` tint — verify the exact mechanism in Base's client item draw).
+- **First look:** Base `qcsrc` client items draw (ghost branch) vs the port's item entity render
+  path (`EntityNode.SetGameplayVisible` — the port may be hiding or alpha-ing without the color
+  tint; `ClientWorld`/item state networking for the "available" flag).
+
+### 30. Client-side animations ignore pause/slowmo (should freeze / slow with the sim)
+- [ ] **Status:** Not started (round 5).
+- **Symptom:** while auto-paused (#19 drives `slowmo 0`) client-side animation keeps running at
+  full speed; more generally, slowmo should scale ALL client-side animation so everything plays
+  in slow motion (item bob/spin, player/model animations, particles, viewmodel).
+- **Expected:** Base derives CSQC `time` from servertime, which advances at the slowmo rate — so
+  every client animation slows/freezes in lockstep with the sim. Thoroughly verify Base's client
+  clock derivation and align.
+- **First look:** the port's client clocks — what feeds `Api.Clock.Time` client-side, the raw
+  `(float)delta` uses (`ModelAnimator.Advance`, `EffectSystem`, `ItemBobAnim`, viewmodel anims,
+  `SpawnPointParticles` etc.) — vs the replicated `slowmo` (#19 v3 wired it into client input
+  cadence already; the ANIMATION layer is what's missing).
+
+### 31. Weapon-switch animation plays when the switch is impossible — Base only plays a denial sound
+- [ ] **Status:** Not started (round 5).
+- **Symptom:** trying to switch weapons with no other weapon available (e.g. others have no ammo)
+  still plays the viewmodel switch animation. In Base nothing switches — you just hear the
+  "can't fire / impossible" denial sound.
+- **Expected:** Base `W_SwitchWeapon` path: `client_hasweapon(..., andammo)` failure → denial
+  sound, NO lower/raise animation. Thoroughly review Base's switch/denial flow and align.
+- **First look:** the port's server switch logic (weapon slots / `client_hasweapon` equivalent)
+  AND the client viewmodel switch prediction (NetGame/viewmodel — it may predict the switch
+  animation unconditionally, same family as #21/#24 prediction gates).
+
+### 32. Remote players: wrong/missing animations + weapon held too high (not in hands)
+- [ ] **Status:** Not started (round 5; PRE-EXISTING before cpuoptimization — user wants it fixed now).
+- **Symptom:** enemy/remote players don't appear to play animations / strike the correct pose;
+  the weapon they hold renders too HIGH, not where their hands are.
+- **Expected:** Base CSQC decides player animation from movement/actions (`animdecide.qc`) and
+  attaches the weapon model to the player skeleton's weapon tag (`tag_weapon`), so the gun sits
+  in the hands and the body plays run/jump/attack/death clips.
+- **First look:** the port's `PlayerModel.Pose` + its animation-decide port (what drives remote
+  players' clips from networked state) and the held-weapon attach (which bone/tag, offset) vs
+  Base `animdecide.qc` + the weaponentity/exteriorweaponentity attach chain.
+
+### 33. Verify bot difficulty (skill) actually applies
+- [ ] **Status:** Not started (round 5; verification task).
+- **Symptom:** unverified suspicion that bot difficulty isn't applying (bots feel the same across
+  skill settings).
+- **Expected:** the menu difficulty / `skill` cvar reaches each spawned bot and changes aim error,
+  reaction time, movement quality etc. (Base havocbot reads per-skill cvars/offsets).
+- **First look:** the port's bot spawn chain (menu → `skill` cvar → bot fill/spawn → per-bot skill
+  field) and the havocbot-port's skill consumers; note the cvar-persistence work added a `--bots`
+  skill sentinel (see memory `cvar-persistence-model`) — make sure the sentinel didn't decouple
+  the real skill cvar from spawned bots.
+
 ---
 
 ## Pending
