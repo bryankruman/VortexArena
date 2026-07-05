@@ -1443,7 +1443,15 @@ public sealed class PlayerPhysics : IPlayerPhysics
         // in-loop stair-step actually lifted the hull over an obstacle this tick (for the step-up velocity clamp).
         int clip = FlyMove(player, mp, dt, applyGravity, StepMultipleTimes ? mp.StepHeight : 0f, out Vector3 stepNormal, out bool steppedUp);
 
-        // DOWNTRACEONGROUND: re-acquire the floor if the slide didn't register one.
+        // DOWNTRACEONGROUND: re-acquire the floor if the slide didn't register one (walk.qc:30-55). NOTE:
+        // this only KEEPS an existing on-ground state alive (clip |= 1 suppresses the clear below) and
+        // refreshes GroundEntity for mover carrying — it must never SET the flag. On-ground is granted
+        // exclusively by a real floor collision (FlyMove, which also clips velocity.z into the plane) or by
+        // the stepdown==2 path, so "OnGround ⇒ velocity.z was ground-clipped" holds — the ADDITIVE
+        // PlayerJump (velocity_z += jumpvelocity) depends on that invariant. Granting it here marked a
+        // falling player on-ground with velocity.z ≈ -270 un-clipped whenever a landing tick ended within
+        // 1u above the floor, and the held bunnyhop jump came out dead/stunted (JumpGrantReproTests pins
+        // both paths).
         if (DownTraceOnGround && (clip & 1) == 0)
         {
             Vector3 up = player.Origin + new Vector3(0f, 0f, 1f);
@@ -1456,10 +1464,10 @@ public sealed class PlayerPhysics : IPlayerPhysics
             }
         }
 
+        // if the move did not hit the ground at any point, we're not on ground (walk.qc:57-58 — clear-only;
+        // Base's `else` arm there is the dead sv_wallclip pm_time branch, not a SET_ONGROUND).
         if ((clip & 1) == 0)
             player.Flags &= ~EntFlags.OnGround;
-        else
-            player.Flags |= EntFlags.OnGround;
 
         if ((clip & 8) != 0) // teleport
             return;

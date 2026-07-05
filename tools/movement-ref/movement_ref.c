@@ -483,8 +483,11 @@ static void WalkMove(pent *e, const mparams *mp, float dt, int applygravity){
         ctrace tr = world_trace(g_world, up, e->mins, e->maxs, down);
         if(tr.fraction<1.0f && tr.plane_normal.z>ONGROUND_NORMAL_Z) clip|=1;
     }
+    /* clear-only (walk.qc:57-58): FL_ONGROUND is granted solely by FlyMove's floor collision
+     * (which clips velocity.z into the plane) or by stepdown==2 — never by the downtrace, whose
+     * clip|=1 merely keeps an existing on-ground state from being cleared. (QC's `else` arm here
+     * is the dead sv_wallclip pm_time branch, not a SET_ONGROUND.) */
     if(!(clip&1)) e->flags &= ~FL_ONGROUND;
-    else e->flags |= FL_ONGROUND;
 
     if(clip&8) return;
     if(e->flags&FL_WATERJUMP) return;
