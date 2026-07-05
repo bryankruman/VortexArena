@@ -958,6 +958,33 @@ nudge-out-of-solid; see #9), **#14** flag jitter (user-deferred).
   rising-edge-triggers (a machinegun burst plays fire once for a SPECTATOR) — needs a shot counter in the
   wepent block; deferred.
 
+### r9/r9b addendum — fire anims + see-through weapons re-reported (HAGAR + DEVASTATOR screenshots); all FIXED
+- [x] **Fire anims STILL dead after r8 — three deeper roots (`ea2a6f3`) + one trap (`b082c30`):**
+  (1) invisible-hand IQM weapons (shotgun/uzi/nex/arc…) DISCARDED the animated h_ rig and rendered the
+  static v_ model at a baked offset — structurally nothing could animate; the equip now renders the LIVE
+  rig with the v_ gun on a `BoneAttachment3D` at the animated `weapon` bone (Base
+  `setattachment(weaponchild, this, "weapon")` — the fire clip pumps the BONE, the gun rides it).
+  (2) The DPM rigs (h_electro/h_crylink/h_rl/h_gl/h_hagar) named their nameless framegroups `anim_0..3` —
+  the r7 slot fix covered IqmBuilder only; DpmBuilder now shares the fire/fire2/idle/reload slot contract.
+  (3) The v_ models attached to the rig are themselves skeletal IQMs with ZERO animations and bring an
+  EMPTY AnimationPlayer — `FindChild`'s first match handed ViewModel the empty one; new
+  `FindAnimationPlayerWithClips` prefers the clip-carrying player. **Chain PROBE-VERIFIED** end to end via
+  a scripted-fire camera-trace run (injected attack buttons): per-shot AttackFinished edge →
+  `PlayFireClip -> 'fire' | anims: fire,fire2,idle,reload`.
+- [x] **See-through weapon geometry (user screenshots = the HAGAR and the DEVASTATOR — both DPM rigs):**
+  DPM triangles are wound OPPOSITE to the IQM/MD3 convention relative to Godot's `cull_back` — every DPM
+  weapon rendered INSIDE-OUT (front faces culled, interiors visible): the devastator's hollow mid-body,
+  the hagar's chrome-ish interior glints, the electro's white patches — one bug, three looks. DpmBuilder
+  now emits each triangle as (0,2,1). Capture-verified: solid devastator, readable side decal. (The r9b
+  commit message misattributed the hagar screenshot as "mortar" — the mortar/h_gl is the same DPM family
+  and carries the same fix, but the pictured gun was the hagar.)
+  **WATCH next playtest:** the flip affects ALL DPM models (monsters included) — anything that previously
+  looked right was silently compensating; eyeball a monster if one shows up.
+- [x] **Team tint (progress confirmed by user — "now I can see colors"):** `LocalShownamesTeam` returns the
+  NUM_TEAM color CODE (blue=13) where `ModelTint.TeamColor` wants the colormap nibble (1..4) — the #8
+  code-vs-nibble trap; blue guns never tinted. Normalized via the now-public
+  `ClientWorld.NormalizeTeamColormap` at the viewmodel glow site.
+
 ### 39. Electro explosion FX — plumbing VERIFIED WIRED; look re-judge after #38
 - [~] **Status:** Investigated (round 7) — the suspected gaps DON'T exist: effectinfo
   `lightradius/lightcolor/lightradiusfade` rows ARE parsed (EffectInfoParser) and spawned as pooled
