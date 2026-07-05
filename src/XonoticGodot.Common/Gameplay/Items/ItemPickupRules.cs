@@ -658,14 +658,14 @@ public static class ItemPickupRules
     /// </summary>
     public static void ScheduleRespawnIn(Entity item, float t)
     {
-        // QC items.qc:329 — the visible-countdown gate is (set_itemstime || MUTATOR_CALLHOOK(Item_ScheduleRespawn,
-        // e, t)) && (t - ITEM_RESPAWN_TICKS) > 0. The port already routes EVERY long respawn (> ITEM_RESPAWN_TICKS)
-        // through the countdown-waypoint path (it doesn't gate on the itemstime set), so the mutator hook can only
-        // KEEP an item on the countdown path, never pull one off it — firing it here makes the Overkill
-        // Item_ScheduleRespawn hook live (it forces its surviving Mega/Big health+armor onto the waypoint path,
-        // which they already take) without altering the existing non-mutator behavior.
-        _ = MutatorHooks.FireItemScheduleRespawn(item, t);
-        if (t - RespawnTicks > 0f)
+        // QC items.qc:328-329: route the item onto the respawn-COUNTDOWN (waypoint) path only when
+        // (set_itemstime || the Item_ScheduleRespawn mutator hook) && (t - ITEM_RESPAWN_TICKS) > 0. set_itemstime
+        // = Item_ItemsTime_Allow(itemdef) || superweapons — i.e. powerups, Mega/Big Health+Armor, superweapons.
+        // Every OTHER pickup (small/medium health+armor, ammo, ordinary weapons) takes the plain no-waypoint
+        // respawn path, so e.g. a small health shard does NOT get an "ITEM" respawn marker (playtest-bugs #12).
+        bool setItemsTime = ItemstimeMutator.IsItemsTimeAllowed(item);
+        bool hook = MutatorHooks.FireItemScheduleRespawn(item, t);
+        if ((setItemsTime || hook) && t - RespawnTicks > 0f)
         {
             item.NextThink = Now + System.MathF.Max(0f, t - RespawnTicks);
             item.ScheduledRespawnTime = item.NextThink + RespawnTicks;

@@ -759,6 +759,16 @@ public sealed class ClientManager
 
         SpawnSystem.PutPlayerInServer(p, sp.Value, warmup: IsWarmup?.Invoke() ?? false);
 
+        // A (re)spawned player is ALIVE and no longer awaiting respawn — clear the dead-state respawn fields so the
+        // networked STAT(RESPAWN_TIME) reads 0 (alive). DeadPlayerThink stops running once the player is alive, so
+        // without this the last value it wrote (±respawn_time) stays non-zero and the client reads deadNow forever:
+        // the death scoreboard + respawn UI stick "on" after respawn (was masked while the scoreboard mis-rendered
+        // as a 64×64 box; #17). Mirrors the PutObserverInServer clear.
+        p.RespawnTime = 0f;
+        p.RespawnTimeMax = 0f;
+        p.RespawnFlags = RespawnFlag.None;
+        p.RespawnTimeStat = 0f;
+
         // [T35] QC PutClientInServer: this.flags = FL_CLIENT | FL_PICKUPITEMS. A spawned, live player can pick
         // up world items — Item_Touch's first gate (CanPickupItems) only passes for a flagged player, so an
         // observer/projectile never collects items. Set here on every spawn path; cleared on disconnect/observe.

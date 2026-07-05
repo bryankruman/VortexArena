@@ -275,6 +275,10 @@ public static class MapObjectsRegistry
         // Domination control points (common/gametypes/gametype/domination/sv_domination.qc dom_controlpoint).
         SpawnFuncs.Register("dom_controlpoint", GametypeObjectiveSpawns.DomControlPoint);
         SpawnFuncs.Register("team_dom_point", GametypeObjectiveSpawns.DomControlPoint); // legacy classname alias
+        // dom_team: team-definition data holder (carries a per-team control-point model). Route it through the sink
+        // so it's RETIRED (never spawns/renders) — without this its map `model` key made it a stray dom_*.md3 model
+        // wrongly visible on the map in the wrong gametype (playtest #20: Stormkeep DM showed a dom_* cluster).
+        SpawnFuncs.Register("dom_team", GametypeObjectiveSpawns.DomTeam);
         // Race checkpoints + penalty zones (common/gametypes/gametype/race/sv_race.qc + server/race.qc).
         SpawnFuncs.Register("trigger_race_checkpoint", GametypeObjectiveSpawns.RaceCheckpoint);
         SpawnFuncs.Register("trigger_race_penalty", GametypeObjectiveSpawns.RacePenalty);
@@ -570,6 +574,13 @@ public static class GametypeObjectiveSpawns
 
     // Domination control point (the owning team starts neutral; the map may set an initial team via fields).
     public static void DomControlPoint(Entity e) => Emit(e, "dom_controlpoint", (int)e.Team);
+
+    // Domination TEAM DEFINITION (dom_team): a data holder that in Base carries a team's control-point model
+    // (dom_red/blue/…​md3). The port doesn't consume these — but the lump copies their `model` key onto the edict,
+    // so WITHOUT routing them through the sink they survive as live, networked, RENDERED models (a cluster of
+    // dom_*.md3 on a platform, wrongly visible in every mode incl. DM — playtest #20). Emit so the sink retires
+    // them: removed in non-dom (default arm), and the Domination arm also retires them (never a placement).
+    public static void DomTeam(Entity e) => Emit(e, "dom_team", (int)e.Team);
 
     // Race checkpoint + penalty zone (checkpoint index / penalty seconds come from the edict fields).
     public static void RaceCheckpoint(Entity e) => Emit(e, "trigger_race_checkpoint", Teams.None);

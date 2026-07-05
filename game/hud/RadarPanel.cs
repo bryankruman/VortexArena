@@ -409,7 +409,17 @@ public partial class RadarPanel : HudPanel
         {
             if (mini is not null)
             {
-                float x0 = MapMinXY.X, y0 = MapMinXY.Y, x1 = MapMaxXY.X, y1 = MapMaxXY.Y;
+                // QC get_mi_min_max_texcoords (util.qc:770-790): the shipped minimap image is a SQUARE that
+                // letterboxes the (usually non-square) map — it covers [mi_picmin, mi_picmax] = the raw map bounds
+                // extended on the SHORTER axis to a centered square, then padded 1/64 on each side. The image maps
+                // [0,1] onto THAT square (radarmap.qc:227, image.mins = mi_picmin), so draw the full-[0,1] quad over
+                // the square PIC bounds — not the raw map bounds. Drawing the whole image over the raw (non-square)
+                // bounds stretched the art on the short axis and drifted it off the blips (playtest-bugs #18). The
+                // blips keep using the raw bounds (their world→pixel scale is already correct), so the two now agree.
+                float exX = MapMaxXY.X - MapMinXY.X, exY = MapMaxXY.Y - MapMinXY.Y;
+                float sqHalf = Mathf.Max(exX, exY) * (0.5f + 1f / 64f); // square half-span + QC's 1/64 padding
+                float mcx = (MapMinXY.X + MapMaxXY.X) * 0.5f, mcy = (MapMinXY.Y + MapMaxXY.Y) * 0.5f;
+                float x0 = mcx - sqHalf, y0 = mcy - sqHalf, x1 = mcx + sqHalf, y1 = mcy + sqHalf;
                 var pts = new[] { WorldToScreen(x0, y0), WorldToScreen(x1, y0), WorldToScreen(x1, y1), WorldToScreen(x0, y1) };
                 if (AllFinite(pts))
                 {

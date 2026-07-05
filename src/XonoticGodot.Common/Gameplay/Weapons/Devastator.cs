@@ -188,7 +188,10 @@ public sealed class Devastator : Weapon
     // W_Devastator_Attack — spawn an accelerating, guidable, detonatable rocket. devastator.qc
     private void Attack(Entity actor, WeaponSlot slot, WeaponSlotState st, bool secondary)
     {
-        actor.TakeResource(AmmoType, Cvars.Ammo);
+        // QC W_Devastator_Attack: W_DecreaseAmmo (devastator.qc:286) — NOT a raw resource drain. The shared
+        // DecreaseAmmo honors IT_UNLIMITED_AMMO (g_weaponarena) and the reload clip; the old direct TakeResource
+        // kept draining under unlimited ammo, driving the rocket count NEGATIVE in the ammo panel (playtest #25).
+        DecreaseAmmo(actor, slot, Cvars.Ammo);
 
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
         ShotInfo shot = WeaponFiring.SetupShot(actor, forward, new Vector3(-3, -3, -3), new Vector3(3, 3, 3), recoil: 5f);
