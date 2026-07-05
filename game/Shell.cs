@@ -20,10 +20,13 @@ namespace XonoticGodot.Game;
 /// applies the saved settings to the engine, and wires the <see cref="MenuCommand"/> host hooks + the menu's
 /// StartGame/Connect callbacks to real actions.
 ///
-/// Pause model: opening the in-game menu pauses the scene tree. The shell and its menu layer are
-/// <see cref="Node.ProcessModeEnum.Always"/> so they keep running (and the shell keeps receiving Escape) while
-/// the match — created <see cref="Node.ProcessModeEnum.Pausable"/> — freezes. That cleanly stops movement,
-/// the sim, and mouse-look without per-system pause flags.
+/// Pause model (#19 auto-pause): <see cref="SyncAutoPause"/> sets <c>GetTree().Paused</c> for a SOLO local game
+/// while the pause menu / console is open or the window is unfocused. The shell and its menu layer are
+/// <see cref="Node.ProcessModeEnum.Always"/> so they keep running (Escape, the menu UI, the pause release).
+/// NOTE: <see cref="XonoticGodot.Game.Net.NetGame"/> is ALSO deliberately Always — pausing its subtree would
+/// starve the ENet pump and time the link out — so the tree pause does NOT stop its _Process; instead NetGame
+/// freezes the authoritative sim itself by driving the server tick with dt=0 while <c>GetTree().Paused</c>
+/// (transport keeps pumping, zero fixed ticks run). The ModelViewer (no netcode) is plain Pausable.
 /// </summary>
 public partial class Shell : Node
 {
@@ -59,7 +62,8 @@ public partial class Shell : Node
     private ModelViewer? _viewer;
     private XonoticGodot.Game.Net.NetGame? _netGame;
     private ConsoleOverlay _console = null!;
-    private bool _paused;
+    private bool _paused;                    // the in-game (pause) menu is open
+    private bool _windowFocused = true;      // OS window focus, tracked from _Notification (drives auto-pause)
     private CanvasLayer? _loadingLayer;
     private LoadingScreen? _loadingScreen;
 
@@ -300,9 +304,17 @@ public partial class Shell : Node
         // delivers both to every node, and SetFocused → Apply is idempotent, so catching either keeps us
         // correct regardless of which a given platform emits.
         if (what == NotificationWMWindowFocusOut || what == NotificationApplicationFocusOut)
+        {
+            _windowFocused = false;
             MouseCapture.SetFocused(false);
+            SyncAutoPause();   // #19: freeze a solo local game when the window loses focus / is minimized
+        }
         else if (what == NotificationWMWindowFocusIn || what == NotificationApplicationFocusIn)
+        {
+            _windowFocused = true;
             MouseCapture.SetFocused(true);
+            SyncAutoPause();   // ...and resume it on regaining focus
+        }
     }
 
     // -------------------------------------------------------------------------------------------------
@@ -410,25 +422,73 @@ public partial class Shell : Node
         MouseCapture.SetWantCapture(false);
     }
 
-    /// <summary>Open the in-game menu: show the pause screen over the frozen match and free the mouse.</summary>
+    /// <summary>Open the in-game menu: show the pause screen and free the mouse. The match freezes ONLY for a
+    /// solo local game (see <see cref="SyncAutoPause"/>); with remote clients connected it keeps running.</summary>
     private void OpenPauseMenu()
     {
         _menu.ShowScreen(new PauseMenu());
         _menu.Visible = true;
         _paused = true;
-        GetTree().Paused = true;
         MouseCapture.SetWantCapture(false);
+        SyncAutoPause(); // freeze the sim iff this is a solo local listen game
     }
 
-    /// <summary>Resume the match: hide the menu, recapture the mouse, unfreeze the tree.</summary>
+    /// <summary>Resume the match: hide the menu, recapture the mouse, and release any auto-pause.</summary>
     private void Resume()
     {
         if (!MatchRunning)
             return;
         _menu.Visible = false;
         _paused = false;
-        GetTree().Paused = false;
         MouseCapture.SetWantCapture(true);
+        SyncAutoPause();
+    }
+
+    /// <summary>QoL auto-pause (#19): freeze a SOLO local game while the player can't act on it — the pause menu
+    /// is open, the console is open, or the window is unfocused/minimized. Gated on hosting a listen server with
+    /// NO remote clients (a real multiplayer server must keep running for them) and on <c>cl_autopause</c> != 0
+    /// (default on). The Shell owns <c>GetTree().Paused</c>: the match is <see cref="Node.ProcessModeEnum.Pausable"/>
+    /// while the Shell is <see cref="Node.ProcessModeEnum.Always"/>, so this keeps running to RELEASE the pause.</summary>
+    private void SyncAutoPause()
+    {
+        var cv = MenuState.Cvars;
+        // Treat an unset cvar as ON (default-enabled) so no registration is required for the default behaviour.
+        bool cvarOn = string.IsNullOrEmpty(cv.GetString("cl_autopause")) || cv.GetFloat("cl_autopause") != 0f;
+        bool eligible = MatchRunning
+            && _loadingScreen is null                        // not mid-load: pausing then would stall the handshake
+            && (_netGame?.IsListenServer ?? false)
+            && !(_netGame?.HasRemoteClients ?? false)
+            && cvarOn;
+        bool cantAct = _paused || ConsoleState.IsOpen || !_windowFocused;
+        bool want = eligible && cantAct;
+        if (GetTree().Paused != want)
+            GetTree().Paused = want;
+    }
+
+    public override void _Process(double delta)
+    {
+        // #28: derive window focus from OS TRUTH every frame (not just the notification edges). A window LAUNCHED
+        // into the background misses its focus edges entirely — Godot's flag sits stale-TRUE, the spawn-frame
+        // capture then set the system-wide ClipCursor confine, and the pointer stayed trapped in the game's window
+        // border while ANOTHER app was foreground, with no edge ever arriving to release it. Polling
+        // WindowReallyFocused (Godot flag AND Win32 GetForegroundWindow) both releases such a confine within a
+        // frame (SetFocused → Apply) and lets the #19 auto-pause treat a never-focused background launch as
+        // unfocused (paused until the player actually clicks in). Skipped headless: no cursor to manage, and the
+        // headless DisplayServer's focus answer must never pause an automated smoke/CI run.
+        if (DisplayServer.GetName() != "headless")
+        {
+            bool osFocused = MouseCapture.WindowReallyFocused();
+            if (osFocused != _windowFocused)
+            {
+                _windowFocused = osFocused;
+                MouseCapture.SetFocused(osFocused);
+            }
+        }
+
+        // Per-frame so console open/close and a remote client joining/leaving (which changes eligibility) are
+        // picked up even without a discrete edge — e.g. a remote joins while the host sits in the menu → release
+        // the pause so they aren't frozen. Shell is ProcessModeEnum.Always, so this runs even while paused.
+        SyncAutoPause();
     }
 
     /// <summary>True while a networked match (<see cref="XonoticGodot.Game.Net.NetGame"/> — listen server or
@@ -495,8 +555,8 @@ public partial class Shell : Node
         TeardownGame();
         ShowLoadingScreen(address);
 
-        // Hide the menu (and unfreeze the tree, capture the mouse) NOW so the loading screen is the only
-        // thing on screen during the blocking connect — not the menu frozen behind the overlay.
+        // Hide the menu (and unfreeze the tree) NOW so the loading screen is the only thing on screen during the
+        // blocking connect — not the menu frozen behind the overlay. The cursor stays free until the player spawns.
         EnterMatchView();
 
         var net = new XonoticGodot.Game.Net.NetGame
@@ -531,8 +591,8 @@ public partial class Shell : Node
         TeardownGame();
         ShowLoadingScreen(config.Map ?? "");
 
-        // Hide the menu (and unfreeze + capture mouse) NOW so the loading screen is the only thing on
-        // screen during the blocking load, not the menu frozen behind it.
+        // Hide the menu (and unfreeze) NOW so the loading screen is the only thing on screen during the blocking
+        // load, not the menu frozen behind it. The cursor stays free until the player spawns.
         EnterMatchView();
 
         // Apply the chosen match limits to the shared cvars so the hosted world reads them.
@@ -604,13 +664,16 @@ public partial class Shell : Node
         return string.IsNullOrWhiteSpace(n) ? "player" : n;
     }
 
-    /// <summary>Hide the menu, capture the mouse, and unfreeze the tree for an active (networked) match.</summary>
+    /// <summary>Hide the menu and unfreeze the tree for a match that is about to load. The cursor is left FREE:
+    /// this runs at the START of the load (the loading screen is the only thing on screen), and capturing the
+    /// pointer for a whole windowed map-load would trap it off-screen. NetGame grabs the cursor for mouse-look the
+    /// frame the local player actually spawns (its per-frame reassert, gated on the loading screen closing).</summary>
     private void EnterMatchView()
     {
         _menu.Visible = false;
         _paused = false;
         GetTree().Paused = false;
-        MouseCapture.SetWantCapture(true);
+        MouseCapture.SetWantCapture(false);
     }
 
     // -------------------------------------------------------------------------------------------------

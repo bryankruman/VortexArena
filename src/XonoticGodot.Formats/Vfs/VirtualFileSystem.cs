@@ -372,6 +372,21 @@ public sealed class VirtualFileSystem : IDisposable
         yield return stem + ".dds";
         yield return stem + ".tga.dds";
 
+        // DP imageformats_other: a bare, un-pathed model-shader name (e.g. a_shells.md3's "Box01"
+        // surface, shader "shellsammo", which has no .shader entry) is also searched under
+        // textures/<name> — that is where the real file lives (textures/shellsammo.tga). Only for stems
+        // not already rooted at a known asset dir, to avoid a double textures/textures/… probe.
+        // (playtest-bugs #2)
+        if (!stem.StartsWith("textures/", System.StringComparison.Ordinal)
+            && !stem.StartsWith("gfx/", System.StringComparison.Ordinal)
+            && !stem.StartsWith("locale/", System.StringComparison.Ordinal))
+        {
+            yield return "textures/" + stem + ".tga";
+            yield return "textures/" + stem + ".png";
+            yield return "textures/" + stem + ".jpg";
+            yield return "dds/textures/" + stem + ".dds";
+        }
+
         // Legacy fallbacks.
         yield return stem + ".pcx";
         yield return stem + ".wal";

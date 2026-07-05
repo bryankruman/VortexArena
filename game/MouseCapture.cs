@@ -44,12 +44,32 @@ public static class MouseCapture
         Apply();
     }
 
+    /// <summary>True when the game window is REALLY the focused/foreground window, per BOTH Godot's focus flag
+    /// AND (on Windows) the OS itself. The Win32 cross-check matters for a window LAUNCHED into the background
+    /// (a scripted <c>--host</c> while the user works in another app): Godot's internal flag can sit stale-TRUE
+    /// (initialized focused; no <c>WM_KILLFOCUS</c> ever arrives because real focus was never gained), which let
+    /// the spawn-frame capture set the system-wide <c>ClipCursor</c> confine and trap the pointer inside the
+    /// game's window border while ANOTHER app was foreground (playtest #28). <see cref="Shell"/> polls this per
+    /// frame so a stale confine also releases without needing a focus edge.</summary>
+    public static bool WindowReallyFocused() => DisplayServer.WindowIsFocused() && OsForeground();
+
+    private static bool OsForeground()
+    {
+        if (!System.OperatingSystem.IsWindows())
+            return true;
+        long h = DisplayServer.WindowGetNativeHandle(DisplayServer.HandleType.WindowHandle);
+        return h == 0 || GetForegroundWindow() == (nint)h; // 0 = no native handle (headless) → no cross-check
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern nint GetForegroundWindow();
+
     private static void Apply()
     {
-        // Release aggressively: either the focus-out edge OR the live query saying "not focused" is enough to
-        // free the pointer. The live query also covers a background launch, where want-capture can be requested
-        // before any focus-out edge has been delivered.
-        bool focused = _focused && DisplayServer.WindowIsFocused();
+        // Release aggressively: the focus-out edge, the live Godot query, OR the OS foreground cross-check saying
+        // "not focused" is enough to free the pointer. The live checks also cover a background launch, where
+        // want-capture can be requested before any focus edge has been delivered.
+        bool focused = _focused && WindowReallyFocused();
         Input.MouseModeEnum target = _wantCapture && focused
             ? Input.MouseModeEnum.Captured
             : Input.MouseModeEnum.Visible;

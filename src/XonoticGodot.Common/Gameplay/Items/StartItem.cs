@@ -283,10 +283,14 @@ public static class StartItem
         }
         else
         {
-            item.MoveType = MoveType.Toss;
-            // QC: DropToFloor_QC_DelayedInit(this) — settle onto the floor. The deterministic sim's TOSS
-            // integrator settles it next frame; an explicit immediate drop isn't required for touchability
-            // (the bbox is already linked at the placed origin). (Waypoint spawn is bot-nav, skipped.)
+            // QC DropToFloor_QC_DelayedInit(this): settle the item onto the floor at spawn. Do the drop
+            // EXPLICITLY (not via the TOSS integrator) — TOSS settles the FULL bbox at first contact and, on a
+            // start-solid placement, leaves a wide item like the mega health embedded in the floor. The Base drop
+            // traces a SMALL Q3 box straight down so it finds the floor even where the full ±30 hull starts solid,
+            // then rests the item there before the first snapshot (playtest-bugs #9). (Waypoint spawn is bot-nav,
+            // skipped.)
+            DropItemToFloor(item);
+            item.MoveType = MoveType.Toss; // still TOSS so physical-items can knock it / it rests normally
         }
 
         item.SpawnShieldExpire = 1f; // live marker
@@ -308,6 +312,32 @@ public static class StartItem
             item.Target = "###item###";
 
         return true;
+    }
+
+    /// <summary>
+    /// QC <c>DropToFloor_QC</c> for a world item (world.qc): drop the item straight down onto the floor at spawn.
+    /// Traces a SMALL Q3 box (±15 wide, <c>mins.z .. mins.z+30</c> tall) rather than the item's full hull, so it
+    /// finds the floor even where the full ±30 bbox starts solid, then rests the item at the impact. Runs at
+    /// spawn (before the first snapshot) so the client's first origin is already settled — the TOSS integrator
+    /// alone leaves a wide item (mega health) embedded on a start-solid placement (playtest-bugs #9). Keeps the
+    /// placed origin if even the small box starts solid (QC's <c>trace_startsolid</c> guard).
+    /// </summary>
+    private static void DropItemToFloor(Entity item)
+    {
+        if (Api.Services is null)
+            return;
+        var start = item.Origin;
+        var dropMins = new System.Numerics.Vector3(-15f, -15f, item.Mins.Z);
+        var dropMaxs = new System.Numerics.Vector3(15f, 15f, item.Mins.Z + 30f);
+        var end = start - new System.Numerics.Vector3(0f, 0f, 4096f); // QC droptofloor traces far down for the floor
+        // MOVE_NORMAL (not NOMONSTERS): Base's droptofloor clips against ALL solid entities, incl. SOLID_BBOX
+        // model/prop platforms — not just BSP + brush models. NOMONSTERS skipped a bbox surface a mapper item
+        // rested on (e.g. the Stormkeep mega health), so the item fell THROUGH it to the BSP floor below and
+        // clipped in. At spawn the only extra SOLID_BBOX hits are other items (rare, and Base-faithful).
+        TraceResult tr = Api.Trace.Trace(start, dropMins, dropMaxs, end, MoveFilter.Normal, item);
+        if (tr.StartSolid)
+            return; // embedded even for the small box — keep the placed origin (QC keeps trace_endpos == start)
+        Api.Entities.SetOrigin(item, tr.EndPos);
     }
 
     // =====================================================================================

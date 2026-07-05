@@ -235,9 +235,6 @@ public partial class WeaponsPanel : HudPanel
             return;
         }
 
-        // Background frame (skin 9-slice; no-op for luma where weapons bg may be set). Faded by bgAlpha.
-        DrawBackgroundFaded(bgAlpha);
-
         float pad = Cfg.Padding;
         float innerX = pad, innerY = pad;
         float innerW = Mathf.Max(1f, Size2.X - pad * 2f);
@@ -253,6 +250,17 @@ public partial class WeaponsPanel : HudPanel
         float gridH = rows * cellH;
         float originX = innerX + (innerW - gridW) * 0.5f;
         float originY = innerY + (innerH - gridH) * 0.5f;
+
+        // Background frame (skin 9-slice; faded by bgAlpha). playtest-bugs #11: draw it hugging the grid, not the
+        // full Size2, so the bg auto-sizes to the shown weapons (QC HUD_Weapons onlyowned shrinks panel_size to
+        // columns*weapon_size + padding). onlyOwned → the fitted rect; the ghost-all mode keeps the full panel.
+        if (bgAlpha > 0.02f)
+        {
+            Rect2 bgRect = onlyOwned
+                ? new Rect2(originX - pad, originY - pad, gridW + 2f * pad, gridH + 2f * pad)
+                : new Rect2(Vector2.Zero, Size2);
+            DrawBackgroundRect(bgRect, bgAlpha);
+        }
 
         // ---- selection highlight target + slide animation (QC weapon_pos_current) ----
         int selIndex = -1;
@@ -586,16 +594,6 @@ public partial class WeaponsPanel : HudPanel
     private bool DrawSkinPicMod(string bareName, Rect2 local, Color modulate)
         => DrawSkinPicFirst(local, modulate,
             $"gfx/hud/{HudSkin.SkinName}/{bareName}", $"gfx/hud/default/{bareName}");
-
-    /// <summary>Draw the panel background frame at an explicit alpha (timeout-faded bg).</summary>
-    private void DrawBackgroundFaded(float bgAlpha)
-    {
-        // The base DrawBackground() uses LiveBgAlpha; when the timeout fade differs we approximate by only
-        // drawing the frame when it's substantially visible (the frame's own alpha already tracks LiveBgAlpha;
-        // the extra timeout factor is small). Draw nothing when faded out.
-        if (bgAlpha <= 0.02f) return;
-        DrawBackground();
-    }
 
     /// <summary>Accuracy tint (QC <c>Accuracy_GetColor</c>: red at 0% → yellow mid → green at 100%).</summary>
     private static Color AccuracyColor(float acc, float alpha)

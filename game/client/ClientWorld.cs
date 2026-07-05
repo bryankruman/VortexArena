@@ -1356,6 +1356,17 @@ public partial class ClientWorld : Node3D
                     st.Effects.Tint.Valid = false;
                 }
             }
+            else if (IsCtfFlagModel(e))
+            {
+                // playtest-bugs #8: the CTF flag banner (banner.tga + banner_shirt.tga) auto-compiles to the
+                // team-colorable PlayerSkinShader with shirt_color defaulting to black (→ the flag reads gray).
+                // Drive the team colormap onto it exactly like a player so the banner shirt-tints red/blue/yellow/
+                // pink (and the glow picks up the team glowmod). Base: flag.colormap |= RENDER_COLORMAPPED
+                // (sv_ctf.qc:1387-1389); the networked team rides Entity.Team (ClientEntityView). NOTE: Entity.Team
+                // is the NUM_TEAM_* color CODE (Red=4/Blue=13/…), but ModelTint.TeamColor wants the colormap low
+                // nibble (1=red..4=pink) — passing the raw code rendered a red flag PINK (TeamColor(4)=pink).
+                ModelTint.ApplyColormap(node, NormalizeTeamColormap((int)e.Team));
+            }
 
             // Cosmetic add-on layer (csqcmodel_hooks.qc add-ons): the Frozen ice block, the held buff_* glow, and
             // the nade spawn-loc marker. Attach off the EntityNode — it already syncs origin/yaw each frame, so the
@@ -1666,7 +1677,7 @@ public partial class ClientWorld : Node3D
         int own = (int)e.Team;
         AppearanceContext? ctx = AppearanceProvider?.Invoke();
         if (ctx is null)
-            return own;
+            return NormalizeTeamColormap(own);
 
         // QC cl_survival.qc NET_HANDLE colormap override + ForcePlayercolors_Skip (CBC_ORDER_LAST): once a Survival
         // round is live/resolved, every known player wears the hardcoded survival palette — red if the client knows
@@ -1690,7 +1701,10 @@ public partial class ClientWorld : Node3D
         int forced = CsqcModelAppearance.ResolveForcedColormap(
             enabled, forceMyColors, clColor, forceUnique, isLocal, ctx.Is1v1, ctx.Teamplay, ctx.MyTeam,
             cm, ctx.PlayerLocalNum, e.Index, ctx.TeamCount);
-        return forced != 0 ? forced : own;
+        // playtest-bugs #8: `own` is Entity.Team = the NUM_TEAM_* color CODE (4/13/12/9), but ModelTint wants the
+        // colormap nibble — normalize it (team codes → 1..4) so team PLAYERS tint the right color, not pink. A
+        // forced (packed >=1024) colormap is already in colormap form, so it flows through untouched.
+        return forced != 0 ? forced : NormalizeTeamColormap(own);
     }
 
     private static float Now() => Api.Services?.Clock?.Time ?? 0f;
@@ -1996,6 +2010,32 @@ public partial class ClientWorld : Node3D
             node.AddChild(ModelLoader.BuildModel(md3, 0, Assets));
         }
     }
+
+    /// <summary>
+    /// True when this networked entity is a CTF flag (its resolved model lives under models/ctf/flag*). Its banner
+    /// texture (banner.tga) carries a <c>banner_shirt.tga</c> companion, so AssetSystem auto-compiles it to the
+    /// team-colorable <see cref="XonoticGodot.Game.Loaders.PlayerSkinShader"/> — the flag just needs the team
+    /// colormap driven onto it like a player (playtest-bugs #8).
+    /// </summary>
+    private static bool IsCtfFlagModel(Entity e) =>
+        e.Model is { } m && m.Contains("ctf/flag", System.StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Normalize a networked colormap / <see cref="Entity.Team"/> for <see cref="ModelTint"/>: it holds Xonotic's
+    /// NUM_TEAM_* color CODE (<see cref="XonoticGodot.Common.Gameplay.Teams"/>: Red=4/Blue=13/Yellow=12/Pink=9),
+    /// but <c>ModelTint.ColormapColors</c>/<c>TeamColor</c> were written for the colormap LOW NIBBLE (1=red..4=pink).
+    /// Map the four team codes to their nibble so a team entity (player OR flag) tints the RIGHT team color; leave
+    /// everything else unchanged — 0 (FFA/none) and a packed FORCECOLORS value (&gt;=1024) both flow through as-is.
+    /// (playtest-bugs #8: a red flag/player rendered PINK because code 4 hit TeamColor(4)=pink.)
+    /// </summary>
+    private static int NormalizeTeamColormap(int cm) => cm switch
+    {
+        XonoticGodot.Common.Gameplay.Teams.Red => 1,    // 4  → 1 red
+        XonoticGodot.Common.Gameplay.Teams.Blue => 2,   // 13 → 2 blue
+        XonoticGodot.Common.Gameplay.Teams.Yellow => 3, // 12 → 3 yellow
+        XonoticGodot.Common.Gameplay.Teams.Pink => 4,   // 9  → 4 pink
+        _ => cm,
+    };
 
     private void UpdateAnimatorState(Entity entity)
     {

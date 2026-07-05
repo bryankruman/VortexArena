@@ -368,16 +368,18 @@ public sealed partial class ShellCasings : Node3D
 
         /// <summary>
         /// Play the Base <c>Casing_Touch</c> bounce sound: a random <c>brass*</c>/<c>casings*</c> impact when the
-        /// casing hits a surface at speed (<c>vdist(velocity,>,50)</c>), throttled to once per 0.2s (the QC
-        /// <c>nextthink</c> gate). Uses the pre-bounce velocity, as the QC touch fires with the incoming velocity.
+        /// casing hits a surface at speed (<c>vdist(velocity,>,50)</c>). Base bumps <c>nextthink = time + 0.2</c>
+        /// on EVERY touch, so a casing grinding on the ground (touching every tic) keeps pushing the throttle
+        /// ahead of <c>time</c> — the sound fires once on the real bounce and then stays silent, instead of
+        /// re-triggering every 0.2s until the casing despawns (playtest-bugs #1). Uses the pre-bounce velocity,
+        /// as the QC touch fires with the incoming velocity.
         /// </summary>
         private void BounceCasingSound()
         {
-            if (VelocityQuake.Length() > 50f && _age >= _nextSoundAt)
-            {
+            bool ready = _age >= _nextSoundAt;
+            _nextSoundAt = _age + 0.2f; // bump on EVERY touch (QC nextthink), so continuous contact self-silences
+            if (ready && VelocityQuake.Length() > 50f)
                 SoundHook?.Invoke(RandomImpactSound(Kind), Coords.ToQuake(Position));
-                _nextSoundAt = _age + 0.2f;
-            }
         }
 
         /// <summary>

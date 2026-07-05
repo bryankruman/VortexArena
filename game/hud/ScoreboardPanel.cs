@@ -791,10 +791,15 @@ public partial class ScoreboardPanel : HudPanel
             if (_fadeAlpha <= 0f && !_active) Visible = false;
             QueueRedraw();
         }
-        else if (_active && !Visible)
+        else if (_active)
         {
-            Visible = true;
-            QueueRedraw();
+            // Faded fully in and stable. Reveal if needed, and — since the panel is NOT IsDynamic — force a repaint
+            // each frame while the local respawn countdown is live so DrawRespawn re-runs and the seconds actually
+            // tick (#23: the countdown was frozen because nothing re-drew the otherwise-static board between
+            // score-version changes; RespawnStat/RespawnServerTime are fed every frame but their setters don't
+            // QueueRedraw). Cheap — only while the local player is dead with the board up.
+            if (!Visible) { Visible = true; QueueRedraw(); }
+            else if (RespawnStat != 0f) QueueRedraw();
         }
     }
 

@@ -90,6 +90,11 @@ public sealed class ServerNet : IDisposable
     private readonly Dictionary<int, PeerState> _peers = new();      // by Godot peer id
     private readonly Dictionary<Player, PeerState> _byPlayer = new(ReferenceEqualityComparer.Instance);
 
+    /// <summary>Number of connected ENet peers (incl. not-yet-handshaked ones). On a listen server the local
+    /// host is one peer, so <c>&gt; 1</c> means at least one REMOTE client is connected. Peer connect/disconnect
+    /// run on the Godot main thread (the transport poll), so this is safe to read from the main-thread UI.</summary>
+    public int ConnectedPeerCount => _peers.Count;
+
     // --- snapshot delta-compression + movevar replication + teleport detection ---
     private ushort _snapshotSeq;                                     // global snapshot sequence (clients ack it)
     private readonly Dictionary<int, NetEntityState> _entityScratch = new(); // reused per-tick entity set
@@ -117,6 +122,8 @@ public sealed class ServerNet : IDisposable
 
     // this tick's scoreboard snapshot (built once, broadcast to all; per-client gated by _scoreVersion).
     private readonly List<XonoticGodot.Net.ScoreRowWire> _scoreRows = new();
+    // #22: last roster/status signature — a change bumps the score version so the row set re-sends on join/leave.
+    private long _lastRosterSig = long.MinValue;
     private readonly List<(int team, int score)> _scoreTeams = new();
     // QC the race/CTS rankings table (Scoreboard_Rankings_Draw): best-first (time, holder) for this map,
     // captured from the persistent RaceRecords DB; empty in non-race modes.
@@ -2604,12 +2611,33 @@ public sealed class ServerNet : IDisposable
             foreach (int t in XonoticGodot.Common.Gameplay.Teams.Active(_world.Teamplay.TeamCount))
                 XonoticGodot.Common.Gameplay.Scoring.GameScores.SetTeamScore(t, _world.Scores.TeamScore(t));
 
+        IReadOnlyList<Player> players = _world.Clients.Players;
+
+        // #22: fold a cheap ROSTER signature (count + each player's net id / spectator flag / team) into the score
+        // version so a roster/status change with no score change — you or the bots JOINING (observer→player), a team
+        // switch, a disconnect — forces a re-send. Without this the row set is rebuilt below but the per-client send
+        // stays gated on the score-only Version, so the client's board sat at the pre-join state ("you're a
+        // spectator, no bots") until the first frag bumped it.
+        long rosterSig = players.Count;
+        for (int i = 0; i < players.Count; i++)
+        {
+            Player rp = players[i];
+            int status = (rp.IsObserver || rp.FragsStatus == Player.FragsSpectator) ? 1 : 0;
+            rosterSig = unchecked(rosterSig * 31 + NetIdFor(rp));
+            rosterSig = unchecked(rosterSig * 31 + status);
+            rosterSig = unchecked(rosterSig * 31 + (int)rp.Team);
+        }
+        if (rosterSig != _lastRosterSig)
+        {
+            _lastRosterSig = rosterSig;
+            XonoticGodot.Common.Gameplay.Scoring.GameScores.MarkDirty();
+        }
+
         _scoreVersion = XonoticGodot.Common.Gameplay.Scoring.GameScores.Version;
         _scoreInfoGen = XonoticGodot.Common.Gameplay.Scoring.GameScores.LayoutGeneration;
         _scoreInfoHash = XonoticGodot.Net.ScoreInfoBlock.Hash();
 
         _scoreRows.Clear();
-        IReadOnlyList<Player> players = _world.Clients.Players;
         for (int i = 0; i < players.Count; i++)
         {
             Player p = players[i];
