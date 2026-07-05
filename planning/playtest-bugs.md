@@ -856,6 +856,44 @@ nudge-out-of-solid; see #9), **#14** flag jitter (user-deferred).
   slower reactions + wide misses at 1 vs near-instant tracking at 10. If those two feel alike
   in-game, reopen with that observation (then the suspect is a consumer formula, not the chain).
 
+### 34. Enemy-held weapon still positioned wrong after #32 — too HIGH, "aligned to their view"
+- [ ] **Status:** Not started (round 6 — #32 improved the body animations; the gun position remains wrong).
+- **Symptom:** remote players' held weapon renders too high — reads as if it's aligned to their VIEW
+  (eye height / view pitch) rather than sitting in their hands.
+- **Leading hypothesis (from the #32 probe):** the hand marker itself is healthy (`bip01 r hand`
+  resolved, live positions), so suspect the ATTACH path: `ViewEntityRenderer.EnsureAttached` may
+  run while the player model is still the streaming placeholder (TagWeaponMarker null → falls back
+  to entity root / RenderRoot) and never RE-ATTACH once the real skeleton lands — leaving the
+  weapon at its NETWORKED wepent origin, which IS the view position ("aligned to their view").
+- **Verify against Base:** `CL_ExteriorWeaponentity_Think` (weaponsystem.qc) — exterior weapon =
+  `v_<weapon>.md3` attached to `tag_weapon` (gettagindex) else `"bip01 r hand"` setattachment;
+  check whether stock player IQMs carry a dedicated `tag_weapon` bone the port should PREFER over
+  the raw hand joint (offset/orientation authored for the gun).
+
+### 35. Bots shoot teammates in team games + don't spare typing players (and typing indicator in remote games)
+- [ ] **Status:** Not started (round 6, seen in CTF vs bots).
+- **Symptom:** (a) bots keep shooting teammates in team games — they should only target enemies;
+  (b) bots should avoid shooting players who are TYPING (Base spares chatting players); (c) make
+  sure the typing/chat indicator (chat bubble) also shows over players in remote/networked games.
+- **Verify against Base:** havocbot target selection (`bot_shouldattack` — team gate + the
+  `buttonchat` spare), BUTTON_CHAT networking, and the chat-bubble attachment (`ChatBubbleThink`,
+  models/misc/chatbubble.spr) — then audit the port's BotAim/BotBrain target pick for the teamplay
+  gate (NB the [[ffa-pants-team-sameteam-trap]] memory: `Teams.SameTeam` is RAW — callers must
+  gate on `GameScores.Teamplay`; DM pants-teams must NOT make bots hold fire in FFA) and the
+  port's typing-state networking + bubble rendering.
+
+### 36. Weapon textures lack color / detail textures wrong + weapon animations incorrect
+- [ ] **Status:** Not started (round 6).
+- **Symptom:** most weapon textures look wrong — lacking color, and the detail textures don't
+  appear to be applied correctly; weapon ANIMATIONS are also definitely not playing correctly.
+- **Two suspected halves:**
+  (a) RENDER: Base weapon materials (dpreflectcube/reflect, _norm/_gloss/_glow stages, colormapped
+  panels?) vs the port's material build for `v_*`/`h_*` models — find what stage(s) drop the color/
+  detail; (b) ANIMATION: weapon md3/iqm clips — Base `weaponsystem.qc` uses FIXED frame slots
+  (fire1=0, fire2=1, idle=2, reload=3 via `CL_WeaponEntity_SetModel`) — the port may be
+  name-matching nameless framegroups again, the exact #32 class of bug (see
+  [[player-anim-framegroups-slot-index]]).
+
 ---
 
 ## Pending

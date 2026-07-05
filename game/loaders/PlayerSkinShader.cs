@@ -89,10 +89,15 @@ uniform sampler2D reflect_mask : hint_default_black;
 uniform sampler2D normal_tex : hint_normal;
 uniform sampler2D gloss_tex : hint_default_white;
 uniform sampler2D glow_tex : hint_default_black;
+// dpreflectcube (playtest #36): the environment cubemap the _reflect mask gates. DP ADDS mask x cubemap on
+// top of the lit diffuse (USEREFLECTCUBE in its GLSL) - the diffuse color always survives. Faces are loaded
+// in DP box order (+X -X +Y -Y +Z -Z, QUAKE axes), so the sample direction below converts Godot->Quake.
+uniform samplerCube reflect_cube : source_color, hint_default_black;
 uniform bool has_normal = false;
 uniform bool has_gloss = false;
 uniform bool has_glow = false;
 uniform bool has_reflect = false;
+uniform bool has_reflect_cube = false;
 // Per-entity tints are instance uniforms so the shared (cached) skin material can still be reused while
 // each model instance carries its own colors (set via MeshInstance3D.set_instance_shader_parameter).
 instance uniform vec3 shirt_color : source_color = vec3(0.0);
@@ -124,20 +129,39 @@ void fragment() {
     // Resolve roughness/metallic locally (avoid reading write-only builtins), then assign once.
     float rough = has_gloss ? (1.0 - texture(gloss_tex, UV).g) : 1.0; // gloss is the inverse of roughness
     float metal = 0.0;
+    vec3 reflect_add = vec3(0.0);
     if (has_reflect) {
-        // _reflect mask gates an environment reflection: bright mask = metallic/smooth so the world reflects.
         float m = texture(reflect_mask, UV).r * reflect_strength;
-        metal = m;
-        rough = mix(rough, 0.1, m);
-        SPECULAR = mix(0.5, 1.0, m);
+        if (has_reflect_cube) {
+            // DP USEREFLECTCUBE (playtest #36): reflection = ReflectMask x ReflectCube(reflected view dir),
+            // ADDED over the lit diffuse - it never replaces the base color. (The old METALLIC=m routing
+            // ZEROED the diffuse albedo where the mask was bright - PBR metals have no diffuse - which
+            // desaturated every weapon: the ""lacking color"" report.) Reflect in view space, take the
+            // direction to Godot world space, then convert Godot(Y-up) -> Quake(Z-up) axes because the cube
+            // faces are authored/loaded in DP box order.
+            vec3 vdir = reflect(-VIEW, NORMAL);
+            vec3 wdir = normalize((INV_VIEW_MATRIX * vec4(vdir, 0.0)).xyz);
+            vec3 qdir = vec3(wdir.x, -wdir.z, wdir.y);
+            reflect_add = texture(reflect_cube, qdir).rgb * m;
+            rough = mix(rough, 0.3, m * 0.5); // a mild sheen; the diffuse keeps its full contribution
+        } else {
+            // No cubemap resolved: a restrained metallic sheen approximation. Kept well below 1 so the
+            // albedo still contributes (full metalness was the color-killer).
+            metal = m * 0.35;
+            rough = mix(rough, 0.2, m);
+            SPECULAR = mix(0.5, 1.0, m);
+        }
     }
     ROUGHNESS = rough;
     METALLIC = metal;
 
+    // Emission composes the additive cubemap reflection with the _glow map (DP adds both over the lit surface).
+    vec3 emis = reflect_add;
     if (has_glow) {
         // glowmod: per-entity glow tint (DP render_glowmod); viewmodels/players use the pants color.
-        EMISSION = texture(glow_tex, UV).rgb * glowmod;
+        emis += texture(glow_tex, UV).rgb * glowmod;
     }
+    EMISSION = emis;
 }
 ";
 

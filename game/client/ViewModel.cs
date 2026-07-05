@@ -300,6 +300,7 @@ public partial class ViewModel : Node3D
                 return null;
             });
         }
+        ReseedInstanceTint(); // AFTER attach — the new meshes start untinted (playtest #36)
         CaptureAuthoredShotSide();
     }
 
@@ -377,6 +378,7 @@ public partial class ViewModel : Node3D
         // local transform — _modelRoot's ViewBasis then re-aims the whole assembly into the camera frame.
         model.Transform = attach ?? Transform3D.Identity;
         _modelRoot.AddChild(model);
+        ReseedInstanceTint(); // AFTER attach — the new meshes start untinted (playtest #36)
 
         _muzzleMarker = ResolveMuzzleMarker(name => FindMarkerByName(model, name))
                         // Skeletal viewmodels (the h_ HAND RIG rendered for full-model DPM weapons) carry the
@@ -1015,12 +1017,21 @@ public partial class ViewModel : Node3D
         _noDepthTestApplied = false;
         _modelAlpha = 1f;
         _glowDirty = true; // the freshly-built model's materials need the team colormod/glow re-applied
-        // Re-seed the PlayerSkinShader instance uniforms on the new full-rig model (cleared by the rebuild).
-        if (_hasTeam && _modelRoot is not null && GodotObject.IsInstanceValid(_modelRoot))
-            ModelTint.Apply(_modelRoot, ModelTint.White, _teamGlow, _teamColormod, _teamColormod);
         if (_muzzleFlashNode is not null && GodotObject.IsInstanceValid(_muzzleFlashNode))
             _muzzleFlashNode.QueueFree();
         _muzzleFlashNode = null;
+    }
+
+    /// <summary>
+    /// Re-push the PlayerSkinShader per-INSTANCE team tint onto the CURRENT model meshes. Must run AFTER a
+    /// freshly-built model is attached: the old swap-time re-seed lived in <see cref="ResetModelFx"/>, which
+    /// every equip path calls BEFORE adding the new model — it walked the outgoing (freed) meshes and the new
+    /// ones kept the shader defaults, silently dropping the team tint on every weapon switch (playtest #36).
+    /// </summary>
+    private void ReseedInstanceTint()
+    {
+        if (_hasTeam && _modelRoot is not null && GodotObject.IsInstanceValid(_modelRoot))
+            ModelTint.Apply(_modelRoot, ModelTint.White, _teamGlow, _teamColormod, _teamColormod);
     }
 
     private static void ApplyMaterialFx(Node node, float a, Color? colormod = null, Color? glow = null)

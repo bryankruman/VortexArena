@@ -1767,6 +1767,15 @@ public partial class ClientWorld : Node3D
     /// id (<see cref="Entity.Team"/>). With no <see cref="AppearanceProvider"/> wired (a pure demo) the override is
     /// inert and the entity keeps its own colormap. The pure decision is <see cref="CsqcModelAppearance.ResolveForcedColormap"/>.
     /// </summary>
+    /// <summary>
+    /// The colormap a player's HELD WEAPON should be tinted with — the same resolved value the player BODY
+    /// gets (forcecolors + team normalization), because Base's weaponentity inherits its owner's colormap
+    /// verbatim (<c>this.colormap = this.owner.colormap</c>, weaponsystem.qc:180). Public for the weapon
+    /// view-entity renderer + the first-person viewmodel (playtest #36: the weapon _shirt/_pants panels sat
+    /// at the black no-colormap default forever — desaturated gun panels).
+    /// </summary>
+    public int PlayerColormap(Entity e) => ResolveForcedColormap(e);
+
     private int ResolveForcedColormap(Entity e)
     {
         int own = (int)e.Team;

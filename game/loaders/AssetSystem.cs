@@ -299,6 +299,15 @@ public sealed class AssetSystem
             mat.SetShaderParameter(PlayerSkinShader.ReflectMaskUniform, reflect);
             mat.SetShaderParameter("has_reflect", true);
             mat.SetShaderParameter(PlayerSkinShader.ReflectStrengthUniform, 1.0f);
+            // dpreflectcube (playtest #36): every shipped weapon shader names `cubemaps/default/sky`
+            // (scripts/weapons.shader) — bind it so the mask gates DP's ADDITIVE sky reflection instead of
+            // the old diffuse-killing metalness. Cached process-wide; a miss keeps the mild-metal fallback.
+            Cubemap? cube = DefaultReflectCubemap();
+            if (cube is not null)
+            {
+                mat.SetShaderParameter(PlayerSkinShader.ReflectCubeUniform, cube);
+                mat.SetShaderParameter("has_reflect_cube", true);
+            }
         }
 
         Texture2D? norm = LoadTexture(baseName + "_norm");
@@ -325,6 +334,47 @@ public sealed class AssetSystem
         // (ModelTint). They default to no team tint / white colormod when unset, so there is nothing to set
         // on the shared, cached material.
         return mat;
+    }
+
+    // --- dpreflectcube (playtest #36) ----------------------------------------------------------------
+    private Cubemap? _defaultReflectCube;
+    private bool _defaultReflectCubeTried;
+
+    /// <summary>
+    /// The `cubemaps/default/sky` environment cubemap every shipped weapon shader names via
+    /// <c>dpreflectcube</c> (scripts/weapons.shader) — six faces loaded in DP box order (+X −X +Y −Y +Z −Z,
+    /// r_sky.c's <c>px/nx/py/ny/pz/nz</c> convention, no flips), QUAKE axes; the skin shader converts its
+    /// sample direction Godot→Quake to match. Built once and cached (null-cached on a miss so a data set
+    /// without the faces never re-probes). NOTE: the shipped weapon shaders all name this ONE cubemap, so a
+    /// per-shader <c>dpreflectcube</c> parse is deferred until an asset actually needs a different one.
+    /// </summary>
+    internal Cubemap? DefaultReflectCubemap()
+    {
+        if (_defaultReflectCubeTried)
+            return _defaultReflectCube;
+        _defaultReflectCubeTried = true;
+
+        string[] suffixes = { "px", "nx", "py", "ny", "pz", "nz" }; // DP box order = GL cubemap layer order
+        var faces = new Godot.Collections.Array<Image>();
+        foreach (string s in suffixes)
+        {
+            Image? img = LoadImage("cubemaps/default/sky" + s);
+            if (img is null)
+            {
+                XonoticGodot.Common.Diagnostics.Log.Info("[AssetSystem] cubemaps/default/sky*: face missing — weapon reflection falls back to the mild sheen.");
+                return null;
+            }
+            // All layers of a layered texture must share one format/size; the shipped faces are uniform PNGs,
+            // but normalize the format defensively (a DDS/TGA override could differ).
+            if (img.GetFormat() != Image.Format.Rgba8)
+                img.Convert(Image.Format.Rgba8);
+            img.GenerateMipmaps();
+            faces.Add(img);
+        }
+        var cube = new Cubemap();
+        cube.CreateFromImages(faces);
+        _defaultReflectCube = cube;
+        return cube;
     }
 
     /// <summary>
