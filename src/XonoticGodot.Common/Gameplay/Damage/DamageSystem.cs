@@ -179,7 +179,15 @@ public sealed class DamageSystem : IDamageSystem
                     damage = 0f;
                     force = Vector3.Zero;
                 }
-                else if (!IsFrozenStat(targ) && Teams.SameTeam(atk, targ))
+                // QC SAME_TEAM(targ, attacker) — the macro is `teamplay ? (a.team == b.team) : (a == b)`, so this
+                // friendly-fire block must be TEAMPLAY-GATED: in FFA a player's .team carries a pants-color-derived
+                // value (DP SV_ChangeTeam sets team = pants+1 on the `color` command — the port is faithful to
+                // that), so two like-colored players compare "same team" and this branch ran in DEATHMATCH —
+                // team-damage accrual, mirror damage, and the victim's "I'm on your team!" teamshoot voice on
+                // plain DM hits (playtest #27). GameScores.Teamplay is authoritative from GameWorld boot (:587).
+                // (Base's a==b arm would admit self-hits here; harmless at teamplay_mode!=1 — every mode arm below
+                // excludes self — and mode 1 is a teamplay-only config, so gating the whole block is equivalent.)
+                else if (!IsFrozenStat(targ) && Scoring.GameScores.Teamplay && Teams.SameTeam(atk, targ))
                 {
                     int mode = (int)Cvar(CvarTeamplayMode, DefTeamplayMode);
                     if (mode == 1)

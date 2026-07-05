@@ -3297,6 +3297,9 @@ public sealed class GameWorld
             }),
             Domination dom => e =>
             {
+                // dom_team is a team-definition data holder, NOT a placement — never spawn a control point for it,
+                // just retire it (it must never linger/render, in dom mode either). #20.
+                if (e.ClassName == "dom_team") { RetirePlaceholder(e); return; }
                 // QC dom_controlpoint_setup: .frags = per-point amount, .wait = per-point rate (defaults 1 / 5).
                 float amt = e.Count > 0 ? e.Count : 1f;
                 dom.SpawnControlPoint(e.Origin, (int)e.Team, amt);
@@ -3484,7 +3487,12 @@ public sealed class GameWorld
                 }
                 RetirePlaceholder(e);
             },
-            _ => null, // non-objective gametype: ignore objective placements
+            // non-objective gametype (DM/Duel/LMS/…): REMOVE foreign objective placements (e.g. a CTF map's
+            // item_flag_* edicts) so they don't linger + render in the wrong mode. QC's per-spawnfunc
+            // `if(!g_<mode>) delete(this)` — the placeholder deletion the CTF/etc. sinks do, applied when no
+            // objective mode claims the edict (playtest-bugs #5). Unit tests never wire the sink (stays null →
+            // the legacy "ignore" path), so their direct-Spawn-API objectives are unaffected.
+            _ => RetirePlaceholder,
         };
     }
 

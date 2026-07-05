@@ -33,6 +33,14 @@ public static class Teams
         for (int i = 0; i < count && i < All.Length; i++) yield return All[i];
     }
 
+    /// <summary>RAW same-team-value compare. NOT the full QC <c>SAME_TEAM(a,b)</c>, which is
+    /// <c>teamplay ? (a.team == b.team) : (a == b)</c> — callers on paths that can run OUTSIDE team modes must
+    /// pair this with their own teamplay/teamGame gate (as <c>Scores.cs</c> does: <c>teamGame &amp;&amp;
+    /// SameTeam(…)</c>). This matters because in FFA a player's <c>.team</c> still carries a pants-color-derived
+    /// NON-zero value (Quake tradition), so two like-colored players compare EQUAL here — an ungated caller then
+    /// runs friendly-fire logic in DEATHMATCH (playtest #27: the damage path did exactly that — mirror/complain
+    /// accrual + the "I'm on your team!" teamshoot voice on plain DM hits). Kept raw (not reading the
+    /// <c>GameScores.Teamplay</c> static) so the predicate stays order-independent for tests and non-match tools.</summary>
     public static bool SameTeam(Entity a, Entity b) => a.Team != 0 && a.Team == b.Team;
 
     /// <summary>

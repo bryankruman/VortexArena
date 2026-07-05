@@ -118,6 +118,28 @@ public sealed class ItemstimeMutator : MutatorBase
         TimedItemClasses.TryGetValue(className, out string? key)
         && (key == "health_mega" || key == "health_big" || key == "armor_mega" || key == "armor_big");
 
+    /// <summary>
+    /// QC <c>set_itemstime = Item_ItemsTime_Allow(e.itemdef) || (STAT(WEAPONS, e) &amp; WEPSET_SUPERWEAPONS)</c>
+    /// (items.qc:328): the pickups that get a respawn-countdown waypoint sprite (and feed the itemstime panel) —
+    /// powerups (<c>instanceOfPowerup</c>), Mega/Big Health + Armor, and superweapon weapon-pickups. Every OTHER
+    /// pickup (small/medium health + armor, ammo, ordinary weapons) is NOT allowed, so it takes the plain
+    /// no-waypoint respawn path instead of showing an "ITEM" marker. Classified from the world-item entity
+    /// (its <see cref="Entity.Pickup"/> def + classname).
+    /// </summary>
+    public static bool IsItemsTimeAllowed(Entity item)
+    {
+        if (item.Pickup?.IsPowerup == true) return true;        // instanceOfPowerup (strength/shield + modded)
+        if (IsSpectatorOnlyItem(item.ClassName)) return true;   // Mega/Big Health + Armor
+        if (item.Pickup?.IsWeaponPickup == true)                // WEPSET_SUPERWEAPONS: a superweapon pickup
+        {
+            IReadOnlyList<Weapon> weapons = Registry<Weapon>.All;
+            for (int i = 0; i < weapons.Count; i++)
+                if (weapons[i].IsSuperWeapon && item.ClassName == "weapon_" + weapons[i].NetName)
+                    return true;
+        }
+        return false;
+    }
+
     // Recompute scratch state, persistent across ticks: this runs EVERY server frame (OnStartFrame), so a
     // fresh accumulator dictionary + a capturing local function + per-superweapon "weapon_"+name concats +
     // one FindByClass iterator per class (~10/tick) were a steady ~3 KB/tick of GC churn under load. The

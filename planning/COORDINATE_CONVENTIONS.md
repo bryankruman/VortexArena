@@ -70,6 +70,34 @@ camera.GlobalPosition = Coords.ToGodot(originQuake);
   This is the exact inverse of the construction above (proven round-trip). Prefer this **vector** path over
   extracting Euler angles — it sidesteps the pitch-sign and Euler-order traps entirely.
 
+## Entity render: the yaw-only path is handedness-flipped (the carried-flag trap)
+
+`EntityNode.SyncFromEntity` (`game/EntityNode.cs`) has **two** yaw→Godot conversions that
+disagree by the **sign of the yaw**:
+
+- **Full-basis path** (pitched/rolled entities): `Basis = new Basis(Coords.ToGodot(fwd),
+  Coords.ToGodot(up), Coords.ToGodot(right))` from `AngleVectors` — for a pure yaw θ this
+  works out to **+θ about Godot +Y**. This is the proven convention (same as the camera /
+  `FirstPersonView`).
+- **Yaw-only shortcut** (players/items/monsters/**flags**): `Rotation = (0, −DegToRad(yaw),
+  0)` — **−θ about Godot +Y**. This is the "negated-yaw Euler [that] silently flips
+  handedness" the camera code was already fixed away from (`FirstPersonView.cs:503`,
+  `NetGame.cs:5775`).
+
+The two are **mirror images**. It goes unnoticed for symmetric spinning items and roughly
+symmetric player models, but it is a genuine handedness flip. It **bites** whenever an
+entity's **position** is computed in Quake space (the +θ world) while its **orientation** is
+set through the yaw-only shortcut (−θ): position and facing then counter-rotate.
+
+The live example is the **carried CTF flag**: `Ctf.cs` places it behind the carrier with
+`QMath.AngleVectors(carrier.Angles.Y)` (Quake, +θ) but sets `flag.Angles.Y = carrier yaw`,
+which renders through the −θ shortcut — so turning left rotates the flag right (see
+`planning/playtest-bugs.md` #7).
+
+**Rule:** orient a Godot node from a Quake yaw via the full-basis `AngleVectors → Coords`
+columns path, and keep an attached entity's **position and orientation on the same
+convention**. Never mix Quake-space offset math with the negated-yaw Euler shortcut.
+
 ## Warpzone / portal transforms
 
 `WarpzoneTransform` (`src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs`) is **entirely Quake**:
@@ -92,3 +120,6 @@ camera.GlobalPosition = Coords.ToGodot(originQuake);
    never feed Quake Euler angles to a Godot Euler ctor.
 5. A **mirrored** result ⇒ a handedness flip you introduced (the swap doesn't); an **inverted pitch** ⇒ a
    `VecToAngles`/`FixedVecToAngles` mix-up; a **180°** result ⇒ a forward/normal sign or an in/out swap.
+6. Orienting an **entity node** from a yaw? The yaw-only shortcut (`Rotation.Y = −yaw`) is handedness-flipped
+   vs. the full-basis path — if the entity's position is Quake-space math, orient it with the full-basis path too,
+   or the two counter-rotate (the carried-flag trap above).

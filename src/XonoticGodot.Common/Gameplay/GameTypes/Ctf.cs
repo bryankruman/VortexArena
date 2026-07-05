@@ -779,7 +779,13 @@ public sealed class Ctf : GameType
         NotificationSystem.Center(player, $"CTF_CAPTURE_{TeamSuffix(carried.HomeTeam)}");
         float capRunTime = carried.PickupTime > 0f ? ((Api.Services is not null ? Api.Clock.Time : 0f) - carried.PickupTime) : 0f;
         CaptureRecord(carried.HomeTeam, player, capRunTime);
-        FlagAnnounceSound(carried.HomeTeam, "CAPTURE");
+        // QC ctf_Handle_Capture (sv_ctf.qc:636): the capture VOICE is keyed on the CAPTURING team's flag
+        // (_sound(player, …, flag.snd_flag_capture) — `flag` is the base flag the carrier touched, i.e. the
+        // capturer's OWN team; DIFF_TEAM(player, flag) is false), NOT the captured enemy flag. Keying it on
+        // carried.HomeTeam played the enemy's announcer, so "red scores" / "blue scores" were reversed
+        // (playtest-bugs #13). The CENTERPRINT above stays on the captured flag's team, matching QC's
+        // APP_NUM(enemy_flag.team, CENTER_CTF_CAPTURE).
+        FlagAnnounceSound((int)player.Team, "CAPTURE");
 
         // QC ctf_Handle_Capture: Send_Effect_(flag.capeffect, …) — the team-colored capture burst at the flag base
         // (EFFECT_CAP(teamnum) = "<team>_cap"). The captured flag's home team picks the color (QC enemy_flag.team).
@@ -1454,6 +1460,12 @@ public sealed class Ctf : GameType
     /// </summary>
     public FlagState SpawnFlag(int team, Vector3 origin, Vector3 angles = default)
     {
+        // QC ctf_FlagSetup (sv_ctf.qc:1426): the flag rests at (map origin + FLAG_SPAWN_OFFSET), a fixed
+        // vertical lift of PL_MAX_CONST.z − 13 = 45 − 13 = 32qu, so the flag model sits ON the floor instead of
+        // sinking into it. PL_MAX_CONST is the compile-time player-hull max (a constant, not the cvar), so the
+        // lift is a constant 32. Applied to `origin` here so the stored HomeOrigin/spawn origin carries it too
+        // (playtest-bugs #15).
+        origin += new Vector3(0f, 0f, 32f);
         if (!Flags.TryGetValue(team, out FlagState? flag))
         {
             flag = new FlagState(team);
@@ -1540,11 +1552,21 @@ public sealed class Ctf : GameType
         s.GtShieldFlag = flagEnt; // QC shield.enemy = flag
         s.Solid = Solid.Trigger;
         s.MoveType = MoveType.Noclip;
-        s.Effects |= EfAdditive;
-        s.AVelocity = new Vector3(7f, 0f, 11f); // QC avelocity '7 0 11'
-        s.Model = "models/ctf/shield.md3"; // QC MDL_CTF_SHIELD = "models/ctf/shield.md3"
-        // QC setsize(shield, shield.scale * shield.mins, shield.scale * shield.maxs) after setmodel.
-        // The shield model's natural hull is roughly the same as the flag bbox; scale 0.5 halves it.
+        // playtest-bugs #4: the shield MODEL must not render in normal play. QC gates its visibility with
+        // ctf_CaptureShield_Customize — shown ONLY to a client who is currently capture-shielded vs the enemy
+        // team; with the default g_ctf_shield_max_ratio 0 nobody is ever shielded, so the dome is invisible. The
+        // port has no per-viewer model customize, so gate the visible model on the feature being enabled at all:
+        // at ratio<=0 the shield is a pure (invisible) push-trigger and no giant purple dome appears. (When
+        // ratio>0 it shows to everyone rather than only shielded players — a per-viewer Customize, the 0.5 visual
+        // scale the port can't network yet, and the additive/env shield material are follow-ups; see #4 notes.)
+        if (_captureShieldMaxRatio > 0f)
+        {
+            s.Effects |= EfAdditive;
+            s.AVelocity = new Vector3(7f, 0f, 11f); // QC avelocity '7 0 11'
+            s.Model = "models/ctf/shield.md3"; // QC MDL_CTF_SHIELD = "models/ctf/shield.md3"
+        }
+        // QC setsize(shield, shield.scale * shield.mins, shield.scale * shield.maxs): the (invisible) push-trigger
+        // hull is the flag bbox halved. scale 0.5.
         const float scale = 0.5f;
         Vector3 scaledMins = FlagMins * scale;
         Vector3 scaledMaxs = FlagMaxs * scale;
@@ -1843,7 +1865,8 @@ public sealed class Ctf : GameType
         // QC ctf_Handle_Capture(…, CAPTURE_DROPPED): same ctf_CaptureRecord broadcast (incl. fastest-cap time) + voice.
         float dropCapRunTime = droppedFlag.PickupTime > 0f ? (Now - droppedFlag.PickupTime) : 0f;
         CaptureRecord(droppedFlag.HomeTeam, player, dropCapRunTime);
-        FlagAnnounceSound(droppedFlag.HomeTeam, "CAPTURE");
+        FlagAnnounceSound((int)player.Team, "CAPTURE"); // QC: capture voice keyed on the CAPTURING team (see the
+                                                        // main Handle_Capture note) — not the captured flag (playtest-bugs #13).
 
         KillCarrierWaypoint(droppedFlag); // defensive: a dropped-capture flag has no carrier, but clear any stale sprite
         droppedFlag.ResetToBase();
@@ -1888,7 +1911,16 @@ public sealed class Ctf : GameType
                 QMath.AngleVectors(new Vector3(0f, anchor.Angles.Y, 0f), out Vector3 cf, out Vector3 cr, out Vector3 cu);
                 Vector3 pos = anchor.Origin + cf * off.X + cr * off.Y + cu * off.Z;
                 GametypeEntities.SetOrigin(cfe, pos);
-                cfe.Angles = new Vector3(0f, anchor.Angles.Y, 0f);
+                // playtest-bugs #7: the carry POSITION above is Quake-space and orbits +θ about Godot +Y. The
+                // client renders a carried flag from its NETWORKED angles (ClientEntityView copies them onto its
+                // proxy) via EntityNode's yaw-only Euler shortcut, which is handedness-flipped to −θ (a negated-yaw
+                // Euler — see planning/COORDINATE_CONVENTIONS.md); left alone it counter-rotates the flag against
+                // its orbit ("turn left, flag spins right"). A server-side render hint can't reach the client
+                // (self-connecting listen server → snapshot-driven proxies), so pre-NEGATE the networked yaw here:
+                // the −θ render path then lands on +θ, matching the position, and the flag rigidly trails the
+                // carrier. (While carried the flag's angles are render-only — nothing reads them for logic; the
+                // at-base flag keeps its true spawn angles.)
+                cfe.Angles = new Vector3(0f, -anchor.Angles.Y, 0f);
             }
             // QC ctf_FlagThink FLAG_PASSING: re-aim / retrieve / give up an in-flight passed flag every tick.
             else if (flag.Status == FlagStatus.Passing)

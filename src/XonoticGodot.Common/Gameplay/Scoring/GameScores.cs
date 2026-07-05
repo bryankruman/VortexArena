@@ -870,6 +870,12 @@ public static class GameScores
     public static int Version { get; private set; }
     private static void Bump() => Version++;
 
+    /// <summary>Force the scoreboard block to re-send even without a score change — used for ROSTER/status changes
+    /// (a player joining/leaving, observer↔player, a team switch) which alter the networked row set but don't touch
+    /// any score value, so they wouldn't otherwise bump <see cref="Version"/> (playtest #22: the scoreboard was
+    /// stuck at the pre-join state — "you're a spectator, no bots" — until the first frag bumped the version).</summary>
+    public static void MarkDirty() => Bump();
+
     /// <summary>
     /// The networked column subset, in registry order (QC the non-empty-label, non-client-only fields). Both
     /// server and client derive this identically from the registry so columns line up positionally on the wire.

@@ -273,11 +273,16 @@ public abstract partial class HudPanel : Control
 
         float fgAlpha = CvarF("fg_alpha", GlobalF("hud_panel_fg_alpha", 1f));
 
-        // Font size scales with the viewport: hud_fontsize is authored at a ~800px reference width.
+        // QC HUD sizing: the HUD is drawn in the vid_conwidth × vid_conheight virtual canvas (Base defaults
+        // 800×600; vid_conwidthauto widens conwidth for aspect, conheight stays fixed) and the engine scales that
+        // canvas UNIFORMLY to the screen — so a hud_fontsize-tall glyph renders at hud_fontsize × screenH /
+        // vid_conheight (HEIGHT-locked). The port previously scaled by viewport.X / hud_width (WIDTH-based, and
+        // hud_width defaults to 560), which over-scaled the HUD font on wide/high-res screens — the centerprint
+        // read far too large (playtest-bugs #3). Match Base: height-lock the font to vid_conheight (default 600).
         float baseFont = CvarF("fontsize", GlobalF("hud_fontsize", 11f));
-        float refW = GlobalF("hud_width", 0f);
-        if (refW <= 0f) refW = 800f;
-        int fontPx = Mathf.Max(8, Mathf.RoundToInt(baseFont * viewport.X / refW));
+        float conHeight = GlobalF("vid_conheight", 600f);
+        if (conHeight <= 0f) conHeight = 600f;
+        int fontPx = Mathf.Max(8, Mathf.RoundToInt(baseFont * viewport.Y / conHeight));
 
         bool enabled = !ConfigFlags.HasFlag(PanelConfig.CanBeOff) ||
                        MenuState.Cvars.GetFloat("hud_panel_" + PanelId) != 0f;
@@ -345,12 +350,17 @@ public abstract partial class HudPanel : Control
     // -------------------------------------------------------------------------------------------------
 
     /// <summary>Place + size the panel directly (legacy path; <see cref="LoadConfig"/> overrides it next frame
-    /// for cvar-driven panels). Kept so external callers (the net layer's scoreboard sizing) still compile.</summary>
+    /// for cvar-driven panels). Kept so external callers (the net layer's scoreboard sizing) still compile.
+    /// The standalone scoreboard is placed ONLY through here (it is never <see cref="LoadConfig"/>'d), so this
+    /// must also update <see cref="Cfg"/> — otherwise <see cref="Size2"/> (which the draw code reads) keeps its
+    /// 64×64 default and the panel renders as a tiny box in the top-left while its Control rect (input hit-test)
+    /// is the real, larger rect.</summary>
     public void Configure(Rect2 rect)
     {
         PanelRect = rect;
         Position = rect.Position;
         Size = rect.Size;
+        Cfg = Cfg with { PosPx = rect.Position, SizePx = rect.Size };
         QueueRedraw();
     }
 
@@ -365,17 +375,28 @@ public abstract partial class HudPanel : Control
     //  All take panel-local coordinates and draw with the Xolonium font.
     // -------------------------------------------------------------------------------------------------
 
-    /// <summary>Paint the panel chrome: the skin 9-slice border frame (QC <c>HUD_Panel_DrawBg</c>). No-op when
-    /// the resolved bg is "0"/inherit-of-0. Flat translucent fallback only when the border texture is missing.</summary>
-    protected void DrawBackground()
+    /// <summary>Paint the panel chrome: the skin 9-slice border frame (QC <c>HUD_Panel_DrawBg</c>) around the
+    /// whole panel. No-op when the resolved bg is "0"/inherit-of-0.</summary>
+    protected void DrawBackground() => DrawBackgroundRect(new Rect2(Vector2.Zero, Size2), LiveBgAlpha);
+
+    /// <summary>Paint the skin 9-slice border frame (QC <c>HUD_Panel_DrawBg</c>) around an explicit panel-local
+    /// <paramref name="panelRect"/> at <paramref name="bgAlpha"/>. The full-panel <see cref="DrawBackground()"/>
+    /// passes <c>(0,0,Size2)</c>; the weapons panel passes the shrunk owned-weapon grid rect so the frame
+    /// auto-sizes to its contents (playtest-bugs #11). Flat translucent fallback only if the border texture is missing.</summary>
+    protected void DrawBackgroundRect(Rect2 panelRect, float bgAlpha)
     {
         string bg = Cfg.Bg;
         if (string.IsNullOrEmpty(bg) || bg == "0") return; // luma: no frame for this panel
         var col = new Color(Cfg.BgColor.R, Cfg.BgColor.G, Cfg.BgColor.B);
         float t = Cfg.BgBorder;
-        var outer = new Rect2(-t, -t, Size2.X + 2f * t, Size2.Y + 2f * t);
-        if (!HudSkin.DrawBorderPicture(this, outer, bg, col, LiveBgAlpha, t))
-            DrawRect(new Rect2(Vector2.Zero, Size2), new Color(col.R, col.G, col.B, LiveBgAlpha * 0.7f));
+        // QC HUD_Panel_DrawBg (hud.qh): the bg rect expands by panel_bg_border, but the 9-slice corner/edge
+        // tiles are sliced at BORDER_MULTIPLIER(=4) × panel_bg_border — the beveled corner art fills a 4×-larger
+        // cell. Passing the raw border as the slice size crushed the bevel into a near-square corner (playtest-bugs #10).
+        const float borderMultiplier = 4f;
+        var outer = new Rect2(panelRect.Position.X - t, panelRect.Position.Y - t,
+                              panelRect.Size.X + 2f * t, panelRect.Size.Y + 2f * t);
+        if (!HudSkin.DrawBorderPicture(this, outer, bg, col, bgAlpha, t * borderMultiplier))
+            DrawRect(panelRect, new Color(col.R, col.G, col.B, bgAlpha * 0.7f));
     }
 
     /// <summary>Paint a flat translucent fill over an arbitrary local rect (inner sub-region backing — the
@@ -532,12 +553,19 @@ public abstract partial class HudPanel : Control
         DrawRect(area, new Color(1f, 1f, 1f, 0.15f), filled: false, width: 1f);
     }
 
-    /// <summary>Draw left-aligned text at a panel-local baseline-top position (with a subtle drop shadow so it
+    /// <summary>Godot <c>DrawString</c>'s Y is the BASELINE. These helpers take a TOP-of-text Y (QC drawstring
+    /// semantics: pos = the char box's top-left), so the baseline offset must be the font's ASCENT for the size —
+    /// NOT the full font size. Xolonium's ascent is ~0.75-0.8 × size, so the old <c>pos.Y + size</c> rendered all
+    /// HUD text ~20% of the font size too LOW in its box (playtest #26: health/armor numbers visibly below
+    /// center; systemic to every panel using these helpers).</summary>
+    private float TextBaseline(int size) => Font.GetAscent(size);
+
+    /// <summary>Draw left-aligned text at a panel-local top-left position (with a subtle drop shadow so it
     /// reads over the world the way Xonotic's outlined HUD font does).</summary>
     protected void DrawText(Vector2 pos, string text, Color color, int size = FontSize)
     {
         if (string.IsNullOrEmpty(text)) return;
-        Vector2 at = pos + new Vector2(0f, size);
+        Vector2 at = pos + new Vector2(0f, TextBaseline(size));
         DrawString(Font, at + new Vector2(1f, 1f), text, HorizontalAlignment.Left, -1f, size, ShadowOf(color));
         DrawString(Font, at, text, HorizontalAlignment.Left, -1f, size, color);
     }
@@ -546,7 +574,7 @@ public abstract partial class HudPanel : Control
     protected void DrawTextCentered(Vector2 pos, float width, string text, Color color, int size = FontSize)
     {
         if (string.IsNullOrEmpty(text)) return;
-        Vector2 at = pos + new Vector2(0f, size);
+        Vector2 at = pos + new Vector2(0f, TextBaseline(size));
         DrawString(Font, at + new Vector2(1f, 1f), text, HorizontalAlignment.Center, width, size, ShadowOf(color));
         DrawString(Font, at, text, HorizontalAlignment.Center, width, size, color);
     }
@@ -555,7 +583,7 @@ public abstract partial class HudPanel : Control
     protected void DrawTextRight(float rightX, float topY, float width, string text, Color color, int size = FontSize)
     {
         if (string.IsNullOrEmpty(text)) return;
-        Vector2 at = new(rightX - width, topY + size);
+        Vector2 at = new(rightX - width, topY + TextBaseline(size));
         DrawString(Font, at + new Vector2(1f, 1f), text, HorizontalAlignment.Right, width, size, ShadowOf(color));
         DrawString(Font, at, text, HorizontalAlignment.Right, width, size, color);
     }

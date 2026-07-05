@@ -181,11 +181,14 @@ public sealed partial class NetGame : Node3D
     // Local fire prediction (cl_predictfire, default on): a client-side refire clock that fires the view-model
     // muzzle flash + a local fire SOUND on every shot the moment the player fires (not just the first), so
     // sustained fire feels instant; the local player's own networked fire-sound/muzzle-flash is then suppressed
-    // so it isn't doubled. _fireClock is a monotonic frame accumulator; _nextFireTime is the next predicted shot.
+    // so it isn't doubled. _fireClock is a monotonic frame accumulator. _weaponReadyTime is a PERSISTENT
+    // per-weapon "next allowed shot" clock — a client mirror of the server's per-slot ATTACK_FINISHED
+    // (WeaponFireGate.st.AttackFinished). It survives button release, so tapping / wheel-firing can't out-run the
+    // weapon's refire rate (the spam this closes). Keyed by weapon id (Base INDEPENDENT_ATTACK_FINISHED) and
+    // SHARED by both fire modes (Base indexes ATTACK_FINISHED by [weapon][slot], not by primary/secondary).
     private bool _predictFire = true;
     private float _fireClock;
-    private bool _firePredictActive;
-    private float _nextFireTime;
+    private readonly Dictionary<int, float> _weaponReadyTime = new();
     private bool _loggedAccept;
     private bool _cameraReady;                   // C5: false until the first snapshot seeds the predicted eye
     private int _prevHealth = -1;               // previous networked local health, for the damage red-flash edge
@@ -252,6 +255,15 @@ public sealed partial class NetGame : Node3D
     /// <summary>Callback to dismiss the loading screen layer (owned by <see cref="Shell"/>). Called when
     /// the player spawns (camera ready + health &gt; 0).</summary>
     public Action? DismissLoadingScreen { get; set; }
+
+    /// <summary>True when this node is hosting a listen server (vs a pure remote <c>--connect</c> client).</summary>
+    public bool IsListenServer => _isListenServer;
+
+    /// <summary>True when a listen server has at least one REMOTE client connected (a peer beyond the local
+    /// host). Drives the local-only auto-pause gate in <see cref="Shell"/>: a solo local game may freeze on
+    /// menu/console/focus-loss, but a server with remote players must keep running. False for a remote client
+    /// (no server) and for a listen host that is alone (with or without bots — bots aren't peers).</summary>
+    public bool HasRemoteClients => _isListenServer && (_server?.ConnectedPeerCount ?? 0) > 1;
 
     /// <summary>
     /// Raised when this listen server must change level (DP <c>changelevel</c>) — carries (map, gametype,
@@ -502,9 +514,11 @@ public sealed partial class NetGame : Node3D
 
         LoadingScreen?.BeginStage("Connecting…", 0.90f, 0.5f);
 
-        // FPS mouse-look: want the cursor captured (MouseCapture only grabs while the window is focused; the
-        // Shell releases/recaptures it around the in-game menu).
-        MouseCapture.SetWantCapture(true);
+        // Keep the cursor FREE during load: the per-frame reassert in _Process grabs it for mouse-look the frame
+        // the local player spawns (gated on LoadingScreen going null), so there's nothing to capture here — and
+        // capturing now would trap the pointer in a windowed game for the whole load (DP keeps it free on the
+        // load screen so you can mouse out of the window).
+        MouseCapture.SetWantCapture(false);
 
         GD.Print(_isListenServer
             ? $"[NetGame] listen server on 127.0.0.1:{_port} (map '{_map}', {_gametype}, {_botCount} bots) — self-connecting."
@@ -1705,7 +1719,14 @@ public sealed partial class NetGame : Node3D
         // NetHud has no scoreboard — so the per-player columns + team totals that ClientNet decodes
         // (LatestScoreboard) had nowhere to go. Add the panel here, sized to a centered slab, hidden until the
         // scoreboard key is held; _Process feeds it from LatestScoreboard each frame the data changes.
-        _scoreboard = new XonoticGodot.Game.Hud.ScoreboardPanel { Name = "Scoreboard", Visible = false };
+        // MouseFilter.Ignore: this panel is added straight to hudLayer, bypassing HudManager.RegisterPanel (which
+        // sets Ignore) — without it the Control defaults to Stop and its (centered, screen-sized) rect EATS the
+        // captured mouse-look motion before it reaches _UnhandledInput, so the scoreboard "steals the mouse" while
+        // it's up (QC hud_cursormode off — the HUD never eats input).
+        _scoreboard = new XonoticGodot.Game.Hud.ScoreboardPanel
+        {
+            Name = "Scoreboard", Visible = false, MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
         hudLayer.AddChild(_scoreboard);
         LayoutScoreboard();
 
@@ -2510,6 +2531,32 @@ public sealed partial class NetGame : Node3D
 
     private bool _shutDown;
 
+    // #19 auto-pause: the `slowmo` value captured while the solo-local pause holds slowmo at 0. Null = not held.
+    private string? _localPauseSlowmo;
+
+    /// <summary>#19 auto-pause realized the Xonotic way — via the <c>slowmo</c> cvar (DP host_timescale; the exact
+    /// lever the timeout pause uses, GameWorld.cs:1274). <see cref="Shell"/>'s SyncAutoPause owns
+    /// <c>GetTree().Paused</c> for a solo-local game; mirror it onto the server's slowmo so
+    /// <c>ServerNet.ResolveSlowmo</c> time-scales the WHOLE sim to 0 (bots/projectiles/timers freeze) AND the
+    /// client — which scales its input cadence by the REPLICATED slowmo — freezes prediction in lockstep (so
+    /// there's no unpause input-burst). Capture/restore the prior value so a server-set slowmo survives; also
+    /// restored in <see cref="Shutdown"/> so a paused teardown can't leave the next map stuck frozen.</summary>
+    private void SyncLocalPauseSlowmo()
+    {
+        if (_serverWorld is null) return; // pure client: no authoritative sim to scale
+        bool pause = GetTree().Paused;
+        if (pause && _localPauseSlowmo is null)
+        {
+            _localPauseSlowmo = _serverWorld.Services.Cvars.GetString("slowmo");
+            _serverWorld.Services.Cvars.Set("slowmo", "0");
+        }
+        else if (!pause && _localPauseSlowmo is not null)
+        {
+            _serverWorld.Services.Cvars.Set("slowmo", _localPauseSlowmo);
+            _localPauseSlowmo = null;
+        }
+    }
+
     /// <summary>
     /// Dispose the client + (listen) server transports and free the prediction carrier — idempotent. Call this
     /// SYNCHRONOUSLY before <see cref="Node.QueueFree"/> when tearing a session down, so the server's UDP port is
@@ -2522,6 +2569,14 @@ public sealed partial class NetGame : Node3D
         if (_shutDown)
             return;
         _shutDown = true;
+
+        // #19: if we tore down while the solo-local auto-pause was holding slowmo at 0, restore it so the engine
+        // doesn't stay frozen for the next map (mirrors TimeoutController.ResetSlowmoOnShutdown).
+        if (_localPauseSlowmo is not null && _serverWorld is not null)
+        {
+            _serverWorld.Services.Cvars.Set("slowmo", _localPauseSlowmo);
+            _localPauseSlowmo = null;
+        }
 
         if (_client is not null)
         {
@@ -2667,6 +2722,12 @@ public sealed partial class NetGame : Node3D
         // call it (that would double-drive the world AND race the worker). The "server.tick" main-thread scope
         // then measures ~0, which is exactly the A/B metric this item targets. When NOT threaded, drive it here
         // exactly as today.
+        // #19 auto-pause: mirror Shell's solo-local pause onto the SIM the Xonotic way — the `slowmo` cvar (see
+        // SyncLocalPauseSlowmo). ResolveSlowmo reads it into Simulation.TimeScale each StepWorld, so a plain
+        // Tick(dt) below then advances ZERO sim time while paused; the transport still pumps (keepalive + a
+        // joining remote still surfaces → Shell auto-releases). Runs BEFORE the tick so the value is live this frame.
+        SyncLocalPauseSlowmo();
+
         if (_serverThread is null)
             using (XonoticGodot.Game.Client.FrameProfiler.Scope("server.tick"))
                 _server?.Tick(dt);
@@ -3290,7 +3351,13 @@ public sealed partial class NetGame : Node3D
         // change) — rather than edge-latching on a remembered flag. The old latch desynced after a pause-menu
         // round-trip OVER an open minigame board: the block is skipped while paused, resume force-captured while the
         // board was still up, and no edge re-fired, so the cursor stayed stuck captured until the board was re-toggled.
-        if (!GetTree().Paused && !ConsoleState.IsOpen)
+        //
+        // ...and NOT while the loading screen is still up: through map load + the connect/join handshake the cursor
+        // stays FREE (DP behaviour — you can alt-tab / mouse out of a windowed game while it loads). LoadingScreen
+        // goes null the frame the local player spawns (the handshake block above), and this reassert runs later in
+        // the same _Process, so the pointer is grabbed on that exact frame; after the first spawn it stays null and
+        // this behaves as before.
+        if (LoadingScreen is null && !GetTree().Paused && !ConsoleState.IsOpen)
             MouseCapture.SetWantCapture(!UiOwnsCursor);
 
         // A changelevel was requested this frame (map / gotomap / nextmap / rotation / vote / samelevel): emit it
@@ -4657,6 +4724,27 @@ public sealed partial class NetGame : Node3D
         // makes hud_panel_scoreboard_fadeinspeed/fadeoutspeed actually animate on the live path.
         if (_scoreboard.Active != show)
             _scoreboard.Active = show;
+        // Drive the manager's non-scoreboard panel cross-fade (QC panel_fade_alpha) from the scoreboard's live fade
+        // level. Without this ScoreboardFade sat at 0 forever, so the always-on HUD panels never faded when the
+        // scoreboard came up — most visibly the top-left radar, whose bottom-right corner pokes into the centered
+        // scoreboard's rect, so its minimap showed THROUGH the scoreboard's Red/Blue + column headers (the "jumble
+        // over the radar" on the death scoreboard). FadeAlpha is the read-only ramp ScoreboardPanel exposes exactly
+        // for this. Set every frame BEFORE the early returns below so it also ramps back down when the board hides.
+        // (_scoreboard is standalone — not _fullHud's discovered panel — so the owner has to bridge the two.)
+        if (_fullHud is not null)
+            _fullHud.ScoreboardFade = _scoreboard.FadeAlpha;
+        // The radar is a STANDALONE panel (NetGame-managed pos/size, never LoadConfig'd), so the manager cross-fade
+        // above never reaches it — its LiveFgAlpha is pinned. Fade it directly by the scoreboard level via Modulate
+        // so the top-left minimap doesn't bleed through the scoreboard (QC: teamradar is MAINGAME-only). EXCEPT while
+        // it's Maximized: the clickable spawn-select radar is itself shown while dead — exactly when the death
+        // scoreboard is also up — and must stay fully visible to pick a spawn (force full alpha so a fade that began
+        // before it was maximized is undone).
+        if (_radar is not null)
+        {
+            float radarA = _radar.Maximized ? 1f : 1f - _scoreboard.FadeAlpha;
+            if (_radar.Modulate.A != radarA)
+                _radar.Modulate = new Color(1f, 1f, 1f, radarA);
+        }
         // QC GET_NEXTMAP: feed the "Next map:" line from the server-broadcast _nextmap (ClientNet.NextMap).
         if (show && _scoreboard.NextMap != _client.NextMap)
             _scoreboard.NextMap = _client.NextMap;
@@ -5505,9 +5593,12 @@ public sealed partial class NetGame : Node3D
     /// SOUND on every shot the instant the player fires (first on the press edge, then every <c>refire</c> s while
     /// held), gated on the active weapon / alive / ammo — so sustained fire feels instant; the local player's own
     /// NETWORKED fire-sound + muzzle-flash are suppressed elsewhere so they aren't doubled. With cl_predictfire 0
-    /// it falls back to a single muzzle flash on the press edge (the networked sustained FX play). Either way each
-    /// press edge sets a sub-tick latch (<see cref="_attackLatch"/>) so a tap shorter than one input tick still
-    /// reaches the server. Inert while the in-game menu / console / minigame menu owns input.
+    /// it falls back to a single muzzle flash on the press edge (the networked sustained FX play). Both modes gate
+    /// every predicted shot on a PERSISTENT per-weapon ready clock (<see cref="_weaponReadyTime"/>, a client mirror
+    /// of the server's ATTACK_FINISHED) so spamming / wheel-firing the button can't out-run the weapon's real
+    /// refire rate — the FX only replay as fast as the weapon actually fires. Either way each press edge sets a
+    /// sub-tick latch (<see cref="_attackLatch"/>) so a tap shorter than one input tick still reaches the server.
+    /// Inert while the in-game menu / console / minigame menu owns input.
     /// </summary>
     private void UpdateLocalFireFeedback(float dt)
     {
@@ -5516,11 +5607,11 @@ public sealed partial class NetGame : Node3D
         bool active = !GetTree().Paused && !ConsoleState.IsOpen && !UiOwnsCursor;
         if (!active)
         {
-            // Input is owned elsewhere (in-game menu / console / minigame / quickmenu): drop the edge state, the tap
-            // latch and the refire clock so nothing fires on resume (matches SampleInput's in_releaseall edge).
+            // Input is owned elsewhere (in-game menu / console / minigame / quickmenu): drop the edge state and the
+            // tap latch so nothing fires on resume (matches SampleInput's in_releaseall edge). The per-weapon ready
+            // clock is left intact so a weapon mid-cooldown stays on cooldown across a menu blip.
             _attackHeld = _attack2Held = false;
             _attackLatch = _attack2Latch = false;
-            _firePredictActive = false;
             return;
         }
 
@@ -5528,51 +5619,71 @@ public sealed partial class NetGame : Node3D
         if (a1 && !_attackHeld)
             _attackLatch = true; // sub-tick latch for the server (independent of FX prediction)
 
-        if (_predictFire && a1 && TryActivePrimaryFire(out string fireSound, out float refire)
-            && !LocalDeadNow() && HasAmmoNow())
+        if (_predictFire)
         {
-            // Refire clock: first shot the frame the button goes down (or whenever the clock catches up), then one
-            // shot per `refire` s while held. Bound the catch-up so a frame hitch can't burst a pile of shots.
-            if (!_firePredictActive)
-            {
-                _firePredictActive = true;
-                _nextFireTime = _fireClock; // fire immediately this frame
-            }
-            if (_fireClock >= _nextFireTime)
+            // cl_predictfire on: predict the view-model flash + local fire sound on every shot (first on the press
+            // edge, then one per `refire` s while held) — but ONLY once the weapon's persistent ready clock has
+            // elapsed, so a burst of taps / wheel-fire can't out-run the refire rate. FirePredictReady + the
+            // MarkFirePredicted cadence are the client mirror of the server's ATTACK_FINISHED gate.
+            if (a1 && !LocalDeadNow() && HasAmmoNow()
+                && TryActivePrimaryFire(out int wid, out string fireSound, out float refire) && FirePredictReady(wid)
+                && (!_attackHeld || !PrimaryRefireRequiresRelease(wid))) // #24: release-gated weapons only fire on a fresh press
             {
                 PredictFireShot(fireSound);
-                float step = Mathf.Max(refire, 0.02f);
-                _nextFireTime += step;
-                if (_nextFireTime < _fireClock - step) _nextFireTime = _fireClock; // don't accumulate a backlog
+                MarkFirePredicted(wid, refire, dt);
             }
         }
-        else
+        else if (a1 && !_attackHeld && !LocalDeadNow()
+                 && TryActiveRefire(XonoticGodot.Common.Gameplay.FireMode.Primary, out int widOff, out float refireOff)
+                 && FirePredictReady(widOff))
         {
-            _firePredictActive = false;
-            // cl_predictfire off (or this weapon isn't predicted): a single muzzle flash on the press edge (Phase 1).
-            if (!_predictFire && a1 && !_attackHeld)
-            {
-                _hud?.PulseFire();
-                _viewModel?.Fire();
-            }
+            // cl_predictfire off: a single muzzle flash on the press edge (Phase 1; the networked sustained FX play),
+            // still gated by the ready clock so tap-spam can't repeat it faster than the refire rate.
+            _hud?.PulseFire();
+            _viewModel?.Fire();
+            MarkFirePredicted(widOff, refireOff, dt);
         }
         _attackHeld = a1;
 
         // Secondary fire: latch the press so its tap reaches the server, and pop a local muzzle flash on the press
         // edge for weapons whose secondary actually fires a shot (Base W_MuzzleFlash is called per shot for either
         // fire mode). Zoom-style secondaries (Vortex/Vaporizer/Rifle secondary = zoom, not a shot) must NOT flash,
-        // so we gate on the weapon having a real secondary attack — mirrors the primary press-edge flash above.
+        // so we gate on the weapon having a real secondary attack. Shares the SAME per-weapon ready clock as primary
+        // (Base ATTACK_FINISHED is per-slot, not per-mode), so a secondary tap inside the refire window is dropped.
         bool a2 = BindTable.Attack2Held;
         if (a2 && !_attack2Held)
         {
             _attack2Latch = true;
-            if (SecondaryFiresShot() && !LocalDeadNow())
+            if (SecondaryFiresShot() && !LocalDeadNow()
+                && TryActiveRefire(XonoticGodot.Common.Gameplay.FireMode.Secondary, out int wid2, out float refire2)
+                && FirePredictReady(wid2))
             {
                 _hud?.PulseFire();
                 _viewModel?.Fire(); // local muzzle flash for the secondary shot (remote copy stays networked)
+                MarkFirePredicted(wid2, refire2, dt);
             }
         }
         _attack2Held = a2;
+    }
+
+    /// <summary>
+    /// Whether the given weapon's PRIMARY refire requires the fire button to be RELEASED between shots (so a
+    /// sustained hold does NOT refire). The Devastator is the stock case: Base <c>W_Devastator</c> <c>wr_think</c>
+    /// only fires when <c>rl_release</c> is set (button released since the last shot); holding fire GUIDES the
+    /// rocket instead of refiring (devastator.qc:461-472). The simple client refire clock can't model that, so it
+    /// predicted phantom muzzle-flash/fire-sound every refire while held (playtest #24) — for these weapons we
+    /// predict only on the press edge. <c>guidestop 1</c> disables guiding → continuous fire like a normal weapon,
+    /// so honour it (then this returns false and the normal held-fire prediction applies).
+    /// </summary>
+    private bool PrimaryRefireRequiresRelease(int wid)
+    {
+        // Netname-only, deliberately NO cvar read: the server-side balance cvar g_balance_devastator_guidestop is
+        // NOT reliably reachable from the client here — _sharedCvars (client/menu store) returned a stale non-zero
+        // (v1: phantom persisted), and Api.Cvars threw / broke the whole prediction path (v2: no flash at all). The
+        // guidestop-1 config (continuous fire, no guiding) is rare and non-default; treating the Devastator as
+        // always release-gated only costs a slightly under-predicted FX cadence in that rare case (cosmetic).
+        return wid >= 0 && wid < XonoticGodot.Common.Gameplay.Weapons.Count
+            && (XonoticGodot.Common.Gameplay.Weapons.ById(wid)?.NetName ?? "") == "devastator";
     }
 
     /// <summary>
@@ -5610,16 +5721,18 @@ public sealed partial class NetGame : Node3D
                 (int)XonoticGodot.Common.Services.SoundChannel.WeaponAuto, _client.LocalNetId, 1f);
     }
 
-    /// <summary>The active weapon's primary fire sound + refire interval, or false when it can't be predicted (no
-    /// active weapon, or a loop/grapple weapon absent from <see cref="WeaponFireSounds"/> → its networked sound
+    /// <summary>The active weapon's id + primary fire sound + refire interval, or false when it can't be predicted
+    /// (no active weapon, or a loop/grapple weapon absent from <see cref="WeaponFireSounds"/> → its networked sound
     /// plays normally and is NOT suppressed).</summary>
-    private bool TryActivePrimaryFire(out string fireSound, out float refire)
+    private bool TryActivePrimaryFire(out int weaponId, out string fireSound, out float refire)
     {
+        weaponId = -1;
         fireSound = "";
         refire = 0.1f;
         if (_client is null || _client.ActiveWeaponId < 0)
             return false;
-        XonoticGodot.Common.Gameplay.Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(_client.ActiveWeaponId);
+        weaponId = _client.ActiveWeaponId;
+        XonoticGodot.Common.Gameplay.Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(weaponId);
         if (w is null)
             return false;
         fireSound = WeaponFireSounds.PrimaryFor(w.NetName);
@@ -5628,6 +5741,46 @@ public sealed partial class NetGame : Node3D
         refire = w.RefireFor(XonoticGodot.Common.Gameplay.FireMode.Primary);
         if (refire <= 0f) refire = 0.1f;
         return true;
+    }
+
+    /// <summary>The active weapon's id + refire interval for <paramref name="mode"/>, or false when there's no
+    /// active weapon. Unlike <see cref="TryActivePrimaryFire"/> this needs no fire-sound entry, so it also serves
+    /// weapons that aren't sound-predicted (the cl_predictfire-off press-edge flash + the secondary flash) — the
+    /// refire only feeds the ready clock. Both modes key the SAME ready slot (Base ATTACK_FINISHED is per-slot).</summary>
+    private bool TryActiveRefire(XonoticGodot.Common.Gameplay.FireMode mode, out int weaponId, out float refire)
+    {
+        weaponId = -1;
+        refire = 0.1f;
+        if (_client is null || _client.ActiveWeaponId < 0)
+            return false;
+        weaponId = _client.ActiveWeaponId;
+        XonoticGodot.Common.Gameplay.Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(weaponId);
+        if (w is null)
+            return false;
+        refire = w.RefireFor(mode);
+        if (refire <= 0f) refire = 0.1f;
+        return true;
+    }
+
+    /// <summary>Whether the persistent predicted-fire clock has elapsed for <paramref name="weaponId"/> (an unseen
+    /// weapon is ready). Client mirror of the server's <c>ATTACK_FINISHED &lt;= time</c> gate
+    /// (<see cref="XonoticGodot.Common.Gameplay.Weapons.WeaponFireGate"/>) — see <see cref="_weaponReadyTime"/>.</summary>
+    private bool FirePredictReady(int weaponId)
+        => !_weaponReadyTime.TryGetValue(weaponId, out float ready) || _fireClock >= ready;
+
+    /// <summary>Advance the per-weapon predicted-fire clock after a predicted shot, mirroring the server's
+    /// ATTACK_FINISHED cadence (WeaponFireGate): if the weapon wasn't firing continuously (its last scheduled shot
+    /// was &gt; ~1.5 frames ago — a fresh tap/burst or a frame hitch) start from now so the opening shot isn't
+    /// penalised and no catch-up backlog can bank up; otherwise accumulate so sustained fire holds an exact refire
+    /// cadence with no per-frame drift. <paramref name="refire"/> is the base per-mode interval (client prediction
+    /// does not apply g_weaponratefactor / haste — a rare, pre-existing approximation, same as before).</summary>
+    private void MarkFirePredicted(int weaponId, float refire, float dt)
+    {
+        float step = Mathf.Max(refire, 0.02f);
+        float ready = _weaponReadyTime.TryGetValue(weaponId, out float r) ? r : float.NegativeInfinity;
+        if (ready < _fireClock - dt * 1.5f)
+            ready = _fireClock;
+        _weaponReadyTime[weaponId] = ready + step;
     }
 
     /// <summary>Whether the local player is dead (stop predicting fire). Listen server reads the host Player; a
@@ -5645,6 +5798,12 @@ public sealed partial class NetGame : Node3D
         XonoticGodot.Common.Gameplay.Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(_client.ActiveWeaponId);
         if (w is null || w.AmmoType == XonoticGodot.Common.Gameplay.ResourceType.None)
             return true; // infinite-ammo weapon (e.g. blaster)
+        // Unlimited ammo (QC IT_UNLIMITED_AMMO — g_weaponarena / give unlimited_ammo): the numeric count can be 0
+        // yet firing is allowed, so gate on the flag first (same check as Inventory.cs HasWeapon's ammo arm).
+        // Without this the weapon-arena Devastator had ammo=False, which silently killed ALL fire prediction —
+        // including the legitimate press-edge flash (#24 diagnostic: `ammo=False` was the only failing input).
+        if (p.UnlimitedAmmo || (p.Items & 1) != 0) // bit 0 = QC IT_UNLIMITED_AMMO (common/items/item.qh)
+            return true;
         return XonoticGodot.Common.Gameplay.Resources.GetResource(p, w.AmmoType) > 0f;
     }
 
