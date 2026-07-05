@@ -755,29 +755,53 @@ nudge-out-of-solid; see #9), **#14** flag jitter (user-deferred).
   available/restore branches → identity clear. Known limits (documented in the registry):
   vehicle-hud item tint still unported; ShaderMaterial item surfaces stay untinted (alpha-only).
 
-### 30. Client-side animations ignore pause/slowmo (should freeze / slow with the sim)
-- [ ] **Status:** Not started (round 5).
-- **Symptom:** while auto-paused (#19 drives `slowmo 0`) client-side animation keeps running at
-  full speed; more generally, slowmo should scale ALL client-side animation so everything plays
-  in slow motion (item bob/spin, player/model animations, particles, viewmodel).
-- **Expected:** Base derives CSQC `time` from servertime, which advances at the slowmo rate — so
-  every client animation slows/freezes in lockstep with the sim. Thoroughly verify Base's client
-  clock derivation and align.
-- **First look:** the port's client clocks — what feeds `Api.Clock.Time` client-side, the raw
-  `(float)delta` uses (`ModelAnimator.Advance`, `EffectSystem`, `ItemBobAnim`, viewmodel anims,
-  `SpawnPointParticles` etc.) — vs the replicated `slowmo` (#19 v3 wired it into client input
-  cadence already; the ANIMATION layer is what's missing).
+### 30. Client-side animations ignore pause/slowmo — FIXED (needs playtest: pause + `slowmo 0.3`)
+- [x] **Status:** Implemented (branch `feature/cpuoptimization`) — build + 2953 tests green, headless smoke
+  clean. Verify: pause a solo game (menu/console/alt-tab) → viewmodel sway/clips, casings, gibs, particles,
+  flashes, item bob, player animations ALL freeze; `slowmo 0.3` in console → everything at 30% speed.
+- **BASE truth (verified in DP source):** `CL_Frame` advances the ONE client clock by
+  `clframetime *= cl.movevars_timescale` and `clframetime = 0` while paused (cl_main.c:2857/2872);
+  CSQC `time` is refreshed from it every frame (csprogs.c:252) — so ALL CSQC animation (item bob,
+  frame lerps, particles, viewmodel) slows/freezes in lockstep for free.
+- **PORT gap:** the sim + `Api.Clock.Time` consumers already scaled (item bob/spin, damage text,
+  beams, HUD), but every WALL-CLOCK animation driver ran unscaled Godot deltas: ClientWorld's
+  central anim/pose/csqc-hooks drive, ViewModel (sway/switch/flash/recoil + both self-advancing
+  clip players), ShellCasings + ModelGibs `_PhysicsProcess`, SpawnPointParticles pulse,
+  MapParticleEmitters (Godot self-processing nodes), FaithfulParticleBackend's `_clientTime`,
+  EffectSystem's FxLight fades.
+- **FIX:** new `ClientRenderTime` static (game/client/ClientRenderTime.cs) — `NetGame._Process`
+  publishes its per-frame `ResolveTimeScale()` (the same replicated slowmo that scales input
+  cadence, #19) and every driver above multiplies its delta by it (map emitters drive
+  `SpeedScale` instead — they're self-processing Godot nodes). Reset to 1 on `Shutdown` so a
+  paused teardown can't freeze the menu/next match (mirrors the #19 slowmo restore). The faithful
+  particle clock keeps its wall-clock SOURCE (the documented freeze/leak guard) — only its STEP
+  is scaled; paused = same-time `Update()` no-op, nothing ages, nothing leaks.
+- **Known residuals (documented):** modern-mode GPU particles (`cl_particles_modern` non-default,
+  unverified mode) + projectile-trail Godot nodes not speed-scaled; audio deliberately unscaled
+  (DP doesn't timescale sound envelopes).
 
-### 31. Weapon-switch animation plays when the switch is impossible — Base only plays a denial sound
-- [ ] **Status:** Not started (round 5).
+### 31. Weapon-switch animation plays when the switch is impossible — FIXED (needs playtest)
+- [x] **Status:** Implemented (branch `feature/cpuoptimization`) — build + 2953 tests green. Verify: with only
+  one usable weapon, press next/prev/group keys → NO lower/raise animation, just the "unavailable" denial
+  sound; with a second usable weapon, switching still lowers instantly on the keypress.
 - **Symptom:** trying to switch weapons with no other weapon available (e.g. others have no ammo)
   still plays the viewmodel switch animation. In Base nothing switches — you just hear the
   "can't fire / impossible" denial sound.
-- **Expected:** Base `W_SwitchWeapon` path: `client_hasweapon(..., andammo)` failure → denial
-  sound, NO lower/raise animation. Thoroughly review Base's switch/denial flow and align.
-- **First look:** the port's server switch logic (weapon slots / `client_hasweapon` equivalent)
-  AND the client viewmodel switch prediction (NetGame/viewmodel — it may predict the switch
-  animation unconditionally, same family as #21/#24 prediction gates).
+- **CONFIRMED root cause:** the SERVER side was already faithful (audited end to end:
+  `Inventory.SwitchWeaponWithComplain` leaves `SwitchWeaponId` untouched on a denied
+  `ClientHasWeapon` — exactly Base `W_SwitchWeapon`/selection.qc:274 — so the weapon state machine
+  never raises/drops, and the denial plays SND UNAVAILABLE like Base). The phantom animation was
+  pure CLIENT-side: `NetGame.RunBoundCommand` played the keypress-predicted holster
+  (`_viewModel.PlayHolster()`) on EVERY weapon-select impulse, unconditionally; the 0.45s
+  grace-recover then raised the gun back — reading exactly as a switch animation. Same prediction
+  family as #21/#24.
+- **FIX:** `NetGame.SwitchCouldSucceedNow(imp)` gates the predicted holster — mirrors the server
+  check with the same shared logic (`Inventory.ClientHasWeapon`, complain:false = silent):
+  group keys (1..9, 14) test their impulse group; by-id (230+) tests the exact weapon PLUS its
+  group when `cl_weapon_switch_fallback_to_impulse` is on (mirrors `ByIdHandle`); next/prev/last/
+  best test "any other usable weapon" (best/last can rarely over-predict — the grace recovers).
+  Pure remote client (no `LocalServerPlayer`): keeps the old predict-always behavior — the same
+  graceful-degradation policy as the #24 ammo gate.
 
 ### 32. Remote players: wrong/missing animations + weapon held too high (not in hands)
 - [ ] **Status:** Not started (round 5; PRE-EXISTING before cpuoptimization — user wants it fixed now).

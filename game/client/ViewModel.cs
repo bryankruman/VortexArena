@@ -885,7 +885,14 @@ public partial class ViewModel : Node3D
     public override void _Process(double delta)
     {
         using var _vmScope = XonoticGodot.Game.Client.FrameProfiler.Scope("viewmodel"); // [profiling] viewmodel sway/anim
-        float dt = (float)delta;
+        // #30 slowmo/pause: the whole viewmodel animation set (flash decay, recoil recovery, switch slide, sway,
+        // fire/reload clips) advances on the slowmo-scaled delta — Base's viewmodel_draw runs on CSQC frametime,
+        // which freezes/slows with the sim. The two self-advancing clip drivers are speed-scaled the same way.
+        float dt = XonoticGodot.Game.Client.ClientRenderTime.ScaleDelta((float)delta);
+        if (_animator is not null && GodotObject.IsInstanceValid(_animator))
+            _animator.TimeScale = XonoticGodot.Game.Client.ClientRenderTime.Scale; // Advance() multiplies by this
+        if (_iqmAnimPlayer is not null && GodotObject.IsInstanceValid(_iqmAnimPlayer))
+            _iqmAnimPlayer.SpeedScale = XonoticGodot.Game.Client.ClientRenderTime.Scale;
 
         RefreshCvars();
 

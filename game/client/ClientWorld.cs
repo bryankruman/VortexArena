@@ -1071,6 +1071,10 @@ public partial class ClientWorld : Node3D
     public override void _Process(double delta)
     {
         using var _cwScope = FrameProfiler.Scope("cw.process"); // [profiling] whole ClientWorld._Process
+        // #30 slowmo/pause: every VISUAL animation in this drive advances by the slowmo-scaled delta (the port
+        // of DP's cl.time — all CSQC animation freezes/slows with the sim). Audio spatialization below stays on
+        // the raw delta (DP doesn't timescale sound envelopes).
+        float dtAnim = ClientRenderTime.ScaleDelta((float)delta);
         // The EffectSystem nodes and projectile trails advance themselves (they're Godot particle nodes);
         // ProjectileRenderer and the ModelAnimators also self-advance via their own _Process. We still poll
         // here for entity-bound animators that need their clip re-selected from movement each frame.
@@ -1085,7 +1089,7 @@ public partial class ClientWorld : Node3D
                 SelectClipFromMovement(e, anim);
             // R1: Advance() relocated here from the (now-disabled) ModelAnimator._Process so the morph still
             // rebuilds once per frame without paying a per-node native->managed callback.
-            anim.Advance((float)delta);
+            anim.Advance(dtAnim);
         }
 
         // Skeletal player models: synthesize the four-pose split + aim each frame and push the CPU bones.
@@ -1117,7 +1121,7 @@ public partial class ClientWorld : Node3D
                 // QC ENT_CLIENT_STATUSEFFECTS frozen: hold the skeletal pose static while encased (the ice block
                 // freezes the animation, not just the tint). Set from the networked StatusEffects bitmap before posing.
                 pm.FrozenHold = HasStatusEffect(e, StatusEffectsCatalog.Frozen);
-                pm.Pose(e, (float)delta, poseCull, isLocal, distSq, cullDistSq, serverNow);
+                pm.Pose(e, dtAnim, poseCull, isLocal, distSq, cullDistSq, serverNow);
                 // Cosmetic add-on layer also attaches to the skeletal player node (it follows origin/yaw like the
                 // EntityNode path) so the ice block / held buff glow ride the posed body too.
                 _cosmetics.Drive(e, pm);
@@ -1127,13 +1131,13 @@ public partial class ClientWorld : Node3D
         // Crosshair-chase local-body fade: ease each targeted local model toward its desired alpha (and back to
         // opaque once the target clears). No-op while no chase target is set (the common case pays a single
         // dictionary-count check).
-        DriveBodyAlpha((float)delta);
+        DriveBodyAlpha(dtAnim);
 
         // (R1/R2) central entity-node drive — folds the DP-faithful entity PVS cull into the same pass, so this
         // one call replaces the old separate ApplyEntityPvsCull. See DriveEntityNodes.
         using (FrameProfiler.Scope("entitynode")) DriveEntityNodes(localId);
-        using (FrameProfiler.Scope("cw.csqc")) DriveCsqcModelHooks((float)delta);
-        using (FrameProfiler.Scope("cw.vehicles")) DriveVehicles((float)delta);
+        using (FrameProfiler.Scope("cw.csqc")) DriveCsqcModelHooks(dtAnim);
+        using (FrameProfiler.Scope("cw.vehicles")) DriveVehicles(dtAnim);
         // Live-poll the dynamic map/scene tint cvars so a console `set r_map_tint*` re-tints instantly (the
         // testing path); when the strength cvars are 0 this is a couple of cheap reads and leaves the map/code
         // baseline in place. See XonoticGodot.Game.WorldTint.

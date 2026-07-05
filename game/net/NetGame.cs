@@ -2577,6 +2577,9 @@ public sealed partial class NetGame : Node3D
             _serverWorld.Services.Cvars.Set("slowmo", _localPauseSlowmo);
             _localPauseSlowmo = null;
         }
+        // #30: same guard for the published client render-time scale — a teardown mid-pause/slowmo must not
+        // leave the menu / the next match's visuals frozen at the old factor.
+        XonoticGodot.Game.Client.ClientRenderTime.Scale = 1f;
 
         if (_client is not null)
         {
@@ -2710,6 +2713,11 @@ public sealed partial class NetGame : Node3D
         // NOTE: the server is still driven by the RAW dt below (it scales internally via TimeScale) — only the
         // client accumulators are pre-scaled here.
         float slowmo = ResolveTimeScale();
+        // #30: publish the factor for every client-side visual animation driver (viewmodel sway/clips, casings,
+        // gibs, entity/player animators, ambient emitters, faithful particles) — the port of DP scaling cl.time
+        // (which ALL CSQC animation reads) by movevars_timescale, so a slowmo/paused sim slows/freezes the
+        // client visuals in lockstep instead of leaving them running on wall clock.
+        XonoticGodot.Game.Client.ClientRenderTime.Scale = slowmo;
 
         // Arm the predicted-warpzone budget: ONE predicted crossing per render frame, across every reconcile
         // replay chain this frame runs (see TriggerTouch.PredictedWarpBudget — kills the replay round-trip
@@ -5397,8 +5405,11 @@ public sealed partial class NetGame : Node3D
             // Instant local feedback: begin lowering the gun the moment a weapon-SELECT key is pressed, so the
             // switch starts visibly the same frame instead of waiting for the server round-trip (EquipNetworkedWeapon
             // then raises the new gun when the change confirms). Only weapon-select impulses (group/next/prev/last/
-            // best/by-id) — NOT drop (17) or reload (20). Auto-recovers if the server denies the switch.
-            if (IsWeaponSwitchImpulse(imp) && _viewModel is not null && GodotObject.IsInstanceValid(_viewModel))
+            // best/by-id) — NOT drop (17) or reload (20) — and only when the switch could actually succeed
+            // (SwitchCouldSucceedNow, playtest #31): Base plays NO animation on a denied switch, just the
+            // "weapons/unavailable" sound. Auto-recovers if the server still denies (pure-client fallback).
+            if (IsWeaponSwitchImpulse(imp) && SwitchCouldSucceedNow(imp)
+                && _viewModel is not null && GodotObject.IsInstanceValid(_viewModel))
                 _viewModel.PlayHolster();
             return;
         }
@@ -5448,6 +5459,64 @@ public sealed partial class NetGame : Node3D
     /// </summary>
     private static bool IsWeaponSwitchImpulse(int imp)
         => (imp >= 1 && imp <= 14) || (imp >= 230 && imp <= 253);
+
+    /// <summary>
+    /// Whether a weapon-select impulse could actually change the weapon — the gate for the keypress-predicted
+    /// holster (playtest #31). Base plays NO switch animation on a denied switch: <c>W_SwitchWeapon</c> leaves
+    /// <c>m_switchweapon</c> untouched when <c>client_hasweapon(…, andammo, complain)</c> fails (selection.qc:274),
+    /// so the weaponsystem state machine never raises/drops — you only hear the "weapons/unavailable" denial
+    /// (which the port's server path already plays). The old predict-always holster lowered the gun on EVERY
+    /// select press and recovered on the grace timer — a phantom switch animation when nothing could switch.
+    /// Mirrors the server check with the same shared logic (<see cref="Inventory.ClientHasWeapon"/>,
+    /// complain: false = silent): group keys test their impulse group, by-id tests the exact weapon (plus its
+    /// group when <c>cl_weapon_switch_fallback_to_impulse</c> is on, matching <c>ByIdHandle</c>), next/prev/last/
+    /// best test for any other usable weapon ("last"/"best" can rarely still deny with this true — e.g. best ==
+    /// current — a small over-predict the holster grace recovers). Pure remote client (no
+    /// <see cref="LocalServerPlayer"/>): keep the old predict-always behavior — the same graceful-degradation
+    /// policy as the fire-prediction ammo gate (<see cref="HasAmmoNow"/>).
+    /// </summary>
+    private bool SwitchCouldSucceedNow(int imp)
+    {
+        if (LocalServerPlayer is not { } p || _client is null)
+            return true;
+        int currentId = _client.ActiveWeaponId;
+
+        if (imp >= 230) // weapon_byid_N — exact target known
+        {
+            Weapon? w = WeaponOrder.WeaponByIdIndex(imp - 230);
+            if (w is null)
+                return false; // out of range → QC WEP_Null no-op, nothing to animate
+            if (w.RegistryId != currentId && Inventory.ClientHasWeapon(p, w, andAmmo: true, complain: false))
+                return true;
+            bool fallback = Api.Services is not null
+                && Api.Cvars.GetFloat("cl_weapon_switch_fallback_to_impulse") != 0f;
+            return fallback && AnyOtherUsableWeapon(p, currentId, w.Impulse);
+        }
+
+        if (imp >= 1 && imp <= 9)
+            return AnyOtherUsableWeapon(p, currentId, imp);   // weapon_group_1..9
+        if (imp == 14)
+            return AnyOtherUsableWeapon(p, currentId, 0);     // weapon_group_0
+        return AnyOtherUsableWeapon(p, currentId, group: -1); // next/prev/last/best (10..13)
+    }
+
+    /// <summary>A usable (owned + ammo, QC <c>client_hasweapon</c>) weapon other than the current one exists —
+    /// optionally restricted to one impulse group (<paramref name="group"/> &lt; 0 = any).</summary>
+    private static bool AnyOtherUsableWeapon(Player p, int currentId, int group)
+    {
+        System.Collections.Generic.IReadOnlyList<Weapon> all = Weapons.All;
+        for (int i = 0; i < all.Count; i++)
+        {
+            Weapon w = all[i];
+            if (w.RegistryId == currentId)
+                continue;
+            if (group >= 0 && w.Impulse != group)
+                continue;
+            if (Inventory.ClientHasWeapon(p, w, andAmmo: true, complain: false))
+                return true;
+        }
+        return false;
+    }
 
     /// <summary>The live look sensitivity (DP `sensitivity` cvar) folded with the base feel — the value the
     /// input-settings dialog writes. Falls back to the previous hardcoded feel when the cvar is unset.</summary>

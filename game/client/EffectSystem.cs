@@ -2161,7 +2161,9 @@ public partial class EffectSystem : Node3D
         int count = _liveFxLights.Count;
         if (count == 0)
             return;
-        float dt = (float)delta;
+        // #30 slowmo/pause: flash-light fades are CSQC dlight decay in Base (cl.time) — scale with the client
+        // render-time factor so a paused game holds the flashes instead of fading them out on wall clock.
+        float dt = XonoticGodot.Game.Client.ClientRenderTime.ScaleDelta((float)delta);
         for (int i = count - 1; i >= 0; i--)
         {
             FxLight l = _liveFxLights[i];

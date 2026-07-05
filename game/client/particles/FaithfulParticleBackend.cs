@@ -351,7 +351,11 @@ public sealed partial class FaithfulParticleBackend : Node3D
         // deliberate game-side divergence from DP's 1 s clamp; the faithful sim's own clamp stays bit-exact
         // (parity tests drive Update directly and are unaffected — this only bounds what the backend feeds it).
         const float MaxParticleStep = 0.05f;   // ~3 frames @ 60 fps; far tighter than DP's 1.0 s correctness clamp
-        _clientTime += Math.Min((float)delta, MaxParticleStep);
+        // #30 slowmo/pause: scale the ADVANCE by the client render-time factor (DP's cl.time — which particles
+        // age on — advances by timescaled frametime, and not at all while paused). At slowmo 0 _clientTime holds
+        // still, so Update() is a same-time no-op: particles hang frozen; no aging, no leak (paused sim emits
+        // nothing new). This keeps the wall-clock SOURCE the doc above requires — only the step is scaled.
+        _clientTime += Math.Min(XonoticGodot.Game.Client.ClientRenderTime.ScaleDelta((float)delta), MaxParticleStep);
         _sim.Update(_clientTime);
 
         // View origin/forward in Quake space, from the active camera (GetViewport().GetCamera3D()). The
