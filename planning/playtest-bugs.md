@@ -803,16 +803,38 @@ nudge-out-of-solid; see #9), **#14** flag jitter (user-deferred).
   Pure remote client (no `LocalServerPlayer`): keeps the old predict-always behavior — the same
   graceful-degradation policy as the #24 ammo gate.
 
-### 32. Remote players: wrong/missing animations + weapon held too high (not in hands)
-- [ ] **Status:** Not started (round 5; PRE-EXISTING before cpuoptimization — user wants it fixed now).
+### 32. Remote players: wrong/missing animations + weapon held too high — FIXED (needs playtest)
+- [x] **Status:** Implemented + probe-verified live (branch `feature/cpuoptimization`); build + 2953 tests +
+  headless smoke green. Verify in playtest: remote players run/strafe/jump/crouch with real leg cycles, shoot/
+  pain torso overlays play, and the held weapon sits in the RIGHT HAND through all of it.
 - **Symptom:** enemy/remote players don't appear to play animations / strike the correct pose;
   the weapon they hold renders too HIGH, not where their hands are.
-- **Expected:** Base CSQC decides player animation from movement/actions (`animdecide.qc`) and
-  attaches the weapon model to the player skeleton's weapon tag (`tag_weapon`), so the gun sits
-  in the hands and the body plays run/jump/attack/death clips.
-- **First look:** the port's `PlayerModel.Pose` + its animation-decide port (what drives remote
-  players' clips from networked state) and the held-weapon attach (which bone/tag, offset) vs
-  Base `animdecide.qc` + the weaponentity/exteriorweaponentity attach chain.
+- **CONFIRMED root cause (live `[dbg32]` probe):** the whole animation pipeline was healthy —
+  velocity/onground/ducked networked ✓, locomotion selection correct ✓, `legsTime` advancing ✓,
+  weapon bone resolved (`bip01 r hand`) with a live marker ✓ — but **every clip resolved to
+  framegroup 0**: stock Xonotic player IQMs define clips via NAMELESS `.framegroups` lines
+  (probe: 31 groups, all `Name=''`), so `BuildClipTable`'s keyword match never hit and every
+  Pick fell back to `groups[0]` = **DIE1**. Every remote player was permanently posed/playing
+  the death animation regardless of movement — "no animation / wrong pose", AND the held weapon
+  rode the hand bone of a DEATH pose (twisted high across the chest) — the SAME root explains
+  the weapon-height complaint. Base never hits this because DP auto-names unnamed framegroups
+  `groupified_<i>_anim` and `animdecide.qh`'s REGISTER_ANIMATION framenames match those — i.e.
+  Base's contract is the SLOT INDEX (die1=0, die2=1, draw=2, duck=3, duckwalk=4, duckjump=5,
+  duckidle=6, idle=7, jump=8, pain1/2=9/10, shoot=11, taunt=12, run=13, runbackwards=14,
+  strafeleft/right=15/16, dead1/2=17/18, forwardright/left=19/20, backright/left=21/22,
+  melee=23, duckwalk-dirs=24..30).
+- **FIX:** `BuildClipTable` now resolves by the Base slot INDEX when the groups are unnamed
+  (named sets keep the keyword path for community models with real anim names), including
+  Base's `animfixfps` fallback pairs (forwardright→straferight, melee→shoot, duckwalk-dirs→
+  duckwalk, pain2→pain1, die2→die1, duckjump→jump). Post-fix probe: idle@143+41, run@400+20,
+  strafes@442/@463, diagonals@488/@509 — distinct real ranges; torso actions overlay (upper=2/3/4
+  seen live); hand-marker positions sane. Dying/dead legs play DIE1 whose non-loop end holds the
+  corpse pose (matches Base's DEAD1 hold).
+- **Watch on re-test:** (a) any model whose `.framegroups` count ≠ 31 leans on the fallback
+  pairs — glance at non-stock models if any; (b) the weapon should now track the hand through
+  run/jump/shoot — if it still floats on SOME models, suspect that model's BoneWeapon metadata
+  (sidecars), not this path; (c) chase-cam-from-inside haze seen during verification is a
+  separate chase-distance quirk, not this bug.
 
 ### 33. Verify bot difficulty (skill) actually applies — VERIFIED WORKING (code audit; live A/B optional)
 - [x] **Status:** Closed by a full-chain code audit (2026-07-05) — skill DOES apply in menu-started games.
