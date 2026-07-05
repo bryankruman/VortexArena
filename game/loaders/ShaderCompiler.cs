@@ -267,10 +267,19 @@ public static class ShaderCompiler
             case BlendMode.Add:
                 mat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
                 mat.BlendMode = BaseMaterial3D.BlendModeEnum.Add;
+                // Q3 `blendfunc add` stages are UNLIT self-luminous adds (GL_ONE GL_ONE over whatever is
+                // already there — no lightmap/scene-light modulation). A Godot Add material left PerPixel-
+                // shaded multiplies the texture by scene lighting first, so in a dim room the addition is
+                // near-black — the "totally flat/dark" energy bolts of playtest #38 (laser/electro
+                // projectile cores) and dim additive map FX. Unshaded = the faithful glow-in-the-dark look.
+                mat.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
                 break;
             case BlendMode.Filter:
                 mat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
                 mat.BlendMode = BaseMaterial3D.BlendModeEnum.Mul;
+                // Q3 `blendfunc filter` multiplies the framebuffer — lighting the multiplier would double-
+                // count the scene light (the surface below is already lit). Unshaded, like Add.
+                mat.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
                 break;
             case BlendMode.Blend:
                 mat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
@@ -307,10 +316,15 @@ public static class ShaderCompiler
             case BlendMode.Add:
                 mat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
                 mat.BlendMode = BaseMaterial3D.BlendModeEnum.Add;
+                // Q3 additive stages are UNLIT self-luminous adds — a PerPixel-shaded Add material goes
+                // near-black in dim rooms (scene-light × texture before the add). This was the flat/dark
+                // laser/electro projectile bolt (playtest #38: laser_projectile_core & co. compile here).
+                mat.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
                 break;
             case BlendMode.Filter:
                 mat.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
                 mat.BlendMode = BaseMaterial3D.BlendModeEnum.Mul;
+                mat.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded; // multiplies the already-lit framebuffer
                 break;
             case BlendMode.Blend:
             case BlendMode.Custom:
