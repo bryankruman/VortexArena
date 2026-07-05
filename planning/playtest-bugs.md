@@ -870,17 +870,30 @@ nudge-out-of-solid; see #9), **#14** flag jitter (user-deferred).
   check whether stock player IQMs carry a dedicated `tag_weapon` bone the port should PREFER over
   the raw hand joint (offset/orientation authored for the gun).
 
-### 35. Bots shoot teammates in team games + don't spare typing players (and typing indicator in remote games)
-- [ ] **Status:** Not started (round 6, seen in CTF vs bots).
-- **Symptom:** (a) bots keep shooting teammates in team games — they should only target enemies;
-  (b) bots should avoid shooting players who are TYPING (Base spares chatting players); (c) make
-  sure the typing/chat indicator (chat bubble) also shows over players in remote/networked games.
-- **Verify against Base:** havocbot target selection (`bot_shouldattack` — team gate + the
-  `buttonchat` spare), BUTTON_CHAT networking, and the chat-bubble attachment (`ChatBubbleThink`,
-  models/misc/chatbubble.spr) — then audit the port's BotAim/BotBrain target pick for the teamplay
-  gate (NB the [[ffa-pants-team-sameteam-trap]] memory: `Teams.SameTeam` is RAW — callers must
-  gate on `GameScores.Teamplay`; DM pants-teams must NOT make bots hold fire in FFA) and the
-  port's typing-state networking + bubble rendering.
+### 35. Bots shoot teammates in team games + typing spare + chat bubble — FIXED (needs playtest)
+- [x] **Status:** Implemented (branch `feature/cpuoptimization`) — build + 2953 tests + CTF smoke green.
+  Verify: (a) CTF bots never aim at teammates; (b) start typing in front of an enemy bot — it holds
+  fire; (c) a typing player shows the chat bubble sprite over their head on every client.
+- **(a) CONFIRMED root cause — the `teamplay` CVAR was never written anywhere.** The port's
+  `BotBrain.ShouldAttack` faithfully mirrors Base `bot_shouldattack` (team gate included) — but its
+  team gate reads `Cvars.Teamplay` = the **`teamplay` cvar**, and NOTHING in the port ever set it
+  (the #27 work set only the `GameScores.Teamplay` static at GameWorld boot). So the gate was
+  silently non-team in every gametype → CTF bots treated same-team players as valid targets.
+  Second casualty found: warmup's `teamplay_lockonrestart` gate (also reads `Cvars.Teamplay`) was
+  dead. **FIX:** GameWorld boot now mirrors the gametype onto the real cvar
+  (`Services.Cvars.Set("teamplay", ...)`, like Base `InitGameplayMode`); cvar registered
+  (runtime, never archived). The FFA pants-team trap is unaffected: in DM `teamplay` stays 0 and
+  Base's own same-team fall-through applies (bots still fight everyone).
+- **(b) Typing spare:** Base `bot_shouldattack` (aim.qc:120) spares `PHYS_INPUT_BUTTON_CHAT`
+  targets unless `bot_typefrag` — the port's predicate omitted it entirely. Added (reads the live
+  `Entity.ButtonChat` input mirror — the same field the monster typefrag spare already reads);
+  `bot_typefrag` registered (Base default 0 = spare).
+- **(c) Chat bubble:** entirely unimplemented (the typing state was networked and used for
+  typefrag scoring, but nothing rendered). Ported `UpdateChatBubble`/`ChatBubbleThink`
+  (client.qc:1350-1397) as `GameWorld.UpdateChatBubble` in the per-client PreThink slot: while a
+  live player types, a `models/misc/chatbubble.spr` entity (asset ships in the pk3dir) follows at
+  `origin + '0 0 15' + maxs_z`; freed on stop/death/spectate + on disconnect (no orphans). A plain
+  networked entity → visible on every client, including remote games.
 
 ### 36. Weapon textures lack color / detail textures wrong + weapon animations incorrect
 - [ ] **Status:** Not started (round 6).
