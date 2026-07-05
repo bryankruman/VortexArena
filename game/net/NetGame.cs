@@ -1968,11 +1968,28 @@ public sealed partial class NetGame : Node3D
             WeaponSlotState st = p.WeaponState(new WeaponSlot(0));
             // clip_load == -1 = QC reload-in-progress sentinel; clip_size>0 guards non-reloadable weapons (clip 0).
             reloading = st.ClipSize > 0 && st.ClipLoad < 0;
+
+            // (playtest r8 #3) FIRE clip, listen-host path: the networked ViewmodelFrame selector is deliberately
+            // NOT consumed on a listen host (UpdateViewModelAnimFromNet returns early — "the host path owns it"),
+            // but this host path only ever derived RELOAD, so the local player's fire animation NEVER triggered
+            // (the muzzle flash is the separate predicted path). Base restarts the clip per shot
+            // (weapon_thinkf(WFRAME_FIRE1) on every attack) — the faithful per-shot edge on the live slot is the
+            // ATTACK_FINISHED bump: every shot pushes it forward. An int-frame rising edge can't re-trigger
+            // during sustained fire; the AttackFinished VALUE change can.
+            float af = st.AttackFinished;
+            if (!reloading && af > _viewmodelLastAttackFinished && _serverWorld is { } sw && af > (float)sw.Time)
+                _viewModel.PlayFireClip();
+            _viewmodelLastAttackFinished = af;
         }
         if (reloading && !_viewmodelReloading)
             _viewModel.PlayReload();
         _viewmodelReloading = reloading;
     }
+
+    /// <summary>Last seen slot-0 ATTACK_FINISHED — the per-shot fire-anim edge for the listen host (see
+    /// <see cref="UpdateViewModelReloadAnim"/>). Reset on equip is unnecessary: a stale higher value only
+    /// suppresses until the first shot pushes past it.</summary>
+    private float _viewmodelLastAttackFinished;
 
     /// <summary>
     /// Drive the local view-model's anim frame from the networked <see cref="XonoticGodot.Net.WepentViewState.ViewmodelFrame"/>

@@ -939,6 +939,25 @@ nudge-out-of-solid; see #9), **#14** flag jitter (user-deferred).
   a full camera billboard — Godot StandardMaterial3D has no axial billboard; a custom-shader axial
   roll is a follow-up if the streak orientation still reads wrong.
 
+### r8 addendum — #36 weapon appearance v2 + the fire-animation trigger (both re-reported, both FIXED)
+- [x] **Appearance "too shiny / seeing through geometry" (screenshots 18:42):** caused by the r7 cubemap
+  binding — the reflect-masked panels (electronew_reflect: 5% bright) mirrored the sky at FULL strength
+  as an always-on EMISSION add; bright sky-colored patches read as HOLES through the gun + chrome. The
+  deeper DP truth: `dpreflectcube` only evaluates inside DP's RTLIGHT shader permutations, and stock
+  Xonotic ships realtime world lighting OFF — the term is near-invisible in Base. **Fix:** cubemap left
+  deliberately UNBOUND (documented in `AssetSystem.DefaultReflectCubemap`); the skin shader's restrained
+  no-cubemap sheen (mild metal, diffuse never killed) is the faithful default. Verified: electro on dance
+  shows its real tan body, no mirror patches.
+- [x] **Weapon fire animation never played (muzzle flash fine):** the networked `ViewmodelFrame` selector
+  is deliberately not consumed on a LISTEN HOST ("the host path owns it") — but the host path
+  (`UpdateViewModelReloadAnim`) only ever derived RELOAD, so the local player's fire clip had NO trigger
+  at all. **Fix:** the host derives the per-shot fire edge from the live slot's ATTACK_FINISHED bump
+  (every shot pushes it forward — Base `weapon_thinkf(WFRAME_FIRE1)` restarts per shot) → new
+  `ViewModel.PlayFireClip()`, which REWINDS an already-playing fire clip (Godot `Play()` doesn't restart)
+  so sustained rapid fire re-triggers visibly. Remote-client note: the int-selector path still only
+  rising-edge-triggers (a machinegun burst plays fire once for a SPECTATOR) — needs a shot counter in the
+  wepent block; deferred.
+
 ### 39. Electro explosion FX — plumbing VERIFIED WIRED; look re-judge after #38
 - [~] **Status:** Investigated (round 7) — the suspected gaps DON'T exist: effectinfo
   `lightradius/lightcolor/lightradiusfade` rows ARE parsed (EffectInfoParser) and spawned as pooled

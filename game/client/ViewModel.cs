@@ -677,6 +677,21 @@ public partial class ViewModel : Node3D
             SetFlashAlpha(child, alpha);
     }
 
+    /// <summary>
+    /// Restart the FIRE clip once — the per-shot server edge (the listen host derives it from the slot's
+    /// ATTACK_FINISHED bump; Base <c>weapon_thinkf(WFRAME_FIRE1)</c> re-sets the frame on EVERY shot). Unlike
+    /// the networked selector's rising-edge path, an already-playing fire clip is REWOUND here so sustained
+    /// rapid fire re-triggers visibly (Godot <c>Play()</c> on the current animation does not restart it).
+    /// (playtest r8 #3)
+    /// </summary>
+    public void PlayFireClip()
+    {
+        string n = FindFireClip(); // plays the clip when found (IQM/DPM or MD3 path)
+        if (_iqmAnimPlayer is not null && GodotObject.IsInstanceValid(_iqmAnimPlayer)
+            && !string.IsNullOrEmpty(n) && _iqmAnimPlayer.CurrentAnimation == n)
+            _iqmAnimPlayer.Seek(0.0, update: true);
+    }
+
     private string FindFireClip()
     {
         // IQM/DPM path (h_* rigs with an AnimationPlayer — the live equip path).
