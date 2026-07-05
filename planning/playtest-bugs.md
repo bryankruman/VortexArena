@@ -730,16 +730,30 @@ nudge-out-of-solid; see #9), **#14** flag jitter (user-deferred).
   confine releases within one frame without needing an edge, and the #19 auto-pause now also treats a
   never-focused background launch as unfocused (game waits paused until you click in — consistent defaults).
 
-### 29. Taken/unavailable ground weapons missing the ghost-item dark tint
-- [ ] **Status:** Not started (playtest 2026-07-05, round 5 — user judges NOT caused by cpuoptimization).
+### 29. Taken/unavailable ground weapons missing the ghost-item dark tint — FIXED (needs playtest eyeball)
+- [x] **Status:** Implemented (branch `feature/cpuoptimization`) — build clean, ran live twice with 0 exceptions;
+  the LOOK needs a playtest confirm (walk over a weapon, check the leftover ghost is a dark translucent
+  silhouette; with `g_weapon_stay 1` an owned stay-weapon should tint reddish).
 - **Symptom:** when a weapon item on the ground is taken / not available (the weapons-stay "ghost"
   state), the port's render effect is wrong — no dark tint is applied where Base clearly darkens
   the ghosted item.
-- **Expected:** match Base's CSQC ghost-item look (likely `cl_ghost_items` alpha +
-  `cl_ghost_items_color` tint — verify the exact mechanism in Base's client item draw).
-- **First look:** Base `qcsrc` client items draw (ghost branch) vs the port's item entity render
-  path (`EntityNode.SetGameplayVisible` — the port may be hiding or alpha-ing without the color
-  tint; `ClientWorld`/item state networking for the "available" flag).
+- **CONFIRMED root cause:** the port applied only the ghost ALPHA (`cl_ghost_items` 0.45,
+  `DriveItemGhostFx`) and never the COLORMOD. Base `ItemDraw` (client/items/items.qc:182-186) sets
+  `colormod = glowmod = cl_ghost_items_color` — and the shipped default `'-1 -1 -1'` is a REAL
+  negative colormod (DP clamps the multiply at 0 → near-BLACK), NOT a "no tint" sentinel ('0 0 0'
+  is the leave-unchanged value, per the cfg description + DP's only-copy-non-zero-colormod rule).
+  So stock Base renders taken items as dark translucent silhouettes; the port rendered them as
+  full-color translucent. Same gap for the weapon-stay tint (`cl_weapon_stay_color '2 0.5 0.5'`,
+  alpha-only before). Both the research agent AND the parity registry rows had mis-read
+  '-1 -1 -1' as "no tint" — registry corrected.
+- **FIX:** `ClientWorld.SetTreeColormod` — per-SURFACE override materials
+  (`SetSurfaceOverrideMaterial`) using cached tinted DUPLICATES of the shared surface materials
+  (albedo+emission premultiplied by `max(colormod,0)`; emission covers QC's glowmod-same-vector),
+  keyed by (material, tint) so shared/cached AssetSystem materials are never mutated; identity
+  clears the overrides. Change-gated like `SetTreeTransparency` (one walk per state change).
+  Wired: `DriveItemGhostFx` → `cl_ghost_items_color`, `DriveItemStayFx` → `cl_weapon_stay_color`,
+  available/restore branches → identity clear. Known limits (documented in the registry):
+  vehicle-hud item tint still unported; ShaderMaterial item surfaces stay untinted (alpha-only).
 
 ### 30. Client-side animations ignore pause/slowmo (should freeze / slow with the sim)
 - [ ] **Status:** Not started (round 5).

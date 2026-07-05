@@ -160,6 +160,8 @@ public partial class ClientWorld : Node3D
         public bool HasTrailTail;     // false until the first frame a trail is active, so the first segment starts at the model origin (no spurious long streak on spawn)
         public float ItemFadeApplied; // last transparency pushed (§11 R9 change gate; 0 = opaque, the node default)
         public int ItemFadeMeshCount; // mesh-list size at last push (re-push after a cache rebuild)
+        public Godot.Vector3 ItemTintApplied = Godot.Vector3.One; // last item colormod pushed (One = untinted; change gate like ItemFadeApplied)
+        public int ItemTintMeshCount; // mesh-list size at last tint push (re-push after a cache rebuild)
     }
     private readonly Dictionary<int, CsqcState> _csqc = new();
 
@@ -1431,11 +1433,9 @@ public partial class ClientWorld : Node3D
                     // QC ItemDraw weapon-stay branch (client/items/items.qc): a still-pickable g_weapon_stay
                     // ghost (Item_Show mode 0 set EF_STARDUST + cleared the live marker server-side; it stays
                     // AVAILABLE so it falls through the ghost branch above) renders translucent at
-                    // cl_weapon_stay_alpha (0.75). The stay-marker isn't networked, so we infer it from the
-                    // weapon_ classname + the server-set EF_STARDUST that ONLY a weapon-stay ghost carries
-                    // (Item_Show ll.531). cl_weapon_stay_color ('2 0.5 0.5') is a per-item colormod multiply the
-                    // port can't apply to item meshes (player-shader-only colormod) -- alpha-only here, see the
-                    // items-pickups stay-weapon-tint gap.
+                    // cl_weapon_stay_alpha (0.75) tinted by the cl_weapon_stay_color ('2 0.5 0.5') colormod
+                    // (playtest #29). The stay-marker isn't networked, so we infer it from the weapon_ classname
+                    // + the server-set EF_STARDUST that ONLY a weapon-stay ghost carries (Item_Show ll.531).
                     DriveItemStayFx(node, st, distAlpha);
                     st.ItemFaded = true;
                 }
@@ -1444,6 +1444,7 @@ public partial class ClientWorld : Node3D
                     // Available but distance-faded: apply only the distance alpha (QC's available branch keeps the
                     // base alpha, colormod 1, no ghost/stay multiply). Hidden once fully faded out past fade_end.
                     SetTreeTransparency(node, st, 1f - distAlpha);
+                    SetTreeColormod(node, st, Godot.Vector3.One); // QC available branch: colormod = '1 1 1'
                     node.SetGameplayVisible(distAlpha > 0.001f);
                     st.ItemFaded = true;
                 }
@@ -1451,6 +1452,7 @@ public partial class ClientWorld : Node3D
                 {
                     // Back to available + in-range — undo the prior ghost/despawn/distance fade exactly once.
                     SetTreeTransparency(node, st, 0f);
+                    SetTreeColormod(node, st, Godot.Vector3.One);
                     node.SetGameplayVisible(true);
                     st.ItemFaded = false;
                 }
@@ -1465,33 +1467,37 @@ public partial class ClientWorld : Node3D
     }
 
     /// <summary>
-    /// Render a picked-up item awaiting respawn as the faded "ghost" — QC ItemDraw's <c>!ITS_AVAILABLE</c> branch
-    /// (client/items/items.qc:182-186): <c>alpha *= cl_ghost_items</c> (default 0.45). <c>cl_ghost_items</c> 0
-    /// hides it entirely (QC <c>alpha 0 → drawmask 0</c>). The optional tint (<c>cl_ghost_items_color</c>, default
-    /// <c>'-1 -1 -1'</c> = no tint) is left for a follow-up. Reuses the per-instance transparency the despawn fade
-    /// uses (never touches the shared/cached item materials); the bob+spin keeps running (driven in EntityNode).
-    /// </summary>
-    /// <summary>
     /// Render a still-pickable <c>g_weapon_stay</c> ghost as the translucent stay-weapon -- QC <c>ItemDraw</c>'s
-    /// weapon-stay branch (client/items/items.qc): <c>alpha *= cl_weapon_stay_alpha</c> (default 0.75) while the
-    /// item stays AVAILABLE (a stay weapon is pickable, just gives no ammo). Composed multiplicatively with the
-    /// distance fade, exactly like <see cref="DriveItemGhostFx"/> does for the unavailable ghost. The
-    /// <c>cl_weapon_stay_color</c> colormod multiply ('2 0.5 0.5') is NOT applied -- item meshes have no
-    /// per-instance colormod path (the SetColormod uniform is player-skin-shader-only); alpha-only here.
+    /// weapon-stay branch (client/items/items.qc): <c>alpha *= cl_weapon_stay_alpha</c> (default 0.75) and
+    /// <c>colormod = cl_weapon_stay_color</c> ('2 0.5 0.5', the reddish overbright tint) while the item stays
+    /// AVAILABLE (a stay weapon is pickable, just gives no ammo). Composed multiplicatively with the distance
+    /// fade, exactly like <see cref="DriveItemGhostFx"/> does for the unavailable ghost. (playtest #29)
     /// </summary>
     private void DriveItemStayFx(EntityNode node, CsqcState st, float distAlpha = 1f)
     {
         float stay = Mathf.Clamp(CvarF("cl_weapon_stay_alpha", 0.75f), 0f, 1f); // xonotic-client.cfg default 0.75
         float alpha = stay * Mathf.Clamp(distAlpha, 0f, 1f); // QC: alpha = distFade; then alpha *= cl_weapon_stay_alpha
         SetTreeTransparency(node, st, 1f - alpha);
+        SetTreeColormod(node, st, CvarColormod("cl_weapon_stay_color", new Godot.Vector3(2f, 0.5f, 0.5f)));
         node.SetGameplayVisible(alpha > 0.001f);
     }
 
+    /// <summary>
+    /// Render a picked-up item awaiting respawn as the faded "ghost" — QC ItemDraw's <c>!ITS_AVAILABLE</c> branch
+    /// (client/items/items.qc:182-186): <c>alpha *= cl_ghost_items</c> (default 0.45) and
+    /// <c>colormod = glowmod = cl_ghost_items_color</c> (default <c>'-1 -1 -1'</c> — a REAL negative colormod:
+    /// DP multiplies the surface color and clamps, so the shipped default renders the ghost as a translucent
+    /// near-BLACK silhouette; '0 0 0' is the "leave color unchanged" sentinel, per the cfg description).
+    /// <c>cl_ghost_items</c> 0 hides it entirely (QC <c>alpha 0 → drawmask 0</c>). Alpha rides the per-instance
+    /// transparency, the tint a per-surface override variant (<see cref="SetTreeColormod"/>) — neither touches
+    /// the shared/cached item materials; the bob+spin keeps running (driven in EntityNode). (playtest #29)
+    /// </summary>
     private void DriveItemGhostFx(EntityNode node, CsqcState st, float distAlpha = 1f)
     {
         float ghost = Mathf.Clamp(CvarF("cl_ghost_items", 0.45f), 0f, 1f); // QC autocvar_cl_ghost_items default 0.45
         float alpha = ghost * Mathf.Clamp(distAlpha, 0f, 1f); // QC: alpha = distFade; then alpha *= cl_ghost_items
         SetTreeTransparency(node, st, 1f - alpha);
+        SetTreeColormod(node, st, CvarColormod("cl_ghost_items_color", new Godot.Vector3(-1f, -1f, -1f)));
         node.SetGameplayVisible(alpha > 0.001f);
     }
 
@@ -1581,6 +1587,91 @@ public partial class ClientWorld : Node3D
             meshes[i].Transparency = transparency;
         st.ItemFadeApplied = transparency;
         st.ItemFadeMeshCount = meshes.Count;
+    }
+
+    /// <summary>
+    /// Apply a whole-model colormod multiply to every mesh surface of an item node — the render-side analogue of
+    /// QC's per-entity <c>.colormod</c>/<c>.glowmod</c> for items (ghost tint / weapon-stay tint, playtest #29).
+    /// Mechanism: a per-SURFACE override material (<see cref="MeshInstance3D.SetSurfaceOverrideMaterial"/>) whose
+    /// albedo/emission are pre-multiplied by the (0-clamped) colormod — a cached DUPLICATE per (material, tint),
+    /// so the shared/cached item materials (AssetSystem SurfaceSetMaterial) are never mutated, mirroring
+    /// <see cref="SetTreeTransparency"/>'s never-touch-shared rule. Restoring to identity clears the overrides,
+    /// exposing the original shared surface material again. DP semantics: a ZERO colormod vector means "unset"
+    /// (identity — csprogs CSQC_AddRenderEdict only copies a non-zero colormod); negatives clamp to 0 (black).
+    /// Non-BaseMaterial3D surfaces (animated ShaderMaterials) are left untinted (alpha still applies).
+    /// Change-gated like the transparency push: one walk per state change, not per frame.
+    /// </summary>
+    private static void SetTreeColormod(EntityNode node, CsqcState st, Godot.Vector3 colormod)
+    {
+        if (colormod == Godot.Vector3.Zero)
+            colormod = Godot.Vector3.One; // QC/DP: '0 0 0' = leave the color unchanged
+        List<MeshInstance3D> meshes = CsqcModelEffects.GetCachedMeshes(st.Effects, node);
+        if (st.ItemTintApplied == colormod && st.ItemTintMeshCount == meshes.Count)
+            return;
+        bool clear = colormod == Godot.Vector3.One;
+        for (int i = 0; i < meshes.Count; i++)
+        {
+            MeshInstance3D mi = meshes[i];
+            if (mi.Mesh is not Mesh mesh)
+                continue;
+            int surfaces = mesh.GetSurfaceCount();
+            for (int s = 0; s < surfaces; s++)
+                mi.SetSurfaceOverrideMaterial(s, clear ? null : TintVariant(mesh.SurfaceGetMaterial(s), colormod));
+        }
+        st.ItemTintApplied = colormod;
+        st.ItemTintMeshCount = meshes.Count;
+    }
+
+    /// <summary>Cache of tinted material variants keyed by (shared source material, colormod). Bounded by the few
+    /// item materials × the two shipped tints (ghost '-1 -1 -1', stay '2 0.5 0.5'); variants hold their source's
+    /// textures by reference. Main-thread only (built inside the ClientWorld drive).</summary>
+    private static readonly Dictionary<(Material, Godot.Vector3), Material?> _itemTintVariants = new();
+
+    /// <summary>
+    /// Get (or build) the tinted duplicate of a shared item surface material. DP applies colormod as a straight
+    /// color multiply clamped at 0 — so albedo AND emission (QC sets <c>glowmod</c> to the same vector in the
+    /// item branches) are multiplied by <c>max(colormod, 0)</c> per channel; '-1 -1 -1' therefore lands on black.
+    /// Returns null (→ no override, shared material stays live) for non-BaseMaterial3D surfaces.
+    /// </summary>
+    private static Material? TintVariant(Material? source, Godot.Vector3 colormod)
+    {
+        if (source is not BaseMaterial3D src)
+            return null; // ShaderMaterial (animated shader) — leave the shared material in place, alpha-only
+        var key = (source!, colormod);
+        if (_itemTintVariants.TryGetValue(key, out Material? cached))
+            return cached;
+        float mr = Mathf.Max(colormod.X, 0f), mg = Mathf.Max(colormod.Y, 0f), mb = Mathf.Max(colormod.Z, 0f);
+        var variant = (BaseMaterial3D)src.Duplicate();
+        Color a = src.AlbedoColor;
+        variant.AlbedoColor = new Color(a.R * mr, a.G * mg, a.B * mb, a.A);
+        if (variant.EmissionEnabled)
+        {
+            Color em = src.Emission;
+            variant.Emission = new Color(em.R * mr, em.G * mg, em.B * mb, em.A);
+        }
+        _itemTintVariants[key] = variant;
+        return variant;
+    }
+
+    /// <summary>
+    /// Read an "r g b" vector cvar as a colormod <see cref="Godot.Vector3"/> (QC <c>stov(autocvar_…)</c>) —
+    /// negatives preserved (they're meaningful: DP clamps them to black at render time). Falls back to
+    /// <paramref name="fallback"/> when unset/unparseable.
+    /// </summary>
+    private Godot.Vector3 CvarColormod(string name, Godot.Vector3 fallback)
+    {
+        if (Api.Services is null)
+            return fallback;
+        string s = Api.Cvars.GetString(name);
+        if (string.IsNullOrWhiteSpace(s))
+            return fallback;
+        string[] parts = s.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 3
+            || !float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float r)
+            || !float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float g)
+            || !float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float b))
+            return fallback;
+        return new Godot.Vector3(r, g, b);
     }
 
     /// <summary>
