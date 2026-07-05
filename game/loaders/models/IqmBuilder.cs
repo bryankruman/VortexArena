@@ -760,8 +760,10 @@ public static class IqmBuilder
         : $"anim_{i}";
 
     /// <summary>Base's weapon-hand rig slot contract (CL_WeaponEntity_SetModel, common/weapons/all.qc:373-376):
-    /// a nameless 4-group `.framegroups` set is fire/fire2/idle/reload BY POSITION. (playtest #36)</summary>
-    private static readonly string[] WeaponSlotNames = { "fire", "fire2", "idle", "reload" };
+    /// a nameless 4-group `.framegroups` set is fire/fire2/idle/reload BY POSITION. Shared with
+    /// <see cref="DpmBuilder"/> — the DPM hand rigs (h_electro/h_crylink/h_rl/h_gl/h_hagar) carry the same
+    /// nameless 4-slot convention. (playtest #36/r9)</summary>
+    internal static readonly string[] WeaponSlotNames = { "fire", "fire2", "idle", "reload" };
 
     // Common Xonotic player-anim ordering used when a framegroup/anim has no explicit name. Not load-bearing.
     private static readonly string[] CanonicalAnimNames =

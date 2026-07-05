@@ -2132,7 +2132,11 @@ public partial class ClientWorld : Node3D
     /// everything else unchanged — 0 (FFA/none) and a packed FORCECOLORS value (&gt;=1024) both flow through as-is.
     /// (playtest-bugs #8: a red flag/player rendered PINK because code 4 hit TeamColor(4)=pink.)
     /// </summary>
-    private static int NormalizeTeamColormap(int cm) => cm switch
+    /// <summary>Map a NUM_TEAM_* color CODE (Red=4/Blue=13/Yellow=12/Pink=9 — what <c>Entity.Team</c> carries)
+    /// onto the colormap low NIBBLE (1..4) <see cref="ModelTint.TeamColor"/> expects; pass-through for values
+    /// already in nibble/colormap form. Public: NetGame's viewmodel team tint needs the same mapping
+    /// (playtest r9: the raw BLUE code 13 is no valid nibble → the first-person gun never team-tinted).</summary>
+    public static int NormalizeTeamColormap(int cm) => cm switch
     {
         XonoticGodot.Common.Gameplay.Teams.Red => 1,    // 4  → 1 red
         XonoticGodot.Common.Gameplay.Teams.Blue => 2,   // 13 → 2 blue

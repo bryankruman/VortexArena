@@ -1897,7 +1897,10 @@ public sealed partial class NetGame : Node3D
         if (_viewModel is null || !GodotObject.IsInstanceValid(_viewModel))
             return;
 
-        int team = LocalShownamesTeam();             // 1=red 2=blue 3=yellow 4=pink, 0/None = FFA
+        // LocalShownamesTeam returns the NUM_TEAM_* color CODE (Red=4/Blue=13/…) — normalize to the colormap
+        // nibble (1..4) TeamColor expects, or a blue player's 13 reads as "no team" and the gun never tints
+        // (playtest r9; the same code-vs-nibble trap as the #8 flag colors).
+        int team = XonoticGodot.Game.Client.ClientWorld.NormalizeTeamColormap(LocalShownamesTeam());
         Color teamColor = XonoticGodot.Game.Client.ModelTint.TeamColor(team, out bool hasTeam);
         if (!hasTeam)
         {

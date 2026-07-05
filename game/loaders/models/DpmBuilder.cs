@@ -427,6 +427,16 @@ public static class DpmBuilder
         }
 
         var usedNames = new HashSet<string>(StringComparer.Ordinal);
+        // (playtest r9) The weapon-hand slot contract, same as IqmBuilder: a NAMELESS 4-group `.framegroups`
+        // set is fire/fire2/idle/reload BY POSITION (CL_WeaponEntity_SetModel). The DPM hand rigs
+        // (h_electro/h_crylink/h_rl/h_gl/h_hagar) ship exactly that; the old `anim_{i}` synthesis meant
+        // ViewModel's fire/idle/reload lookups never matched a DPM rig — no viewmodel animation at all.
+        bool allNameless = true;
+        foreach (FrameGroup g in groups)
+            if (!string.IsNullOrEmpty(g.Name)) { allNameless = false; break; }
+        string[]? slotNames = allNameless && groups.Count == IqmBuilder.WeaponSlotNames.Length
+            ? IqmBuilder.WeaponSlotNames : null;
+
         int groupIndex = 0;
         foreach (FrameGroup group in groups)
         {
@@ -466,7 +476,9 @@ public static class DpmBuilder
                 }
             }
 
-            string name = ClipName(group, groupIndex, usedNames);
+            string name = slotNames is not null && groupIndex < slotNames.Length
+                ? UniqueName(slotNames[groupIndex], usedNames)
+                : ClipName(group, groupIndex, usedNames);
             library.AddAnimation(name, anim);
             emittedNames.Add(name);
             groupIndex++;
@@ -478,8 +490,11 @@ public static class DpmBuilder
 
     /// <summary>Resolve a unique, sensible clip name for a frame group (its name, or a synthesised one).</summary>
     private static string ClipName(FrameGroup group, int index, HashSet<string> used)
+        => UniqueName(string.IsNullOrEmpty(group.Name) ? $"anim_{index}" : group.Name, used);
+
+    /// <summary>De-duplicate a clip name against the already-emitted set (`name`, `name_1`, …).</summary>
+    private static string UniqueName(string baseName, HashSet<string> used)
     {
-        string baseName = string.IsNullOrEmpty(group.Name) ? $"anim_{index}" : group.Name;
         string name = baseName;
         int suffix = 1;
         while (!used.Add(name))
