@@ -290,11 +290,17 @@ public static class DpmBuilder
             WriteTopWeights(vert.Weights, worldBind.Length, boneIdx, boneWts, v * MaxBonesPerVertex);
         }
 
+        // (playtest r9) DPM triangles are wound OPPOSITE to the IQM/MD3 convention relative to Godot's
+        // cull_back — emitted verbatim, every DPM weapon rig rendered inside-out: front faces culled, interior
+        // faces visible ("see through the geometry", brightest on the devastator/mortar). Swap each triangle
+        // to (0,2,1) so the outside faces the camera, exactly like the other builders' file-order winding does.
         var indices = new int[mesh.Triangles.Length];
-        for (int i = 0; i < mesh.Triangles.Length; i++)
+        for (int t = 0; t + 2 < mesh.Triangles.Length; t += 3)
         {
-            int idx = mesh.Triangles[i];
-            indices[i] = (idx >= 0 && idx < vcount) ? idx : 0;
+            int a = mesh.Triangles[t], b = mesh.Triangles[t + 1], c = mesh.Triangles[t + 2];
+            indices[t] = (a >= 0 && a < vcount) ? a : 0;
+            indices[t + 1] = (c >= 0 && c < vcount) ? c : 0; // swapped
+            indices[t + 2] = (b >= 0 && b < vcount) ? b : 0; // swapped
         }
 
         var arrays = new Godot.Collections.Array();

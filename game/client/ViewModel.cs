@@ -390,7 +390,11 @@ public partial class ViewModel : Node3D
         // Capture the IQM/DPM AnimationPlayer (h_* skeletal rigs) so PlayIdle/PlayReload/SetNetAnimFrame can
         // drive the live weapon animation. IqmBuilder and DpmBuilder always name it "AnimationPlayer" (verified
         // in IqmBuilder.cs:134 and DpmBuilder.cs:140). Null on plain v_*.md3 static models — those have no rig.
-        _iqmAnimPlayer = model.FindChild("AnimationPlayer", recursive: true, owned: false) as AnimationPlayer;
+        // (r9) The tree can now hold TWO AnimationPlayers: the live-rig equip parents the v_ VISUAL model under
+        // the rig's weapon BoneAttachment, and a skeletal v_ (several are 4-bone IQMs with ZERO animations)
+        // brings its own EMPTY player — FindChild's first match grabbed that one and every clip lookup found an
+        // empty list ([dbg9]-probe confirmed). Prefer the player that actually HAS clips.
+        _iqmAnimPlayer = FindAnimationPlayerWithClips(model);
 
         // Capture the resolved shot tag's authored side offset (Base `vecs.y`) so cl_gunalign moves THIS gun by
         // its own per-model amount. CaptureAuthoredShotSide composes the marker relative to _modelRoot, so it
@@ -675,6 +679,33 @@ public partial class ViewModel : Node3D
         }
         foreach (Node child in node.GetChildren())
             SetFlashAlpha(child, alpha);
+    }
+
+    /// <summary>
+    /// The first <see cref="AnimationPlayer"/> under <paramref name="root"/> that carries at least one clip —
+    /// the h_ rig's real animation driver. A clipless player (a skeletal but animation-less v_ visual model
+    /// nested under the rig's weapon bone) is only returned when NO clip-carrying player exists. (r9)
+    /// </summary>
+    private static AnimationPlayer? FindAnimationPlayerWithClips(Node root)
+    {
+        AnimationPlayer? empty = null;
+        foreach (Node child in root.GetChildren())
+        {
+            if (child is AnimationPlayer ap)
+            {
+                if (ap.GetAnimationList().Length > 0)
+                    return ap;
+                empty ??= ap;
+            }
+            AnimationPlayer? nested = FindAnimationPlayerWithClips(child);
+            if (nested is not null)
+            {
+                if (nested.GetAnimationList().Length > 0)
+                    return nested;
+                empty ??= nested;
+            }
+        }
+        return empty;
     }
 
     /// <summary>
