@@ -814,16 +814,25 @@ nudge-out-of-solid; see #9), **#14** flag jitter (user-deferred).
   players' clips from networked state) and the held-weapon attach (which bone/tag, offset) vs
   Base `animdecide.qc` + the weaponentity/exteriorweaponentity attach chain.
 
-### 33. Verify bot difficulty (skill) actually applies
-- [ ] **Status:** Not started (round 5; verification task).
-- **Symptom:** unverified suspicion that bot difficulty isn't applying (bots feel the same across
-  skill settings).
-- **Expected:** the menu difficulty / `skill` cvar reaches each spawned bot and changes aim error,
-  reaction time, movement quality etc. (Base havocbot reads per-skill cvars/offsets).
-- **First look:** the port's bot spawn chain (menu → `skill` cvar → bot fill/spawn → per-bot skill
-  field) and the havocbot-port's skill consumers; note the cvar-persistence work added a `--bots`
-  skill sentinel (see memory `cvar-persistence-model`) — make sure the sentinel didn't decouple
-  the real skill cvar from spawned bots.
+### 33. Verify bot difficulty (skill) actually applies — VERIFIED WORKING (code audit; live A/B optional)
+- [x] **Status:** Closed by a full-chain code audit (2026-07-05) — skill DOES apply in menu-started games.
+- **The chain (all verified live):** menu difficulty → `MatchConfig.BotSkill` (SingleplayerScreen /
+  CreateGameScreen / campaign) → `NetGame.ConfigureListenServer(_botSkill)` → writes the `skill`
+  cvar when specified (NetGame.cs:734) → `BotPopulation.SpawnBot` seeds `Player.BotSkill` from
+  `Cvars.Skill` + a per-frame resync loop mirrors QC bot.qc:725-736 (a live `skill` change
+  re-seeds every brain) → consumed per-bot in ~10 places matching Base's formulas: think interval
+  (`min(14/(skill+14),1)`), aim-error cone (`1−0.1·skill`), aim-lead blend (`skill·0.1`), fire
+  deviation (`(10−skill)·0.3`), fire aggression, dodge scaling (`0.5+skill·0.1`), strafe-flip
+  timing, bunnyhop gate, reload discipline (skill<2/<5 gates), skill>6 escape moves.
+- **The one caveat (BY DESIGN):** a bare CLI `--host <map> --bots N` leaves `_botSkill = -1`
+  (the cvar-persistence sentinel) → the `skill` cvar is NOT written → bots inherit whatever
+  config.cfg / the last menu game left. Only affects automation runs, not menu play.
+- **Not ported (uniform bots, not broken skill):** bots.txt per-bot skill OFFSETS
+  (bot_aimskill/moveskill/… columns) default 0 — every bot shares the global skill instead of
+  per-personality variance. Cosmetic-depth gap; note if bots feel "samey".
+- **If it still FEELS flat:** run a menu A/B (skill 1 vs 10, same map/bots) — expect visibly
+  slower reactions + wide misses at 1 vs near-instant tracking at 10. If those two feel alike
+  in-game, reopen with that observation (then the suspect is a consumer formula, not the chain).
 
 ---
 
