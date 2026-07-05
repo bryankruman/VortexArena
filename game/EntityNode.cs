@@ -68,8 +68,8 @@ public partial class EntityNode : Node3D, IEntityPresence
     }
 
     // R1 dirty-gate: SyncFromEntity is a pure function of (Origin, Angles, ScaleFactor, ItemAnimate) — plus the
-    // render clock, but ONLY while ItemAnimate != 0 (bob/spin pickups). So the marshalled Position/Basis/Scale
-    // writes can be skipped whenever none of those inputs changed. The node's own _Process is disabled
+    // render clock, but ONLY while ItemAnimate != 0 (bob/spin pickups) or ModelSpinRotate (MF_ROTATE key spin). So
+    // the marshalled Position/Basis/Scale writes can be skipped whenever none of those inputs changed. The node's own _Process is disabled
     // (ClientWorld drives DriveSync from its central _entityNodes loop) to remove the per-node native->managed
     // callback — the dominant render-submission (rcpu) tax at ~150 entities × high fps.
     private System.Numerics.Vector3 _lastOrigin, _lastAngles;
@@ -84,7 +84,10 @@ public partial class EntityNode : Node3D, IEntityPresence
     {
         Entity? e = Entity;
         if (e is null) return;
-        if (e.ItemAnimate == 0 && _syncValid
+        // Time-driven anims must re-sync every frame regardless of the dirty-gate: ItemAnimate (bob/spin pickups)
+        // and ModelSpinRotate (MF_ROTATE — the pickup-key 100°/s spin main adds in SyncFromEntity, which reads the
+        // render clock but is NOT coupled to ItemAnimate). Otherwise skip when nothing the sync reads changed.
+        if (e.ItemAnimate == 0 && !e.ModelSpinRotate && _syncValid
             && e.Origin == _lastOrigin && e.Angles == _lastAngles
             && e.ScaleFactor == _lastScale && e.ItemAnimate == _lastItemAnimate)
             return; // unchanged → skip the marshalled Position/Basis/Scale writes
@@ -119,6 +122,15 @@ public partial class EntityNode : Node3D, IEntityPresence
             (float bobHeight, float yawSpinDeg) = ItemBobAnim.Sample(Entity.ItemAnimate, time);
             position.Y += bobHeight; // Quake +Z (up) maps to Godot +Y under ToGodot=(x,z,-y)
             yawDeg += yawSpinDeg;
+        }
+
+        // QC MF_ROTATE (csqcmodel_hooks.qc:617-623, the pickup-key model flag): a steady yaw spin of
+        // '0 100 0' * fmod(time, 3.6) added on top of the entity's base angles (100°/s, wrapping every 3.6 s =
+        // a full 360°). Keys-only in all of Base; carried as a render-only bool on the shared edict.
+        if (Entity.ModelSpinRotate)
+        {
+            float time = Api.Services is not null ? Api.Clock.Time : 0f;
+            yawDeg += 100f * (time % 3.6f);
         }
 
         Position = position;

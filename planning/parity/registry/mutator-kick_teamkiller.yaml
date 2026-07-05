@@ -1,0 +1,207 @@
+unit: mutator-kick_teamkiller
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-25"
+summary:
+  feature_count: 7
+  worst_gaps: []
+features:
+  - id: mutator-kick_teamkiller.register.enable_gate
+    name: "Mutator registered/active only when g_kick_teamkiller_rate > 0"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/kick_teamkiller/sv_kick_teamkiller.qc:9 REGISTER_MUTATOR(kick_teamkiller, (autocvar_g_kick_teamkiller_rate > 0))"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/KickTeamkillerMutator.cs:40 IsEnabled"
+      - "src/XonoticGodot.Server/GameWorld.cs:535 MutatorActivation.Apply()"
+    constants:
+      - { name: "g_kick_teamkiller_rate (enable when >0)", base: "0", port: "0 (assets/data/xonotic-data.pk3dir/mutators.cfg:536)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "IsEnabled = Api.Services!=null && Cvars.GetFloat(\"g_kick_teamkiller_rate\")>0; mirrors REGISTER_MUTATOR predicate", result: pass }
+      - { kind: code, ref: "MutatorActivation.Apply() called at GameWorld.cs:535 on server boot; subscribes Hook() only when IsEnabled", result: pass }
+      - { kind: test, ref: "tests/XonoticGodot.Tests/MutatorBatchT51Tests.cs:103 asserts Mutators.ByName(\"kick_teamkiller\") not null (registration only)", result: pass }
+    confidence: high
+    notes: "Unchanged by Wave 1/2. Disabled by default in both Base and port (rate=0 via bundled mutators.cfg). When an admin sets rate>0 the PlayerDies hook subscribes at boot — detection is genuinely live. severity/bantime have no `set` in either Base or port and resolve to 0 (=> default play-ban branch)."
+
+  - id: mutator-kick_teamkiller.detect.gates
+    name: "Entry gates: teamplay only, not warmup, real (non-bot) attacker"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/kick_teamkiller/sv_kick_teamkiller.qc:13-25 MUTATOR_HOOKFUNCTION(kick_teamkiller, PlayerDies)"
+      - "server/utils.qh:17 #define IS_REAL_CLIENT(v) (clienttype(v) == CLIENTTYPE_REAL)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/KickTeamkillerMutator.cs:74-82 OnPlayerDies gates"
+      - "src/XonoticGodot.Server/GameWorld.cs:946 NotificationSystem.WarmupStage = Warmup.WarmupStage (live source of the warmup gate)"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Wave-2 added `if (NotificationSystem.WarmupStage) return false;` (line 77), restoring the QC `if (warmup_stage) return;` 2nd gate. Order: !teamplay -> !warmup -> real-client, matching QC", result: pass }
+      - { kind: code, ref: "WarmupStage is genuinely live: GameWorld.cs:946 mirrors NotificationSystem.WarmupStage = Warmup.WarmupStage each server tick (WarmupController drives Warmup.WarmupStage from g_warmup)", result: pass }
+      - { kind: code, ref: "real-client gate: `(attacker.Flags & EntFlags.Client)==0 || attacker is Player{IsBot:true}` rejects world/bots, approximating IS_REAL_CLIENT (CLIENTTYPE_REAL connected non-bot)", result: pass }
+    confidence: high
+    notes: "FIX vs baseline: the missing warmup_stage gate is now present AND wired live (per-tick mirror from the warmup controller). teamplay and real-client gates already faithful. All three QC gates now reproduced in order — logic upgraded partial->faithful."
+
+  - id: mutator-kick_teamkiller.detect.teamkill_score
+    name: "Read attacker's accumulated teamkill count (SP_TEAMKILLS)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/kick_teamkiller/sv_kick_teamkiller.qc:30 teamkills = PlayerScore_Get(attacker, SP_TEAMKILLS)"
+      - "server/damage.qc:56 GiveFrags increments SP_TEAMKILLS when f<0 && targ!=attacker"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/KickTeamkillerMutator.cs:84 GameScores.Get(attacker, GameScores.TeamKills)"
+      - "src/XonoticGodot.Server/Scores.cs:501 Row(attacker).AddAux(ScoreField.TeamKills, 1)"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "GameScores.Get(attacker, TeamKills) reads the same unified store Scores.cs:501 writes via AddAux(TeamKills,1) on the live obituary teamkill branch", result: pass }
+      - { kind: code, ref: "Scores.cs:485-507 teamkill branch gated on teamGame && attacker!=null && !ReferenceEquals(attacker,victim) && SameTeam — suicides excluded, matching Base targ!=attacker", result: pass }
+    confidence: high
+    notes: "Unchanged by Wave 1/2; remains faithful/live. Suicide-exclusion faithful."
+
+  - id: mutator-kick_teamkiller.detect.playtime
+    name: "Player playtime used as the rate denominator"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/kick_teamkiller/sv_kick_teamkiller.qc:32 playtime = time - CS(attacker).startplaytime"
+      - "server/client.qc:780 startplaytime set on spectator->player switch"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/KickTeamkillerMutator.cs:100-101 startPlayTime = (attacker as Player).StartPlayTime; playtime = Api.Clock.Time - startPlayTime"
+      - "src/XonoticGodot.Common/Gameplay/Player/Player.cs:164 float StartPlayTime"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:608-609 StartPlayTime stamped on FragsStatus==FragsSpectator spectator->player edge"
+    constants:
+      - { name: "playtime source", base: "time - CS(attacker).startplaytime (seconds since spectator->player switch)", port: "Api.Clock.Time - Player.StartPlayTime (seconds since spectator->player switch)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "`float startPlayTime = (attacker as Player)?.StartPlayTime ?? 0f; float playtime = Api.Clock.Time - startPlayTime;` (KickTeamkillerMutator.cs:100-101) now mirrors QC `time - CS(attacker).startplaytime` exactly", result: pass }
+      - { kind: code, ref: "Player.StartPlayTime (Player.cs:164) is stamped in SpawnSystem.cs:608-609 only on the spectator->player edge (`if (p.FragsStatus == Player.FragsSpectator)`), mirroring QC client.qc:776-780 `if (CS(this).killcount == FRAGS_SPECTATOR) CS(this).startplaytime = time;` — a mid-life respawn leaves it untouched", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (2026-06-25): the per-client startplaytime gap is CLOSED. The port now has `Player.StartPlayTime` (Player.cs:164), stamped on the genuine spectator->player transition in SpawnSystem.PutPlayerInServer (line 608-609, gated on FragsStatus==FragsSpectator, the port's FRAGS_SPECTATOR sentinel), and the mutator computes `Api.Clock.Time - StartPlayTime` (line 101) — bit-equivalent to QC `time - CS(attacker).startplaytime`. Mid-match joiners now cross the rate gate at the same teamkill cadence as Base. logic/values/timing upgraded partial->faithful; gap removed. This was the unit's only remaining open gap."
+
+  - id: mutator-kick_teamkiller.detect.threshold
+    name: "Rate threshold: teamkills >= lower_limit AND teamkills >= rate*playtime/60"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/kick_teamkiller/sv_kick_teamkiller.qc:34-35 teamkills >= autocvar_g_kick_teamkiller_lower_limit && teamkills >= autocvar_g_kick_teamkiller_rate*playtime/60.0"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/KickTeamkillerMutator.cs:104 teamkills < LowerLimit || teamkills < Rate * playtime / 60f (early-return negation of the QC AND)"
+    constants:
+      - { name: "g_kick_teamkiller_lower_limit", base: "5", port: "5 (mutators.cfg:537)", match: true }
+      - { name: "g_kick_teamkiller_rate", base: "0", port: "0 (mutators.cfg:536)", match: true }
+      - { name: "rate units / divisor", base: "teamkills per minute; /60.0", port: "/60f", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "`if (teamkills < LowerLimit || teamkills < Rate * playtime / 60f) return false;` is the De-Morgan negation of QC `teamkills >= lower && teamkills >= rate*playtime/60` — equivalent; constants confirmed in mutators.cfg", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (2026-06-25): timing upgraded partial->faithful. The only timing-dependent input (playtime) is now the per-client startplaytime (see mutator-kick_teamkiller.detect.playtime), so the threshold trips at the same teamkill cadence as Base for all players including mid-match joiners. The comparison and constants were already exact."
+
+  - id: mutator-kick_teamkiller.action.punish
+    name: "Punishment switch: kick (1) / IP-ban (2) / play-ban+observe (default)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/kick_teamkiller/sv_kick_teamkiller.qc:37-74 switch(autocvar_g_kick_teamkiller_severity)"
+      - "common/mutators/mutator/kick_teamkiller/sv_kick_teamkiller.qc:41 dropclient_schedule(attacker) / :48 Ban_KickBanClient / :63-70 PutObserverInServer + cvar_set g_playban_list + TRANSMUTE(Observer)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/KickTeamkillerMutator.cs:96-150 switch(Severity)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/KickTeamkillerMutator.cs:122-138 default branch: RESPAWN_SILENT + IsObserver + g_playban_list write"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/KickTeamkillerMutator.cs:95 LastAction = (attacker, Severity) (sev1/2 host hook — no observer)"
+      - "src/XonoticGodot.Server/ClientManager.cs:400 PutObserverInServer (the proper force-spectate; NOT called by the mutator)"
+      - "src/XonoticGodot.Server/Bans.cs:78 DropClient / :273 KickBanClient (sev1/2 substrate; unreached)"
+    constants:
+      - { name: "g_kick_teamkiller_severity", base: "0 (unset->0; default=play-ban)", port: "read into Severity; default branch implemented, sev1/2 unenforced", match: false }
+      - { name: "g_kick_teamkiller_bantime", base: "0 (unset->0)", port: "read into BanTime but unused (KickBanClient never called)", match: false }
+      - { name: "g_ban_default_masksize", base: "3 (xonotic-server.cfg:425)", port: "3 (Cvars.cs:337) but not consumed (no IP-ban path)", match: false }
+      - { name: "RESPAWN_SILENT on attacker (all branches)", base: "set", port: "set (SetRespawnSilent -> RespawnFlag.Silent=2, EntityEnums.cs:49)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "switch(Severity) present with all 3 branches; SetRespawnSilent sets RespawnFlag.Silent (EntityEnums.cs:49 Silent=2). Default branch writes g_playban_list + force-spectate via ForceObserver; sev1 KickClient, sev2 BanClient", result: pass }
+      - { kind: code, ref: "Three injected Server-action delegates (ForceObserver/KickClient/BanClient) wired in GameWorld.WireServerInfrastructure (GameWorld.cs:846-859) like Minigames.ObserverForcer. Default branch calls ClientManager.PutObserverInServer; sev1 -> Bans.DropClient; sev2 -> Bans.KickBanClient(bantime, g_ban_default_masksize)", result: pass }
+      - { kind: code, ref: "Play-ban join gate enforced: ClientManager.JoinAllowed consults the ForcedSpectate predicate (wired to Bans.IsPlayBanned, GameWorld.cs:840), refusing +jump/autojoin for a g_playban_list client (QC Join_Try). g_ban_default_masksize consumed by sev2", result: pass }
+    confidence: high
+    notes: "Re-verified 2026-06-25 (adversarial): the three delegates are genuinely wired on the LIVE boot path. GameWorld.cs:846-859 (inside WireServerInfrastructure, called at GameWorld.cs:820) sets ForceObserver=>Clients.PutObserverInServer, KickClient=>Bans.DropClient (returns true once scheduled), BanClient=>Bans.KickBanClient(bantime,masksize, \"Team Killing\"). The mutator's OnPlayerDies is invoked via MutatorHooks.PlayerDies.Call at DamageSystem.cs:594 on the real kill path. Play-ban join gate live: Clients.ForcedSpectate=Bans.IsPlayBanned (GameWorld.cs:840). All three severity branches run real punitive actions; g_kick_teamkiller_bantime + g_ban_default_masksize consumed by sev2. logic/values faithful, liveness live. Line refs refreshed (delegate block shifted 749-762 -> 846-859 since last audit); no behavioral change."
+
+  - id: mutator-kick_teamkiller.notify.broadcast
+    name: "Broadcast + center-print notifications on punishment (severity-dependent)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/kick_teamkiller/sv_kick_teamkiller.qc:42,49 INFO_QUIT_KICK_TEAMKILL (sev 1 & 2)"
+      - "common/mutators/mutator/kick_teamkiller/sv_kick_teamkiller.qc:66 INFO_QUIT_PLAYBAN_TEAMKILL (default, NOTIF_ALL)"
+      - "common/mutators/mutator/kick_teamkiller/sv_kick_teamkiller.qc:67 CENTER_QUIT_PLAYBAN_TEAMKILL (default, NOTIF_ONE to offender)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/KickTeamkillerMutator.cs:104,114 QUIT_KICK_TEAMKILL (Info, sev 1 & 2)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/KickTeamkillerMutator.cs:141 QUIT_PLAYBAN_TEAMKILL (Info, default broadcast)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/KickTeamkillerMutator.cs:144 QUIT_PLAYBAN_TEAMKILL (Center, NotifBroadcast.One to offender)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:739-740,977 notif definitions"
+    constants:
+      - { name: "info notif (severity 1 & 2)", base: "INFO_QUIT_KICK_TEAMKILL", port: "QUIT_KICK_TEAMKILL", match: true }
+      - { name: "info notif (default/play-ban)", base: "INFO_QUIT_PLAYBAN_TEAMKILL", port: "QUIT_PLAYBAN_TEAMKILL (now sent in default branch)", match: true }
+      - { name: "center notif (default/play-ban, to offender)", base: "CENTER_QUIT_PLAYBAN_TEAMKILL via NOTIF_ONE", port: "QUIT_PLAYBAN_TEAMKILL Center via NotifBroadcast.One (now sent)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "sev1/2 branches send Info QUIT_KICK_TEAMKILL; default branch sends Info QUIT_PLAYBAN_TEAMKILL (broadcast, NotificationsList.cs:740 'forced to spectate') + Center QUIT_PLAYBAN_TEAMKILL to offender (NotifBroadcast.One, NotificationsList.cs:977). Severity-correct, matching QC", result: pass }
+      - { kind: code, ref: "definitions: Info QUIT_KICK_TEAMKILL (:739), Info QUIT_PLAYBAN_TEAMKILL (:740), Center QUIT_PLAYBAN_TEAMKILL (:977) all exist and now have live Send callers in the mutator", result: pass }
+    confidence: high
+    notes: "FIX vs baseline: Wave-2 added the severity branch so the default (play-ban) path now sends the correct QUIT_PLAYBAN_TEAMKILL broadcast (kill-feed reads 'forced to spectate', not the old wrong 'kicked') and the offender center-print (QUIT_PLAYBAN_TEAMKILL Center via NOTIF_ONE). All three notifications match Base and are live on the threshold-trip path. Upgraded logic/values/presentation partial->faithful, liveness partial->live."

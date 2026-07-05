@@ -154,6 +154,88 @@ public sealed class AssaultSpawnTests
     }
 
     [Fact]
+    public void AttackerWin_SchedulesSecondRound_ThenSwapsRolesAfterTheDelay()
+    {
+        // QC WinningCondition_Assault: a round-1 attacker core-destruction (non-campaign) does NOT end the match —
+        // it freezes for AS_ROUND_DELAY (5s) then assault_new_round swaps roles for round 2 (DriveFrame fires it).
+        GameWorld world = BootAssaultMap();
+        var aslt = (Assault)world.GameType!;
+
+        Assault.Destructible wall1 = aslt.Destructibles.First(w => w.Target == "dec1");
+        Assault.Destructible wall2 = aslt.Destructibles.First(w => w.Target == "dec2");
+
+        // Destroy the whole chain as red → round 1 won by the attackers (red).
+        Assert.True(aslt.DamageDestructible(wall1, Teams.Red, 100f));
+        Assert.True(aslt.DamageDestructible(wall2, Teams.Red, 100f));
+        Assert.Equal(Teams.Red, aslt.WinningTeam);
+
+        // Round 1 win → a second round is PENDING (the 5s freeze), the match has NOT ended, roles not yet swapped.
+        Assert.True(aslt.SecondRoundPending, "an attacker round-1 win schedules round 2 (the as_round freeze)");
+        Assert.False(aslt.MatchEnded);
+        Assert.Equal(Teams.Red, aslt.AttackerTeam);
+
+        // A host restart callback stands in for ReadyRestart_force(true).
+        bool restarted = false;
+        aslt.OnSecondRoundRestart = () => restarted = true;
+
+        // Drive frames during the freeze: nothing flips until the delay elapses.
+        aslt.GameStartTime = 0f;
+        aslt.DriveFrame(1f);
+        Assert.True(aslt.SecondRoundPending);
+        Assert.Equal(Teams.Red, aslt.AttackerTeam);
+
+        // Once AS_ROUND_DELAY has passed (the as_round nextthink), DriveFrame runs assault_new_round: roles swap
+        // (blue now attacks), the win latch clears, the objective chain re-arms, and the host restart fires.
+        // (A fresh booted world's clock is at t=0, so the due time is RoundDelay; drive well past it.)
+        aslt.DriveFrame(Assault.RoundDelay + 100f);
+        Assert.False(aslt.SecondRoundPending);
+        Assert.Equal(1, aslt.State.Round);
+        Assert.Equal(Teams.Blue, aslt.AttackerTeam);
+        Assert.Equal(0, aslt.WinningTeam);
+        Assert.True(restarted, "round 2 runs the host's ReadyRestart_force(true) restart");
+        // The chain head is armed again for the new attackers.
+        Assert.True(aslt.Objectives.First(o => o.Name == "core1").Active);
+        Assert.True(aslt.Destructibles.First(w => w.Target == "dec1").Active);
+    }
+
+    [Fact]
+    public void FuncAssaultWall_HidesWhenItsObjectiveIsDestroyed_AndIsSolidWhileItLives()
+    {
+        // QC func_assault_wall + assault_wall_think: the wall is SOLID_BSP/visible while its objective lives and
+        // hides (model="" + SOLID_NOT) once the objective is destroyed (RES_HEALTH < 0). The wall watches "core1".
+        var ents = new List<EntityDict>
+        {
+            Dict("func_assault_wall", new Vector3(50, 0, 0), ("target", "core1"), ("model", "*3")),
+            Dict("func_assault_destructible", new Vector3(10, 0, 0), ("target", "dec1"), ("health", "100")),
+            Dict("target_objective_decrease", default, ("targetname", "dec1"), ("target", "core1"), ("dmg", "150")),
+            Dict("target_objective", default, ("targetname", "core1")),
+            Dict("target_assault_roundend", default, ("targetname", "roundend")),
+            Dict("target_assault_roundstart"),
+        };
+        var world = new GameWorld(new CollisionWorld(), ents);
+        world.Boot("as");
+        var aslt = (Assault)world.GameType!;
+
+        // The wall edict was kept in the world (not retired) and linked to its objective.
+        Assault.Wall wall = Assert.Single(aslt.Walls);
+        Assert.Equal("core1", wall.ObjectiveRef!.Name);
+        Entity edict = aslt.Walls[0].WorldEntity!;
+        Assert.False(edict.IsFreed);
+
+        // While the objective lives (inactive or active, health >= 0) the wall is solid + visible.
+        aslt.DriveWalls();
+        Assert.Equal(Solid.Bsp, edict.Solid);
+
+        // Shoot the destructible → core1 destroyed (health -1) → DriveWalls hides the wall (non-solid, model cleared).
+        Assault.Destructible wall1 = aslt.Destructibles.First(w => w.Target == "dec1");
+        Assert.True(aslt.DamageDestructible(wall1, Teams.Red, 100f));
+        Assert.True(aslt.Objectives.First(o => o.Name == "core1").Destroyed);
+        aslt.DriveWalls();
+        Assert.Equal(Solid.Not, edict.Solid);
+        Assert.Equal("", edict.Model);
+    }
+
+    [Fact]
     public void Destructible_StaysInWorld_AsAShootableEntity_LinkedToItsPojo()
     {
         GameWorld world = BootAssaultMap();

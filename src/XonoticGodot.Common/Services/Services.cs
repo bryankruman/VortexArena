@@ -97,6 +97,12 @@ public interface ICvarService
     string GetString(string name);
     void Set(string name, string value);
     void Register(string name, string defaultValue, CvarFlags flags = CvarFlags.None);
+
+    /// <summary>Whether this cvar exists (is registered) in the store — the QC engine's command-vs-cvar dispatch
+    /// check, used by the console/rcon cvar-set fallback so a whitelisted cvar-style vote (e.g. <c>fraglimit</c>)
+    /// actually applies. The live <see cref="CvarService"/> overrides this with a real registry-membership test;
+    /// this default (a non-empty effective value) suffices for the lightweight in-memory stores used by tests.</summary>
+    bool Has(string name) => !string.IsNullOrEmpty(GetString(name));
 }
 
 // Mirrors QuakeC's CH_* constants (common/sounds/sound.qh) + Darkplaces' channel model (sound.h): a NEGATIVE
@@ -122,6 +128,10 @@ public enum SoundChannel
     Pain = 6,
     Player = 7,
     Bgm = 8,
+    AmbientSingle = 9, // CH_AMBIENT_SINGLE — looping per-entity ambient (e.g. func_rotating .noise)
+    TubaBlend = 10,   // CH_TUBA_SINGLE + 1 (implicit in QC via e.enemy entity) — the upper-neighbour timbre
+                      // sample for the cos/sin crossfade in tubasound (tuba.qc:471-473). Only active when
+                      // the note is not an exact pitchstep multiple and neither edge of the recorded range.
 }
 
 /// <summary>sound()/precache_sound (QC sound builtins), with DP's SV_StartSound entity+channel model.</summary>

@@ -350,8 +350,8 @@ public static class IqmReader
         public Vector2[] TexCoords { get; init; }
         public Vector3[]? Normals { get; init; }
         public Vector4[]? Tangents { get; init; }
-        public byte[][]? BlendIndexes { get; init; }
-        public byte[][]? BlendWeights { get; init; }
+        public byte[]? BlendIndexes { get; init; }
+        public byte[]? BlendWeights { get; init; }
         public Vector4[]? Colors { get; init; }
     }
 
@@ -362,8 +362,8 @@ public static class IqmReader
         Vector2[]? texCoords = null;
         Vector3[]? normals = null;
         Vector4[]? tangents = null;
-        byte[][]? blendIndexes = null;
-        byte[][]? blendWeights = null;
+        byte[]? blendIndexes = null;
+        byte[]? blendWeights = null;
         Vector4[]? colors = null;
 
         for (int i = 0; i < h.NumVertexArrays; i++)
@@ -712,34 +712,27 @@ public static class IqmReader
         return arr;
     }
 
-    private static byte[][] ReadUByte4Array(ReadOnlySpan<byte> data, int offset, int count)
-    {
-        var arr = new byte[count][];
-        for (int i = 0; i < count; i++)
-        {
-            int o = offset + i * 4;
-            // Individual byte reads; the whole region was bounds-checked by the caller.
-            arr[i] = new[] { data[o], data[o + 1], data[o + 2], data[o + 3] };
-        }
-        return arr;
-    }
+    /// <summary>Reads a ubyte4 per-vertex array as one FLAT byte[count*4] (vertex v at [v*4..v*4+3]) — the
+    /// on-disk bytes verbatim. Flat, not jagged: one byte[4] per vertex was tens of thousands of tiny GC
+    /// objects per player model. The whole region was bounds-checked by the caller.</summary>
+    private static byte[] ReadUByte4Array(ReadOnlySpan<byte> data, int offset, int count)
+        => data.Slice(offset, count * 4).ToArray();
 
     /// <summary>Reads float4 blend weights and quantizes each to the 0..255 byte scale so all weights have
-    /// one representation. Values are clamped into [0,1] before scaling.</summary>
-    private static byte[][] ReadFloat4AsUByte4Array(ReadOnlySpan<byte> data, int offset, int count)
+    /// one representation, in the same FLAT byte[count*4] layout as <see cref="ReadUByte4Array"/>. Values
+    /// are clamped into [0,1] before scaling.</summary>
+    private static byte[] ReadFloat4AsUByte4Array(ReadOnlySpan<byte> data, int offset, int count)
     {
-        var arr = new byte[count][];
+        var arr = new byte[count * 4];
         for (int i = 0; i < count; i++)
         {
             int o = offset + i * 16;
-            var w = new byte[4];
             for (int k = 0; k < 4; k++)
             {
                 float v = BinaryUtil.ReadFloat(data, o + k * 4);
                 v = v < 0f ? 0f : (v > 1f ? 1f : v);
-                w[k] = (byte)MathF.Round(v * 255.0f);
+                arr[i * 4 + k] = (byte)MathF.Round(v * 255.0f);
             }
-            arr[i] = w;
         }
         return arr;
     }

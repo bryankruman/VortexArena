@@ -33,10 +33,10 @@ public sealed partial class WorldOcclusion : Node
 
     public override void _Ready()
     {
-        // Escape hatch / A-B toggle (archived like the other r_* engine cvars). Default OFF: the PVS culler
-        // stays the shipping path until this is measured. Mirrors WorldPvsCuller's defensive self-registration.
-        XonoticGodot.Game.Menu.MenuState.Cvars.Register("r_occlusion_cull", "0",
-            XonoticGodot.Common.Services.CvarFlags.Save);
+        // Escape hatch / A-B toggle. Deliberately NOT archived (no CvarFlags.Save): an experiment pin must not
+        // silently persist into the player's config.cfg. Default OFF: the PVS culler stays the shipping path
+        // until this is measured. Mirrors WorldPvsCuller's defensive self-registration.
+        XonoticGodot.Game.Menu.MenuState.Cvars.Register("r_occlusion_cull", "0");
 
         _instance = new OccluderInstance3D { Name = "WorldOccluder", Occluder = _occluder };
         AddChild(_instance);

@@ -83,6 +83,15 @@ public static class EffectNetProtocol
     public const int NetColorSame = 1 << 3; // EFF_NET_COLOR_SAME (min == max optimisation)
 
     /// <summary>
+    /// Sentinel "registered effect id" the transport writes in place of a real registry id when the request is
+    /// the engine-fallback by-name path (QC <c>Send_Effect_</c> → <c>__pointparticles(_particleeffectnum(name))</c>):
+    /// no registered <see cref="Effect"/> carries the name, so the wire carries the effectinfo NAME instead and the
+    /// receiver resolves it through its own effectinfo.txt catalog (DP's <c>_particleeffectnum</c> equivalent).
+    /// 0xFFFF is safe: the registry is BITS(8) (max 256 ids), so a real id never collides.
+    /// </summary>
+    public const int ByNameSentinelId = 0xFFFF;
+
+    /// <summary>
     /// Compute the extraflags byte from a request's velocity/colour, exactly as Net_Write_Effect does
     /// (velocity present; colour-min present; the min==max "same" optimisation, else colour-max present).
     /// </summary>
@@ -118,6 +127,31 @@ public static class EffectNetProtocol
         if (!trail && r.Count == 0) return null;
 
         var bytes = new List<byte>(20);
+        EncodeBody(bytes, r, trail);
+        return bytes.ToArray();
+    }
+
+    /// <summary>
+    /// Encode the EFF_NET body for the engine-fallback by-name path (QC <c>Send_Effect_</c> →
+    /// <c>__pointparticles(_particleeffectnum(name), …)</c>): no registered <see cref="Effect"/>, so the transport
+    /// writes <see cref="ByNameSentinelId"/> and this body, which carries the EFF_NET payload (origin / extraflags /
+    /// velocity / colours / count) for a POINT effect — <c>__pointparticles</c> is always a point spawn. The name
+    /// itself is framed by the transport (it owns the leading id/name slot, like <c>WriteRegistered</c>). Returns
+    /// null for the same drop the registered path applies (no name, or a count-0 point effect).
+    /// </summary>
+    public static byte[]? EncodeByName(in EffectRequest r)
+    {
+        if (r.Effect is not null) return null;          // not the by-name path
+        if (string.IsNullOrEmpty(r.EffectName)) return null;
+        if (r.Count == 0) return null;                  // point effect with no count → drop (Send_Effect_Except guard)
+
+        var bytes = new List<byte>(20);
+        EncodeBody(bytes, r, trail: false);             // __pointparticles is always a point effect
+        return bytes.ToArray();
+    }
+
+    private static void EncodeBody(List<byte> bytes, in EffectRequest r, bool trail)
+    {
         WriteVector(bytes, r.Origin);
 
         int flags = ExtraFlags(r);
@@ -141,8 +175,6 @@ public static class EffectNetProtocol
 
         if (!trail)
             bytes.Add((byte)(r.Count & 0xFF)); // WriteByte(channel, eent_net_count)
-
-        return bytes.ToArray();
     }
 
     // DarkPlaces WriteVector sends 3 little-endian 32-bit floats (the engine coord precision).
@@ -246,8 +278,14 @@ public static class EffectEmitter
     /// <summary>te_explosion — a generic explosion at <paramref name="origin"/> (maps to EFFECT_TE_EXPLOSION).</summary>
     public static void TeExplosion(Vector3 origin) => Emit("TE_EXPLOSION", origin, default, 1);
 
-    /// <summary>te_smallflash — a small muzzle/impact flash (maps to EFFECT_BLASTER_MUZZLEFLASH-style flash).</summary>
-    public static void TeSmallflash(Vector3 origin) => Emit("BLASTER_MUZZLEFLASH", origin, default, 1);
+    /// <summary>te_tarexplosion — the dark "tar" explosion builtin (QC te_tarexplosion(org)), distinct from
+    /// te_explosion; used by Key Hunt for a destroyed key. Maps to the dedicated TE_TAREXPLOSION effectinfo block.</summary>
+    public static void TeTarExplosion(Vector3 origin) => Emit("TE_TAREXPLOSION", origin, default, 1);
+
+    /// <summary>te_smallflash — the engine smallflash builtin. In DP this resolves the effectinfo block named
+    /// TE_SMALLFLASH (a generic bright flash), NOT any weapon's muzzleflash; mapped to the matching registry
+    /// entry so it networks and renders the correct block (fusionreactor heal flash, etc.).</summary>
+    public static void TeSmallflash(Vector3 origin) => Emit("TE_SMALLFLASH", origin, default, 1);
 
     /// <summary>te_spark — a burst of sparks (QC te_spark(org, vel, count)); maps to EFFECT_TE_SPARK.</summary>
     public static void TeSpark(Vector3 origin, Vector3 velocity, int count) => Emit("TE_SPARK", origin, velocity, count);
@@ -266,16 +304,39 @@ public static class EffectEmitter
     /// heal/damage ray (BRG_*) and other rail-style beams. The client's beam renderer draws a cylinder from
     /// <paramref name="from"/> to <paramref name="to"/>. <paramref name="effectName"/> must read as a beam
     /// (contains "beam") so it classifies correctly; a non-electric name keeps it straight (not jagged).
+    ///
+    /// When the effectinfo name is a registered (trail) Effect — heal_beam/damage_beam are registered for
+    /// exactly this — the beam is emitted by registry id so it NETWORKS to remote clients (the colormod rides
+    /// the wire eent_net_color_min/max fields, decoded back as the beam tint). Only a truly-unknown name falls
+    /// through to the null-Effect record, which the networking sink drops (engine-fallback path; Send_Effect_).
     /// </summary>
     public static void TeBeam(string effectName, Vector3 from, Vector3 to, Vector3 color)
-        => Sink.Emit(new EffectRequest(null, effectName, from, to, 0, color, color, null));
+    {
+        var effect = Effects.ByEffectInfoName(effectName);
+        if (effect is not null)
+        {
+            // Trail effect, count 0: the velocity is the beam END point (QC beam convention) and the colormod
+            // is carried as the min==max colour range (EFF_NET_COLOR_SAME), so the beam networks by id.
+            Emit(effect, from, to, 0, color, color);
+            return;
+        }
+        // engine-fallback: no registered effect for this name — record by name (the listen-server in-process
+        // mirror can still draw it; the networking sink drops a null-Effect request, matching __pointparticles).
+        Sink.Emit(new EffectRequest(null, effectName, from, to, 0, color, color, null));
+    }
 
-    /// <summary>The Bumblebee pilot heal-beam (BRG_*): a green straight beam from the gun to the heal target.</summary>
+    /// <summary>
+    /// The Bumblebee pilot heal-beam (BRG_*): a straight beam from the gun to the heal target. Base's
+    /// bumble_raygun_draw tints the cylinder by colormod = (count ? '1 0 0' : '0 1 0') — i.e. pure green
+    /// for the default heal ray (raygun 0). Matched here so the beam colour is bit-faithful to Base.
+    /// </summary>
     public static void TeHealBeam(Vector3 from, Vector3 to)
-        => TeBeam("heal_beam", from, to, new Vector3(0.3f, 1f, 0.4f));
+        => TeBeam("heal_beam", from, to, new Vector3(0f, 1f, 0f));
 
-    /// <summary>te_gunshot — a bullet impact puff (QC te_gunshot(org, count)); maps to EFFECT_MACHINEGUN_IMPACT.</summary>
-    public static void TeGunshot(Vector3 origin, int count) => Emit("MACHINEGUN_IMPACT", origin, default, count);
+    /// <summary>te_gunshot — the engine gunshot builtin (QC te_gunshot(org, count)). DP resolves the generic
+    /// effectinfo block named TE_GUNSHOT (a sparks+smoke+decal impact puff), NOT a specific weapon's impact;
+    /// mapped to the matching registry entry so it networks and renders the correct block.</summary>
+    public static void TeGunshot(Vector3 origin, int count) => Emit("TE_GUNSHOT", origin, default, count);
 
     /// <summary>te_blood — a blood spray (QC te_blood(org, vel, count)); maps to EFFECT_BLOOD.</summary>
     public static void TeBlood(Vector3 origin, Vector3 velocity, int count) => Emit("BLOOD", origin, velocity, count);

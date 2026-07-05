@@ -83,5 +83,14 @@ namespace XonoticGodot.Common.Framework
         public float NadeOrbExpire;
         /// <summary>QC <c>.cnt</c> reuse on the spawn-loc marker — remaining spawns at the spawn-nade location.</summary>
         public int NadeSpawnCount;
+
+        // --- client orb proxy (networked NadeOrbState field on a nade_orb entity) ---
+        /// <summary>
+        /// Client-only proxy of the networked <c>OrbRadius</c> (qu, 250..500) decoded into a
+        /// <c>nade_orb</c> entity from <c>EntityField.NadeOrbState</c>. The renderer uses it for the 3D
+        /// model scale and the in-orb color-flash containment test; 0 on every non-orb entity (the
+        /// <c>NadeOrbState</c> field is present only on a nade_orb delta).
+        /// </summary>
+        public float OrbRadiusClient;
     }
 }

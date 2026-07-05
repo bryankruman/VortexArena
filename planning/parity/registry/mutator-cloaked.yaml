@@ -1,0 +1,210 @@
+unit: mutator-cloaked
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-25"
+summary:
+  feature_count: 6
+  worst_gaps:
+    - "HEADLINE EFFECT WORKING (unchanged since Wave-5): with g_cloaked 1 players render semi-transparent end-to-end. The alpha seed lives in Common (MutatorHooks.DefaultPlayerAlpha/DefaultWeaponAlpha, set by FireSetDefaultAlpha at GameWorld.cs:569 worldspawn), server consumers read it (SpawnSystem.cs:591, DamageSystem.cs:629), and the client net->render bridge decodes NetEntityState.Alpha onto Entity.Alpha (ClientEntityView.cs:134) -> PlayerModel.ApplyAlpha. 0.25 round-trips faithfully via QuantizeAlpha (0.25->64/255=0.251)."
+    - "STILL OPEN — secondary alpha consumers: no exterior/held weapon-entity alpha-follow (Base weaponsystem.qc:116-117,170-171) and no vehicle-exit alpha restore (Base sv_vehicles.qc:814). These are minor relative to the now-working player body alpha."
+    - "2026-06-25 DRIFT (FIX, full) — the pretty-string append is now LIVE end-to-end. CloakedMutator overrides BuildMutatorsPrettyString (CloakedMutator.cs:73-78, ', Cloaked' with the !g_cts gate, Wave-6b), AND the MutatorActivation.BuildMutatorsPrettyString chain runner (MutatorActivation.cs:121) now has TWO live external callers: GameWorld.cs:1079 (match-start, stores into the 'modifications' serverinfo key — faithful to QC PutClientInServer client.qc:1107) and ServerNet.cs:607 (server-browser infostring). The baseline recorded this runner as DEAD; it is now live. STILL OPEN: no MUT_CLOAKED=7 bit (util.qh:62) ported (cosmetic bitfield, minor)."
+    - "2026-06-25 DRIFT (FIX, full) — the create-game checkbox is ported AND now carries the VERBATIM cloaked.qc describe text as its tooltip (DialogMutators.cs:134-136). The earlier describe-text content gap is closed; only the presentation surface differs (tooltip vs a dedicated describe page — the port-wide infra pattern, no describe-page widget for any mutator)."
+features:
+  - id: mutator-cloaked.enable.predicate
+    name: "Enable predicate (g_cloaked cvar gate + registration/subscription)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/cloaked/sv_cloaked.qc:4 REGISTER_MUTATOR(cloaked, expr_evaluate(cvar_string(\"g_cloaked\")))"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/CloakedMutator.cs:30 IsEnabled"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/CloakedMutator.cs:35 Hook"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:Apply"
+      - "src/XonoticGodot.Server/GameWorld.cs:602 MutatorActivation.Apply() (boot, before map entities spawn)"
+    constants:
+      - { name: "g_cloaked", base: "0 (mutators.cfg:563)", port: "0 (assets/.../mutators.cfg:563)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "VERIFIED (unchanged): CloakedMutator.IsEnabled = Api.Services is not null && Api.Cvars.GetFloat(\"g_cloaked\") != 0f (CloakedMutator.cs:30-31); MutatorActivation.Apply() called live at GameWorld.cs:602 (before map entities spawn); Hook() Adds OnSetDefaultAlpha + reads g_balance_cloaked_alpha", result: pass }
+      - { kind: value, ref: "VERIFIED: assets/data/xonotic-data.pk3dir/mutators.cfg:563 'set g_cloaked 0' matches Base", result: pass }
+    confidence: high
+    notes: "UNCHANGED in behavior. The mutator IS registered (auto-discovered via [Mutator]) and its handler IS subscribed on the live boot path when g_cloaked != 0. Base uses expr_evaluate(cvar_string) which parses expressions; port uses a simple != 0 float check — functionally equivalent for the stock '0'/'1' usage (campaign Stormkeep sets g_cloaked 1). Line ref for MutatorActivation.Apply() drifted to GameWorld.cs:602 (2026-06-25); behavior identical."
+
+  - id: mutator-cloaked.alpha.set_default_alpha
+    name: "SetDefaultAlpha override — set player/weapon alpha from g_balance_cloaked_alpha"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/cloaked/sv_cloaked.qc:8-13 MUTATOR_HOOKFUNCTION(cloaked, SetDefaultAlpha)"
+      - "server/world.qc:105-112 SetDefaultAlpha() (free fn that fires the hook / seeds default)"
+      - "server/world.qh:72-73 default_player_alpha / default_weapon_alpha globals"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/CloakedMutator.cs:53 OnSetDefaultAlpha"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:485 SetDefaultAlpha chain + 493/496 DefaultPlayerAlpha/DefaultWeaponAlpha + 507-517 FireSetDefaultAlpha"
+      - "src/XonoticGodot.Server/GameWorld.cs:618 (DefaultPlayerAlpha, DefaultWeaponAlpha) = MutatorHooks.FireSetDefaultAlpha()"
+    constants:
+      - { name: "g_balance_cloaked_alpha", base: "0.25 (mutators.cfg:564)", port: "0.25 (CloakedMutator.Alpha default + re-read in Hook()/OnSetDefaultAlpha)", match: true }
+      - { name: "default_player_alpha = alpha", base: "yes (world.qh global)", port: "MutatorHooks.DefaultPlayerAlpha set from args.PlayerAlpha", match: true }
+      - { name: "default_weapon_alpha = player alpha", base: "yes (world.qh global)", port: "MutatorHooks.DefaultWeaponAlpha set from args.WeaponAlpha (= player alpha)", match: true }
+      - { name: "hook returns true (replaces default branch)", base: "true", port: "true (OnSetDefaultAlpha returns true)", match: true }
+      - { name: "SetDefaultAlpha() world-init driver fires the hook", base: "world.qc:105-112, called at worldspawn", port: "GameWorld.cs:618 fires FireSetDefaultAlpha at worldspawn (after MutatorActivation.Apply)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "VERIFIED: MutatorHooks.FireSetDefaultAlpha calls SetDefaultAlpha.Call(ref a) and caches the result into the Common-side statics DefaultPlayerAlpha/DefaultWeaponAlpha. GameWorld.cs:618 calls FireSetDefaultAlpha() at worldspawn after MutatorActivation.Apply(). Cloaked's OnSetDefaultAlpha writes args.PlayerAlpha=args.WeaponAlpha=0.25 and returns true.", result: pass }
+      - { kind: code, ref: "VERIFIED: MutatorHooks declares the static DefaultPlayerAlpha/DefaultWeaponAlpha (default 1f), updated by FireSetDefaultAlpha. GameWorld.cs:618 also mirrors them onto the Server GameWorld props. The seed is correct AND lives in Common where the spawn/death consumers can read it.", result: pass }
+      - { kind: value, ref: "VERIFIED: mutators.cfg:564 'g_balance_cloaked_alpha 0.25' == port; CloakedMutator.Alpha defaults 0.25f and OnSetDefaultAlpha re-reads the cvar live (guarded a != 0).", result: pass }
+      - { kind: code, ref: "VERIFIED (downstream wired): MutatorHooks.DefaultPlayerAlpha is read by SpawnSystem.cs:640, DamageSystem.cs:687, and PowerupsMutator.cs:385 — the seed reaches spawned/dead players. The whole consumer chain is closed (see default_alpha_consumers).", result: pass }
+    confidence: high
+    notes: "FIX (Wave-5): presentation partial->faithful. The override's visible purpose is now realized end-to-end — the seed it computes is consumed by spawn/death (server) and decoded+rendered on the client. Previously partial because the seed went nowhere. Logic/values/timing/liveness were already faithful/live in the prior audit (Wave-2). Line ref shifted 545->565 (Wave-5 GameWorld edits)."
+
+  - id: mutator-cloaked.alpha.default_alpha_consumers
+    name: "default_player_alpha / default_weapon_alpha applied at spawn, death, weapon entities, vehicle-exit; networked + rendered"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/client.qc:788,790 (PutClientInServer: player + exteriorweapon alpha)"
+      - "server/player.qc:540 (PlayerDies: corpse alpha)"
+      - "server/weapons/weaponsystem.qc:116-117,170-171 (weapon entity follows owner alpha)"
+      - "common/vehicles/sv_vehicles.qc:814 (restore player.alpha on vehicle exit)"
+      - "common/mutators/mutator/powerups/powerup/invisibility.qc:16-18 (Invisibility expiry restores default_player/weapon_alpha)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:640 p.Alpha = MutatorHooks.DefaultPlayerAlpha (reads the seed)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:687 victim.Alpha = MutatorHooks.DefaultPlayerAlpha (corpse reads the seed)"
+      - "game/net/ServerNet.cs:1830,1944 QuantizeAlpha(p.Alpha)/QuantizeAlpha(e.Alpha) — networking present"
+      - "src/XonoticGodot.Net/NetEntity.cs:96,132,177,231,272 EntityField.Alpha + NetEntityState.Alpha encode/decode — networking present"
+      - "game/net/ClientEntityView.cs:135 e.Alpha = s.Alpha switch { 0=>1f, 255=>-1f, _=>s.Alpha/255f } — client net->render bridge WIRED"
+      - "game/client/PlayerModel.cs:160,217 ApplyAlpha(e.Alpha) — render present + fed the decoded alpha"
+    constants:
+      - { name: "spawn: player.alpha = default_player_alpha", base: "client.qc:788", port: "p.Alpha = MutatorHooks.DefaultPlayerAlpha (SpawnSystem.cs:640)", match: true }
+      - { name: "spawn: exteriorweapon.alpha = default_weapon_alpha", base: "client.qc:790", port: "none (no exterior-weapon entity alpha-follow)", match: false }
+      - { name: "death/corpse: this.alpha = default_player_alpha", base: "player.qc:540", port: "victim.Alpha = MutatorHooks.DefaultPlayerAlpha (DamageSystem.cs:687)", match: true }
+      - { name: "weapon entity follows owner alpha", base: "weaponsystem.qc:116-117,170-171", port: "none", match: false }
+      - { name: "vehicle-exit restores player.alpha = default_player_alpha", base: "sv_vehicles.qc:814", port: "none", match: false }
+      - { name: ".alpha networked to clients (wire channel)", base: "DP networked render field (entity state)", port: "PRESENT: ServerNet QuantizeAlpha + NetEntity EntityField.Alpha (byte, 0=opaque sentinel; 1..254 = alpha/255)", match: true }
+      - { name: ".alpha decoded onto the render entity (net->render bridge)", base: "DP applies networked alpha to the rendered ent", port: "PRESENT: ClientEntityView.DriveEntity:135 copies NetEntityState.Alpha -> Entity.Alpha (0->1f, 255->-1f hidden, else byte/255)", match: true }
+      - { name: ".alpha rendered on the player model", base: "DP renders ent alpha", port: "PRESENT: PlayerModel.ApplyAlpha maps Entity.Alpha -> per-instance GeometryInstance3D.Transparency (real), fed the decoded alpha each frame via Pose:160", match: true }
+      - { name: "0.25 round-trip fidelity", base: "0.25", port: "QuantizeAlpha(0.25)=round(63.75)->64; client 64/255=0.251 (1-byte quantization)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "STILL OPEN (secondary) — no exterior/held weapon-entity alpha-follow: Base weaponsystem.qc:116-117,170-171 makes the held weapon model track default_weapon_alpha when the owner is at the default player alpha; the port has no such consumer. Minor vs the now-working player body alpha."
+      - "STILL OPEN (secondary) — no vehicle-exit alpha restore (Base sv_vehicles.qc:814 resets player.alpha = default_player_alpha when leaving a vehicle)."
+    verification:
+      - { kind: code, ref: "VERIFIED (server consumers wired): SpawnSystem.cs:640 'p.Alpha = MutatorHooks.DefaultPlayerAlpha' (live spawn path) and DamageSystem.cs:687 'victim.Alpha = MutatorHooks.DefaultPlayerAlpha' (PlayerDies corpse setup, live death path). Both read the Common-side seed set by FireSetDefaultAlpha at worldspawn.", result: pass }
+      - { kind: code, ref: "VERIFIED (networking layer present): NetEntity.cs has EntityField.Alpha=1<<17 (line 96) + NetEntityState.Alpha (line 132) + diff/write/read (177/231/272); ServerNet.cs QuantizeAlpha(p.Alpha) at 1830 and QuantizeAlpha(e.Alpha) at 1944. QuantizeAlpha (ServerNet.cs:2264) returns 0 for alpha>=1 (opaque sentinel), clamp(round(alpha*255),1,254) otherwise.", result: pass }
+      - { kind: code, ref: "VERIFIED (client bridge wired): ClientEntityView.DriveEntity:135 'e.Alpha = s.Alpha switch { 0=>1f, 255=>-1f, _=>s.Alpha/255f }' decodes the networked byte onto the render proxy. The dequantize is the inverse of QuantizeAlpha (plus 255=hidden sentinel).", result: pass }
+      - { kind: code, ref: "VERIFIED (render path real and fed): PlayerModel.ApplyAlpha (PlayerModel.cs:217) maps Entity.Alpha -> per-instance GeometryInstance3D.Transparency, called every frame from Pose (line 160) with the decoded e.Alpha. End-to-end the player renders translucent under g_cloaked 1.", result: pass }
+      - { kind: code, ref: "VERIFIED (git): the bridge + Common-seed + consumer wiring all landed in commit 023ba70 (Wave 5 finish). The 2026-06-22 baseline predated Wave-5 and recorded the pre-fix hardcoded-1f state.", result: pass }
+    confidence: high
+    notes: "MAJOR FIX (Wave-5): logic partial->faithful, values missing->faithful, presentation partial->faithful, liveness dead->live for the player-body alpha. Wave-5 closed BOTH of the prior gating defects: (a) moved the seed into Common (MutatorHooks.DefaultPlayerAlpha) so SpawnSystem/DamageSystem/PowerupsMutator read it (no more cross-assembly barrier, no more hardcoded 1f), and (b) added the ClientEntityView net->render alpha bridge so the decoded NetEntityState.Alpha actually reaches PlayerModel.ApplyAlpha. The 0.25 cloaked value round-trips faithfully (1-byte quantization, 0.251 effective). Remaining gaps are the two SECONDARY consumers (exterior weapon-entity follow, vehicle-exit restore) — neither blocks the headline 'players go translucent' effect."
+
+  - id: mutator-cloaked.report.mutators_pretty_string
+    name: "Active-mutators string contribution (', Cloaked' + MUT_CLOAKED bit)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/cloaked/sv_cloaked.qc:15-18 MUTATOR_HOOKFUNCTION(cloaked, BuildMutatorsPrettyString)"
+      - "common/util.qc:302 X(\"Cloaked\", _(\"Cloaked\"), MUT_CLOAKED, cvar(\"g_cloaked\"))"
+      - "common/util.qh:62 const int MUT_CLOAKED = 7"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameplayBases.cs:288 MutatorBase.BuildMutatorsPrettyString (base no-op virtual)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/CloakedMutator.cs:73-78 BuildMutatorsPrettyString override — returns s + ', Cloaked' unless g_cts (Wave-6b)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:121 BuildMutatorsPrettyString chain runner — NOW LIVE: called at GameWorld.cs:1079 (match-start 'modifications' serverinfo) + ServerNet.cs:607 (server-browser infostring)"
+    constants:
+      - { name: "pretty string append", base: "', Cloaked' (suppressed in CTS)", port: "', Cloaked' unless g_cts (CloakedMutator.cs:73-78)", match: true }
+      - { name: "g_cts suppression gate", base: "if (!g_cts) (sv_cloaked.qc:17)", port: "cts ? s : s + ', Cloaked' (CloakedMutator.cs:76-77)", match: true }
+      - { name: "MUT_CLOAKED bit", base: "7 (util.qh:62)", port: "none", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "STILL OPEN (minor) — no MUT_CLOAKED=7 bit (util.qh:62) / util.qc:302 bitfield mapping ported. Cosmetic mutator-bitfield only; the live pretty-string path does not consume it."
+    verification:
+      - { kind: code, ref: "VERIFIED (FIX): CloakedMutator.BuildMutatorsPrettyString (CloakedMutator.cs:73-78) overrides the base virtual, returning s + ', Cloaked' unless g_cts (faithful to sv_cloaked.qc:15-18 incl. the !g_cts gate). Landed Wave-6b. The base virtual is at GameplayBases.cs:288.", result: pass }
+      - { kind: code, ref: "VERIFIED (liveness NOW live — drift fix): the MutatorActivation.BuildMutatorsPrettyString chain runner (MutatorActivation.cs:121) has TWO live external callers: GameWorld.cs:1079 (match-start: stores the stripped string into the 'modifications' serverinfo cvar, faithful to QC PutClientInServer client.qc:1107) and ServerNet.cs:607 (server-browser BuildServerInfo 'modifications' key). Both strip the leading ', ' per QC substring(s,2,...). The baseline recorded this as dead.", result: pass }
+      - { kind: code, ref: "VERIFIED: no MUT_CLOAKED hits in src/+game/ (only Base util.qh:62 / util.qc:302). The bit mapping is unported.", result: fail }
+    confidence: high
+    notes: "2026-06-25 DRIFT — FIX (liveness dead->live): the pretty-string runner now has live callers (GameWorld.cs:1079 match-start 'modifications' serverinfo + ServerNet.cs:607 server-browser infostring), so ', Cloaked' is computed and surfaced on the live path. The override itself (logic/values/presentation faithful) landed Wave-6b. Combined with the runner being wired, the only remaining gap is the cosmetic MUT_CLOAKED=7 bit (minor, unconsumed by the live path)."
+
+  - id: mutator-cloaked.menu.metadata
+    name: "MENUQC metadata (describe text + create-game checkbox)"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/cloaked/cloaked.qc:6-13 METHOD(MutatorCloaked, describe)"
+      - "common/mutators/mutator/cloaked/cloaked.qh:4-8 CLASS(MutatorCloaked) + REGISTER_MUTATOR(cloaked, true, MutatorCloaked)"
+      - "menu/xonotic/dialog_multiplayer_create_mutators.qc (g_cloaked checkbox)"
+    port_refs:
+      - "game/menu/dialogs/DialogMutators.cs:134-136 Widgets.CheckBox(\"g_cloaked\", \"Cloaked\", <full describe text>) — create-game checkbox; tooltip carries the verbatim cloaked.qc describe text"
+    constants:
+      - { name: "menu label", base: "_(\"Cloaked\")", port: "\"Cloaked\" (DialogMutators.cs:134)", match: true }
+      - { name: "create-game checkbox cvar", base: "g_cloaked", port: "g_cloaked (DialogMutators.cs:134)", match: true }
+      - { name: "checkbox tooltip / describe text", base: "'makes all players nearly invisible, similar to the Invisibility powerup. This adds an extra layer of stealth and strategy to gameplay.' (cloaked.qc:6-13 METHOD describe)", port: "verbatim describe text as the checkbox tooltip (DialogMutators.cs:135-136)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "MINOR (intended infra divergence) — there is no dedicated in-game per-mutator describe-PAGE widget; the QC METHOD(MutatorCloaked, describe) text rides on the create-game checkbox tooltip instead (the port-wide pattern). The actual describe wording is now carried verbatim, so the content gap is closed; only the page-vs-tooltip presentation surface differs."
+    verification:
+      - { kind: code, ref: "VERIFIED (FIX): DialogMutators.cs:134-136 has Widgets.CheckBox(\"g_cloaked\", \"Cloaked\", \"The Cloaked mutator makes all players nearly invisible, similar to the Invisibility powerup. This adds an extra layer of stealth and strategy to gameplay.\") — create-game checkbox with the g_cloaked cvar + _(\"Cloaked\") label. The tooltip is now the VERBATIM cloaked.qc:6-13 describe text (not the earlier paraphrase the baseline recorded).", result: pass }
+    confidence: high
+    notes: "2026-06-25 DRIFT — FIX (presentation partial->faithful): the checkbox tooltip now carries the full verbatim cloaked.qc describe text (DialogMutators.cs:135-136), closing the prior describe-text content gap. The remaining difference is only the surface (tooltip vs a dedicated describe page) — the port has no describe-page widget for any mutator, so this is the port-wide infra pattern, not a cloaked-specific defect."
+
+  - id: mutator-cloaked.compose.invisibility_powerup
+    name: "Composition with Invisibility powerup (expiry returns to default_player_alpha, i.e. cloaked alpha under cloaked)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/powerups/powerup/invisibility.qc:16-18 (m_remove: actor.alpha = default_player_alpha; exteriorweaponentity.alpha = default_weapon_alpha)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:383 (invisibility held: player.Alpha = _invisibilityAlpha 0.15)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:385 (lapse: player.Alpha = MutatorHooks.DefaultPlayerAlpha — composes with cloaked)"
+    constants:
+      - { name: "Invisibility while held sets player.alpha", base: "invisibility_alpha (0.15)", port: "player.Alpha = _invisibilityAlpha 0.15 (PowerupsMutator.cs:383) — LIVE", match: true }
+      - { name: "Invisibility expiry restores to default_player_alpha", base: "yes (so under cloaked → 0.25, not 1)", port: "restores MutatorHooks.DefaultPlayerAlpha (PowerupsMutator.cs:385) — composes with cloaked", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "VERIFIED: PowerupsMutator.cs:383 sets player.Alpha = _invisibilityAlpha (0.15) while invisibility active (live per-frame), and 385 restores MutatorHooks.DefaultPlayerAlpha on lapse (the same seed cloaked sets to 0.25). Under cloaked the restore correctly composes to 0.25, not 1f.", result: pass }
+      - { kind: code, ref: "VERIFIED (renders): same alpha channel that cloaked uses — the powerup-set player.Alpha (0.15) and the restore are networked (ServerNet QuantizeAlpha) AND decoded by the client bridge (ClientEntityView.cs:135) and rendered (PlayerModel.ApplyAlpha). So the Invisibility powerup translucency, and its cloaked-composing restore, are both visible on remote players.", result: pass }
+    confidence: high
+    notes: "FIX (Wave-5): logic/values/presentation/liveness partial->faithful. Two prior defects closed: (1) the expiry restore now reads MutatorHooks.DefaultPlayerAlpha (was hardcoded 1f) so it composes with cloaked -> 0.25, and (2) the alpha now renders (the ClientEntityView net->render bridge that previously dropped it is wired). The Invisibility powerup writes player.Alpha while held (live producer) and restores the cloaked-aware default on lapse, matching Base invisibility.qc:16-18. (Base also restores exteriorweaponentity.alpha = default_weapon_alpha; the port has no exterior-weapon-entity alpha-follow — tracked under default_alpha_consumers, not re-counted here.)"

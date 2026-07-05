@@ -18,13 +18,39 @@ namespace XonoticGodot.Game.Menu;
 public partial class DialogMonsterTools : MenuScreen
 {
     // QC radio group 2 over menu_monsters_edit_spawn — the monster type to spawn (netname value).
-    private static readonly (string Value, string Label)[] Monsters =
+    // Tooltip = each monster's MENUQC describe() flavor prose (qcsrc/common/monsters/monster/<m>.qc). Base
+    // surfaces describe() only on a dedicated monster-book/page widget, which the port lacks; following the
+    // same pattern as the mutator dialog (DialogMutators), the describe text rides on the radio tooltip — the
+    // closest faithful surface for it.
+    private static readonly (string Value, string Label, string Describe)[] Monsters =
     {
-        ("zombie", "Zombie"),
-        ("spider", "Spider"),
-        ("golem",  "Golem"),
-        ("mage",   "Mage"),
-        ("wyvern", "Wyvern"),
+        ("zombie", "Zombie",
+            "Zombies are the undead remains of deceased soldiers, risen with a ravenous hunger and no sense of self-preservation. " +
+            "When a Zombie senses a nearby player it will begin to charge its target at high speeds. " +
+            "While charging, a Zombie may leap towards the player, dealing massive damage on contact. " +
+            "If it gets close, the Zombie will punch and bite repeatedly. " +
+            "When threatened the Zombie may hold up its hands to block incoming attacks briefly. " +
+            "It is no small task to kill that which is already dead. Once a Zombie is defeated, destroy its corpse to prevent it from rising again!"),
+        ("spider", "Spider",
+            "The Spider is a large mechanically-enhanced arachnoid adept at hunting speedy enemies. " +
+            "To slow down its target, the Spider launches a synthetic web-like substance from its cannons. " +
+            "Approaching its enwebbed prey, the Spider will inflict a series of high damage bites."),
+        ("golem",  "Golem",
+            "Golems are large powerful brutes capable of taking and dealing a beating. Keeping your distance is advised. " +
+            "The Golem's primary melee attack is a series of punches. " +
+            "On occasion the Golem may jump into the air, dealing massive damage in an area as it slams the ground. " +
+            "To deal with distant foes, the Golem may throw a chunk of its electrified rocky exterior, zapping nearby targets on impact."),
+        ("mage",   "Mage",
+            "Wielding nanotechnology as if it were sorcery, the Mage employs a range of unique abilities of its own creation in combat. " +
+            "As a primary attack, the Mage throws a homing electric sphere towards the player. " +
+            "This sphere will track its target at high speed, exploding on impact or if it does not reach its target in time. " +
+            "When threatened, the Mage may deploy an energy shield to protect itself from damage briefly. " +
+            "Enemies approaching too closely during this time may be pushed away with explosive force! " +
+            "Defensively the Mage is capable of healing itself and nearby allies, with some variants also providing armor and ammunition. " +
+            "The Mage may sometimes appear to blink out of existence as it teleports behind its target for a sneak attack."),
+        ("wyvern", "Wyvern",
+            "The Wyvern is a flying reptilian monster that glides around hunting for fresh prey. " +
+            "While fragile, the Wyvern is capable of launching deadly fireballs at the player from a distance, inflicting high damage and causing burning."),
     };
 
     // QC radio group 3 over menu_monsters_edit_movetarget — what a spawned monster does.
@@ -71,8 +97,8 @@ public partial class DialogMonsterTools : MenuScreen
         var monsterGroup = new ButtonGroup();
         var monsterRow = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         monsterRow.AddThemeConstantOverride("separation", 8);
-        foreach ((string value, string label) in Monsters)
-            monsterRow.AddChild(Widgets.RadioButton("menu_monsters_edit_spawn", value, label, monsterGroup));
+        foreach ((string value, string label, string describe) in Monsters)
+            monsterRow.AddChild(Widgets.RadioButton("menu_monsters_edit_spawn", value, label, monsterGroup, describe));
         box.AddChild(monsterRow);
 
         // Spawn / Remove — QC "spawnmob $menu_monsters_edit_spawn $menu_monsters_edit_movetarget" / "killmob".

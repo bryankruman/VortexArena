@@ -165,8 +165,11 @@ public static class ModelTint
     {
         colormod = White;
 
-        // RESPAWNGHOST early-out: (csqcmodel_effects & CSQCMODEL_EF_RESPAWNGHOST) && !keepcolors → black, colormap 0.
-        if (isRespawnGhost && Cvar("cl_respawn_ghosts_keepcolors", 1f) == 0f)
+        // RESPAWNGHOST early-out (csqcmodel_hooks.qc:331-336): (csqcmodel_effects & CSQCMODEL_EF_RESPAWNGHOST)
+        // && !cl_respawn_ghosts_keepcolors → glowmod '0 0 0', no shirt/pants, colormap 0. Decision via the shared
+        // CsqcModelAppearance helper so the live render path and the unit-tested math are one source of truth.
+        if (CsqcModelAppearance.RespawnGhostClearsColors(
+                isRespawnGhost, keepColors: Cvar("cl_respawn_ghosts_keepcolors", 1f) != 0f))
         {
             glow = Black;            // glowmod '0 0 0', no shirt/pants, colormap 0
             shirtOut = Black;
@@ -180,9 +183,11 @@ public static class ModelTint
         // cl_forceplayercolors / cl_forcemyplayercolors / cl_forceuniqueplayercolors paint correctly.
         ColormapColors(colormap, out Color shirt, out Color pants, out bool hasColor);
 
-        // GLOWMOD: QC colormapPaletteColor(colormap & 0x0F /* pants */, true) when colormap>0, else '1 1 1'
-        // (csqcmodel_hooks.qc:339-342). The glow base is the PANTS color, matching QC.
-        glow = hasColor ? pants : White;
+        // GLOWMOD base (csqcmodel_hooks.qc:340-342): colormapPaletteColor(colormap & 0x0F /* pants */, true) when
+        // colormap>0, else '1 1 1'. The pants color we just resolved IS colormapPaletteColor(lo, isPants:true), so
+        // feed the shared BaseGlowmod helper its low nibble for the colored case and let it return white otherwise.
+        (float gr, float gg, float gb) = CsqcModelAppearance.BaseGlowmod(hasColor, colormap & 0x0F, Now());
+        glow = hasColor ? pants : new Color(gr, gg, gb);
 
         // DEATH FADING: scale glowmod by the death-fade factor while dead (cl_deathglow drives the rate).
         float deathglow = Cvar("cl_deathglow", 0f); // engine cvar default 0; xonotic-client.cfg sets 2 at runtime
@@ -191,16 +196,18 @@ public static class ModelTint
             float minFactor = Cvar("cl_deathglow_min", 0.5f);
             float factor = CsqcModelAppearance.DeathGlowFactor(deathglow, minFactor, hasColor: colormap > 0,
                 isDead: true, now: Now(), deathTime: deathTime);
-            glow = new Color(glow.R * factor, glow.G * factor, glow.B * factor);
-            // QC: if glowmod == '0 0 0' set glowmod.x = 0.000001 (so the engine doesn't treat it as "no glowmod").
-            if (glow.R == 0f && glow.G == 0f && glow.B == 0f)
-                glow = new Color(0.000001f, 0f, 0f);
+            // QC glowmod-zero guard (csqcmodel_hooks.qc:353-354): a fully-black post-fade glowmod is nudged to
+            // x=0.000001 so the engine doesn't treat it as "no glowmod". Via the shared GuardGlowmodZero helper.
+            (float fr, float fg, float fb) = CsqcModelAppearance.GuardGlowmodZero(
+                (glow.R * factor, glow.G * factor, glow.B * factor));
+            glow = new Color(fr, fg, fb);
         }
 
-        // Don't let the engine increase the player's glowmod (HDR): glowmod /= r_hdr_glowintensity when >1.
-        float hdr = Cvar("r_hdr_glowintensity", 0f);
-        if (hdr > 1f)
-            glow = new Color(glow.R / hdr, glow.G / hdr, glow.B / hdr);
+        // Don't let the engine increase the player's glowmod (HDR, csqcmodel_hooks.qc:359-360): glowmod /=
+        // r_hdr_glowintensity when >1. Via the shared ApplyHdrGlowClamp helper.
+        (float hr, float hg, float hb) = CsqcModelAppearance.ApplyHdrGlowClamp(
+            (glow.R, glow.G, glow.B), Cvar("r_hdr_glowintensity", 0f));
+        glow = new Color(hr, hg, hb);
 
         // Shirt = high-nibble color, pants = low-nibble color (distinct for a packed/forced colormap; equal for a
         // plain team id; FFA/untinted = black masks).

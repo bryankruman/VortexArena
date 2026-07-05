@@ -167,6 +167,70 @@ public static class QMath
         return a;
     }
 
+    /// <summary>
+    /// QC <c>AnglesTransform_Apply(transform, v)</c> (lib/warpzone/anglestransform.qc): rotate the vector
+    /// <paramref name="v"/> by the basis of <paramref name="transform"/> — <c>forward*v.x + right*-v.y + up*v.z</c>
+    /// where (forward,right,up) = <c>FIXED_MAKE_VECTORS(transform)</c> (which, with the default
+    /// POSITIVE_PITCH_IS_DOWN, is plain <see cref="AngleVectors"/>).
+    /// </summary>
+    public static Vector3 AnglesTransformApply(Vector3 transform, Vector3 v)
+    {
+        AngleVectors(transform, out Vector3 forward, out Vector3 right, out Vector3 up);
+        return forward * v.X + right * -v.Y + up * v.Z;
+    }
+
+    /// <summary>
+    /// QC <c>AnglesTransform_Multiply(t1, t2)</c> (lib/warpzone/anglestransform.qc): compose two angle
+    /// transforms — make the basis of <paramref name="t2"/>, rotate its forward+up by <paramref name="t1"/>, then
+    /// read the result back with <see cref="FixedVecToAngles2"/>.
+    /// </summary>
+    public static Vector3 AnglesTransformMultiply(Vector3 t1, Vector3 t2)
+    {
+        AngleVectors(t2, out Vector3 forward, out _, out Vector3 up);
+        forward = AnglesTransformApply(t1, forward);
+        up = AnglesTransformApply(t1, up);
+        return FixedVecToAngles2(forward, up);
+    }
+
+    /// <summary>
+    /// QC <c>AnglesTransform_ApplyToAngles(transform, v)</c> (default POSITIVE_PITCH_IS_DOWN branch): apply an
+    /// angle transform to a set of entity angles, accounting for the pitch-sign flip — negate pitch, multiply,
+    /// negate pitch back. Used by the <c>make</c> cheat's surface-align (<c>transform=fixedvectoangles2(normal,
+    /// forward)</c>, <c>v='-90 0 0'</c>) so unrotated models stand up on the hit surface.
+    /// </summary>
+    public static Vector3 AnglesTransformApplyToAngles(Vector3 transform, Vector3 v)
+    {
+        v.X = -v.X;
+        v = AnglesTransformMultiply(transform, v);
+        v.X = -v.X;
+        return v;
+    }
+
+    /// <summary>
+    /// QC <c>AnglesTransform_Normalize(t, minimize_roll)</c> (lib/warpzone/anglestransform.qc): bring an Euler
+    /// angle triple into canonical range — yaw/roll wrapped to (−180, 180], pitch folded into [−90, 90] (with a
+    /// 180° yaw+roll flip when it falls outside). Base ends <c>WarpZone_TransformVAngles</c> with this; without it
+    /// a <see cref="FixedVecToAngles"/> result (pitch in (−360, 0]) reaches a view consumer that
+    /// <c>Mathf.Clamp(pitch, -89, 89)</c>s it — so an exit facing even slightly DOWN (raw pitch ≈ −355) clamps to
+    /// −89 and the view snaps STRAIGHT UP. <paramref name="minimizeRoll"/> false = keep pitch in range (view/body
+    /// angles); true = keep roll in range instead (the camera-transform case). <c>rint</c> == round-half-to-even,
+    /// which <see cref="MathF.Round"/> does by default.
+    /// </summary>
+    public static Vector3 AnglesTransformNormalize(Vector3 t, bool minimizeRoll = false)
+    {
+        t.X -= 360f * MathF.Round(t.X / 360f);
+        t.Y -= 360f * MathF.Round(t.Y / 360f);
+        t.Z -= 360f * MathF.Round(t.Z / 360f);
+        bool needFlip = minimizeRoll ? (t.Z > 90f || t.Z <= -90f) : (t.X > 90f || t.X < -90f);
+        if (needFlip)
+        {
+            t.X = t.X >= 0f ? 180f - t.X : -180f - t.X;
+            t.Y = t.Y > 0f ? t.Y - 180f : t.Y + 180f;
+            t.Z = t.Z > 0f ? t.Z - 180f : t.Z + 180f;
+        }
+        return t;
+    }
+
     public static float Clamp(float v, float lo, float hi) => v < lo ? lo : (v > hi ? hi : v);
 
     /// <summary>QuakeC bound(min, value, max).</summary>

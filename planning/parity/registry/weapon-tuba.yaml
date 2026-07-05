@@ -1,0 +1,385 @@
+unit: weapon-tuba
+category: weapon
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"  # OPUS re-audit: crossfade wave landed (cos/sin two-sample blend + SoundChannel.TubaBlend); audio.note_sound values partial->faithful, audio stays unknown (headless)
+summary:
+  feature_count: 11
+  worst_gaps:
+    - "Note SOUND is a SUSTAINED pitched loop WITH the two-sample cos/sin crossfade now ported: NoteOn plays the floor neighbour on CH_TUBA (vol1=cos, pitch 2^(m/12)) AND, in the in-range branch, the upper neighbour on the new CH_TUBA_BLEND channel (vol2=sin, pitch 2^((m-step)/12)), at VOL_BASE*cl_tuba_volume / cl_tuba_attenuation; NoteOff Stops both. The server-side emission carries loop+pitch (SoundService.Play -> SoundEvent.Pitch), but the AUDIBLE result is NOT runtime-verified (headless read) so the audio dimension stays unknown. Remaining residuals: the cl_tuba_fadetime release ramp and ENT_CLIENT_TUBANOTE networking (remote players' notes still not driven by a dedicated note entity)."
+    - "GetNote still derives movestate from velocity (intended divergence) and omits crouch/jump/team pitch shifts — only changes which sample/pitch is heard, not whether a sound plays."
+    - "Per-instrument view models (h_akordeon/h_kleinbottle via CSQC weaponname/wr_viewmodel) still unwired (render-only)."
+    - "Melody recognition is LIVE+faithful (HasPlayed wired into the magic-ear pipeline) AND the recognised-melody bprint chat line is now wired (GameWorld.cs:663 -> Chat.PrintToChatAll) — the prior 'bprint still unwired' gap is CLOSED."
+    - "MENUQC weapon-guide describe text is PORTED (Tuba.GuideDescription, live via DialogMediaGuide); only the dynamic Keybinds/DPS trailing paragraphs are omitted (by design, matching the Electro guide)."
+features:
+  - id: weapon-tuba.fire.note_blast
+    name: "Held-fire note: refire-gated radius blast centered on player"
+    layer: [authority, shared]
+    base_refs:
+      - "common/weapons/weapon/tuba.qc:wr_think"
+      - "common/weapons/weapon/tuba.qc:W_Tuba_NoteOn"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:WrThink"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:NoteOn"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:RadiusDamage"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:136-139 (same-team sound rule)"
+    constants:
+      - { name: "damage", base: "5", port: "5", match: true }
+      - { name: "edgedamage", base: "0", port: "0", match: true }
+      - { name: "force", base: "40", port: "40", match: true }
+      - { name: "radius", base: "200", port: "200", match: true }
+      - { name: "refire", base: "0.05", port: "0.05", match: true }
+      - { name: "animtime", base: "0.05", port: "0.05", match: true }
+      - { name: "HITTYPE_SOUND on the blast", base: "hittype = HITTYPE_SOUND (tuba.qc:266)", port: "deathTag = DeathTypes.WithHitType(FromWeapon('tuba'), Sound) (Tuba.cs:124)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value-diff, ref: "Tuba.Configure() vs bal-wep-xonotic.cfg g_balance_tuba_*", result: pass }
+      - { kind: trace, ref: "WeaponFireDriver.Frame -> Tuba.WrThink(Primary) -> NoteOn -> WeaponSplash.RadiusDamage(deathTag)", result: pass }
+      - { kind: trace, ref: "NoteOn deathTag carries DeathTypes.Sound; RadiusDamage center=actor.Origin directHit=null => isIndirect always true => deathTag branch -> Combat.Damage; DamageSystem.Apply:131-134 SameTeam sound rule returns 0 dmg for teammates", result: pass }
+      - { kind: read, ref: "SplashDeathType only ORs |splash (tag not special), Sound/Secondary/Bounce tokens preserved (DamageSystem.cs:111-114)", result: pass }
+    confidence: high
+    notes: "FIXED vs baseline. The blast now carries HITTYPE_SOUND via the Wave-1 string deathTag channel on WeaponSplash.RadiusDamage, and DamageSystem.Apply honors the same-team sound rule (returns 0 to teammates) — the tuba's defining 'never hurts teammates' behavior is now live and faithful. damage/force/radius/refire/animtime remain bit-exact. Centered on actor.Origin (Base inflictor=actor) — equivalent."
+
+  - id: weapon-tuba.deathtype.instrument_bits
+    name: "Death-type carries instrument/secondary bits for obituary selection"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/tuba.qc:W_Tuba_NoteOn"
+      - "common/weapons/weapon/tuba.qc:wr_think"
+      - "common/weapons/weapon/tuba.qc:wr_killmessage"
+      - "common/weapons/weapon/tuba.qc:wr_suicidemessage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:NoteOn"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:RadiusDamage"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:94"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:168"
+    constants:
+      - { name: "HITTYPE_SECONDARY when instrument&1 (accordion)", base: "OR'd in W_Tuba_NoteOn (tuba.qc:267-268)", port: "deathTag |= Secondary when TubaInstrument&1 (Tuba.cs:125-126)", match: true }
+      - { name: "HITTYPE_BOUNCE when instrument&2 (klein bottle)", base: "OR'd in W_Tuba_NoteOn (tuba.qc:269-270)", port: "deathTag |= Bounce when TubaInstrument&2 (Tuba.cs:127-128)", match: true }
+      - { name: "secondary FIRE MODE does NOT set instrument bit", base: "W_Tuba_NoteOn overwrites hittype=HITTYPE_SOUND then ORs only instrument bits (tuba.qc:266-270)", port: "same — secondary only shifts pitch +7, obituary from instrument alone", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The Accordion/Klein Bottle obituary branches are reachable only once the player has cycled instruments via reload (now live, see weapon-tuba.reload.instrument_cycle) — no longer doubly-dead."
+    verification:
+      - { kind: read, ref: "Tuba.NoteOn builds string deathTag with Sound + (instrument&1->Secondary) + (instrument&2->Bounce); passed as deathTag to RadiusDamage", result: pass }
+      - { kind: trace, ref: "RadiusDamage indirect path -> Combat.Damage(tag); DeathMessages.SelectKill/SuicideMessage 'tuba' case reads HasHitType Bounce/Secondary -> KLEINBOTTLE/ACCORDEON/TUBA (DeathMessages.cs:94,168)", result: pass }
+    confidence: high
+    notes: "FIXED vs baseline. The baseline's structural root cause (int weapon-id path could not encode HITTYPE bits) is resolved: NoteOn now forms the STRING deathtype and routes it via the deathTag override, and the always-indirect blast (directHit=null) always takes the string pipeline. Note: the baseline framed 'secondary fire never reads ACCORDEON' as a defect, but Base also derives the obituary from the INSTRUMENT, not the fire mode (W_Tuba_NoteOn overwrites the passed hittype) — the port now matches Base exactly on that point."
+
+  - id: weapon-tuba.reload.instrument_cycle
+    name: "Reload cycles instrument Tuba -> Accordion -> Klein Bottle"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/tuba.qc:wr_reload"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:Reload"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs:226 (tuba.Reload dispatch)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:335 (ScheduleThink)"
+    constants:
+      - { name: "instrument cycle 0->1->2->0", base: "wr_reload switch (tuba.qc:366-380)", port: "(TubaInstrument + 1) % 3 (Tuba.cs:243)", match: true }
+      - { name: "WS_READY gate before cycling", base: "early-return if state != WS_READY (tuba.qc:363)", port: "if (st.State != Ready) return (Tuba.cs:239-240)", match: true }
+      - { name: "EFFECT_TELEPORT on switch", base: "Send_Effect(EFFECT_TELEPORT, w_shotorg) (tuba.qc:387)", port: "EffectEmitter.Emit('TELEPORT', origin+ViewOfs) (Tuba.cs:246)", match: true }
+      - { name: "WFRAME_RELOAD 0.5s WS_INUSE lock", base: "state=WS_INUSE; weapon_thinkf(WFRAME_RELOAD,0.5,w_ready) (tuba.qc:388-389)", port: "State=InUse; ScheduleThink(0.5s)->Ready (Tuba.cs:250-256)", match: true }
+      - { name: "weaponname tuba/akordeon/kleinbottle", base: "set in wr_reload (tuba.qc:370,374,378)", port: "not set (drives CSQC viewmodel only; render-only, see notes)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "weaponname (akordeon/kleinbottle) is not set — in Base it feeds only the CSQC wr_viewmodel (per-instrument view model h_akordeon/h_kleinbottle). The instrument index (TubaInstrument) IS tracked, so the obituary/sound branch correctly; only the per-instrument VIEW MODEL swap is unwired (render-only gap)."
+    verification:
+      - { kind: read, ref: "WeaponImpulses.ReloadHandle:217-219 — non-Reloadable && w is Tuba -> tuba.Reload(actor, slot) BEFORE the no-op generic WrReload", result: pass }
+      - { kind: read, ref: "Tuba.Reload: WS_READY guard, %3 cycle, TELEPORT effect, WS_INUSE + 0.5s ScheduleThink->Ready — matches tuba.qc:360-389", result: pass }
+    confidence: high
+    notes: "FIXED vs baseline (dead+stub -> live+faithful). The reload impulse (20) now reaches Tuba.Reload via WeaponImpulses.ReloadHandle's non-Reloadable repurpose seam, and Reload is rewritten to match wr_reload (READY guard, %3 cycle, Send_Effect(TELEPORT) instead of the old misc/teleport.wav, WS_INUSE 0.5s anim lock). Only the per-instrument view-model swap (weaponname) remains, and it is client-render-only."
+
+  - id: weapon-tuba.pitch.getnote
+    name: "Note pitch selection from movement state"
+    layer: [shared]
+    base_refs:
+      - "common/weapons/weapon/tuba.qc:W_Tuba_GetNote"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:GetNote"
+    constants:
+      - { name: "movestate 3x3 note table", base: "from movement.x/.y keys", port: "from horizontal velocity vs facing", match: false }
+      - { name: "note table values 1..9", base: "-6,-5,-4,+5,0,+2,+3,+4,-1", port: "-6,-5,-4,+5,0,+2,+3,+4,-1 (identical)", match: true }
+      - { name: "secondary shift", base: "+7", port: "+7", match: true }
+      - { name: "crouch shift", base: "-12", port: "none", match: false }
+      - { name: "jump shift", base: "+12", port: "none", match: false }
+      - { name: "team/player tuning", base: "+3 (team 2/4 or clientcolors&1)", port: "none", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Movement-key bits and crouch/jump/team tuning aren't carried to the headless weapon entity, so the port derives the movestate from horizontal velocity vs facing and applies only the +7 secondary shift. Pitch feeds ONLY the (still mostly-unported/silent) note sound, so the divergence has no gameplay effect today; flagged so it isn't re-reported. Would need real input bits to be faithful once audio lands."
+    gaps:
+      - "Chosen note differs from Base (velocity proxy, missing crouch/jump/team shifts). Now AUDIBLE since weapon-tuba.audio.note_sound plays a sustained pitched loop (PitchStepBaseNote snaps to a real sample + shifts the residual pitch), so this divergence changes which pitch is heard — but still never which file resolves (always a real sample) and has no gameplay effect (pitch feeds only the sound)."
+    verification:
+      - { kind: read, ref: "Tuba.GetNote (Tuba.cs:346-364) vs tuba.qc:136-203 — 1..9 movestate table identical, +7 secondary present; crouch(-12)/jump(+12)/team(+3) shifts + movement-key source absent (velocity proxy w/ +-16 thresholds)", result: fail }
+    confidence: high
+    notes: "Unchanged vs baseline (intended divergence retained). The note value is stored on the spawned tuba_note entity (.Count), pitch-stepped to a real sample for the now-sustained note loop, AND recorded into the tuba_lastnotes ring for melody recognition — but the input-derivation divergence (velocity proxy, no crouch/jump/team shift) stands."
+
+  - id: weapon-tuba.note.sustain_lifetime
+    name: "Sustained note entity: spawn, refresh-on-hold, off-on-release, keep-alive"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/tuba.qc:W_Tuba_NoteOn"
+      - "common/weapons/weapon/tuba.qc:W_Tuba_NoteOff"
+      - "common/weapons/weapon/tuba.qc:W_Tuba_NoteThink"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:NoteOn"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:NoteOff"
+    constants:
+      - { name: "keep-alive teleport_time", base: "time + refire*2*W_WeaponRateFactor", port: "time + refire*2 (MaxHealth, no consumer)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "W_WeaponRateFactor scaling on the keep-alive — the port DOES multiply refire*2 by WeaponRateFactor(actor) (Tuba.cs:163), so this matches Base; only relevant under haste/rate modifiers."
+      - "No W_Tuba_NoteThink server-side per-listener volume/angle re-origin + SendFlags (moot until tuba-note sound networking exists). The port's NoteThink only models the teleport_time self-expiry, not the re-origin broadcast."
+    verification:
+      - { kind: read, ref: "Tuba.NoteOn spawns note, sets MaxHealth=time+refire*2*WeaponRateFactor; NoteThink (Tuba.cs:224-235) reads MaxHealth and self-NoteOffs when lapsed; NextThink kept live", result: pass }
+      - { kind: read, ref: "Tuba.NoteOff (Tuba.cs:197-218) NOW records tuba_lastnotes ring entry (on,off,pitch) + bumps count, then runs MagicEarProcessAllEars — the baseline 'does not record tuba_lastnotes' gap is CLOSED", result: pass }
+    confidence: high
+    notes: "FIXED vs baseline (partial/partial liveness -> faithful logic + live). The keep-alive MaxHealth IS now consumed: NoteThink self-expires the note on teleport_time lapse (matching W_Tuba_NoteThink's expiry branch), and NoteOff records the tuba_lastnotes history that feeds melody recognition. The rate-factor scaling is present. Only the per-listener re-origin/SendFlags broadcast remains (moot without note-sound networking) -> timing/values kept partial."
+
+  - id: weapon-tuba.fx.smoke_ring
+    name: "Per-note smoke ring puff"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/tuba.qc:W_Tuba_NoteOn (Send_Effect EFFECT_SMOKE_RING)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:NoteOn"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:219"
+    constants:
+      - { name: "smoke throttle", base: "0.25 s (tuba_smoketime)", port: "0.25 s (st.TubaSmokeTime) (Tuba.cs:175)", match: true }
+      - { name: "per-instrument offset (tuba)", base: "v_up*40 + v_right*10 + v_forward*14", port: "up*40 + right*10 + fwd*14 (Tuba.cs:172)", match: true }
+      - { name: "per-instrument offset (accordion)", base: "v_up*25 + v_right*10 + v_forward*14", port: "up*25 + right*10 + fwd*14 (Tuba.cs:170)", match: true }
+      - { name: "per-instrument offset (klein bottle)", base: "v_up*50 + v_right*10 + v_forward*45", port: "up*50 + right*10 + fwd*45 (Tuba.cs:171)", match: true }
+      - { name: "ring velocity", base: "v_up * 100", port: "up * 100 (Tuba.cs:174)", match: true }
+      - { name: "ring origin", base: "gettaginfo(weapon, 0) (weapon tag)", port: "actor.Origin + actor.ViewOfs (eye approximation)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Ring origin uses the player eye (Origin + ViewOfs) rather than the weapon muzzle tag (gettaginfo), so the puff spawns slightly off from Base — but Base itself FIXMEs that gettaginfo doesn't return the real tag origin (tuba.qc:309), so this is a near-equivalent approximation, not a faithful tag read. Per-instrument vertical offsets and the 0.25s throttle are bit-exact."
+    verification:
+      - { kind: read, ref: "Tuba.NoteOn emits EFFECT_SMOKE_RING with per-instrument offsets + 0.25s throttle; SMOKE_RING registered EffectsList.cs:219", result: pass }
+    confidence: high
+    notes: "FIXED vs baseline (missing -> live). Smoke ring now emitted every 0.25s with the correct per-instrument vertical offsets and ring velocity. Only the origin reference (eye vs weapon tag) differs, and Base's own tag read is FIXME-flagged."
+
+  - id: weapon-tuba.audio.note_sound
+    name: "Sustained pitched note sound (loop sample, pitch step, fade, attenuation, networking)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/tuba.qc:tubasound"
+      - "common/weapons/weapon/tuba.qc:Ent_TubaNote_Think"
+      - "common/weapons/weapon/tuba.qc:W_Tuba_NoteSendEntity"
+      - "common/weapons/weapon/tuba.qc:NET_HANDLE(ENT_CLIENT_TUBANOTE)"
+      - "common/weapons/weapon/tuba.qc:TUBA_STARTNOTE (tuba.qc:430)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:NoteOn"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:NoteSample"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:PitchStepBaseNote"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:NoteOff"
+      - "src/XonoticGodot.Common/Services/Services.cs:138 (ISoundService.Play loop/pitch)"
+    constants:
+      - { name: "asset name scheme", base: "TUBA_STARTNOTE: 'tuba'+(i?ftos(i):'')+'_loopnote'+ftos(n)", port: "'weapons/tuba'+(i!=0?i:'')+'_loopnote'+note+'.wav' (Tuba.cs:371-376)", match: true }
+      - { name: "available samples on disk", base: "only notes at cl_tuba_pitchstep=6 multiples in TUBA_MIN..MAX per 3 instruments", port: "PitchStepBaseNote returns the on-disk floor/upper neighbour (multiple of 6) so the lookup hits a REAL file", match: true }
+      - { name: "cl_tuba_pitchstep rounding", base: "6; tubasound takes m=pymod(note,step), plays the floor neighbour", port: "honored — PitchStepBaseNote (Tuba.cs:286-323) reads cl_tuba_pitchstep (default 6), m=pymod, floor/upper neighbour branches match tuba.qc:449-477, exact-pitch when step<=0", match: true }
+      - { name: "sound7 residual pitch shift 2^(m/12)", base: "speed1 = 2^(m/12) (or 2^((m-step)/12) at the low edge)", port: "honored — PitchStepBaseNote returns speed=2^(m/12) / 2^((m-step)/12), passed as engine pitch to Api.Sound.Play (Tuba.cs:207-210)", match: true }
+      - { name: "cl_tuba_pitchstep crossfade (vol1/vol2 cos/sin)", base: "in-range branch plays BOTH neighbours: vol1=cos(pi/2 m/step) on floor + vol2=sin(...) on upper for a timbre blend", port: "honored — PitchStepBaseNote returns floor(vol1=cos)+upper(vol2=sin) pair; NoteOn plays floor on SoundChannel.Tuba and upper on SoundChannel.TubaBlend (=CH_TUBA_SINGLE+1), each pitched (2^(m/12) / 2^((m-step)/12)) (Tuba.cs:227-246)", match: true }
+      - { name: "cl_tuba_volume", base: "1", port: "honored — vol = clamp(VOL_BASE * cl_tuba_volume, 0, 1) (Tuba.cs:208, TubaVolumeCvar)", match: true }
+      - { name: "cl_tuba_attenuation", base: "0.5", port: "honored — attenuation = cl_tuba_attenuation (Tuba.cs:210, TubaAttenuationCvar)", match: true }
+      - { name: "cl_tuba_fadetime", base: "0.25 (Ent_TubaNote_Think ramps volume down on release)", port: "not honored — NoteOff Stops the loop cleanly, no fade-out ramp", match: false }
+      - { name: "sustained loop vs one-shot", base: "held tuba_note entity = one persistent loop on CH_TUBA_SINGLE", port: "honored — Api.Sound.Play(loop:true) on CH_TUBA, replaced on pitch/instrument change, Stopped by NoteOff (Tuba.cs:209-210,255)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: partial
+      presentation: partial
+      audio: unknown
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Audible result NOT runtime-verified: this is a headless code read. The server-side emission carries the loop+pitch (SoundService.Play -> SoundEvent(Loop,Pitch), EngineServices.cs:615), but whether the CLIENT renderer actually applies the pitch shift on a looping (entity,channel) REPLACEMENT — vs treating a same-(entity,channel) re-emit as idempotent and ignoring the new pitch — is unobserved. Needs a behavioral/listen check before audio can be called faithful."
+      - "No cl_tuba_fadetime release ramp: NoteOff Stops the loop cleanly rather than ramping volume down over 0.25s (needs a client-side per-frame volume think)."
+      - "No ENT_CLIENT_TUBANOTE networking: remote players' tuba notes are not driven by a dedicated note entity (no per-listener re-origin / SendFlags broadcast)."
+    verification:
+      - { kind: read, ref: "Tuba.NoteSample vs tuba.qc:430 TUBA_STARTNOTE — name scheme matches; NoteOn (Tuba.cs:227-246) plays NoteSample(instrument, PitchStepBaseNote(...)) on SoundChannel.Tuba with loop:true, pitch:speed1", result: pass }
+      - { kind: read, ref: "PitchStepBaseNote (Tuba.cs:335-391) ports tubasound (tuba.qc:449-481): m=pymod, floor neighbour note-m (speed 2^(m/12)), low-edge upper note-m+step (speed 2^((m-step)/12)); IN-RANGE branch returns BOTH neighbours with vol1=cos / vol2=sin weights; step<=0 -> exact note speed 1", result: pass }
+      - { kind: read, ref: "Two-sample cos/sin crossfade NOW PORTED (was a baseline gap): NoteOn (Tuba.cs:227-246) plays the floor sample on SoundChannel.Tuba at baseVol*vol1(cos) AND, when vol2>0, the upper neighbour on SoundChannel.TubaBlend (=CH_TUBA_SINGLE+1, Services.cs:126) at baseVol*vol2(sin); edge/exact-step branches play one sample and Stop the TubaBlend channel so no stale loop bleeds — matches tubasound's e + e.enemy pair (tuba.qc:466-481)", result: pass }
+      - { kind: read, ref: "vol=clamp(VOL_BASE*cl_tuba_volume,0,1), attenuation=cl_tuba_attenuation (TubaVolumeCvar/TubaAttenuationCvar, Tuba.cs:230-231,393-405) — matches tubasound _sound args", result: pass }
+      - { kind: read, ref: "NoteOff (Tuba.cs:298-299) Stops BOTH CH_TUBA and CH_TUBA_BLEND; SoundChannel.Tuba=5 / TubaBlend=10 single-channel (Services.cs:121,126) so re-emitting REPLACES rather than stacks", result: pass }
+      - { kind: code, ref: "all four cl_tuba_* cvars registered in xonotic-client.cfg:337-340 (attenuation 0.5/fadetime 0.25/pitchstep 6/volume 1)", result: pass }
+      - { kind: build, ref: "XonoticGodot.Common builds clean with the crossfade + SoundChannel.TubaBlend addition (0 warnings / 0 errors)", result: pass }
+      - { kind: read, ref: "SoundService.Play (EngineServices.cs:602-616) broadcasts SoundEvent with Loop+Pitch; loop is keyed by (entity,channel) and replaced by a later loop on the same key. The CLIENT-side render of a pitched looping REPLACEMENT is NOT runtime-observed -> audio dimension unknown", result: unknown }
+    confidence: medium
+    notes: "FURTHER FIX this wave (crossfade landed); audio fidelity STILL NOT runtime-verified. NoteOn now plays the FULL two-sample cos/sin pitch-step crossfade: floor neighbour on CH_TUBA (vol1=cos, pitch 2^(m/12)) AND, in the in-range branch, the upper neighbour on the NEW CH_TUBA_BLEND channel (vol2=sin, pitch 2^((m-step)/12)); edge/exact branches play a single sample and Stop the blend channel. The baseline 'no upper-neighbour blend' value gap is CLOSED -> values partial->faithful (volume/attenuation/pitchstep/sound7-pitch + the cos/sin weights all honored). audio stays UNKNOWN (headless — the audible result of a pitched looping REPLACEMENT is unobserved; needs a behavioral listen-check). Remaining: cl_tuba_fadetime release ramp (timing partial — needs a CSQC per-frame volume think), ENT_CLIENT_TUBANOTE remote-player networking (presentation partial)."
+
+  - id: weapon-tuba.melody.recognition
+    name: "Melody recognition + magic-ear chat (W_Tuba_HasPlayed / lastnotes)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/tuba.qc:W_Tuba_HasPlayed"
+      - "common/weapons/weapon/tuba.qc:W_Tuba_NoteOff (tuba_lastnotes + magicear bprint)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:HasPlayed"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:NoteOff"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/EntityWeaponState.cs:380-387 (TubaLastNotes ring)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:548-579 (MagicEarProcessMessage TUBA branch)"
+      - "src/XonoticGodot.Server/GameWorld.cs:663 (TubaMelodyBprint host seam -> Chat.PrintToChatAll)"
+    constants:
+      - { name: "MAX_TUBANOTES ring buffer", base: "32", port: "Tuba.MaxTubaNotes = 32; EntityWeaponState.TubaLastNotes = new Vector3[32]", match: true }
+      - { name: "instrument filter (instrument<0 = any)", base: "if (instrument >= 0 && tuba_instrument != instrument) return false", port: "same (Tuba.cs:358-359)", match: true }
+      - { name: "note/rhythm verification (pitchshift, nolength, mmin/mmax tempo bounds)", base: "W_Tuba_HasPlayed tuba.qc:24-92", port: "ported line-for-line (Tuba.cs:361-403)", match: true }
+      - { name: "ignorePitch = !MAGICEAR_TUBA_EXACTPITCH", base: "tuba.qc magicear EXACTPITCH spawnflag", port: "ignorePitch = (SpawnFlags & MagicEarTubaExactPitch) == 0 (LogicGates.cs:529)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: read, ref: "Tuba.HasPlayed (Tuba.cs:441-503) ports W_Tuba_HasPlayed (tuba.qc:13-97) — tokenize, count gate, instrument filter, backwards note walk w/ pitchshift, nolength rhythm bounds, clears count on match", result: pass }
+      - { kind: trace, ref: "Tuba.NoteOff (Tuba.cs:272-274) records vec3(on,off,pitch) into TubaLastNotes ring + bumps count, then calls LogicGates.MagicEarProcessAllEars(actor,0,null,'') -> MagicEarProcessMessage TUBA branch (empty msg, LogicGates.cs:548-579) -> Tuba.HasPlayed per slot -> UseTargets on match", result: pass }
+      - { kind: trace, ref: "trigger_magicear registered via spawnfunc (MapObjectsRegistry.cs:77 -> MagicEarSetup) so map ears populate the list at load; MagicEarProcessAllEars also live from Chat.cs:143 (the say pipeline)", result: pass }
+      - { kind: trace, ref: "On a TUBA match MagicEarProcessAllEars returns the ear NetName; Tuba.NoteOff invokes TubaMelodyBprint host seam (GameWorld.cs:663) -> Chat.PrintToChatAll composes '* NAME played on the @!#%'n {instrument}: TEXT' (real broadcast, Chat.cs:867) — the bprint chat line is LIVE", result: pass }
+    confidence: high
+    notes: "FIXED vs baseline (missing/na -> faithful/live), and the residual bprint gap is now ALSO closed. The W_Tuba_HasPlayed engine is ported (HasPlayed), tuba_lastnotes is recorded on NoteOff, driving the live magic-ear pipeline (MagicEarProcessMessage TUBA branch -> UseTargets). The recognised-melody chat line is now wired: NoteOff hands the matched text + instrument to TubaMelodyBprint, which GameWorld.cs:663 binds to Chat.PrintToChatAll (a real all-clients broadcast). presentation partial -> faithful. NOTE: the inline comment at LogicGates.cs:533/494 still says 'TUBA out of scope' but the code below it (548-579) is the live implementation — stale comment only."
+
+  - id: weapon-tuba.setup.instrument_reset
+    name: "wr_setup resets instrument to Tuba on (re)equip"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/tuba.qc:wr_setup"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:WrSetup"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:273"
+    constants:
+      - { name: "tuba_instrument reset to 0", base: "wr_setup sets tuba_instrument = 0 (tuba.qc:357)", port: "WrSetup sets WeaponState.TubaInstrument = 0 (Tuba.cs:70)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: read, ref: "Tuba.WrSetup overrides base; WeaponFireDriver.cs:273 calls newwep.WrSetup(player, slot) on equip (same pattern as Vortex/OkNex/Devastator)", result: pass }
+    confidence: high
+    notes: "FIXED vs baseline (missing -> live+faithful). Tuba now overrides WrSetup to reset the instrument to 0 on equip, called by the driver on weapon switch-in — matching wr_setup. Now meaningful because the instrument cycle (reload) is live."
+
+  - id: weapon-tuba.identity.metadata
+    name: "Weapon identity, flags, models, ammo, bot aim, registration/liveness"
+    layer: [authority, shared, presentation]
+    base_refs:
+      - "common/weapons/weapon/tuba.qh"
+      - "common/weapons/weapon/tuba.qc:wr_aim"
+      - "common/weapons/weapon/tuba.qc:wr_checkammo1"
+      - "common/weapons/weapon/tuba.qc:wr_checkammo2"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:Tuba (ctor)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:BotWantsSecondary (Tuba.cs:128-129)"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:406 (live wr_aim dispatch)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponOrder.cs:209"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:282"
+    constants:
+      - { name: "impulse", base: "1", port: "1", match: true }
+      - { name: "spawnflags", base: "HIDDEN|TYPE_SPLASH|NODUAL|NOTRUEAIM", port: "Hidden|TypeSplash|NoDual|NoTrueAim", match: true }
+      - { name: "m_color", base: "'0.909 0.816 0.345'", port: "(0.909,0.816,0.345)", match: true }
+      - { name: "view/world/item models", base: "h_tuba.iqm / v_tuba.md3 / g_tuba.md3", port: "same", match: true }
+      - { name: "infinite ammo", base: "wr_checkammo* return true", port: "CheckAmmo* return true", match: true }
+      - { name: "kill/suicide notifications (all 6)", base: "TUBA/ACCORDEON/KLEINBOTTLE *_MURDER/_SUICIDE", port: "all registered", match: true }
+      - { name: "wr_aim bot fire (vdist<radius -> 50/50 ATCK/ATCK2)", base: "tuba.qc:321-332 — if (vdist(actor-enemy,<,radius)) random()>0.5?ATCK:ATCK2", port: "BotWantsSecondary => enemyDistance<Radius && Random01>0.5 (Tuba.cs:127); live via BotBrain.cs:365", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Per-instrument view models (h_akordeon/h_kleinbottle, driven by CSQC wr_viewmodel/weaponname) still unwired; render-only (see weapon-tuba.reload.instrument_cycle)."
+      - "Crosshair gfx/crosshairtuba and weapon-image weapontuba assets exist in data but live-render wiring not verified (headless audit)."
+    verification:
+      - { kind: trace, ref: "WeaponOrder.cs:209 lists tuba; impulse 1; ctor flags/color/models vs tuba.qh", result: pass }
+      - { kind: read, ref: "All 6 tuba notifications in NotificationsList.cs", result: pass }
+      - { kind: trace, ref: "Tuba.BotWantsSecondary (Tuba.cs:128-129) overrides wr_aim — enemyDistance<Radius && Random01>0.5; dispatched live from BotBrain.cs:406 (fresh Random01 draw, routes ATCK->ATCK2) — matches tuba.qc:321-332", result: pass }
+    confidence: high
+    notes: "FIXED vs baseline (wr_aim missing -> faithful+live). Tuba now overrides BotWantsSecondary (the wr_aim seam): a bot within the 200u note radius rolls a fresh random()>0.5 to pick primary vs secondary, exactly matching W_Tuba_NoteOn's vdist<radius / coin-flip — bots can now play the tuba in combat. The override is invoked on the live bot path (BotBrain dispatches it for the chosen weapon). Core identity, flags, color, models and infinite-ammo remain faithful and live. Only the per-instrument render assets (view models / crosshair) remain — presentation stays partial."
+
+  - id: weapon-tuba.describe.guide
+    name: "Weapon-guide describe text (MENUQC)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/tuba.qc:describe (METHOD Tuba, describe — tuba.qc:600-612)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs:GuideDescription"
+      - "game/menu/dialogs/DialogMediaGuide.cs:160"
+    constants:
+      - { name: "guide paragraphs (5 static PARs)", base: "ear-bleeding music + slight knockback, secondary higher pitch, breath-only ammo, close-range only, movement-key pitch (tuba.qc:604-608)", port: "all 5 ported verbatim with the %s name pre-filled '@!#%'n Tuba' (Tuba.cs:67-74)", match: true }
+      - { name: "dynamic Keybinds/DPS trailing PARs", base: "W_Guide_Keybinds + W_Guide_DPS_onlyOne_unnamed (tuba.qc:609-610)", port: "omitted by design (owned by the guide page, matching the Electro guide precedent)", match: false }
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The two dynamic trailing paragraphs (W_Guide_Keybinds player keybinds + W_Guide_DPS damage-per-second line) are not part of GuideDescription — omitted exactly as the Electro guide omits them (they belong to the guide page, not the static prose)."
+    verification:
+      - { kind: read, ref: "Tuba.GuideDescription (Tuba.cs:67-74) ports the 5 static describe PARs from tuba.qc:604-608 verbatim", result: pass }
+      - { kind: read, ref: "DialogMediaGuide.cs:160 reads w.GuideDescription into the description panel on the live weapon-guide dialog (same path as Electro)", result: pass }
+    confidence: high
+    notes: "FIXED vs baseline (missing/na -> faithful/live). The MENUQC describe prose is now ported as Tuba.GuideDescription and rendered live by DialogMediaGuide (mirrors weapon-electro.describe_guide which was ported the same way). Only the dynamic Keybinds/DPS trailing paragraphs remain omitted, by design."

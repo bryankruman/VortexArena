@@ -365,16 +365,18 @@ public static class IqmBuilder
 
     /// <summary>
     /// Write the 4 bone indices + 4 weights for one vertex. BlendIndexes are joint indices (already global to
-    /// the skeleton, so no re-basing); weights are 0..255 bytes normalized to 0..1 floats. Falls back to a
-    /// rigid bind to bone 0 if the file lacks per-vertex skin data for this index.
+    /// the skeleton, so no re-basing) in <see cref="IqmData"/>'s flat <c>vertex*4</c> layout; weights are
+    /// 0..255 bytes normalized to 0..1 floats. Falls back to a rigid bind to bone 0 if the file lacks
+    /// per-vertex skin data for this index.
     /// </summary>
     private static void FillSkinVertex(IqmData iqm, int globalVertex, int localVertex, int[] bones, float[] weights)
     {
         int b = localVertex * 4;
-        byte[]? bi = (iqm.BlendIndexes is { } bix && globalVertex < bix.Length) ? bix[globalVertex] : null;
-        byte[]? bw = (iqm.BlendWeights is { } bwx && globalVertex < bwx.Length) ? bwx[globalVertex] : null;
+        int g = globalVertex * 4;
+        byte[]? bi = iqm.BlendIndexes;
+        byte[]? bw = iqm.BlendWeights;
 
-        if (bi is null || bw is null)
+        if (bi is null || bw is null || g < 0 || g + 4 > bi.Length || g + 4 > bw.Length)
         {
             // Unskinned vertex inside a skinned model: pin fully to the root bone so it stays attached.
             bones[b] = 0; bones[b + 1] = 0; bones[b + 2] = 0; bones[b + 3] = 0;
@@ -386,12 +388,12 @@ public static class IqmBuilder
         float sum = 0f;
         for (int j = 0; j < 4; j++)
         {
-            int idx = j < bi.Length ? bi[j] : 0;
+            int idx = bi[g + j];
             // BlendIndexes index into Joints (== skeleton bones); clamp defensively against malformed data so
             // Godot's skin lookup never dereferences a bone that doesn't exist.
-            if (idx < 0 || idx >= jointCount)
+            if (idx >= jointCount)
                 idx = 0;
-            float w = (j < bw.Length ? bw[j] : 0) / 255f;
+            float w = bw[g + j] / 255f;
             bones[b + j] = idx;
             weights[b + j] = w;
             sum += w;
@@ -475,9 +477,16 @@ public static class IqmBuilder
             clips.Add(new ClipSpec("all", 0, frames.Length, 20f, true));
         }
 
+        // Per-MODEL scratch shared across every clip build (track paths, track-index maps, frame-world
+        // buffers). These were re-allocated per clip — for a player model (~35 clips × ~60 bones) that was
+        // thousands of identical strings/NodePaths/arrays inside the first-build burst on the streamer
+        // worker (the iqm.anims scope of the bot-join alloc storm). Contents are per-bone, identical for
+        // every clip of the model, so one set serves all clips.
+        var scratch = new AnimScratch(boneNames);
+
         foreach (ClipSpec clip in clips)
         {
-            Animation anim = BuildOneAnimation(iqm, boneNames, clip);
+            Animation anim = BuildOneAnimation(iqm, scratch, clip);
             library.AddAnimation(clip.Name, anim);
 
             // Choose an autoplay default: prefer any "idle"-named clip, else fall back to the first clip.
@@ -489,15 +498,40 @@ public static class IqmBuilder
         return library;
     }
 
+    /// <summary>Reused per-model buffers for <see cref="BuildOneAnimation"/>: one animation track path per
+    /// bone (<c>"Skeleton3D:bone"</c>, pre-converted to <see cref="NodePath"/> — the conversion allocates a
+    /// managed wrapper + native path, so it must not repeat per clip), the per-clip track-index maps, and
+    /// the two frame-world scratch arrays. NodePath construction is pure data (no scene access) and safe on
+    /// the streamer worker, where the first build of each model runs.</summary>
+    private sealed class AnimScratch
+    {
+        public readonly NodePath[] BonePaths;
+        public readonly int[] PosTrack, RotTrack, SclTrack;
+        public readonly Transform3D[] WorldQuake, WorldGodot;
+
+        public AnimScratch(string[] boneNames)
+        {
+            int n = boneNames.Length;
+            BonePaths = new NodePath[n];
+            for (int i = 0; i < n; i++)
+                BonePaths[i] = new NodePath($"{SkeletonNodeName}:{boneNames[i]}");
+            PosTrack = new int[n];
+            RotTrack = new int[n];
+            SclTrack = new int[n];
+            WorldQuake = new Transform3D[n];
+            WorldGodot = new Transform3D[n];
+        }
+    }
+
     /// <summary>
     /// Build a single <see cref="Animation"/> for one clip: a position+rotation+scale track per bone, keyed at
     /// each frame in the clip's span at 1/fps. Each frame's bone-LOCAL Quake TRS is converted to a Godot
     /// bone-LOCAL transform through the same world-conjugation as the rest pose (computed fresh per frame so
     /// the non-commuting parent translation is handled correctly).
     /// </summary>
-    private static Animation BuildOneAnimation(IqmData iqm, string[] boneNames, ClipSpec clip)
+    private static Animation BuildOneAnimation(IqmData iqm, AnimScratch s, ClipSpec clip)
     {
-        int boneCount = boneNames.Length;
+        int boneCount = s.BonePaths.Length;
         IqmFrame[] frames = iqm.Frames;
         IqmJoint[] joints = iqm.Joints;
 
@@ -514,15 +548,13 @@ public static class IqmBuilder
             LoopMode = clip.Loop ? Animation.LoopModeEnum.Linear : Animation.LoopModeEnum.None,
         };
 
-        // Create the 3 tracks per bone up front and remember their indices.
-        var posTrack = new int[boneCount];
-        var rotTrack = new int[boneCount];
-        var sclTrack = new int[boneCount];
+        // Create the 3 tracks per bone up front and remember their indices (in the per-model scratch).
+        int[] posTrack = s.PosTrack, rotTrack = s.RotTrack, sclTrack = s.SclTrack;
         for (int bone = 0; bone < boneCount; bone++)
         {
             // Paths are relative to the AnimationPlayer.RootNode (the model root): "<skeleton>:<bone>".
             // The skeleton's node name is the fixed SkeletonNodeName, so no live node is needed here.
-            var basePath = $"{SkeletonNodeName}:{boneNames[bone]}";
+            NodePath basePath = s.BonePaths[bone];
 
             posTrack[bone] = anim.AddTrack(Animation.TrackType.Position3D);
             anim.TrackSetPath(posTrack[bone], basePath);
@@ -534,9 +566,9 @@ public static class IqmBuilder
             anim.TrackSetPath(sclTrack[bone], basePath);
         }
 
-        // Scratch arrays reused across every frame of this clip (one alloc per clip, not per frame).
-        var worldGodot = new Transform3D[boneCount]; // each bone's Godot-space WORLD transform this frame
-        var worldQuake = new Transform3D[boneCount]; // its Quake-space WORLD transform (pre-conjugation)
+        // Frame-world scratch reused across every frame of every clip of this model.
+        Transform3D[] worldGodot = s.WorldGodot; // each bone's Godot-space WORLD transform this frame
+        Transform3D[] worldQuake = s.WorldQuake; // its Quake-space WORLD transform (pre-conjugation)
 
         for (int f = 0; f < frameCount; f++)
         {

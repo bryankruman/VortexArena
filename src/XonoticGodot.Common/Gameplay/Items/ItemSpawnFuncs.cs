@@ -64,16 +64,32 @@ public static class ItemSpawnFuncs
         RegisterItem("item_jetpack", "jetpack");
         RegisterItem("item_fuel_regen", "fuel_regen");
 
+        // ---- instagib economy items (items.qh SPAWNFUNC_ITEM + alias) ----
+        // VaporizerCells (item_vaporizer_cells, alias item_minst_cells) + ExtraLife (item_extralife).
+        // These are mutator-economy items that only appear during instagib matches (spawned by the random-powerup
+        // replacement deck or Devastator/Vortex replacement). They live here so the map parser resolves the
+        // classname even on non-instagib maps (FilterItemDefinition removes them when instagib is off).
+        RegisterItem("item_vaporizer_cells", "vaporizer_cells"); // QC SPAWNFUNC_ITEM(item_vaporizer_cells, ITEM_VaporizerCells)
+        AliasItem("item_minst_cells", "vaporizer_cells");        // QC SPAWNFUNC_ITEM(item_minst_cells, ITEM_VaporizerCells)
+        RegisterItem("item_extralife", "extralife");             // QC SPAWNFUNC_ITEM(item_extralife, ITEM_ExtraLife)
+
         // ---- alias spawnfuncs that share a def (QC SPAWNFUNC_ITEM aliases in the powerup .qh) ----
         AliasItem("item_invincible", "invincible");       // -> ITEM_Shield
-        AliasItem("item_buff_speed", "speed");            // -> ITEM_Speed
-        AliasItem("item_buff_invisibility", "invisibility"); // -> ITEM_Invisibility
+        AliasItem("item_buff_speed", "speed");            // -> ITEM_Speed (a powerup, not a buff)
+        AliasItem("item_buff_invisibility", "invisibility"); // -> ITEM_Invisibility (a powerup, not a buff)
+
+        // ---- map buff items (QC buffs.qh BUFF_SPAWNFUNCS / BUFF_SPAWNFUNC_Q3COMPAT) ----
+        // item_buff_<type> (+ _team1.._team4 per-team variants) and item_buff_random spawn a live buff pickup
+        // carrying that type (null = randomize). The Q3/QL/WOP holdable/item classnames map via Buff_CompatName.
+        RegisterBuffSpawnFuncs();
 
         // ---- compatibility spawn functions (server/items/spawning.qc:99-105) ----
-        // item_armor1: Quake green armor = a Xonotic armor SHARD (medium) — or small on a Q3 map. The port has
-        // no live q3compat flag in this layer, so default to the Xonotic mapping (ArmorMedium). (Q3-map armor1
-        // sizing is non-fatal; recorded as a deviation.)
-        AliasItem("item_armor1", "armor_medium");
+        // QC SPAWNFUNC_ITEM(item_armor1, autocvar_sv_mapformat_is_quake3 ? ITEM_ArmorSmall : ITEM_ArmorMedium)
+        // (spawning.qc:99): Quake green armor is a Xonotic armor SHARD (small) on a Q3-format map, a medium armor
+        // otherwise. Resolved at SPAWN time (like the QC per-spawn macro body) so the live sv_mapformat_is_quake3
+        // cvar (default true) picks the right size — defaulting to ArmorSmall on the stock Q3 map format.
+        SpawnFuncs.Register("item_armor1",
+            e => ItemSpawn(e, CompatRemaps.IsMapformatQuake3() ? "armor_small" : "armor_medium"));
         AliasItem("item_armor25", "armor_mega");          // Nexuiz Mega Armor
         AliasItem("item_armor_large", "armor_mega");
         AliasItem("item_health1", "health_small");
@@ -154,6 +170,63 @@ public static class ItemSpawnFuncs
         }
     }
 
+    // The 13 QC buffs that carry an item_buff_<type> map spawnfunc (buffs.qh BUFF_SPAWNFUNCS calls, one per
+    // buff/<type>.qh). item_buff_random (null type) is added separately below.
+    private static readonly string[] BuffSpawnTypes =
+    {
+        "ammo", "bash", "disability", "flight", "inferno", "jump", "luck",
+        "magnet", "medic", "resistance", "swapper", "vampire", "vengeance",
+    };
+
+    // The teamplay-only team_forced suffixes (QC BUFF_SPAWNFUNCS: _team1.._team4 -> NUM_TEAM_1..NUM_TEAM_4).
+    private static readonly (string suffix, int team)[] BuffTeamVariants =
+    {
+        ("_team1", Teams.Red), ("_team2", Teams.Blue), ("_team3", Teams.Yellow), ("_team4", Teams.Pink),
+    };
+
+    // The Q3TA/Q3A/WOP holdable/item compat classnames -> canonical buff short name (QC buffs/<type>.qh
+    // BUFF_SPAWNFUNC_Q3COMPAT lines; the buffname is what Buff_CompatName maps).
+    private static readonly (string className, string buff)[] BuffCompatClassnames =
+    {
+        ("item_ammoregen", "ammo"),                  // Q3TA ammoregen
+        ("item_scout", "bash"),                      // Q3TA scout
+        ("item_flight", "flight"),                   // (WOP flight)
+        ("item_doubler", "inferno"),                 // Q3TA doubler
+        ("item_jumper", "jump"),                     // WOP jumper
+        ("item_regen", "medic"),                     // Q3A regen
+        ("item_revival", "medic"),                   // WOP revival
+        ("item_guard", "resistance"),                // Q3TA guard
+        ("holdable_teleporter", "swapper"),          // Q3A personal teleporter
+        ("holdable_invulnerability", "vampire"),     // Q3TA invulnerability
+        ("holdable_kamikaze", "vengeance"),          // Q3TA kamikaze
+    };
+
+    // QC buffs.qh BUFF_SPAWNFUNCS / BUFF_SPAWNFUNC_Q3COMPAT: install every item_buff_* + compat classname so a
+    // map can place buff pickups. Each routes to BuffsMutator.SpawnMapBuff (buff_Init), which gates on g_buffs
+    // and frees the edict when buffs are off / no type is available.
+    private static void RegisterBuffSpawnFuncs()
+    {
+        // item_buff_random — a null type forces randomization (QC BUFF_SPAWNFUNCS(random, NULL)).
+        SpawnFuncs.Register("item_buff_random", e => BuffsMutator.SpawnMapBuff(e, null, 0));
+
+        foreach (string t in BuffSpawnTypes)
+        {
+            string type = t; // capture
+            SpawnFuncs.Register("item_buff_" + type, e => BuffsMutator.SpawnMapBuff(e, type, 0));
+            foreach (var (suffix, team) in BuffTeamVariants)
+            {
+                int tm = team;
+                SpawnFuncs.Register("item_buff_" + type + suffix, e => BuffsMutator.SpawnMapBuff(e, type, tm));
+            }
+        }
+
+        foreach (var (className, buff) in BuffCompatClassnames)
+        {
+            string b = buff; // capture
+            SpawnFuncs.Register(className, e => BuffsMutator.SpawnMapBuff(e, b, 0));
+        }
+    }
+
     // Register a classname -> the [Item] Pickup with the given NetName, and record it as that def's canonical name.
     private static void RegisterItem(string className, string netName)
     {
@@ -220,13 +293,68 @@ public static class ItemSpawnFuncs
             MapMover.RemoveEntity(e);
             return;
         }
-        StartItem.Spawn(e, def);
+        // QC m_spawnfunc_hookreplace(this, e): let the def optionally substitute itself with a different def
+        // before StartItem runs. This is how jetpack/fuelregen replace themselves with ITEM_Fuel when the
+        // player already gets the held-bit as a start item (jetpack.qc:6-11, fuelregen.qc:6-11).
+        Pickup effective = def.SpawnFuncHookReplace(e);
+        StartItem.Spawn(e, effective);
         // (StartItem removes the edict itself on a failed permanent spawn; nothing more to do here.)
     }
 
     // ---- the weapon item spawnfunc (QC weapon_defaultspawnfunc, server/weapons/spawning.qc:29) ----
     private static void WeaponSpawn(Entity e, Weapon w)
     {
+        // QC weapon_defaultspawnfunc (spawning.qc:33): the weaponreplace + SetWeaponreplace mutator pass runs only
+        // for a real (non-loot, non-already-replaced) map weapon entity. The port's loot/thrown path reuses
+        // PickupFor + StartItem.SpawnLoot directly, so any e reaching here is a map spawn — run the full pass.
+        if (!e.ItemIsLoot && !e.IsReplacedWeapon)
+        {
+            // NOTE (deferred): QC weapon_defaultspawnfunc rejects a WEP_FLAG_MUTATORBLOCKED weapon outright here
+            // (startitem_failed). The port does NOT yet enforce that at map-spawn — doing so changes weapon spawning
+            // project-wide (compat-remapped arc/minelayer, Weapons.All[0]-based item tests) and needs its own pass
+            // with the spawn-rejection test contract updated. Left as a separate parity item so the weaponreplace
+            // pass below (the New-Toys gap this file closes) ships without that broad behavior change.
+
+            // QC: s = W_Apply_Weaponreplace(wpn.netname); MUTATOR_CALLHOOK(SetWeaponreplace, this, wpn, s);
+            //     s = M_ARGV(2, string); — the New Toys SetWeaponreplace handler rewrites s to the map "new_toys"
+            // key (or the global autoreplace mapping), then re-applies the per-weapon weaponreplace cvar.
+            string s = W_Apply_Weaponreplace(w.NetName);
+            s = MutatorHooks.FireSetWeaponreplace(e, w, s);
+            if (s.Length == 0)
+                { MapMover.RemoveEntity(e); return; } // empty result deletes the entity (QC startitem_failed)
+
+            string[] toks = s.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            // QC: a >=2 token list links the extra weapons as an --internalteam replacement group (the engine
+            // shows one). The port has no team-item select group at this layer, so the extra tokens spawn their
+            // own world weapon (faithful set of weapons present; the single-show grouping is the deviation noted
+            // in StartItem). argv(0) stays as THIS entity's weapon.
+            if (toks.Length >= 2)
+            {
+                for (int i = 1; i < toks.Length; i++)
+                {
+                    Weapon? wep = Weapons.ByName(toks[i]);
+                    if (wep is null) continue;
+                    Entity rep = Api.Entities.Spawn();
+                    rep.ClassName = e.ClassName;
+                    rep.Origin = e.Origin;
+                    rep.OldOrigin = e.Origin;
+                    rep.Angles = e.Angles;
+                    rep.TargetName = e.TargetName;
+                    rep.Target = e.Target;
+                    rep.SpawnFlags = e.SpawnFlags;
+                    rep.Team = e.Team;
+                    rep.IsReplacedWeapon = true; // QC replacement.m_isreplaced = true (skips a recursive replace)
+                    WeaponSpawn(rep, wep);
+                }
+            }
+
+            // QC: wpn = Weapon_from_name(argv(0)); if (wpn == WEP_Null) { delete; startitem_failed; return; }
+            Weapon? primary = Weapons.ByName(toks[0]);
+            if (primary is null)
+                { MapMover.RemoveEntity(e); return; }
+            w = primary;
+        }
+
         WeaponPickup def = PickupFor(w);
 
         // QC weapon_defaultspawnfunc: default respawntime; default pickup ammo if the edict didn't set it; the
@@ -238,6 +366,30 @@ public static class ItemSpawnFuncs
             e.PickupAnyway = 1;
 
         StartItem.Spawn(e, def);
+    }
+
+    /// <summary>
+    /// QC <c>W_Apply_Weaponreplace(string in)</c> (server/weapons/spawning.qc:13): token-walk <paramref name="in"/>;
+    /// for each token resolve the weapon and substitute its own <c>weaponreplace</c> cvar (single-level), dropping
+    /// any <c>"0"</c> token, then rebuild the space-joined list. An unknown token is kept verbatim (QC's
+    /// <c>Weapon_from_name</c> null case leaves <c>replacement = it</c>).
+    /// </summary>
+    public static string W_Apply_Weaponreplace(string input)
+    {
+        // QC FOREACH_WORD(in, true, ...): per token resolve the weapon's own weaponreplace (else keep the token),
+        // drop a whole-string "0" (this slot spawns nothing), and cons() the replacement onto the output. cons
+        // joins with a single space; tokenize_console later re-splits, so a multi-name replacement string is fine.
+        string outStr = "";
+        foreach (string tok in input.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        {
+            string replacement = tok;
+            Weapon? w = Weapons.ByName(tok);
+            if (w is not null)
+                replacement = w.WeaponReplace.Length > 0 ? w.WeaponReplace : tok;
+            if (replacement == "0") continue; // QC: replacement == "0" => drop
+            outStr = outStr.Length == 0 ? replacement : outStr + " " + replacement; // QC cons(out, replacement)
+        }
+        return outStr;
     }
 
     /// <summary>The stable per-weapon <see cref="WeaponPickup"/> def (QC <c>wpn.m_pickup</c>). Public so the

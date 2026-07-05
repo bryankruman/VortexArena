@@ -29,12 +29,20 @@ namespace XonoticGodot.Common.Gameplay;
 ///        the player beside them facing their angles. The "1-team-only-one-player" advantage guard and the
 ///        per-teammate <c>msnt_timer</c> cooldown are ported.
 ///
-/// NOTE (deferred / approximated, all flagged inline): <c>checkpvs</c> (PVS visibility), the
-/// <c>tracebox_hits_trigger_hurt</c> hurt-volume check, the <c>pointcontents</c> lava/slime/sky reject, and the
-/// nade-in-range reject (needs the projectile entity list) have no clean mutator-reachable equivalent yet, so the
-/// relocation does the geometry traces it CAN and skips those extra rejections — a faithful superset (it may keep
-/// a spot QC would have rejected for a hurt trigger / lava). The <c>closetodeath</c> sub-branch uses the player's
-/// current origin as the death origin (the port has no <c>.death_origin</c> field reachable here).
+/// All five geometry/content rejects QC applies in the relocate trace are now ported: the sky-surface reject
+/// (Q3SURFACEFLAG_SKY) and the lava/slime/water <c>pointcontents</c> reject (via the trace's surfaceflags +
+/// <c>Api.Trace.PointContents</c>), the <c>tracebox_hits_trigger_hurt</c> hurt-volume reject (a swept-AABB slab
+/// test over the trigger_hurt edicts), and — when <c>g_nades</c> is on — the nade-in-range reject (a radius scan
+/// over the live <c>nade</c> edicts within <c>g_nades_nade_radius</c>). The <c>checkpvs</c> PVS-visibility gate in
+/// Spawn_Score is applied (<c>Api.Trace.CheckPvs</c>), and the <c>closetodeath</c> sub-branch now measures from the
+/// player's latched <c>.death_origin</c> (<see cref="Player.DeathOrigin"/>). Both the look-at facing and the
+/// relocation facing are latched into the networked FixAngle channel so the spawn orientation reaches the client.
+///
+/// The per-teammate eligibility gates <c>weaponLocked(it)</c> and <c>PHYS_INPUT_BUTTON_CHAT(it)</c> are now
+/// ported: <c>IsChatting</c> reads <see cref="Entity.ButtonChat"/> (set by PlayerPhysics from the Typing intent,
+/// same field campcheck and typefrag use); <c>WeaponLocked</c> checks <see cref="Entity.FrozenStat"/> and the
+/// <c>STATUSEFFECT_Frozen</c> status effect (the reachable subset of QC's <c>weaponLocked</c> — the
+/// game_stopped/prematch and player_blocked/LockWeapon-hook portions are not observable on the spawn path).
 /// QC kept <c>.msnt_lookat</c> / <c>.msnt_timer</c> on the spot/player edicts; adding Entity fields is out of this
 /// task's edit scope, so both live in <see cref="ConditionalWeakTable{TKey,TValue}"/> maps keyed by the entity.
 /// </summary>
@@ -46,6 +54,10 @@ public sealed class SpawnNearTeammateMutator : MutatorBase
 
     /// <summary>QC SPAWN_PRIO_NEAR_TEAMMATE_SAMETEAM (server/spawnpoints.qh:11).</summary>
     public const int PrioNearTeammateSameTeam = 100;
+
+    /// <summary>DP SUPERCONTENTS_* water|slime|lava (Base/darkplaces/bspfile.h) — the "liquids" mask used to map
+    /// QC <c>pointcontents(p) != CONTENT_EMPTY</c> onto the port's bitmask PointContents (matches PlayerPhysics).</summary>
+    private const int SuperContentsLiquidsMask = 0x00000010 | 0x00000020 | 0x00000040;
 
     public SpawnNearTeammateMutator() => NetName = "spawn_near_teammate";
 
@@ -110,8 +122,10 @@ public sealed class SpawnNearTeammateMutator : MutatorBase
             float d = Vector3.Distance(spot.Origin, it.Origin);
             if (d > distance) continue;     // QC: vdist(.., >, distance) → skip
             if (d < 48f) continue;          // QC: vdist(.., <, 48) → skip
-            // QC: if(!checkpvs(spawn_spot.origin, it)) continue; — PVS visibility (no mutator-reachable equivalent;
-            // skipped, a faithful superset that may keep a not-yet-visible teammate's spot).
+            // QC: if(!checkpvs(spawn_spot.origin, it)) continue; — only bias toward / face a teammate that is
+            // potentially visible from the spot (the compiled map PVS, conservative). Skips a teammate behind a
+            // wall/in another room that QC would also skip, so the biased set matches Base, not a superset.
+            if (!Api.Trace.CheckPvs(spot.Origin, it.Origin)) continue;
             count++;
             if (Prandom.RangeInt(0, count) == 0) chosen = it; // uniform reservoir (QC AddEnt weight 1)
         }
@@ -161,7 +175,7 @@ public sealed class SpawnNearTeammateMutator : MutatorBase
             //     player.angles_x = -player.angles.x; player.angles_z = 0;
             // vectoangles + the explicit pitch flip == fixedvectoangles (the round-trippable look-at facing).
             Vector3 ang = QMath.FixedVecToAngles(mate.Origin - player.Origin);
-            player.Angles = new Vector3(ang.X, ang.Y, 0f);
+            FaceAngles(player, new Vector3(ang.X, ang.Y, 0f));
         }
         return false;
     }
@@ -255,9 +269,12 @@ public sealed class SpawnNearTeammateMutator : MutatorBase
                 {
                     if (closeToDeath)
                     {
-                        // QC dist2 = vlen2(chosen.origin - player.death_origin); keep the nearest to death.
-                        // The port has no .death_origin reachable here → use the player's current origin (NOTE).
-                        float dist2 = Vector3.DistanceSquared(roundChosen.Origin, player.Origin);
+                        // QC dist2 = vlen2(chosen.origin - player.death_origin); keep the spot whose teammate is
+                        // nearest to where the player died (so "spawn as close to where you died as possible").
+                        // player.DeathOrigin is latched in the Obituary path (DamageSystem.Killed); it is zero
+                        // until the player's first death, matching QC's default-zero .death_origin.
+                        Vector3 deathOrigin = player is Player pl ? pl.DeathOrigin : player.Origin;
+                        float dist2 = Vector3.DistanceSquared(roundChosen.Origin, deathOrigin);
                         if (dist2 < bestDist2)
                         {
                             bestDist2 = dist2;
@@ -305,8 +322,18 @@ public sealed class SpawnNearTeammateMutator : MutatorBase
         if (vert.Fraction == 1.0f) return null; // above void or too high
         Vector3 vertEnd = vert.EndPos;
 
-        // QC also rejects sky surfaces, lava/slime (pointcontents), and hurt-trigger volumes here — no clean
-        // mutator-reachable equivalent (NOTE in the class doc); the geometry traces are kept.
+        // QC: if (trace_dphitq3surfaceflags & Q3SURFACEFLAG_SKY) goto skip; — don't relocate onto a sky leak.
+        if ((vert.DpHitQ3SurfaceFlags & MutatorConstants.Q3SurfaceFlagSky) != 0) return null;
+
+        // QC: if (pointcontents(vectical_trace_endpos) != CONTENT_EMPTY) goto skip; — no lava/slime/water (the QC
+        // comment names exactly those three as the "annoying" content to avoid). PointContents returns a
+        // SUPERCONTENTS bitmask in the port, so test the liquids mask rather than the legacy CONTENT_EMPTY value.
+        if ((Api.Trace.PointContents(vertEnd) & SuperContentsLiquidsMask) != 0) return null;
+
+        // QC: if (tracebox_hits_trigger_hurt(horizontal_trace_endpos, PL_MIN, PL_MAX, vectical_trace_endpos)) goto skip;
+        // — reject a spot whose drop column to the floor sweeps through a trigger_hurt volume (don't spawn into
+        // damage). Swept-AABB-vs-box slab test over the trigger_hurt edicts (player.qc tracebox_hits_trigger_hurt).
+        if (HitsTriggerHurt(horizEnd, plMin, plMax, vertEnd)) return null;
 
         // QC: make sure there's floor (or a wall) ahead so the player won't immediately fall.
         Vector3 floorStart = vertEnd + up * plMax.Z + forward * plMax.X;
@@ -314,8 +341,83 @@ public sealed class SpawnNearTeammateMutator : MutatorBase
             floorStart + forward * 100f - up * 128f, MoveFilter.NoMonsters, mate);
         if (floorAhead.Fraction == 1.0f) return null;
 
-        // QC nade-in-range reject (g_nades) needs the projectile entity list — deferred (NOTE).
+        // QC: if (g_nades) reject when any live nade is within g_nades_nade_radius (300) of the floor spot — don't
+        // relocate a freshly-spawned player on top of a primed grenade (IL_EACH(g_projectiles, classname=="nade")).
+        if (Api.Cvars.GetFloat("g_nades") != 0f && NadeInRange(vertEnd)) return null;
+
         return vertEnd;
+    }
+
+    /// <summary>
+    /// QC <c>tracebox_hits_trigger_hurt(start, mins, maxs, end)</c> (common/mapobjects/trigger/hurt.qc:78): does the
+    /// box <paramref name="mins"/>/<paramref name="maxs"/> swept from <paramref name="start"/> to
+    /// <paramref name="end"/> overlap any <c>trigger_hurt</c> volume? Walks the trigger_hurt edicts (found by
+    /// classname; the brushes keep their absmin/absmax) and runs QC's <c>tracebox_hits_box</c> Minkowski-expanded
+    /// swept-ray-vs-box slab test. (Same algorithm as the bot-danger slice in BotDanger.HitsTriggerHurt, which lives
+    /// in the server assembly the Common mutator can't reference, so it is reproduced here.)
+    /// </summary>
+    private static bool HitsTriggerHurt(Vector3 start, Vector3 mins, Vector3 maxs, Vector3 end)
+    {
+        if (Api.Services is null) return false;
+        foreach (Entity e in Api.Entities.FindByClass("trigger_hurt"))
+        {
+            if (e.IsFreed) continue;
+            if (e.AbsMin == e.AbsMax) continue; // unlinked / degenerate volume
+            // QC: tracebox_hits_box(start, mins, maxs, end, absmin, absmax)
+            //   = trace_hits_box(start, end, absmin - maxs, absmax - mins)
+            if (TraceHitsBox(start, end, e.AbsMin - maxs, e.AbsMax - mins))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>QC <c>trace_hits_box(start, end, thmi, thma)</c> (common/util.qc:2219): does the ray start→end cross
+    /// the AABB [thmi, thma]? Per-axis slab clip mirroring QC's <c>trace_hits_box_1d</c>.</summary>
+    private static bool TraceHitsBox(Vector3 start, Vector3 end, Vector3 thmi, Vector3 thma)
+    {
+        end -= start;
+        thmi -= start;
+        thma -= start;
+        float a0 = 0f, a1 = 1f;
+        if (!HitsBox1D(end.X, thmi.X, thma.X, ref a0, ref a1)) return false;
+        if (!HitsBox1D(end.Y, thmi.Y, thma.Y, ref a0, ref a1)) return false;
+        if (!HitsBox1D(end.Z, thmi.Z, thma.Z, ref a0, ref a1)) return false;
+        return true;
+    }
+
+    /// <summary>QC <c>trace_hits_box_1d</c> (common/util.qc:2197): one-axis slab clamp of the [a0,a1] interval.</summary>
+    private static bool HitsBox1D(float end, float thmi, float thma, ref float a0, ref float a1)
+    {
+        if (end == 0f)
+        {
+            if (0f < thmi) return false;
+            if (0f > thma) return false;
+        }
+        else
+        {
+            a0 = System.MathF.Max(a0, System.MathF.Min(thmi / end, thma / end));
+            a1 = System.MathF.Min(a1, System.MathF.Max(thmi / end, thma / end));
+            if (a0 > a1) return false;
+        }
+        return true;
+    }
+
+    /// <summary>
+    /// QC nade-in-range reject (sv_spawn_near_teammate.qc:153-163): true if any live nade (an entity with
+    /// <c>classname == "nade"</c>) is within <c>g_nades_nade_radius</c> (300) of the candidate floor spot. QC scans
+    /// the <c>g_projectiles</c> intrusive list filtered to nades; the port has no g_projectiles list but nades are
+    /// real edicts found by classname, so a radius scan over them is equivalent.
+    /// </summary>
+    private static bool NadeInRange(Vector3 spot)
+    {
+        if (Api.Services is null) return false;
+        float radius = Api.Cvars.GetFloat("g_nades_nade_radius");
+        foreach (Entity nade in Api.Entities.FindByClass("nade"))
+        {
+            if (nade.IsFreed) continue;
+            if (Vector3.Distance(nade.Origin, spot) < radius) return true; // QC: vdist(.., <, radius)
+        }
+        return false;
     }
 
     /// <summary>QC: setorigin(player, pos); player.angles = mate.angles; player.angles_z = 0 (never spawn tilted).</summary>
@@ -323,7 +425,22 @@ public sealed class SpawnNearTeammateMutator : MutatorBase
     {
         if (Api.Services is not null) Api.Entities.SetOrigin(player, pos);
         else player.Origin = pos;
-        player.Angles = new Vector3(mate.Angles.X, mate.Angles.Y, 0f);
+        FaceAngles(player, new Vector3(mate.Angles.X, mate.Angles.Y, 0f));
+    }
+
+    /// <summary>
+    /// Force the spawned player to face <paramref name="angles"/> on the respawn edge. QC just writes
+    /// <c>player.angles</c> here (PlayerSpawn runs while <c>fixangle</c> is already set from PutPlayerInServer,
+    /// so the DP client honors it). The port split orientation into two channels: <c>Angles</c> alone never
+    /// reaches the camera — it's overwritten by the client's input view angles next tick — so the spawn facing
+    /// must be latched into the networked FixAngle/FixAngleAngles channel (SpawnSystem.PutPlayerInServer:559-560
+    /// sets it to the SPAWNPOINT angles; we overwrite that here with the teammate-facing).
+    /// </summary>
+    private static void FaceAngles(Entity player, Vector3 angles)
+    {
+        player.Angles = angles;
+        player.FixAngle = true;
+        player.FixAngleAngles = angles;
     }
 
     private static void SetLookAt(Entity spot, Entity? mate) =>
@@ -340,14 +457,25 @@ public sealed class SpawnNearTeammateMutator : MutatorBase
     private static bool IsSpawnShielded(Entity e) =>
         StatusEffectsCatalog.SpawnShield is { } sh && StatusEffectsCatalog.Has(e, sh);
 
-    /// <summary>QC <c>weaponLocked(it)</c>: the player's weapon is locked (e.g. mid-switch / disabled). The port has
-    /// no per-player weapon-lock flag reachable here, so this is always false (a faithful subset — it won't skip a
-    /// teammate that QC would have for a weapon lock; flagged).</summary>
-    private static bool WeaponLocked(Entity e) => false;
+    /// <summary>QC <c>weaponLocked(it)</c> (server/weapons/weaponsystem.qc:435): true when
+    /// <c>(time &lt; game_starttime &amp;&amp; !sv_ready_restart_after_countdown) || game_stopped ||
+    /// player_blocked || StatusEffects_active(STATUSEFFECT_Frozen, it) || LockWeapon_hook</c>.
+    /// The game-start/game-stopped portions are not reachable here (spawns only fire during a live match);
+    /// <c>player_blocked</c> and the <c>LockWeapon</c> mutator hook have no port equivalent yet.
+    /// The reachable piece — mirroring <see cref="CampcheckMutator"/>'s <c>WeaponLocked</c> — is the
+    /// freeze check: the gametype freeze stat (<see cref="Entity.FrozenStat"/>, e.g. Freeze Tag) OR the
+    /// <c>STATUSEFFECT_Frozen</c> status effect (e.g. the Buffs swapper freeze).</summary>
+    private static bool WeaponLocked(Entity e) => e.FrozenStat != 0 || IsFrozen(e);
 
-    /// <summary>QC <c>PHYS_INPUT_BUTTON_CHAT(it)</c>: the teammate has the chat console open. The headless sim has
-    /// no chat-button input plumbed, so this is always false (a faithful subset — flagged like <see cref="WeaponLocked"/>).</summary>
-    private static bool IsChatting(Entity e) => false;
+    /// <summary>QC <c>StatusEffects_active(STATUSEFFECT_Frozen, it)</c> half of <c>weaponLocked</c>.</summary>
+    private static bool IsFrozen(Entity e) =>
+        StatusEffectsCatalog.Frozen is { } f && StatusEffectsCatalog.Has(e, f);
+
+    /// <summary>QC <c>PHYS_INPUT_BUTTON_CHAT(it)</c> (common/physics/player.qh:161 → CS(s).buttonchat):
+    /// the teammate has the chat console open. In the port this is written from the <c>Typing</c> input
+    /// intent in <c>PlayerPhysics</c> into <see cref="Entity.ButtonChat"/> — the same field campcheck
+    /// and the typefrag system read. Bots never set it (no Typing intent), matching QC behaviour.</summary>
+    private static bool IsChatting(Entity e) => e.ButtonChat;
 
     /// <summary>Deterministic Fisher–Yates shuffle (QC FOREACH_CLIENT_RANDOM order) via the shared <see cref="Prandom"/>.</summary>
     private static void Shuffle(List<Entity> list)
@@ -359,12 +487,75 @@ public sealed class SpawnNearTeammateMutator : MutatorBase
         }
     }
 
-    /// <summary>QC <c>expr_evaluate(s)</c> for a cvar string: false for "" / "0" / "false", true otherwise.</summary>
+    /// <summary>
+    /// Faithful port of QC <c>expr_evaluate(string s)</c> (lib/cvar.qh:48). A boolean cvar-expression
+    /// interpreter: an optional leading '+' (no-op) or '-' (negate the result); then each whitespace token is a
+    /// predicate that must hold (logical AND) — either a comparison <c>var>=x</c> / <c>var&lt;=x</c> /
+    /// <c>var&gt;</c> / <c>var&lt;</c> / <c>var==x</c> / <c>var!=x</c> (numeric, via cvar()) or
+    /// <c>var===s</c> / <c>var!==s</c> (string, via cvar_string()), or a bare token which is either a literal
+    /// number (its own truthiness) or a cvar name (cvar()'s truthiness), optionally '!'-prefixed to invert.
+    /// If any predicate fails, the AND fails (and is NOT inverted by '-'); otherwise the running result flips.
+    /// This is what lets the overkill ruleset value <c>g_spawn_near_teammate "!g_assault !g_freezetag"</c>
+    /// correctly disable the mutator during assault / freezetag instead of always reading as enabled.
+    /// </summary>
     private static bool ExprEvaluate(string s)
     {
-        if (string.IsNullOrEmpty(s)) return false;
-        s = s.Trim();
-        if (s == "0" || string.Equals(s, "false", System.StringComparison.OrdinalIgnoreCase)) return false;
-        return true;
+        s ??= string.Empty;
+        bool ret = false;
+        if (s.Length > 0 && s[0] == '+') s = s.Substring(1);
+        else if (s.Length > 0 && s[0] == '-') { ret = true; s = s.Substring(1); }
+
+        bool exprFail = false;
+        foreach (string tok in s.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (!ExprToken(tok)) { exprFail = true; break; }
+        }
+        if (!exprFail) ret = !ret;
+        return ret;
     }
+
+    // One whitespace token of expr_evaluate's AND chain — returns true if the predicate holds (QC: continue).
+    private static bool ExprToken(string s)
+    {
+        int o;
+        // Operators tested in EXACTLY QC's BINOP source order (>= <= == != === !==, then > <). strstrofs finds
+        // the FIRST occurrence, so for a "var===x" token the leading "==" matches before "===" is ever tried —
+        // a faithful quirk of expr_evaluate (lib/cvar.qh:69-80), not reordered here.
+        if ((o = s.IndexOf(">=", System.StringComparison.Ordinal)) >= 0)
+            return CvarF(s.Substring(0, o)) >= Stof(s.Substring(o + 2));
+        if ((o = s.IndexOf("<=", System.StringComparison.Ordinal)) >= 0)
+            return CvarF(s.Substring(0, o)) <= Stof(s.Substring(o + 2));
+        if ((o = s.IndexOf("==", System.StringComparison.Ordinal)) >= 0)
+            return CvarF(s.Substring(0, o)) == Stof(s.Substring(o + 2));
+        if ((o = s.IndexOf("!=", System.StringComparison.Ordinal)) >= 0)
+            return CvarF(s.Substring(0, o)) != Stof(s.Substring(o + 2));
+        if ((o = s.IndexOf("===", System.StringComparison.Ordinal)) >= 0)
+            return Cvar(s.Substring(0, o)) == s.Substring(o + 3);
+        if ((o = s.IndexOf("!==", System.StringComparison.Ordinal)) >= 0)
+            return Cvar(s.Substring(0, o)) != s.Substring(o + 3);
+        if ((o = s.IndexOf('>')) >= 0)
+            return CvarF(s.Substring(0, o)) > Stof(s.Substring(o + 1));
+        if ((o = s.IndexOf('<')) >= 0)
+            return CvarF(s.Substring(0, o)) < Stof(s.Substring(o + 1));
+
+        // Bare token: literal number (its own value) or cvar name; optional leading '!' inverts.
+        string k = s;
+        bool b = true;
+        if (k.Length > 0 && k[0] == '!') { k = k.Substring(1); b = false; }
+        float f = Stof(k);
+        // QC: boolean((ftos(f) == k) ? f : cvar(k)) — if k is a literal number use it, else read the cvar.
+        float val = (Ftos(f) == k) ? f : CvarF(k);
+        return (val != 0f) == b;
+    }
+
+    // cvar(name) / cvar_string(name) analogues; "" when services aren't up (cvar of a missing name is 0/"").
+    private static float CvarF(string name) => Api.Services is null ? 0f : Api.Cvars.GetFloat(name);
+    private static string Cvar(string name) => Api.Services is null ? string.Empty : Api.Cvars.GetString(name);
+
+    // QC stof/ftos: parse a leading float (0 on failure), and the canonical float→string (used to detect literals).
+    private static float Stof(string s) =>
+        float.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float v) ? v : 0f;
+
+    private static string Ftos(float f) =>
+        f.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture);
 }

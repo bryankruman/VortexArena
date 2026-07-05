@@ -8,8 +8,11 @@
 // here, like the Fireball weapon, as the STATUSEFFECT_Burning status effect whose per-tick burn the
 // status-effects loop applies (strength = the distance-scaled damage-per-second).
 //
-// Render-only omissions: the EFFECT_FIREBALL_LASER trail, the EF_FLAME ball effect, the CSQC projectile, the
-// water-contents velocity damping (pointcontents is an engine query not needed for the headless burn).
+// Render-only omissions: the EFFECT_FIREBALL_LASER trail, the EF_FLAME ball effect, the CSQC projectile.
+// The water-contents velocity damping IS ported (WaterDamp, via Api.Trace.PointContents). The QC
+// proj.damageforcescale (4) is an inert field on these projectiles — the balls/fountain never set
+// takedamage=DAMAGE_AIM, so they can't receive damage events for that force scale to multiply (no victim
+// knockback in Base either); it is intentionally not modelled.
 
 using System.Numerics;
 using XonoticGodot.Common.Framework;
@@ -21,7 +24,27 @@ namespace XonoticGodot.Common.Gameplay.Nades.Booms;
 /// <summary>The napalm nade detonation — port of <c>nade_napalm_boom</c>.</summary>
 public sealed class NadeNapalmBoom : INadeBoom
 {
+    // SUPERCONTENTS_WATER (DP common contents). QC pointcontents returns CONTENT_WATER for a submerged point.
+    private const int SuperContentsWater = 0x00000010;
+
     public string NadeNetName => "napalm";
+
+    /// <summary>
+    /// Port of the napalm.qc water-damping (napalm_ball_think:47 / napalm_fountain_think:112): if the entity's
+    /// midpoint is in water, halve its velocity; if 16 units higher is still water, set upward velocity to 200
+    /// (so a submerged fireball floats up rather than sinking).
+    /// </summary>
+    private static void WaterDamp(Entity self)
+    {
+        if (Api.Services is null) return;
+        Vector3 midpoint = self.Origin + (self.Mins + self.Maxs) * 0.5f;
+        if ((Api.Trace.PointContents(midpoint) & SuperContentsWater) != 0)
+        {
+            self.Velocity *= 0.5f;
+            if ((Api.Trace.PointContents(midpoint + new Vector3(0f, 0f, 16f)) & SuperContentsWater) != 0)
+                self.Velocity = new Vector3(self.Velocity.X, self.Velocity.Y, 200f);
+        }
+    }
 
     /// <summary>
     /// Port of <c>nade_napalm_boom(entity this)</c> (napalm.qc:134): spew the initial fireballs, then spawn
@@ -92,11 +115,13 @@ public sealed class NadeNapalmBoom : INadeBoom
     {
         if (Api.Services is null) return;
         float now = Api.Clock.Time;
-        if (now > self.NadeOrbExpire)
+        // QC napalm_ball_think:40 — (round_handler_IsActive() && !round_handler_IsRoundStarted()) || time > pushltime.
+        if (RoundHandler.RoundGateBlocks() || now > self.NadeOrbExpire)
         {
             Api.Entities.Remove(self);
             return;
         }
+        WaterDamp(self); // QC napalm_ball_think:47 — halve/float velocity while submerged.
         self.Angles = QMath.VecToAngles(self.Velocity);
         NapalmDamage(self,
             NadeProjectile.Cvar("g_nades_napalm_ball_radius", 100f),
@@ -114,11 +139,14 @@ public sealed class NadeNapalmBoom : INadeBoom
     {
         if (Api.Services is null) return;
         float now = Api.Clock.Time;
-        if (now >= self.NadeOrbExpire)
+        // QC napalm_fountain_think:105 — (round_handler_IsActive() && !round_handler_IsRoundStarted()) || time >= ltime.
+        if (RoundHandler.RoundGateBlocks() || now >= self.NadeOrbExpire)
         {
             Api.Entities.Remove(self);
             return;
         }
+
+        WaterDamp(self); // QC napalm_fountain_think:112 — same water damping as the balls.
 
         NapalmDamage(self,
             NadeProjectile.Cvar("g_nades_napalm_fountain_radius", 130f),
@@ -185,9 +213,11 @@ public sealed class NadeNapalmBoom : INadeBoom
 
         float dd = (self.Origin - chosenImpact).Length();
         dd = damage + (edgeDamage - damage) * (dd / dist);
-        // QC: Fire_AddDamage(chosen, owner, d * burntime, burntime, deathtype). Total dd*burntime over burntime
-        // seconds == dd damage-per-second, which is the burn strength the status-effects tick applies.
-        StatusEffectsCatalog.Apply(chosen, burning, burnTime, strength: dd, source: owner ?? self);
+        // QC napalm.qc:32: Fire_AddDamage(chosen, this.realowner, d * burntime, burntime, this.projectiledeathtype)
+        // where projectiledeathtype = DEATH_NADE_NAPALM. Port: route through FireAddDamage so the LEMMA merge
+        // applies (stacked napalm burns combine correctly) and the burn ticks carry the nade_napalm deathtype
+        // for proper obituary attribution instead of the generic "fire" fallback.
+        StatusEffectsCatalog.FireAddDamage(chosen, owner ?? self, dd * burnTime, burnTime, NadeDeathTypes.Napalm);
     }
 
     private static bool IsFrozen(Entity e)

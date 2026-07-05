@@ -106,8 +106,18 @@ public static class Prof
     /// code). A single volatile store per main-thread push/pop; the watchdog samples it during a long frame.</summary>
     public static volatile string? MainPhase;
 
+    /// <summary>The synthetic phase the collector installs when its _Process ends (see
+    /// <see cref="MarkCollectorEnd"/>): a watchdog sample landing here means the main thread is in the
+    /// POST-process part of the iteration — deferred calls, render submit, present/vsync, next-iteration input +
+    /// physics — not in un-wrapped process-phase game code. A named scope opened during that window (a deferred
+    /// handler with a Prof.Sample) still overrides it while open; after it pops the phase falls back to
+    /// "(unscoped)" — a documented coarseness.</summary>
+    public const string PostProcessPhase = "(post-process)";
+
     private static long _frameStart;   // stamp at the first _Process of the frame
     private static long _frameSeq;     // increments each MarkFrameStart, so the watchdog knows when a new frame began
+    private static long _collectorEnd; // stamp at the END of the collector's _Process (main thread only)
+    private static double _lastLateMs; // collector-end → next fence: the deferred+present+input/physics gap
 
     /// <summary>Stopwatch ticks stamped at the start of the current process step (see <see cref="MarkFrameStart"/>).</summary>
     public static long FrameStartTicks => Volatile.Read(ref _frameStart);
@@ -123,15 +133,43 @@ public static class Prof
     /// process priority); paired with <see cref="FrameProcessMs"/> read by the collector that runs LAST, it
     /// measures the wall-clock span across ALL nodes' <c>_Process</c> — a true per-frame total to compare
     /// against the sum of scopes (Godot's TIME_PROCESS monitor is smoothed, so it can't be differenced per frame).
+    /// Also closes the previous iteration's post-process window: it computes <see cref="LastLateMs"/> (the
+    /// collector-end → here gap = deferred calls + render submit + present + next-iteration input/physics) and
+    /// clears the <see cref="PostProcessPhase"/> watchdog marker for the fresh process phase.
     /// </summary>
     public static void MarkFrameStart()
     {
         if (Enabled)
         {
-            Volatile.Write(ref _frameStart, Stopwatch.GetTimestamp());
+            long now = Stopwatch.GetTimestamp();
+            long ce = _collectorEnd;
+            _lastLateMs = ce > 0 ? (now - ce) * MsPerTick : 0.0;   // fence + collector share the main thread
+            MainPhase = null;
+            Volatile.Write(ref _frameStart, now);
             Interlocked.Increment(ref _frameSeq);
         }
     }
+
+    /// <summary>
+    /// Stamp the END of the collector's <c>_Process</c> (it runs last) and install the
+    /// <see cref="PostProcessPhase"/> watchdog marker. Everything the main thread does between this call and the
+    /// next fence — deferred calls, render submit, the present/vsync block — is main-loop time that NO process
+    /// scope can see; the marker lets the watchdog attribute it, and the fence turns the gap into
+    /// <see cref="LastLateMs"/> so the collector can print it on a hitch line.
+    /// </summary>
+    public static void MarkCollectorEnd()
+    {
+        if (Enabled)
+        {
+            _collectorEnd = Stopwatch.GetTimestamp();
+            MainPhase = PostProcessPhase;
+        }
+    }
+
+    /// <summary>The previous iteration's post-process gap (collector-end → fence) in ms — deferred calls +
+    /// render submit + present + the next iteration's input/physics. Written by the fence, read by the collector;
+    /// both run on the main thread, so a plain field suffices. 0 until one full iteration has elapsed.</summary>
+    public static double LastLateMs => _lastLateMs;
 
     /// <summary>Per-frame total <c>_Process</c> span in ms (first node's _Process → this call). 0 when disabled.</summary>
     public static double FrameProcessMs() => Enabled ? (Stopwatch.GetTimestamp() - _frameStart) * MsPerTick : 0.0;

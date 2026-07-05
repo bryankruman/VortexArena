@@ -234,9 +234,10 @@ public static class MayhemScoring
     }
 
     /// <summary>
-    /// QC the environmental-suicide deathtype set in PlayerDamage_SplitHealthArmor (DEATH_KILL / DROWN /
-    /// HURTTRIGGER / CAMP / LAVA / SLIME / SWAMP). DEATH_HURTTRIGGER maps to the port's <c>void</c> tag; the
-    /// port has no <c>camp</c> deathtype yet (campcheck isn't modelled), so it is absent here.
+    /// QC the environmental-suicide deathtype set in the Mayhem damage-accrual frag handler (sv_mayhem.qc:325-332):
+    /// DEATH_KILL / DROWN / HURTTRIGGER / CAMP / LAVA / SLIME / SWAMP — these self-damage deaths are subtracted back
+    /// out of the victim's total_damage_dealt. DEATH_HURTTRIGGER maps to the port's <c>void</c> tag; <c>camp</c> is
+    /// the campcheck mutator's deathtype (now live via <see cref="DeathTypes.Camp"/> / CampcheckMutator).
     /// </summary>
     private static bool IsEnvironmentalSuicide(string? deathType)
     {
@@ -244,6 +245,7 @@ public static class MayhemScoring
         return b == DeathTypes.Kill
             || b == DeathTypes.Drown
             || b == DeathTypes.Void   // QC DEATH_HURTTRIGGER
+            || b == DeathTypes.Camp   // QC DEATH_CAMP (campcheck mutator)
             || b == DeathTypes.Lava
             || b == DeathTypes.Slime
             || b == DeathTypes.Swamp;
@@ -290,8 +292,8 @@ public static class MayhemScoring
 ///  - the point-limit + lead-limit end-of-match check;
 ///  - reset_map_players (<see cref="ResetMapPlayers"/>, called by the host on round/map reset): clear GtTotalDamageDealt.
 ///
-/// Deferred (NOTE — cross-boundary): score networking/HUD, the Scores_CountFragsRemaining suppression
-/// (announcer), and map-size support gating (m_isAlwaysSupported / m_isForcedSupported — map-pool concern).
+/// Deferred (NOTE — cross-boundary): score networking/HUD and map-size support gating
+/// (m_isAlwaysSupported / m_isForcedSupported — map-pool concern).
 /// </summary>
 [GameType]
 public sealed class Mayhem : GameType
@@ -306,6 +308,17 @@ public sealed class Mayhem : GameType
     private const string CvarLeadLimit      = "g_mayhem_point_leadlimit";
     private const float  DefaultPointLimit  = 1000f; // mayhem.qh gametype_init pointlimit=1000
     private const float  DefaultLeadLimit   = 0f;    // mayhem.qh gametype_init leadlimit=0
+
+    // ----- timelimit (mayhem.qh gametype_init "timelimit=15"; the generic Cvars.cs default is 20) -----
+    private const string CvarTimeLimit      = "timelimit";
+
+    /// <summary>
+    /// QC mayhem.qh <c>gametype_init</c> default time limit, in MINUTES (<c>"timelimit=15 …"</c>). Applied by the
+    /// host (<c>GameWorld.ActivateGameType</c>) when Mayhem is selected and no explicit <c>timelimit</c> cvar was
+    /// set, mirroring QC's GameType_SetTeamplay/gametype_init applying the gametype's default args. (mayhem.qh's
+    /// <c>m_legacydefaults</c> lists 20 min, but the active <c>gametype_init</c> string is 15 — 15 is canonical.)
+    /// </summary>
+    public const float DefaultTimeLimitMinutes = 15f;
 
     // ----- respawn delay cvars (shared with DM; xonotic-server.cfg g_respawn_delay_small/large = 2) -----
     private const string CvarRespawnDelaySmall = "g_respawn_delay_small";
@@ -339,8 +352,31 @@ public sealed class Mayhem : GameType
 
     public override void OnInit()
     {
-        // QC INIT(mayhem): identity is set in the ctor; the limits are read on demand. gametype_init flags
-        // (USEPOINTS) and map-size gating are engine/map-pool concerns.
+        // QC INIT(mayhem): identity is set in the ctor; the point/lead limits are read on demand
+        // (PointLimit/LeadLimit fall back to 1000/0). gametype_init flags (USEPOINTS) and map-size gating are
+        // engine/map-pool concerns.
+        //
+        // QC mayhem.qh gametype_init applies "timelimit=15 pointlimit=1000 leadlimit=0" at gametype registration.
+        // The timelimit is a generic engine cvar (not a g_mayhem_* one), so we seed the gametype default here the
+        // way Tdm/TeamMayhem do: a prior mode/admin could have left a non-15 timelimit, and selecting mayhem must
+        // reset to its default of 15.
+        SeedTimeLimit(DefaultTimeLimitMinutes);
+    }
+
+    /// <summary>
+    /// Apply mayhem's gametype-default timelimit (gametype_init "timelimit=15") if the host has not overridden it.
+    /// QC applies the default-limit string at gametype registration; the port's generic <c>timelimit</c> default is
+    /// 20, so we only seed when the live value still equals that generic default — an explicit host/server.cfg
+    /// timelimit (including 0 = "no time limit") is a deliberate choice that wins, matching QC where an admin-set
+    /// cvar overrides the gametype default.
+    /// </summary>
+    private static void SeedTimeLimit(float minutes)
+    {
+        if (Api.Services is null)
+            return;
+        const float genericDefault = 20f; // Cvars.cs generic timelimit default
+        if (Api.Cvars.GetFloat(CvarTimeLimit) == genericDefault)
+            Api.Cvars.Set(CvarTimeLimit, minutes.ToString(System.Globalization.CultureInfo.InvariantCulture));
     }
 
     /// <summary>QC FFA equality (server/scores.qc:537): the top two players are tied on the primary score, so a
@@ -413,7 +449,7 @@ public sealed class Mayhem : GameType
         MutatorHooks.ForbidThrowCurrentWeapon.Add(_forbidThrowHandler);
     }
 
-    public void Deactivate()
+    public override void Deactivate()
     {
         if (_deathHandler is null)
             return;
@@ -666,6 +702,11 @@ public sealed class Mayhem : GameType
         if (leadLimit > 0f && best is not null && second is not null
             && (best.ScoreFrags - second.ScoreFrags) >= leadLimit)
             MatchEnded = true;
+
+        // QC MUTATOR_HOOKFUNCTION(mayhem, Scores_CountFragsRemaining) is commented out (disabled): Mayhem's
+        // upscaled score (damage-weight + frag-weight, often 1000+ limit) doesn't play well with per-frag
+        // announcements; a single shot (~40-80 dmg = 2-3 score) would trigger "2/3 frags left" as the match ends,
+        // leaving no time for the cue to process. The port matches this by not calling CountFragsRemaining.
     }
 
     // ----- cvar helpers (the gametype TryCvar idiom) ---------------------------------------------------

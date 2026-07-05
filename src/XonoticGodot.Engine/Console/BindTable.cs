@@ -30,7 +30,7 @@ public static class BindTable
     private static readonly Dictionary<string, string> _table = new(StringComparer.OrdinalIgnoreCase);
 
     // held-button state (cl_input.c kbutton_t), set/cleared by +/- commands.
-    private static bool _fwd, _back, _left, _right, _up, _down, _attack, _attack2, _zoom, _use;
+    private static bool _fwd, _back, _left, _right, _up, _down, _attack, _attack2, _zoom, _use, _hook;
 
     /// <summary>True while the scoreboard key (<c>+showscores</c>) is held — read by the HUD, not the sampler.</summary>
     public static bool ShowScores { get; private set; }
@@ -54,6 +54,28 @@ public static class BindTable
 
     /// <summary>DP <c>bind &lt;key&gt;</c> with no command: the current binding, or "" if unbound.</summary>
     public static string Get(string key) => _table.TryGetValue(key, out string? c) ? c : "";
+
+    /// <summary>
+    /// DP <c>getcommandkey(descriptivename, command)</c>: the display name of the first key bound to
+    /// <paramref name="command"/> (e.g. "+jump" → "SPACE"); when no key is bound to it, returns the
+    /// human-readable <paramref name="descriptiveName"/> fallback (QC's first arg). Matching is exact on the
+    /// bound command string, like DP's bind table lookup.
+    /// </summary>
+    public static string CommandKey(string descriptiveName, string command)
+    {
+        if (!string.IsNullOrEmpty(command))
+            foreach (string k in EnumerateKeysOrdered())
+                if (string.Equals(_table[k], command, StringComparison.Ordinal))
+                    return k;
+        return descriptiveName ?? "";
+    }
+
+    private static IEnumerable<string> EnumerateKeysOrdered()
+    {
+        var keys = new List<string>(_table.Keys);
+        keys.Sort(StringComparer.OrdinalIgnoreCase);
+        return keys;
+    }
 
     /// <summary>DP <c>bindlist</c>: every (key, command) pair, ordered by key.</summary>
     public static IEnumerable<KeyValuePair<string, string>> List()
@@ -87,7 +109,18 @@ public static class BindTable
 
         if (command[0] == '+' || command[0] == '-')
         {
-            SetButton(command, pressed);
+            // A '+'/'-' bind is normally a held engine BUTTON (movement/fire/zoom/use/hook/showscores) tracked by
+            // SetButton. But a few '+'-aliases are press-TOGGLES the engine runs as commands, not held buttons —
+            // notably +hud_panel_radar_maximized (the stock `m` bind → maximize the radar). SetButton has no case
+            // for those, so left here they would be silently swallowed and the bind would do nothing. Route any
+            // '+'/'-' command SetButton doesn't recognise to runCommand so the bound alias actually fires (the
+            // command sink — e.g. NetGame.RunBoundCommand — handles the press toggle and ignores the '-' release).
+            if (IsHeldButton(command))
+            {
+                SetButton(command, pressed);
+                return;
+            }
+            runCommand(command); // pass both the press '+form' and the release '-form'; the sink decides
             return;
         }
         // QC togglezoom alias (binds-xonotic.cfg: bind MOUSE3 togglezoom -> ${_togglezoom}zoom -> +button4):
@@ -106,8 +139,24 @@ public static class BindTable
     public static void ReleaseAll()
     {
         _fwd = _back = _left = _right = _up = _down = false;
-        _attack = _attack2 = _zoom = _use = false;
+        _attack = _attack2 = _zoom = _use = _hook = false;
         ShowScores = false;
+    }
+
+    /// <summary>True when a '+'/'-' bind command is one of the held engine BUTTONS <see cref="SetButton"/> tracks
+    /// (movement/fire/zoom/use/hook/showscores). Anything else (e.g. +hud_panel_radar_maximized) is a press-toggle
+    /// alias that <see cref="HandleBind"/> dispatches to the command sink instead of latching as a button. Kept in
+    /// lockstep with the <see cref="SetButton"/> switch.</summary>
+    private static bool IsHeldButton(string command)
+    {
+        string name = command.Substring(1).ToLowerInvariant();
+        return name switch
+        {
+            "forward" or "back" or "backward" or "moveleft" or "left" or "moveright" or "right"
+                or "jump" or "moveup" or "crouch" or "movedown" or "attack" or "fire" or "attack2"
+                or "altattack" or "fire2" or "zoom" or "use" or "hook" or "showscores" or "score" => true,
+            _ => false,
+        };
     }
 
     private static void SetButton(string command, bool state)
@@ -126,6 +175,9 @@ public static class BindTable
             case "attack2": case "altattack": case "fire2": _attack2 = state; break;
             case "zoom": _zoom = state; break;
             case "use": _use = state; break;
+            // QC +hook (binds-xonotic.cfg: bind h +hook) -> PHYS_INPUT_BUTTON_HOOK. The +hook / offhand-fire
+            // button: drives the grapple hook, the offhand blaster, and the nade prime/throw each frame.
+            case "hook": _hook = state; break;
             case "showscores": case "score": ShowScores = state; break;
         }
     }
@@ -160,4 +212,8 @@ public static class BindTable
 
     /// <summary>True while use is held (InputButtons.Use).</summary>
     public static bool UseHeld => _use;
+
+    /// <summary>True while the +hook / offhand-fire button is held (InputButtons.Hook / PHYS_INPUT_BUTTON_HOOK).
+    /// Drives the offhand-weapon think (grapple hook, offhand blaster, nade prime/throw).</summary>
+    public static bool HookHeld => _hook;
 }

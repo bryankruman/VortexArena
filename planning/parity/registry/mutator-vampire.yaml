@@ -1,0 +1,162 @@
+unit: mutator-vampire
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-25"
+summary:
+  feature_count: 5
+  worst_gaps:
+    - "No remaining functional gaps. The BuildMutatorsPrettyString chain is now LIVE (GameWorld.cs:1079 -> 'modifications' serverinfo cvar; ServerNet.cs:607 -> server-browser infostring), so ', Vampire' reaches the human-readable status string. The machine ':Vampire' string remains live via the sv_eventlog gamelog path. The MENUQC describe text is now ported onto the checkbox tooltip."
+    - "Residual: the only divergence is the long-standing weaponarena edge in the enable predicate (g_instagib cvar vs resolved mutator state), shared across the instagib-family ports."
+features:
+  - id: mutator-vampire.enable.gate
+    name: "Enable predicate (g_vampire + instagib exclusion)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/vampire/sv_vampire.qc:7 (REGISTER_MUTATOR vampire = expr_evaluate(g_vampire) && !MUTATOR_IS_ENABLED(mutator_instagib))"
+      - "common/mutators/mutator/instagib/sv_instagib.qh:35 (REGISTER_MUTATOR mutator_instagib = autocvar_g_instagib && !MapInfo_LoadedGametype.m_weaponarena)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/VampireMutator.cs:24 (IsEnabled: g_vampire!=0 && g_instagib==0)"
+      - "src/XonoticGodot.Server/GameWorld.cs:602 (MutatorActivation.Apply)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:80 (Apply -> mut.IsEnabled -> Add/Remove)"
+    constants:
+      - { name: "g_vampire", base: "0 (mutators.cfg:78)", port: "0 (mutators.cfg:78)", match: true }
+      - { name: "instagib exclusion term", base: "!MUTATOR_IS_ENABLED(mutator_instagib)", port: "g_instagib == 0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Minor edge divergence: Base excludes vampire when the instagib MUTATOR is enabled, and instagib itself is gated on `g_instagib && !m_weaponarena`. The port's `g_instagib == 0` term keys on the cvar, not the resolved mutator state — so on a weaponarena gametype with g_instagib 1 (instagib mutator OFF) Base would permit vampire but the port suppresses it. The common `g_vampire 1; g_instagib 1` double-activation (the actual baseline defect) is correctly prevented."
+    verification:
+      - { kind: code, ref: "re-audit 2026-06-25: VampireMutator.IsEnabled (VampireMutator.cs:24-27) = `Api.Services is not null && GetFloat(g_vampire) != 0f && GetFloat(g_instagib) == 0f`; instagib term present. Unchanged vs prior audit (only line refs in callers shifted)", result: pass }
+      - { kind: code, ref: "live: MutatorActivation.Apply (MutatorActivation.cs:80-89) iterates Mutators.All and Add/Removes per mut.IsEnabled; invoked from GameWorld.cs:602 at server boot", result: pass }
+      - { kind: code, ref: "Base instagib register (sv_instagib.qh:35) also requires !m_weaponarena; port keys on g_instagib cvar only -> narrow weaponarena edge case (unchanged)", result: pass }
+    confidence: high
+    notes: "Re-verified 2026-06-25 against current HEAD: instagib exclusion present, activation path live. Residual is only the weaponarena edge (same approximation across NIX/new_toys/instagib-family ports). No status change vs baseline; caller line refs bumped (Apply now GameWorld.cs:602)."
+
+  - id: mutator-vampire.heal.on_damage
+    name: "Heal attacker by damage dealt (PlayerDamage_SplitHealthArmor hook)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/vampire/sv_vampire.qc:9 (MUTATOR_HOOKFUNCTION vampire, PlayerDamage_SplitHealthArmor)"
+      - "server/player.qc:322 (MUTATOR_CALLHOOK fired unconditionally per damage event)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/VampireMutator.cs:45 (OnPlayerDamage)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:438 (PlayerDamageSplitHealthArmor.Call)"
+    constants:
+      - { name: "g_vampire_factor (default)", base: "1.0", port: "1.0", match: true }
+      - { name: "g_vampire_factor == 0 honored", base: "yes (heals 0)", port: "yes (read live, no if(f!=0) swallow)", match: true }
+      - { name: "g_vampire_use_total_damage", base: "0 (false)", port: "false", match: true }
+      - { name: "guard: !spawnshield(target)", base: "present", port: "present (target.SpawnShieldExpire > now)", match: true }
+      - { name: "guard: attacker != target", base: "present", port: "present", match: true }
+      - { name: "guard: IS_PLAYER(attacker)", base: "present", port: "EntFlags.Client", match: true }
+      - { name: "guard: !IS_DEAD(target)", base: "present", port: "DeadFlag.No", match: true }
+      - { name: "guard: !FROZEN(target)", base: "present", port: "present (StatusEffectsCatalog.Frozen)", match: true }
+      - { name: "damage_take clamp bound(0,take,curHP)", base: "present", port: "present (QMath.Bound)", match: true }
+      - { name: "cvar read cadence", base: "autocvar read live each damage event", port: "read live each damage event (OnPlayerDamage)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "re-audit 2026-06-25: OnPlayerDamage (VampireMutator.cs:45-79) heal math + total-vs-health/alive/frozen/self/player/spawnshield guards vs sv_vampire.qc:9 — all match. Unchanged", result: pass }
+      - { kind: code, ref: "spawn-shield guard present: `targetSpawnShielded = target.SpawnShieldExpire > now` (VampireMutator.cs:64) skips heal when shielded; mirrors DamageSystem.HasSpawnShield. SpawnShieldExpire is set on the LIVE player spawn path (SpawnSystem)", result: pass }
+      - { kind: code, ref: "g_vampire_factor / g_vampire_use_total_damage read live per event (VampireMutator.cs:52-53); factor 0 not swallowed and no spurious `&& damageTake > 0f` guard, matching Base", result: pass }
+      - { kind: code, ref: "live: DamageSystem.cs:438 fires PlayerDamageSplitHealthArmor for every player-damage event; VampireMutator subscribes via Hook() (line 32-36)", result: pass }
+    confidence: high
+    notes: "Re-verified 2026-06-25: spawn-shield guard, factor==0 honored, per-event cvar cadence all hold at current HEAD. No dedicated vampire unit test; the hook chain is exercised structurally by Mayhem/buffs/globalforces tests that drive PlayerDamageSplitHealthArmor, and discovery is asserted in IntegrationSmokeTests. No change vs baseline."
+
+  - id: mutator-vampire.health.cap
+    name: "Heal clamped to health limit (GiveResource -> GetResourceLimit)"
+    layer: [authority]
+    base_refs:
+      - "common/resources/sv_resources.qc:12 (GetResourceLimit RES_HEALTH = autocvar_g_balance_health_limit)"
+      - "common/mutators/mutator/vampire/vampire.qc:11 (MENUQC describe: 'health can go way above 200' — STALE text)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/Resources.cs:105 (GiveResource -> SetResource clamps to GetResourceLimit)"
+      - "src/XonoticGodot.Common/Gameplay/Items/Resources.cs:84 (GetResourceLimit RES_HEALTH default 200)"
+    constants:
+      - { name: "g_balance_health_limit (balance-xonotic)", base: "200", port: "200", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "re-audit 2026-06-25: current Base GetResourceLimit (sv_resources.qc) has NO vampire-specific override; heal caps at g_balance_health_limit. Port matches (Resources.cs:84 `Cvar(g_balance_health_limit, 200f)`, :105 GiveResource clamps to GetResourceLimit)", result: pass }
+      - { kind: value, ref: "g_balance_health_limit 200; port default 200 (Resources.cs:84)", result: pass }
+    confidence: high
+    notes: "Faithful (unchanged). Both Base's MENUQC describe text and the port's tooltip copy claiming health exceeds 200 are stale Base documentation faithfully reproduced; the modern resource system caps at the balance limit in both. No change vs baseline."
+
+  - id: mutator-vampire.buff.exclusion
+    name: "g_vampire suppresses the BUFF_VAMPIRE pickup"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/buffs/sv_buffs.qc:259 (buff_Available: BUFF_VAMPIRE && g_vampire -> false)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs:206 (BuffAvailable)"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "re-audit 2026-06-25: BuffsMutator.cs:206 `if (n == \"vampire\" && Api.Cvars.GetFloat(\"g_vampire\") != 0f) return false;` mirrors buff_Available. Live via BuffAvailable callers (BuffsMutator.cs:214/299/302) on the buff-spawn path", result: pass }
+    confidence: high
+    notes: "Faithful port (unchanged); exercised on the buff-spawn path when g_buffs is enabled. Line ref bumped (now BuffsMutator.cs:206). No status change vs baseline."
+
+  - id: mutator-vampire.report.mutator_strings
+    name: "Mutator-list strings + menu description (':Vampire' / ', Vampire' / MENUQC describe)"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/vampire/sv_vampire.qc:25 (BuildMutatorsString -> ':Vampire'; aggregated at server/gamelog.qc:50, gated by sv_eventlog)"
+      - "common/mutators/mutator/vampire/sv_vampire.qc:30 (BuildMutatorsPrettyString -> ', Vampire'; aggregated at server/client.qc:1107 for the server-info 'modifications' string)"
+      - "common/mutators/mutator/vampire/vampire.qc:6 (MENUQC METHOD describe — 2-paragraph info page)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/VampireMutator.cs:82 (BuildMutatorsString -> ':Vampire')"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/VampireMutator.cs:85 (BuildMutatorsPrettyString -> ', Vampire')"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:108 (BuildMutatorsString aggregator — LIVE) / :121 (BuildMutatorsPrettyString aggregator — now LIVE)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1068 (MutatorActivation.BuildMutatorsString live under sv_eventlog -> GameLog.Init)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1079 (MutatorActivation.BuildMutatorsPrettyString live -> 'modifications' serverinfo cvar)"
+      - "game/net/ServerNet.cs:607 (MutatorActivation.BuildMutatorsPrettyString live -> server-browser infostring 'modifications' key)"
+      - "game/menu/dialogs/DialogMutators.cs:148 (g_vampire checkbox; tooltip now carries the full 2-paragraph describe text)"
+    constants: []
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Minor presentation form divergence (not a defect): Base's describe() renders a dedicated 2-paragraph mutator info page; the port carries the same text (both paragraphs, %s resolved to 'Vampire') on the g_vampire checkbox tooltip instead, following the established Cloaked / New Toys / Piñata / Hook tooltip pattern. Content is faithful."
+    verification:
+      - { kind: code, ref: "re-audit 2026-06-25: VampireMutator.BuildMutatorsString -> ':Vampire' (VampireMutator.cs:82) and MutatorActivation.BuildMutatorsString (MutatorActivation.cs:108-114) iterate added mutators. LIVE caller: GameWorld.cs:1068 calls it under the sv_eventlog gate and feeds GameLog.Init — same gate as Base server/gamelog.qc:50", result: pass }
+      - { kind: code, ref: "FIX: MutatorActivation.BuildMutatorsPrettyString (MutatorActivation.cs:121-127) now HAS live callers — GameWorld.cs:1079 strips the leading ', ' and writes the 'modifications' serverinfo cvar (Base server/client.qc:1107), and ServerNet.cs:607 builds the server-browser infostring 'modifications' key. ', Vampire' reaches the human-readable status string. Baseline recorded this aggregator as dead", result: pass }
+      - { kind: code, ref: "FIX: DialogMutators.cs:148-152 — the g_vampire checkbox tooltip now contains the full vampire.qc:6-13 describe text (2 paragraphs, %s->'Vampire'), not the prior one-line tooltip. Describe content ported", result: pass }
+    confidence: high
+    notes: "Two fixes since baseline. (1) BuildMutatorsPrettyString chain is now live via TWO callers (GameWorld.cs:1079 modifications serverinfo + ServerNet.cs:607 browser infostring); baseline recorded it dead -> presentation partial->faithful, liveness partial->live. (2) The MENUQC describe 2-paragraph text is now ported onto the checkbox tooltip (DialogMutators.cs:148). The remaining note is only a presentation-form choice (tooltip vs dedicated page), shared across the mutator family. Net: this row is now fully live and faithful."

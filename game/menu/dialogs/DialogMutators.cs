@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using Godot;
 using XonoticGodot.Engine.Simulation;
+using XonoticGodot.Common.Gameplay;
 
 namespace XonoticGodot.Game.Menu;
 
@@ -126,10 +127,19 @@ public partial class DialogMutators : MenuScreen
 
         box.AddChild(Widgets.CheckBox("g_dodging", "Dodging",
             "Enable dodging (quick acceleration in a given direction). Double-tap a directional key to dodge"));
+        // Port of MutatorTouchExplode.describe() (touchexplode.qc:5-11): 2-paragraph info-page text. The port
+        // has no dedicated describe-page widget, so the describe text rides on the checkbox tooltip (same pattern
+        // as Cloaked, Vampire, New Toys, Piñata, and Hook above).
         box.AddChild(Widgets.CheckBox("g_touchexplode", "Touch explode",
-            "An explosion occurs when two players collide"));
+            "The Touch explode mutator causes an explosion when two players collide if it is enabled. " +
+            "This is a nice way to add some silly fun to a server, but it also does allow for the use of " +
+            "new tactics in some gametypes."));
+        // Port of MutatorCloaked.describe() (cloaked.qc:6-13): "makes all players nearly invisible, similar to
+        // the Invisibility powerup". The port has no dedicated describe-page widget, so the describe text rides
+        // on the checkbox tooltip (same pattern as Piñata and New Toys above).
         box.AddChild(Widgets.CheckBox("g_cloaked", "Cloaked",
-            "All players are almost invisible"));
+            "The Cloaked mutator makes all players nearly invisible, similar to the Invisibility powerup. " +
+            "This adds an extra layer of stealth and strategy to gameplay."));
         // QC: e.cvarOffValue = "-1" (Buffs off writes -1, not 0).
         box.AddChild(Widgets.CheckBox("g_buffs", "Buffs",
             "Enable buff pickups (random bonuses like Medic, Invisible, etc.) on the maps that support it",
@@ -137,22 +147,33 @@ public partial class DialogMutators : MenuScreen
         box.AddChild(Widgets.CheckBox("g_midair", "Midair",
             "Only possible to inflict damage on your enemy while they're airborne"));
 
+        // Port of MutatorVampire.describe() (vampire.qc:6-13): the 2-paragraph mutator info page. Both %s fills
+        // (the mutator's own name and BUFF_VAMPIRE's m_name) resolve to "Vampire". The port has no dedicated
+        // describe-page widget, so (following the Cloaked / New Toys / Piñata / Hook pattern) the describe text
+        // rides on the checkbox tooltip.
         var vampire = Widgets.CheckBox("g_vampire", "Vampire",
-            "Damage done to your enemy gets added to your own health");
+            "The Vampire mutator gives all players a permanent version of the Vampire buff. However, unlike " +
+            "the normal Vampire buff, when this mutator is enabled players' health can go way above the usual " +
+            "limit of 200. Additionally the amount of health players get is equal to the damage they deal, " +
+            "which isn't normally the case with the Vampire buff.");
         box.AddChild(vampire);
         Dependent.Bind(vampire, "g_instagib", 0, 0); // QC setDependent(e,"g_instagib",0,0)
 
         // Blood loss — QC makeXonoticSliderCheckBox(0, 1, g_bloodloss[10..50], "Blood loss"): the checkbox is
         // checked while g_bloodloss != 0; on writes the saved value (20), off writes 0. The slider refines it.
+        // The port has no dedicated describe-page widget, so (following the Vampire / Cloaked / Hook pattern)
+        // the full MENUQC describe paragraph (bloodloss.qc:76-77) rides on the checkbox/slider tooltip.
+        const string bloodlossTooltip =
+            "Blood loss is a mutator in which players below a certain health threshold (for example 25) will " +
+            "suffer blood loss. Blood loss makes players stunned, severely impairs their movement, and rapidly " +
+            "takes away health points until they either die or gain enough health to go above the health threshold.";
         var bloodEnable = new DialogMutatorsSliderCheckBox("g_bloodloss", "Blood loss", offValue: 0f, savedValue: 20f)
         {
-            TooltipText = "Amount of health below which players start bleeding out " +
-                          "(health rots and they can't jump)",
+            TooltipText = bloodlossTooltip,
         };
         box.AddChild(bloodEnable);
         Dependent.Bind(bloodEnable, "g_instagib", 0, 0); // QC setDependent on the combo checkbox
-        var bloodSlider = Widgets.Slider("g_bloodloss", 10f, 50f, 1f,
-            "Amount of health below which players start bleeding out (health rots and they can't jump)");
+        var bloodSlider = Widgets.Slider("g_bloodloss", 10f, 50f, 1f, bloodlossTooltip);
         var bloodRow = Ui.Row("", bloodSlider, labelMinWidth: 24f);
         box.AddChild(bloodRow);
         Dependent.Bind(bloodRow, "g_instagib", 0, 0);
@@ -173,8 +194,17 @@ public partial class DialogMutators : MenuScreen
         box.AddChild(Ui.Spacer());
         box.AddChild(Ui.Header("Weapon & item mutators:"));
 
+        // Port of MutatorGrapplingHook.describe() (hook.qc:7-15): the long-form description page — the
+        // offhand / unlimited-ammo / no-secondary / overridden-by-offhand_blaster explainer. The port has no
+        // dedicated describe-page widget, so (following the New Toys / Cloaked pattern) the text rides on the
+        // checkbox tooltip. Names match the QC %s fills: Grappling Hook (mutator + WEP_HOOK) / "hook" key /
+        // Offhand Blaster.
         box.AddChild(Widgets.CheckBox("g_grappling_hook", "Grappling Hook",
-            "Players spawn with the grappling hook. Press the 'hook' key to use it"));
+            "The Grappling Hook mutator gives all players a Grappling Hook as their offhand weapon, used with " +
+            "the 'hook' key. It has unlimited ammo, but the ordinary secondary fire can't be used. " +
+            "Since it's given as an offhand, players can use it to move around and shoot at their enemies at " +
+            "the same time, opening up more gameplay possibilities than the regular Grappling Hook. " +
+            "Note that it is overridden by the Offhand Blaster mutator."));
         box.AddChild(Widgets.CheckBox("g_jetpack", "Jetpack",
             "Players spawn with the jetpack. Double-tap 'jump' or press the 'jetpack' key to use it"));
 
@@ -185,8 +215,16 @@ public partial class DialogMutators : MenuScreen
 
         // New Toys + its auto-replacement radio set (QC setDependentWeird on a weapon-arena compatibility test;
         // approximated as the dominant "not InstaGib" dependency + enabled only when g_new_toys is on).
+        // Port of MutatorNewToys.describe() (new_toys.qc:25): the picker info blurb — the gimmicky-weapons note,
+        // the InstaGib/Overkill exclusivity, and a runtime enumeration of the current new-toy weapon list (Base
+        // uses FOREACH(Weapons, nt_IsNewToy(it.m_id)) to dynamically build the list). The port has no dedicated
+        // describe-page widget, so the text is carried on the checkbox tooltip (closest faithful surface).
+        string newToysWeaponList = BuildNewToysWeaponList();
         var newToys = Widgets.CheckBox("g_new_toys", "New Toys",
-            "Allow maps to spawn additional weapons (new toys)");
+            "The New Toys mutator, enabled by default, allows the spawning of new gimmicky weapons, " +
+            "sometimes replacing a core weapon. Since these weapons can't spawn in InstaGib and Overkill, " +
+            "the New Toys mutator can't be enabled concurrently. The current New Toys weapons are: " +
+            newToysWeaponList);
         box.AddChild(newToys);
         Dependent.Bind(newToys, "g_instagib", 0, 0);
 
@@ -212,8 +250,11 @@ public partial class DialogMutators : MenuScreen
 
         // Piñata / Weapons stay — QC setDependentWeird(checkCompatibility_pinata): incompatible with instagib,
         // nix, overkill, melee_only and any weapon arena. Approximated as the dominant "not InstaGib" gate.
-        var pinata = Widgets.CheckBox("g_pinata", "Pinata",
-            "Players will drop all weapons they possessed when they are killed");
+        // Label = MutatorPinata.message (_("Piñata"), pinata.qh:6); tooltip = MutatorPinata.describe()
+        // (pinata.qc:6-8). The port has no describe-page widget, so the describe text rides on the tooltip.
+        var pinata = Widgets.CheckBox("g_pinata", "Piñata",
+            "Piñata is a mutator that makes players drop all their weapons when they die. " +
+            "Without this mutator, players normally drop only their equipped weapon");
         box.AddChild(pinata);
         Dependent.Bind(pinata, "g_instagib", 0, 0);
 
@@ -286,6 +327,28 @@ public partial class DialogMutators : MenuScreen
         // every g_balance_*_weaponstartoverride. Selecting it zeroes them all; deselecting restores -1.
         box.AddChild(DialogMutatorsArenaRadio.StartWeapons(
             "No start weapons", _arenaGroup, StartWeaponMulti));
+    }
+
+    /// <summary>
+    /// Builds a runtime enumeration of new-toy weapon names (faithful to Base's FOREACH(Weapons, nt_IsNewToy)),
+    /// comma-separated for the describe() tooltip text. This mirrors QC's FOREACH loop that dynamically builds
+    /// the list so it auto-updates if the new-toy set ever changes (currently static, but the port mimics the
+    /// Base intent by avoiding a hardcoded list).
+    /// </summary>
+    private static string BuildNewToysWeaponList()
+    {
+        var names = new List<string>();
+        foreach (Weapon w in Weapons.All)
+        {
+            if (NewToysMutator.IsNewToy(w.NetName))
+                names.Add(string.IsNullOrEmpty(w.DisplayName) ? w.NetName : w.DisplayName);
+        }
+        // Faithful fallback ONLY if the registry hasn't populated (should not happen in the menu): use the
+        // Base m_name values (seeker.qh:50 "T.A.G. Seeker", minelayer.qh:38 "Mine Layer", hlac.qh:35 "Heavy
+        // Laser Assault Cannon", rifle.qh:34 "Rifle", arc.qh:38 "Arc"), NOT the abbreviated "Seeker"/"HLAC".
+        return names.Count > 0
+            ? string.Join(", ", names)
+            : "T.A.G. Seeker, Mine Layer, Heavy Laser Assault Cannon, Rifle, Arc";
     }
 }
 

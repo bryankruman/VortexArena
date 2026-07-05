@@ -36,6 +36,11 @@ namespace XonoticGodot.Common.Framework
         /// <summary>QC <c>.state</c> as a logic-gate on/off latch (flipflop/monoflop/multivibrator).</summary>
         public int GateState;
 
+        // ---- trigger_relay_teamcheck saved team (QC .team_saved, IL g_saved_team) ----
+        /// <summary>QC <c>.team_saved</c> — the entity's spawn-time <c>.team</c>, restored by the relay_teamcheck
+        /// reset (relay_teamcheck.qc:33). Stamped at spawn so a round restart re-asserts the original team gate.</summary>
+        public float TeamSaved;
+
         // ---- target_kill / func_door_secret second obituary message (QC .message2) ----
         /// <summary>QC <c>.message2</c> — the "by &lt;attacker&gt;" obituary half (target_kill, door_secret).</summary>
         public string Message2 = "";
@@ -47,6 +52,14 @@ namespace XonoticGodot.Common.Framework
         public float TLength;
         // NOTE: door_secret's `.mangle` reuses the existing MAngle (MapObjectsCommon.cs); `.oldorigin` reuses
         // the engine OldOrigin field; `.speed` reuses Speed.
+
+        // ---- trigger_warpzone trigger sizing (QC .scale / .warpzone_isboxy, lib/warpzone) ----
+        /// <summary>QC <c>.scale</c> resolved for a warpzone trigger (server.qc:662 — modelscale then 1); the
+        /// trigger volume was sized mins*scale..maxs*scale. 1 for the common case.</summary>
+        public float WarpzoneScale = 1f;
+        /// <summary>QC <c>.warpzone_isboxy</c> (util_server.qc) — box trigger (no inline model, or mapper-overridden
+        /// bounds) so Base skips the exact-surface touch match.</summary>
+        public bool WarpzoneIsBoxy;
 
         // ---- target_changelevel keys (QC .chmap / .gametype / .chlevel_targ) ----
         /// <summary>QC <c>.chmap</c> — the map target_changelevel switches to ("" = end match).</summary>
@@ -68,6 +81,12 @@ namespace XonoticGodot.Common.Framework
 
         // ---- soundpack selector (QC .sounds) ----
         public int Sounds;                // QC .sounds — trigger_multiple/secret/keylock noise selector
+
+        // ---- bidirectional rotating-door reverse marker (QC .trigger_reverse, subs.qh) ----
+        // Map-settable on a trigger_multiple that fires a func_door_rotating: a trigger with trigger_reverse=1
+        // opens a BIDIR rotating door in the reversed direction (door_use's DOOR_ROTATING_BIDIR path). Declared
+        // but never assigned in QC (it is purely a map key on the firing trigger).
+        public int TriggerReverse;        // QC .trigger_reverse
 
         // ---- door touch debounce + LinkDoors connected-component marker ----
         public float DoorFinished;        // QC .door_finished — door_touch message/throttle window
@@ -127,6 +146,18 @@ namespace XonoticGodot.Common.Framework
 
         // ---- SUB_UseTargets reuse latch + target_random (QC .sub_target_used / .target_random) ----
         public float SubTargetUsed = -1f; // QC .sub_target_used — last time a preventReuse fire hit this target
+
+        // ---- trigger_multiple CTS per-client wait buffers (QC .triggertimes buf_create/bufstr_*) ----
+        // In CTS/Race each client gets an independent re-trigger time keyed by their entity slot index
+        // (QC etof(enemy)). Allocated by MultipleSetup only when IS_GAMETYPE(CTS); null on non-CTS triggers.
+        // Dictionary<clientIndex, lastTriggerTime> — index == Entity.Index, time == server sim time.
+        /// <summary>
+        /// QC <c>.triggertimes</c> string-buffer (multi.qc): per-client last-trigger time keyed by
+        /// <see cref="Entity.Index"/>. Allocated in <see cref="XonoticGodot.Common.Gameplay.Triggers.MultipleSetup"/>
+        /// only when the gametype is CTS (mirrors <c>buf_create()</c> in <c>spawnfunc(trigger_multiple)</c>).
+        /// Null on non-CTS triggers (the shared <see cref="Entity.NextThink"/> path is used instead).
+        /// </summary>
+        public System.Collections.Generic.Dictionary<int, float>? CtsTriggerTimes;
     }
 }
 

@@ -599,14 +599,16 @@ public sealed partial class FaithfulParticleRenderer : Node3D
             if (p.Orientation == ParticleOrientation.Spark)
             {
                 // Velocity-stretched spark (cl_particles.c:2812-2825): half-length along the CURRENT
-                // velocity = max(stretch · 0.04 · |vel|, size · 0.5); cross width = size. Build the basis
+                // velocity = max(stretch · 0.04 · |vel|, size · 0.5); cross HALF-width = size —
+                // R_CalcBeam_Vertex3f places corners at org ± size·right (gl_rmain.c:6269-6280), so the
+                // full width is 2·size, same ± convention as DP's billboard corners. Build the basis
                 // CPU-side so the shader draws it verbatim (sparkFlag = 1). The quad is 1x1 centered, so
                 // the X axis becomes the full width and Y the full length.
                 float size = p.Size * sizeScale;
                 float speed = p.Vel.Length();
                 float stretch = p.Stretch > 0f ? p.Stretch : 1f;
                 float halfLen = MathF.Max(stretch * 0.04f * speed, size * 0.5f);
-                float width = MathF.Max(size, 0.001f);
+                float width = MathF.Max(size * 2f, 0.001f);
 
                 Vector3 gvel = speed > 1e-4f ? Coords.ToGodot(p.Vel).Normalized() : Vector3.Up;
                 Vector3 gfwd = Coords.ToGodot(viewFwd);
@@ -627,12 +629,15 @@ public sealed partial class FaithfulParticleRenderer : Node3D
             {
                 // Oriented (double-sided) billboard fixed to a surface: orient by the velocity/normal the
                 // sim carries in Vel (decal-style). Treat like a spark-flagged instance (no billboarding):
-                // build a basis whose Z is the orientation normal, scaled to the particle size.
+                // build a basis whose Z is the orientation normal. DP spans corners org ± right ± up with
+                // right = baseright·size·stretch, up = baseup·size (cl_particles.c:2792-2794) — full edges
+                // are 2·size·stretch and 2·size, like every other DP orientation.
                 float size2 = p.Size * sizeScale;
+                float stretch2 = p.Stretch != 0f ? MathF.Abs(p.Stretch) : 1f;
                 Vector3 gnrm = p.Vel.LengthSquared() > 1e-6f ? Coords.ToGodot(p.Vel).Normalized() : Vector3.Up;
                 Vector3 refv = MathF.Abs(gnrm.Dot(Vector3.Up)) > 0.95f ? Vector3.Right : Vector3.Up;
-                Vector3 xa = refv.Cross(gnrm).Normalized() * size2;
-                Vector3 ya = gnrm.Cross(xa.Normalized()).Normalized() * size2;
+                Vector3 xa = refv.Cross(gnrm).Normalized() * (size2 * 2f * stretch2);
+                Vector3 ya = gnrm.Cross(xa.Normalized()).Normalized() * (size2 * 2f);
                 WriteTransform(buf, o, xa, ya, gnrm, gpos);
                 WriteColor(buf, o, col);
                 WriteCustom(buf, o, slot, angle, sparkFlag: 1f);

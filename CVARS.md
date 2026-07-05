@@ -43,6 +43,28 @@ truth is [`MovementParameters.FromCvars`](src/XonoticGodot.Common/Physics/Moveme
 fallbacks + the shipped cfgs). `--show-rejects` and the "read but never registered"
 list in the text report are the audit tools for finding genuinely *invisible* ones.
 
+## Persistence (`~/XonData/config.cfg`)
+
+Which cvars may be written to the user config follows **DarkPlaces' rules exactly**:
+
+- **The shipped cfg tree is the authority on archiveability.** A `seta name value` in the stock
+  configs marks the cvar archiveable (DP `Cvar_SetA_f` → `CVAR_SAVE`); a plain `set` does not —
+  `MenuState.Boot` wires `ConfigLoader`'s archive hook to carry this through. A C# registration may
+  add `CvarFlags.Save` **only** for cvars DP itself registers with `CVAR_SAVE` (engine cvars like
+  `showfps`, `m_pitch`, `scr_screenshot_*`) or for port features that are genuine user settings.
+  Do **not** flag server-ops (`bot_number`, `sv_spectate`, `minplayers`, …: plain `set` in Base) or
+  debug/A-B knobs (`r_pvs_cull`, `r_world_cell_*`, `cl_frameprofiler*`, `cl_movement_*` toggles) —
+  a `--cvar` pin or console `set` on those must never leak into the player's config.
+- **Saved = archived AND changed.** `CvarService.ArchivedNamesToPersist` is DP
+  `Cvar_WriteVariables`: only archived cvars whose value differs from the locked shipped default
+  (plus user-created `seta`s with no known default) are written — a lean diff, never a dump.
+- **Automation runs never save.** `--quit-after-seconds` or `--no-save-config` on the command line
+  disables the config write entirely (`MenuState.SaveUserConfig`), the analogue of DP skipping
+  `Host_SaveConfig` for `-benchmark`/`-capturedemo` — so perf/CI/scripted runs can pin anything
+  without polluting `~/XonData/config.cfg`.
+- A user can still make any cvar sticky from the console with `seta name value` (DP's
+  allocated-cvar escape: archived, and always saved until it matches a known default).
+
 ## What each prefix means (and should mean)
 
 The central rule: **a prefix denotes which side is *authoritative* for the value —

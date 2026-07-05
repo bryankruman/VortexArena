@@ -27,11 +27,14 @@ public abstract class PowerupPickup : Pickup
     protected PowerupPickup()
     {
         // QC Powerup ATTRIBs: m_maxs = ITEM_L_MAXS (large), m_respawntime = g_pickup_respawntime_powerup (120),
-        // m_itemflags = FL_POWERUP. The bbox + respawn live on the Pickup base; the def flags + glow are set here.
+        // m_itemflags = FL_POWERUP, m_botvalue = 11000 (powerups.qh CLASS(Powerup) ATTRIB default). Jetpack and
+        // FuelRegen override m_botvalue to 3000 in their own .qh. The bbox + respawn live on the Pickup base; the
+        // def flags, glow, and botvalue are set here.
         Mins = ItemBoxes.DefaultMins;
         Maxs = ItemBoxes.LargeMaxs;
         RespawnTime = 120f;            // g_pickup_respawntime_powerup
         ItemDef.IsPowerup = true;      // QC instanceOfPowerup
+        ItemDef.BotValue = 11000;      // QC m_botvalue ATTRIB on CLASS(Powerup) — powerups.qh:13
         // NOTE: m_glow is set per-item in QC, NOT on the Powerup base — strength/shield/speed/invisibility glow,
         // but jetpack + fuelregen do NOT (their .qh has no m_glow ATTRIB). The glowing four set ItemDef.Glow below.
     }
@@ -189,6 +192,8 @@ public sealed class JetpackItem : PowerupPickup
         ItemDef.Color = new Vector3(0.5f, 0.5f, 0.5f);
         ItemDef.PickupSound = "ITEMPICKUP"; // QC Jetpack inherits the default Pickup m_sound (SND_ITEMPICKUP)
         // QC Jetpack has NO m_glow ATTRIB → does not glow (left at the base default false).
+        // QC jetpack.qh: ATTRIB(Jetpack, m_botvalue, int, 3000) — overrides the Powerup base's 11000.
+        ItemDef.BotValue = 3000;
     }
     private string? ItemModel;
 
@@ -202,10 +207,25 @@ public sealed class JetpackItem : PowerupPickup
         if (item.GetResource(ResourceType.Fuel) == 0f)
         {
             float fuel = item.Count > 0
-                ? item.Count * ItemPickupRules.CvarOr("g_jetpack_fuel", 100f)
+                ? item.Count * ItemPickupRules.CvarOr("g_jetpack_fuel", 8f) // g_jetpack_fuel default 8 (fuel/sec)
                 : ItemPickupRules.CvarOr("g_pickup_fuel_jetpack", 100f);
             item.SetResourceExplicit(ResourceType.Fuel, fuel);
         }
+    }
+
+    /// <summary>
+    /// QC jetpack.qc <c>m_spawnfunc_hookreplace</c> (lines 6-11): if the match's start loadout already grants
+    /// IT_JETPACK (e.g. a custom <c>start_items</c> loadout), replace this item_jetpack with a plain
+    /// item_fuel pickup — the map still drops useful ammo rather than a redundant held-bit pickup.
+    /// </summary>
+    public override Pickup SpawnFuncHookReplace(Entity e)
+    {
+        // QC: if (start_items & ITEM_Jetpack.m_itemid) return ITEM_Fuel;
+        StartLoadout start = SpawnSystem.ComputeStartItems();
+        bool jetpackIsStartItem = start.ItemFlags.Contains("JETPACK");
+        if (jetpackIsStartItem)
+            return Items.ByName("fuel") ?? this;
+        return this;
     }
 }
 
@@ -226,9 +246,27 @@ public sealed class FuelRegenItem : PowerupPickup
         ItemDef.ItemId = ItemFlag.FuelRegen;
         ItemDef.Color = new Vector3(1f, 0.5f, 0f);
         ItemDef.PickupSound = "ITEMPICKUP";
+        // QC fuelregen.qh: ATTRIB(FuelRegen, m_botvalue, int, 3000) — overrides the Powerup base's 11000.
+        ItemDef.BotValue = 3000;
     }
     private string? ItemModel;
 
     /// <summary>QC powerup_fuelregen_init: only the mutator-block head — no resource/timer seeding.</summary>
     public override void ItemInit(Entity item) => ApplyMutatorBlock();
+
+    /// <summary>
+    /// QC fuelregen.qc <c>m_spawnfunc_hookreplace</c> (lines 6-11): if the match's start loadout already grants
+    /// IT_FUEL_REGEN (e.g. the Hook mutator via <c>g_grappling_hook</c> with ammo), replace this
+    /// item_fuel_regen with a plain item_fuel pickup so the map drops useful fuel ammo instead of a redundant
+    /// held-bit pickup.
+    /// </summary>
+    public override Pickup SpawnFuncHookReplace(Entity e)
+    {
+        // QC: if (start_items & ITEM_FuelRegen.m_itemid) return ITEM_Fuel;
+        StartLoadout start = SpawnSystem.ComputeStartItems();
+        bool fuelRegenIsStartItem = start.ItemFlags.Contains("FUEL_REGEN");
+        if (fuelRegenIsStartItem)
+            return Items.ByName("fuel") ?? this;
+        return this;
+    }
 }

@@ -1,0 +1,634 @@
+{
+ "session": "session-20260703-005244",
+ "log": "C:\\Users\\Bryan\\XonData\\logs\\session-20260703-005244.log",
+ "frames": 3997,
+ "old_schema": true,
+ "duration_s": 51.428,
+ "avg_fps": 114.69123896093238,
+ "p50_ms": 6.94,
+ "p95_ms": 14.02,
+ "p99_ms": 23.05,
+ "p999_ms": 144.32,
+ "low1_fps": 43.38394793926247,
+ "low01_fps": 6.929046563192905,
+ "max_ms": 150.0,
+ "hitch_time_ms": 5122.96,
+ "slow_frames": 278,
+ "top_offenders": [
+  [
+   "ng.process",
+   2570.2199999999975
+  ],
+  [
+   "iqm.mesh",
+   1775.0100000000002
+  ],
+  [
+   "proc:other",
+   350.66
+  ],
+  [
+   "cev.process",
+   179.81
+  ],
+  [
+   "iqm.anims",
+   139.09
+  ],
+  [
+   "stream.build",
+   108.17
+  ]
+ ],
+ "alloc_total_mb": 3218.884765625,
+ "alloc_storms": [
+  {
+   "t": 11.377,
+   "mb": 632.3759765625,
+   "top1": "proc:other",
+   "gc2": 2
+  },
+  {
+   "t": 13.389,
+   "mb": 310.98828125,
+   "top1": "proc:other",
+   "gc2": 2
+  },
+  {
+   "t": 5.013,
+   "mb": 276.4140625,
+   "top1": "proc:other",
+   "gc2": 2
+  },
+  {
+   "t": 14.328,
+   "mb": 204.408203125,
+   "top1": "iqm.mesh",
+   "gc2": 1
+  },
+  {
+   "t": 15.085,
+   "mb": 185.5166015625,
+   "top1": "iqm.mesh",
+   "gc2": 2
+  },
+  {
+   "t": 27.09,
+   "mb": 167.6259765625,
+   "top1": "proc:other",
+   "gc2": 0
+  },
+  {
+   "t": 25.747,
+   "mb": 160.51953125,
+   "top1": "ng.process",
+   "gc2": 1
+  },
+  {
+   "t": 16.465,
+   "mb": 131.68359375,
+   "top1": "iqm.mesh",
+   "gc2": 1
+  },
+  {
+   "t": 27.117,
+   "mb": 119.1953125,
+   "top1": "ng.process",
+   "gc2": 1
+  },
+  {
+   "t": 15.624,
+   "mb": 84.0166015625,
+   "top1": "iqm.mesh",
+   "gc2": 0
+  }
+ ],
+ "gc": {
+  "gc0": 105,
+  "gc1": 55,
+  "gc2": 14
+ },
+ "gc_pause_ms": 499.93,
+ "pipe_total": 119,
+ "pipe_sync": [
+  {
+   "t": 11.468,
+   "n": 43,
+   "ms": 144.32
+  },
+  {
+   "t": 15.085,
+   "n": 5,
+   "ms": 118.93
+  },
+  {
+   "t": 15.309,
+   "n": 1,
+   "ms": 133.33
+  },
+  {
+   "t": 20.038,
+   "n": 4,
+   "ms": 120.55
+  },
+  {
+   "t": 20.249,
+   "n": 4,
+   "ms": 98.62
+  },
+  {
+   "t": 20.257,
+   "n": 1,
+   "ms": 18.05
+  },
+  {
+   "t": 25.716,
+   "n": 1,
+   "ms": 22.75
+  },
+  {
+   "t": 26.337,
+   "n": 1,
+   "ms": 7.74
+  },
+  {
+   "t": 31.528,
+   "n": 1,
+   "ms": 86.71
+  }
+ ],
+ "draws_p50": 356.0,
+ "logdata": {
+  "events": [
+   {
+    "t": 22.6,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.1,
+    "n": 1
+   },
+   {
+    "t": 23.7,
+    "cls": "VSYNC/PRESENT",
+    "ms": 22.7,
+    "n": 4
+   },
+   {
+    "t": 23.7,
+    "cls": "EXTERNAL",
+    "ms": 110.7,
+    "n": 1
+   },
+   {
+    "t": 23.7,
+    "cls": "MIXED",
+    "ms": 17.5,
+    "n": 1
+   },
+   {
+    "t": 23.7,
+    "cls": "MIXED",
+    "ms": 17.5,
+    "n": 1
+   },
+   {
+    "t": 23.7,
+    "cls": "VSYNC/PRESENT",
+    "ms": 14.7,
+    "n": 1
+   },
+   {
+    "t": 24.0,
+    "cls": "MIXED",
+    "ms": 13.6,
+    "n": 1
+   },
+   {
+    "t": 24.3,
+    "cls": "EXTERNAL",
+    "ms": 84.9,
+    "n": 1
+   },
+   {
+    "t": 24.3,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1
+   },
+   {
+    "t": 25.0,
+    "cls": "EXTERNAL",
+    "ms": 95.6,
+    "n": 1
+   },
+   {
+    "t": 25.0,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1
+   },
+   {
+    "t": 25.6,
+    "cls": "EXTERNAL",
+    "ms": 99.9,
+    "n": 1
+   },
+   {
+    "t": 25.7,
+    "cls": "MIXED",
+    "ms": 12.7,
+    "n": 1
+   },
+   {
+    "t": 25.7,
+    "cls": "MIXED",
+    "ms": 14.5,
+    "n": 2
+   },
+   {
+    "t": 25.7,
+    "cls": "PIPELINE-COMPILE",
+    "ms": 22.7,
+    "n": 1
+   },
+   {
+    "t": 25.7,
+    "cls": "GC-PAUSE",
+    "ms": 30.5,
+    "n": 1
+   },
+   {
+    "t": 25.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 20.8,
+    "n": 1
+   },
+   {
+    "t": 25.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 20.8,
+    "n": 2
+   },
+   {
+    "t": 25.8,
+    "cls": "CPU-LOGIC",
+    "ms": 20.0,
+    "n": 1
+   },
+   {
+    "t": 25.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 20.0,
+    "n": 1
+   },
+   {
+    "t": 26.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 20.0,
+    "n": 1
+   },
+   {
+    "t": 27.1,
+    "cls": "GC-PAUSE",
+    "ms": 15.0,
+    "n": 1
+   },
+   {
+    "t": 27.1,
+    "cls": "GC-PAUSE",
+    "ms": 23.1,
+    "n": 1
+   },
+   {
+    "t": 27.1,
+    "cls": "MIXED",
+    "ms": 20.4,
+    "n": 1
+   },
+   {
+    "t": 27.2,
+    "cls": "ASSET-BUILD",
+    "ms": 21.6,
+    "n": 1
+   },
+   {
+    "t": 27.2,
+    "cls": "VSYNC/PRESENT",
+    "ms": 38.8,
+    "n": 1
+   },
+   {
+    "t": 27.2,
+    "cls": "CPU-LOGIC",
+    "ms": 36.6,
+    "n": 1
+   },
+   {
+    "t": 27.3,
+    "cls": "CPU-LOGIC",
+    "ms": 40.3,
+    "n": 1
+   },
+   {
+    "t": 27.3,
+    "cls": "EXTERNAL",
+    "ms": 47.4,
+    "n": 1
+   },
+   {
+    "t": 27.3,
+    "cls": "VSYNC/PRESENT",
+    "ms": 37.5,
+    "n": 1
+   },
+   {
+    "t": 27.4,
+    "cls": "MIXED",
+    "ms": 22.3,
+    "n": 1
+   },
+   {
+    "t": 27.4,
+    "cls": "VSYNC/PRESENT",
+    "ms": 22.1,
+    "n": 1
+   },
+   {
+    "t": 27.4,
+    "cls": "ASSET-BUILD",
+    "ms": 16.7,
+    "n": 1
+   },
+   {
+    "t": 27.4,
+    "cls": "MIXED",
+    "ms": 18.9,
+    "n": 1
+   },
+   {
+    "t": 27.5,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1
+   },
+   {
+    "t": 27.5,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1
+   },
+   {
+    "t": 28.5,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 4
+   },
+   {
+    "t": 30.3,
+    "cls": "VSYNC/PRESENT",
+    "ms": 12.8,
+    "n": 1
+   },
+   {
+    "t": 31.4,
+    "cls": "EXTERNAL",
+    "ms": 34.5,
+    "n": 1
+   },
+   {
+    "t": 31.4,
+    "cls": "VSYNC/PRESENT",
+    "ms": 22.7,
+    "n": 1
+   },
+   {
+    "t": 31.5,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1
+   },
+   {
+    "t": 31.5,
+    "cls": "PIPELINE-COMPILE",
+    "ms": 86.7,
+    "n": 1
+   },
+   {
+    "t": 31.6,
+    "cls": "VSYNC/PRESENT",
+    "ms": 23.9,
+    "n": 1
+   },
+   {
+    "t": 31.6,
+    "cls": "CPU-LOGIC",
+    "ms": 16.8,
+    "n": 1
+   },
+   {
+    "t": 31.6,
+    "cls": "VSYNC/PRESENT",
+    "ms": 22.8,
+    "n": 1
+   },
+   {
+    "t": 32.2,
+    "cls": "VSYNC/PRESENT",
+    "ms": 22.8,
+    "n": 3
+   },
+   {
+    "t": 32.2,
+    "cls": "PIPELINE-COMPILE",
+    "ms": 14.7,
+    "n": 1
+   },
+   {
+    "t": 32.2,
+    "cls": "VSYNC/PRESENT",
+    "ms": 14.8,
+    "n": 1
+   },
+   {
+    "t": 37.5,
+    "cls": "EXTERNAL",
+    "ms": 29.5,
+    "n": 1
+   },
+   {
+    "t": 37.5,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1
+   },
+   {
+    "t": 38.6,
+    "cls": "VSYNC/PRESENT",
+    "ms": 19.3,
+    "n": 22
+   },
+   {
+    "t": 38.6,
+    "cls": "MIXED",
+    "ms": 15.0,
+    "n": 1
+   },
+   {
+    "t": 38.6,
+    "cls": "EXTERNAL",
+    "ms": 26.7,
+    "n": 1
+   },
+   {
+    "t": 38.6,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.0,
+    "n": 1
+   },
+   {
+    "t": 39.9,
+    "cls": "VSYNC/PRESENT",
+    "ms": 19.9,
+    "n": 19
+   },
+   {
+    "t": 44.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 15.3,
+    "n": 1
+   },
+   {
+    "t": 44.8,
+    "cls": "EXTERNAL",
+    "ms": 33.8,
+    "n": 1
+   },
+   {
+    "t": 44.9,
+    "cls": "VSYNC/PRESENT",
+    "ms": 20.7,
+    "n": 1
+   },
+   {
+    "t": 47.6,
+    "cls": "VSYNC/PRESENT",
+    "ms": 20.7,
+    "n": 28
+   },
+   {
+    "t": 48.5,
+    "cls": "VSYNC/PRESENT",
+    "ms": 14.3,
+    "n": 1
+   },
+   {
+    "t": 48.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 17.9,
+    "n": 14
+   },
+   {
+    "t": 48.8,
+    "cls": "MIXED",
+    "ms": 14.3,
+    "n": 1
+   },
+   {
+    "t": 48.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 14.9,
+    "n": 1
+   },
+   {
+    "t": 49.0,
+    "cls": "VSYNC/PRESENT",
+    "ms": 18.7,
+    "n": 10
+   },
+   {
+    "t": 49.0,
+    "cls": "EXTERNAL",
+    "ms": 31.9,
+    "n": 1
+   },
+   {
+    "t": 49.0,
+    "cls": "VSYNC/PRESENT",
+    "ms": 21.7,
+    "n": 1
+   },
+   {
+    "t": 51.5,
+    "cls": "VSYNC/PRESENT",
+    "ms": 21.7,
+    "n": 39
+   },
+   {
+    "t": 51.6,
+    "cls": "VSYNC/PRESENT",
+    "ms": 15.0,
+    "n": 1
+   }
+  ],
+  "census": {
+   "VSYNC/PRESENT": 169,
+   "EXTERNAL": 10,
+   "MIXED": 11,
+   "PIPELINE-COMPILE": 3,
+   "GC-PAUSE": 3,
+   "CPU-LOGIC": 6,
+   "ASSET-BUILD": 2
+  },
+  "recovery": 0,
+  "env": "managed-debugger=False godot-context=release csharp=Release(optimized) vsync=Enabled maxfps=0 refresh=60Hz cpu=24c gpu=NVIDIA GeForce RTX 3080",
+  "debug_build": false,
+  "summary": [
+   "=== frame profiler session summary (53s, 3998 frames) ===",
+   "  fps: avg 114.2  1%low 43  0.1%low 7  (median 6.9ms, worst 150.0ms)",
+   "  hitches: 204 total \u2014 10 EXTERNAL, 2 ASSET-BUILD, 3 PIPELINE-COMPILE, 3 GC-PAUSE, 169 VSYNC/PRESENT, 6 CPU-LOGIC, 11 MIXED",
+   "    worst[1]: 110.7ms EXTERNAL (ng.process) @ t=23.7s",
+   "    worst[2]: 99.9ms EXTERNAL (ng.process) @ t=25.6s",
+   "    worst[3]: 95.6ms EXTERNAL (ng.process) @ t=25.0s",
+   "    worst[4]: 86.7ms PIPELINE-COMPILE (ng.process) @ t=31.5s",
+   "    worst[5]: 84.9ms EXTERNAL (ng.process) @ t=24.3s",
+   "  gc: g0+112 g1+59 g2+16, total pause 543ms",
+   "  alloc: 3.3GB total, 5MB/s recent, peak 632.4MB in one frame @ t=11.4s, heap 980.3MB"
+  ]
+ },
+ "clusters": [
+  {
+   "start": 23.7,
+   "end": 27.5,
+   "count": 24,
+   "ms": 833.5999999999999,
+   "classes": {
+    "EXTERNAL": 5,
+    "MIXED": 9,
+    "PIPELINE-COMPILE": 1,
+    "GC-PAUSE": 3,
+    "CPU-LOGIC": 4,
+    "ASSET-BUILD": 2
+   }
+  },
+  {
+   "start": 31.4,
+   "end": 32.2,
+   "count": 5,
+   "ms": 169.4,
+   "classes": {
+    "EXTERNAL": 1,
+    "CPU-LOGIC": 2,
+    "PIPELINE-COMPILE": 2
+   }
+  },
+  {
+   "start": 37.5,
+   "end": 38.6,
+   "count": 3,
+   "ms": 71.2,
+   "classes": {
+    "EXTERNAL": 2,
+    "MIXED": 1
+   }
+  }
+ ]
+}

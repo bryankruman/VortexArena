@@ -24,8 +24,8 @@ public sealed class VoteController
     // ---- per-player selection (QC VOTE_SELECT_*) ----
     public const int SelectAbstain = -2, SelectReject = -1, SelectNull = 0, SelectAccept = 1;
 
-    /// <summary>QC <c>sv_vote_timeout</c> default.</summary>
-    public const float DefaultTimeout = 30f;
+    /// <summary>QC <c>sv_vote_timeout</c> default (commands.cfg: 24).</summary>
+    public const float DefaultTimeout = 24f;
 
     private readonly Dictionary<Player, int> _selection = new();  // QC .vote_selection
     private readonly HashSet<Player> _masters = new();            // QC .vote_master
@@ -62,6 +62,20 @@ public sealed class VoteController
     /// <summary>Broadcast sink for the bprint lines (QC bprint). The host wires it to the chat/console broadcast.</summary>
     public Action<string>? Broadcast { get; set; }
 
+    /// <summary>QC <c>Send_Notification(NOTIF_ALL, NULL, MSG_ANNCE, ANNCE_VOTE_CALL)</c> (vote.qc:1073): the "vote
+    /// called" announcer cue, played when a vote opens AND more than one real player is on the server. Host-wires
+    /// to the announcer channel.</summary>
+    public Action? AnnounceVoteCall { get; set; }
+
+    /// <summary>QC <c>Send_Notification(NOTIF_ALL, NULL, MSG_ANNCE, ANNCE_VOTE_ACCEPT)</c> (VoteAccept, vote.qc:181):
+    /// the "vote passed" announcer cue. Host-wires to the announcer channel.</summary>
+    public Action? AnnounceVoteAccept { get; set; }
+
+    /// <summary>QC <c>Send_Notification(NOTIF_ALL, NULL, MSG_ANNCE, ANNCE_VOTE_FAIL)</c> (VoteReject/VoteTimeout,
+    /// vote.qc:188/195): the "vote failed" announcer cue (shared by reject + timeout). Host-wires to the
+    /// announcer channel.</summary>
+    public Action? AnnounceVoteFail { get; set; }
+
     /// <summary>The connected real clients (QC FOREACH_CLIENT(IS_REAL_CLIENT)). Wired by the host for counting.</summary>
     public Func<IEnumerable<Player>>? Roster { get; set; }
 
@@ -71,11 +85,51 @@ public sealed class VoteController
     /// <summary>QC IS_PLAYER predicate — is this client an in-game player (vs spectator)? Host-wired (default true).</summary>
     public Func<Player, bool> IsPlayer { get; set; } = static _ => true;
 
+    /// <summary>QC <c>INGAME(it)</c> — a client queued/joined this round (counts toward the real-player tally even
+    /// while not yet IS_PLAYER). Host-wired (default false, so the union reduces to IsPlayer until wired).</summary>
+    public Func<Player, bool> InGame { get; set; } = static _ => false;
+
     /// <summary>QC <c>warmup_stage || intermission_running</c> — relaxes the spectator gate. Host-wired.</summary>
     public Func<bool> WarmupOrIntermission { get; set; } = static () => false;
 
+    /// <summary>QC <c>timeout_status</c> != INACTIVE — a timeout is pending/active. While true, only a
+    /// literal <c>timein</c> vote may be called (QC vote.qc:1022). Host-wires to <c>TimeoutController.Active</c>.</summary>
+    public Func<bool> TimeoutActive { get; set; } = static () => false;
+
+    /// <summary>QC <c>game_starttime</c> — absolute sim time the match begins; before it, calling a vote is
+    /// rejected unless <c>sv_vote_gamestart</c> (QC vote.qc:1009). Host-wires to <c>GameWorld.GameStartTime</c>.</summary>
+    public Func<float> GameStartTime { get; set; } = static () => 0f;
+
+    /// <summary>QC <c>IS_CLIENT</c> — is this caller a fully connected client (vs. still spawning)? Host-wired
+    /// (default true; the port's caller is generally already a connected client).</summary>
+    public Func<Player, bool> IsClient { get; set; } = static _ => true;
+
+    /// <summary>QC <c>warmup_stage</c> — true during warmup only. Gates the <c>allready</c> vote (rejected once
+    /// the match has started, vote.qc:913). Host-wires to <c>Warmup.WarmupStage</c>.</summary>
+    public Func<bool> WarmupStage { get; set; } = static () => false;
+
+    /// <summary>QC <c>ValidateMap</c> (vote.qc): normalize + validate a map/nextmap vote argument
+    /// (<c>MapInfo_FixName</c> + the <c>sv_vote_override_mostrecent</c> recent-map block + <c>MapInfo_CheckMap</c>
+    /// gametype-support gate). Returns the validated map name, or null with the rejection reason in
+    /// <c>error</c>. <c>fromConsole</c> (caller is server console) bypasses the recent-map block, like QC's
+    /// <c>caller</c> guard. Host-wires to the map catalog/rotation; default accepts a non-empty name.</summary>
+    public delegate string? ValidateMapDelegate(string map, bool fromConsole, out string error);
+
+    /// <summary>Host-wired map validator (see <see cref="ValidateMapDelegate"/>). Default: accept any non-empty name.</summary>
+    public ValidateMapDelegate ValidateMap { get; set; } =
+        static (string map, bool fromConsole, out string error) =>
+        { error = ""; return string.IsNullOrEmpty(map) ? null : map; };
+
     /// <summary>Whether a player can become master (granted via login or a won master vote).</summary>
     public bool IsMaster(Player p) => _masters.Contains(p);
+
+    /// <summary>
+    /// QC <c>this.vote_master = true</c> auto-grant (server/client.qc:1262-1264): grant vote-master status to a
+    /// player directly, without a login password or a won master-vote. Used by the host on connect to honor
+    /// <c>sv_vote_master_ids</c> — a connecting client whose crypto idfp is listed in that cvar is silently made
+    /// master. Idempotent (a re-grant is a no-op).
+    /// </summary>
+    public void GrantMaster(Player p) => _masters.Add(p);
 
     /// <summary>QC the FOREACH_CLIENT(IS_REAL_CLIENT) voter count source — kept for back-compat.</summary>
     public void SetVoterCountSource(Func<int> voterCount) => _voterCount = voterCount;
@@ -121,14 +175,24 @@ public sealed class VoteController
         { ctx.Print("^1You are banned from calling a vote."); return; }
         if (!Cvars.Bool("sv_vote_call") && caller is not null)
         { ctx.Print("^1Vote calling is not allowed."); return; }
+        // QC: !sv_vote_gamestart && time < game_starttime — no votes before the match starts (vote.qc:1009).
+        if (!Cvars.Bool("sv_vote_gamestart") && Now < GameStartTime())
+        { ctx.Print("^1Vote calling is not allowed before the match has started."); return; }
         if (Active)
         { ctx.Print("^1There is already a vote called."); return; }
         if (!SpectatorsAllowed && caller is not null && !IsPlayer(caller))
         { ctx.Print("^1Only players can call a vote."); return; }
+        // QC: caller && !IS_CLIENT(caller) — only fully connected clients may vote (vote.qc:1018).
+        if (caller is not null && !IsClient(caller))
+        { ctx.Print("^1Only connected clients can vote."); return; }
+
+        string raw = ctx.ArgTail(2);
+        // QC: timeout_status && vote_command != "timein" — no other vote may be called mid-timeout (vote.qc:1022).
+        if (TimeoutActive() && !string.Equals(ctx.Arg(2), "timein", StringComparison.OrdinalIgnoreCase))
+        { ctx.Print("^1You can not call a vote while a timeout is active."); return; }
         if (caller is not null && Now < WaitTimeOf(caller))
         { ctx.Print($"^1You have to wait ^2{MathF.Ceiling(WaitTimeOf(caller) - Now):0}^1 seconds before you can call a vote again."); return; }
 
-        string raw = ctx.ArgTail(2);
         if (!CheckNasty(raw))
         { ctx.Print("^1Syntax error in command."); return; }
 
@@ -157,8 +221,18 @@ public sealed class VoteController
             _waitTime[caller] = Now + Cvars.Float("sv_vote_wait");
         }
 
+        // QC: count real clients (IS_REAL_CLIENT = connected, non-bot) before announcing (vote.qc:1062).
+        int tmpPlayerCount = 0;
+        foreach (Player it in Roster?.Invoke() ?? System.Array.Empty<Player>())
+            if (!it.IsBot) tmpPlayerCount++;
+
         Broadcast?.Invoke($"^2* {CallerName(caller)} calls a vote for {Display}");
         Count(firstCount: true);
+
+        // QC vote.qc:1072 — play ANNCE_VOTE_CALL only if the vote is still open (Count may have already resolved a
+        // single-player vote) and more than one real player is present (so a solo caller doesn't hear their own cue).
+        if (tmpPlayerCount > 1 && Active)
+            AnnounceVoteCall?.Invoke();
     }
 
     private void CmdMaster(CommandContext ctx)
@@ -204,6 +278,8 @@ public sealed class VoteController
         if (!Cvars.Bool("sv_vote_master_callable")) { ctx.Print("^1Vote to become vote master is not allowed."); return; }
         if (Active) { ctx.Print("^1There is already a vote called."); return; }
         if (!SpectatorsAllowed && caller is not null && !IsPlayer(caller)) { ctx.Print("^1Only players can call a vote."); return; }
+        // QC: timeout_status — a master vote cannot be called mid-timeout either (vote.qc:1170).
+        if (TimeoutActive()) { ctx.Print("^1You can not call a vote while a timeout is active."); return; }
 
         Status = StatusMaster;
         Caller = caller;
@@ -349,7 +425,7 @@ public sealed class VoteController
         {
             if (!debug && it.IsBot) continue; // QC: only real clients (bots only in debug)
             playerCount++;
-            bool real = IsPlayer(it);
+            bool real = IsPlayer(it) || InGame(it); // QC: IS_PLAYER(it) || INGAME(it)
             if (real) realPlayers++;
             switch (SelectionOf(it))
             {
@@ -423,24 +499,33 @@ public sealed class VoteController
         Reset();
         if (status != StatusMaster)
             VotePassed?.Invoke(cmd);
+        // QC VoteAccept (vote.qc:181): Send_Notification(NOTIF_ALL, NULL, MSG_ANNCE, ANNCE_VOTE_ACCEPT).
+        AnnounceVoteAccept?.Invoke();
     }
 
     private void Reject()
     {
         Broadcast?.Invoke($"^2* {CallerName(Caller)}'s vote for ^1{Display}^2 was rejected");
         Reset();
+        // QC VoteReject (vote.qc:188): Send_Notification(NOTIF_ALL, NULL, MSG_ANNCE, ANNCE_VOTE_FAIL).
+        AnnounceVoteFail?.Invoke();
     }
 
     private void Timeout()
     {
         Broadcast?.Invoke($"^2* {CallerName(Caller)}'s vote for ^1{Display}^2 timed out");
         Reset();
+        // QC VoteTimeout (vote.qc:195): Send_Notification(NOTIF_ALL, NULL, MSG_ANNCE, ANNCE_VOTE_FAIL).
+        AnnounceVoteFail?.Invoke();
     }
 
     private void Spam(int notvoters, int mincount, string result)
     {
         string needed = mincount >= 0 ? $" (^1{mincount}^2 needed)" : "";
-        Broadcast?.Invoke($"^2* vote results: ^1{YesCount}^2:^1{NoCount}{needed}, ^1{AbstainCount}^2 didn't care, ^1{notvoters}^2 didn't vote");
+        // QC VoteSpam (vote.qc:205): "didn't " + (mincount >= 0 ? "" : "have to ") + "vote" — an early accept/reject
+        // (mincount < 0, the vote resolved before everyone had to weigh in) reads "didn't have to vote".
+        string didnt = mincount >= 0 ? "didn't vote" : "didn't have to vote";
+        Broadcast?.Invoke($"^2* vote results: ^1{YesCount}^2:^1{NoCount}{needed}, ^1{AbstainCount}^2 didn't care, ^1{notvoters}^2 {didnt}");
         _ = result;
     }
 
@@ -456,7 +541,9 @@ public sealed class VoteController
         // NB: _masters persists (master status survives a vote, like QC's .vote_master).
     }
 
-    private int SelectionOf(Player p) => _selection.TryGetValue(p, out int s) ? s : SelectNull;
+    /// <summary>The local/given player's current ballot (QC <c>.vote_selection</c>): +1 yes, -1 no, -2 abstain,
+    /// 0 not voted. Surfaced for the client vote HUD's "you've already voted" dim + the yes/no highlight.</summary>
+    public int SelectionOf(Player p) => _selection.TryGetValue(p, out int s) ? s : SelectNull;
     private float WaitTimeOf(Player p) => _waitTime.TryGetValue(p, out float t) ? t : 0f;
     private static string CallerName(Player? p) => p?.NetName ?? "server";
     private bool SpectatorsAllowed
@@ -481,6 +568,56 @@ public sealed class VoteController
         if (string.IsNullOrEmpty(command)) return false;
         return command.IndexOf(';') < 0 && command.IndexOf('\n') < 0 && command.IndexOf('\r') < 0 && command.IndexOf('$') < 0;
     }
+
+    /// <summary>
+    /// QC <c>VoteCommand_checkargs</c>: apply the per-command arg restriction cvar
+    /// <c>sv_vote_command_restriction_&lt;cmd&gt;</c>. The restriction is <c>"&lt;minargs&gt;[;charlist[;charlist...]]"</c>:
+    /// the first field is the minimum arg count, each subsequent <c>;</c>-separated field is the allowed-character
+    /// list for that positional arg (empty = any char allowed). An unset/empty restriction permits everything.
+    /// Returns false (reject) when the arg count is short or an arg contains a disallowed character.
+    /// </summary>
+    private static bool CheckArgs(CommandContext ctx, int startpos)
+    {
+        string cmdrestriction = Cvars.String("sv_vote_command_restriction_" + ctx.Arg(startpos));
+        if (string.IsNullOrEmpty(cmdrestriction)) return true; // unset/empty → no restriction (QC)
+
+        int argc = ctx.ArgCount;
+        startpos++; // skip the command name (QC ++startpos)
+
+        // QC: minargs = stof(cmdrestriction); if (argc - startpos < minargs) return false.
+        int firstSemi = cmdrestriction.IndexOf(';');
+        string minPart = firstSemi < 0 ? cmdrestriction : cmdrestriction.Substring(0, firstSemi);
+        int minargs = (int)ToFloat(minPart);
+        if (argc - startpos < minargs) return false;
+
+        int p = firstSemi; // index of the first semicolon (QC strstrofs(...,";",0))
+        for (; ; )
+        {
+            if (startpos >= argc) break;            // all args checked → GOOD
+            if (p < 0)                              // no more charlists
+            {
+                if (argc - startpos == minargs) break; // exactly minargs left → GOOD
+                return false;
+            }
+            int q = cmdrestriction.IndexOf(';', p + 1); // next semicolon
+            string charlist = q < 0
+                ? cmdrestriction.Substring(p + 1)
+                : cmdrestriction.Substring(p + 1, q - (p + 1));
+            if (charlist.Length != 0)
+            {
+                string arg = ctx.Arg(startpos);
+                for (int check = 0; check < arg.Length; check++)
+                    if (charlist.IndexOf(arg[check]) < 0) return false; // disallowed char
+            }
+            startpos++;
+            minargs--;
+            p = q;
+        }
+        return true;
+    }
+
+    private static float ToFloat(string s)
+        => float.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float v) ? v : 0f;
 
     /// <summary>QC the map/chmap→gotomap normalization used by the whitelist check.</summary>
     private static string ApplyReplacements(string s)
@@ -513,32 +650,59 @@ public sealed class VoteController
         string first = ctx.Arg(startpos).ToLowerInvariant();
         if (caller is not null && !CheckInList(first, list)) return 0;
 
+        // QC VoteCommand_checkargs: per-command arg restriction (sv_vote_command_restriction_<cmd>).
+        if (!CheckArgs(ctx, startpos)) return 0;
+
         switch (first)
         {
+            case "movetoauto":
+            case "movetored":
+            case "movetoblue":
+            case "movetoyellow":
+            case "movetopink":
+            case "movetospec":
+            {
+                // QC: GetIndexedEntity + VerifyClientEntity, then pass the verbatim command through (vote.qc:796).
+                Player? victim = FindPlayer?.Invoke(ctx.Arg(startpos + 1));
+                if (victim is null) { parseError = $"vcall: no player matching \"{ctx.Arg(startpos + 1)}\"."; return 0; }
+                // Base has per-team server verbs (movetored/blue/…); the port consolidated them into a single
+                // `moveplayer <player> <dest>` command, so translate the voted verb's team suffix into it. Use the
+                // #index player form (not the name) so a NetName containing spaces can't re-tokenize on execution.
+                // Without this the passed vote ran a non-existent `movetored` command and silently did nothing.
+                parsedCommand = $"moveplayer #{victim.Index} {first["moveto".Length..]}";
+                parsedDisplay = $"^1{first} #{victim.Index} ^7{victim.NetName}";
+                return 1;
+            }
             case "kick":
             case "kickban":
             {
+                // QC emits `kick # <index> ...` (kickban appends g_ban_default_bantime/masksize/~) (vote.qc:820).
                 Player? victim = FindPlayer?.Invoke(ctx.Arg(startpos + 1));
                 if (victim is null) { parseError = $"vcall: no player matching \"{ctx.Arg(startpos + 1)}\"."; return 0; }
                 string reason = ctx.ArgTail(startpos + 2);
-                parsedCommand = $"kick {victim.NetName}{(string.IsNullOrEmpty(reason) ? "" : " " + reason)}";
-                parsedDisplay = $"^1{first} ^7{victim.NetName}{(string.IsNullOrEmpty(reason) ? "" : "^1 " + reason)}";
+                if (string.IsNullOrEmpty(reason)) reason = "No reason provided";
+                string cmdArgs = first == "kickban"
+                    ? $"{(int)Cvars.FloatOr("g_ban_default_bantime", 5400f)} {Cvars.Int("g_ban_default_masksize")} ~"
+                    : reason;
+                parsedCommand = $"{first} # {victim.Index} {cmdArgs}";
+                parsedDisplay = $"^1{first} #{victim.Index} ^7{victim.NetName}^1 {reason}";
                 return 1;
             }
             case "map":
             case "chmap":
             case "gotomap":
             {
-                string map = ctx.Arg(startpos + 1);
-                if (string.IsNullOrEmpty(map)) { parseError = "^1Invalid map name."; return -1; }
+                // QC: vote_command = ValidateMap(argv(startpos+1), caller); if (!vote_command) return -1.
+                string? map = ValidateMap(ctx.Arg(startpos + 1), caller is null, out parseError);
+                if (string.IsNullOrEmpty(map)) return -1;
                 parsedCommand = $"gotomap {map}";
                 parsedDisplay = $"^1gotomap {map}";
                 return 1;
             }
             case "nextmap":
             {
-                string map = ctx.Arg(startpos + 1);
-                if (string.IsNullOrEmpty(map)) { parseError = "^1Invalid map name."; return -1; }
+                string? map = ValidateMap(ctx.Arg(startpos + 1), caller is null, out parseError);
+                if (string.IsNullOrEmpty(map)) return -1;
                 parsedCommand = $"nextmap {map}";
                 parsedDisplay = $"^1nextmap {map}";
                 return 1;
@@ -554,7 +718,8 @@ public sealed class VoteController
             case "timelimit":
             {
                 float n = ctx.ArgFloat(startpos + 1);
-                float lo = Cvars.FloatOr("timelimit_min", 0f), hi = Cvars.FloatOr("timelimit_max", 9999f);
+                // QC timelimit_min/max defaults (xonotic-server.cfg): 5 / 60.
+                float lo = Cvars.FloatOr("timelimit_min", 5f), hi = Cvars.FloatOr("timelimit_max", 60f);
                 if (n < lo || n > hi) { parseError = $"^1Invalid timelimit, accepted values are {lo:0}..{hi:0}."; return -1; }
                 parsedCommand = $"timelimit {(int)n}";
                 parsedDisplay = $"^1timelimit {(int)n}";
@@ -563,6 +728,13 @@ public sealed class VoteController
             case "restart":
                 parsedCommand = "defer 1 restart"; // QC defers so the announcer/result shows first
                 parsedDisplay = "^1restart";
+                return 1;
+            case "allready":
+                // QC: allready is only votable during warmup; once the match started use resetmatch (vote.qc:911).
+                if (!WarmupStage())
+                { parseError = "Game already started. Use the resetmatch command to restart the match."; return -1; }
+                parsedCommand = command;
+                parsedDisplay = "^1" + command;
                 return 1;
             default:
                 parsedCommand = command;

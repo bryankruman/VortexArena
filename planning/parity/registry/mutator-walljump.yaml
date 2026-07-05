@@ -1,0 +1,263 @@
+unit: mutator-walljump
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-27"
+summary:
+  feature_count: 9
+  worst_gaps:
+    - "Jump animation action (animdecide_setaction ANIMACTION_JUMP) still not triggered on a wall jump (no anim-action seam in the port; WalljumpMutator.cs:135 is a comment only). UNCHANGED — same missing server->client one-shot action channel as Dodging. Purely cosmetic (jump pose)."
+    - "Minor: jump voice plays on SoundChannel.VoiceAuto (CH_VOICE) vs Base CH_PLAYER. The sample resolves and is audible, so this is the only residual on fx.sound. UNCHANGED."
+    - "Client facade traces against a flat test floor (BootClientFacade), not the replicated server BSP, so a remote-client wall jump predicts against approximate local geometry until client-side map collision lands. Out of scope for this unit; noted on predict.shared_impulse."
+features:
+  - id: mutator-walljump.activation.enable
+    name: "Mutator registration + g_walljump enable gate"
+    layer: [authority, shared]
+    base_refs:
+      - "common/mutators/mutator/walljump/walljump.qc:REGISTER_MUTATOR"
+      - "common/stats.qh:322"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs:IsEnabled"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:Apply"
+      - "src/XonoticGodot.Server/GameWorld.cs:631"
+      - "game/net/NetGame.cs:1120"
+    constants:
+      - { name: "g_walljump", base: "0", port: "0 (mutators.cfg:485)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "MutatorActivation.Apply is invoked on BOTH processes: server GameWorld.cs:631 AND client NetGame.cs:1120 (BootClientFacade, reached on the live client load coroutine at NetGame.cs:430). Both call Mutators.All -> IsEnabled (Api.Services!=null && g_walljump!=0) -> Add -> Hook() subscribes the static PlayerJump chain. This mirrors Base REGISTER_MUTATOR(walljump, true) on CSQC + autocvar on SVQC. RE-VERIFIED 2026-06-27 (line refs re-read this pass).", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-27 (unchanged since last audit): the client activates mutators via MutatorActivation.Apply() in BootClientFacade (NetGame.cs:1120, reached at NetGame.cs:430 in the client load coroutine), so the walljump PlayerJump hook is subscribed on the client process too (not just the server). Liveness live. The gate value (g_walljump!=0) matches Base. Apply() call lines re-read: server 602->631, client 1011->1120."
+
+  - id: mutator-walljump.detect.touchwall
+    name: "Nearby-wall detection (4-way tracebox, steep non-NOIMPACT surface)"
+    layer: [shared]
+    base_refs:
+      - "common/mutators/mutator/walljump/walljump.qc:PlayerTouchWall"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs:PlayerTouchWall"
+    constants:
+      - { name: "dist", base: "10", port: "10", match: true }
+      - { name: "max_normal", base: "0.2", port: "0.2", match: true }
+      - { name: "scaler", base: "100", port: "100", match: true }
+      - { name: "cast_order", base: "+fwd,-fwd,+right,-right", port: "+fwd,-fwd,+right,-right", match: true }
+      - { name: "Q3SURFACEFLAG_NOIMPACT", base: "BIT(0)=0x1 skipped", port: "0x1 skipped (MutatorConstants.Q3SurfaceFlagNoImpact)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "side-by-side read of PlayerTouchWall (Base walljump.qc:16-34 vs WalljumpMutator.cs:146-179): same bbox tracebox start=origin, same four cast directions in order (+fwd,-fwd,+right,-right via the short-circuit || chain), same fraction<1 + (origin-EndPos).Length()<dist + PlaneNormal.Z<max_normal + NOIMPACT guards, returns first qualifying plane normal (+ endpos in hitPos). RE-VERIFIED 2026-06-27.", result: pass }
+    confidence: high
+    notes: "Faithful, unchanged (RE-VERIFIED 2026-06-27). Port additionally returns the contact point (hitPos = trace EndPos) for the smoke ring; Base reads trace_endpos from the global trace state. Equivalent. Method line moved 139->146."
+
+  - id: mutator-walljump.gate.guards
+    name: "Wall-jump eligibility guards (delay, airborne, movetype, jump-tapped, unfrozen, alive)"
+    layer: [shared]
+    base_refs:
+      - "common/mutators/mutator/walljump/walljump.qc:40-46"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs:82-91"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "guard-by-guard read (WalljumpMutator.cs:82-91): now-LastWallJumpTime<=Delay returns false, !OnGround, movetype not in {None,Follow,Fly,Noclip}, jump not held ((Flags&JumpReleased)==0), DeadState==No, !Frozen (StatusEffectsCatalog.Frozen). RE-VERIFIED 2026-06-27.", result: pass }
+    confidence: high
+    notes: "Unchanged (RE-VERIFIED 2026-06-27). IS_JUMP_HELD modeled identically (EntFlags.JumpReleased==0). Frozen uses the StatusEffects Frozen def. Delay gate matches Base time - STAT(LASTWJ) > DELAY. (Note: port checks DeadState before Frozen, vs Base order Frozen-then-Dead — same set of guards, order is immaterial since all must pass.) Guard block moved 74-84->82-91."
+
+  - id: mutator-walljump.impulse.velocity
+    name: "Off-wall velocity impulse (horizontal push /xy, z = jumpvel*z, crouch slam) + standard-jump composition"
+    layer: [shared]
+    base_refs:
+      - "common/mutators/mutator/walljump/walljump.qc:52-60"
+      - "common/mutators/mutator/walljump/walljump.qc:70"
+      - "common/physics/player.qc:481"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs:98-105"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs:53-58"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:1086-1097"
+    constants:
+      - { name: "g_walljump_force", base: "300", port: "300 (mutators.cfg:487); C# field default 300", match: true }
+      - { name: "g_walljump_velocity_xy_factor", base: "1.15", port: "1.15 (mutators.cfg:488); C# field default 1.05 but cfg wins", match: true }
+      - { name: "g_walljump_velocity_z_factor", base: "0.5", port: "0.5 (mutators.cfg:489); C# field default 1.0 but cfg wins", match: true }
+      - { name: "g_walljump_delay", base: "1", port: "1 (mutators.cfg:486); C# field default 0.3 but cfg wins", match: true }
+      - { name: "sv_jumpvelocity (PHYS_JUMPVELOCITY)", base: "260", port: "260", match: true }
+      - { name: "final velocity_z (normal walljump, stock cvars)", base: "260*0.5 + 260 = 390", port: "390", match: true }
+      - { name: "final velocity_z (crouch walljump, stock cvars)", base: "-130 + 260 = 130", port: "130", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "impulse arithmetic matches Base walljump.qc:55-60 (v.X+=n.X*force; v.X/=xy; v.Y likewise; v.Z=jumpvel*z; crouch inverts; WalljumpMutator.cs:100-104). The impulse runs OUTSIDE the !Predicted guard (lines 98-105, above the if(!args.Predicted) block at 115) so it applies on both the server and the predicting client. Hook sets args.Multijump=true and returns false (WalljumpMutator.cs:138-139) so PlayerJump.Call returns false; doublejump=true skips the air-bail and vel.Z+=mjumpheight adds the standard jump on top, reproducing Base player.qc:481. RE-VERIFIED 2026-06-27.", result: pass }
+      - { kind: code, ref: "cvar-override-zero guard intact. Hook() reads each g_walljump* via `if (IsSet(name)) Field = GetFloat(name)` where IsSet = !IsNullOrEmpty(GetString(name)) (WalljumpMutator.cs:53-58). A shipped/registered cvar returns a non-empty string, so an admin explicitly setting any tunable to 0 (legal in Base) is honored instead of being masked by the C# field default.", result: pass }
+      - { kind: code, ref: "mutators.cfg:485-489 ships the exact Base defaults (delay 1, force 300, xy 1.15, z 0.5) — verified byte-identical to Base mutators.cfg:485-489 this pass; Hook() reads them and overrides the (differing) C# field defaults at activation", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-27. Logic/values/timing faithful at runtime AND predicted on the client (liveness live): the velocity impulse is applied on the shared (non-Predicted-gated) path, and the client process subscribes the hook via NetGame.cs:1120. The C# field defaults (xy 1.05, z 1.0, delay 0.3) still differ from Base but are masked by the shipped cfg reads. Critical composition (multijump-grant-then-add-standard-jump) verified end-to-end. Hook line refs shifted (PlayerPhysics PlayerJump.Call now 1086-1097; impulse 90-98->98-105)."
+
+  - id: mutator-walljump.predict.shared_impulse
+    name: "Client-side prediction of the wall-jump impulse (Base runs it shared CSQC+SVQC)"
+    layer: [shared, presentation]
+    base_refs:
+      - "common/mutators/mutator/walljump/walljump.qc:5"
+      - "common/mutators/mutator/walljump/walljump.qc:36-60"
+    port_refs:
+      - "game/net/NetGame.cs:1120 (BootClientFacade -> MutatorActivation.Apply)"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:1091 (Predicted = input.Predicted)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs:115 (if (!args.Predicted) SVQC-only block)"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Residual (out-of-scope for this unit): BootClientFacade traces the predicted move against a flat test floor, not the replicated server BSP — so a remote-client wall jump predicts against approximate local geometry until client-side map collision lands. The mutator wiring itself is correct; this is a general client-collision-replication gap noted in NetGame.cs:988-994."
+    verification:
+      - { kind: code, ref: "The PlayerJump chain is subscribed on the client process: NetGame.BootClientFacade (NetGame.cs:1104-1121, reached at NetGame.cs:430 in the live client load coroutine) calls MutatorActivation.Apply() (NetGame.cs:1120), mirroring Base's CSQC REGISTER_MUTATOR(walljump, true). PlayerPhysics.PlayerJump builds PlayerJumpArgs with Predicted = input.Predicted (PlayerPhysics.cs:1086-1091) and dispatches via PlayerJump.Call (cs:1093); WalljumpMutator gates ONLY the #ifdef-SVQC side-effects (smoke ring, jump voice, LASTWJ + oldvelocity stamps) behind if(!args.Predicted) (cs:115), while the velocity impulse (cs:98-105) runs shared. So the predicting client applies the same impulse as the server (no double-effect, no rubberband from a missing impulse). RE-VERIFIED 2026-06-27.", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-27 (FIXED-state holds). The prior baseline flagged the dedicated-server-client case as mispredicting because no client-side MutatorActivation.Apply caller existed; one is in BootClientFacade (NetGame.cs:1120), and a Predicted flag on PlayerJumpArgs (MutatorHooks.cs:438, set at PlayerPhysics.cs:1091) makes the shared impulse predict while the SVQC-only side-effects stay server-networked — exactly matching Base's CSQC-shares-impulse / SVQC-emits-effects split. logic faithful, presentation faithful, liveness live. NetGame.cs refs shifted (Apply 1011->1120)."
+
+  - id: mutator-walljump.fx.smokering
+    name: "Smoke-ring particle at the wall contact point"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/walljump/walljump.qc:65"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs:127"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:244"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:Emit"
+    constants:
+      - { name: "EFFECT_SMOKE_RING count", base: "5 (Send_Effect EFFECT_SMOKE_RING, trace_endpos, plane_normal, 5)", port: "5 (EffectEmitter.Emit(\"SMOKE_RING\", hitPos, planeNormal, 5))", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "WalljumpMutator.cs:127 calls EffectEmitter.Emit(\"SMOKE_RING\", hitPos, planeNormal, 5) INSIDE the if(!args.Predicted) block — origin=contact point (trace EndPos), velocity=plane_normal, count=5, matching Base Send_Effect(EFFECT_SMOKE_RING, trace_endpos, plane_normal, 5) under #ifdef SVQC. SMOKE_RING registered at EffectsList.cs:244 (Effects.Register(\"SMOKE_RING\", \"smoke_ring\")). RE-VERIFIED 2026-06-27.", result: pass }
+      - { kind: code, ref: "live sink: EffectEmitter.Emit dispatches through the swappable EffectEmitter.Sink (EffectEmitter.cs:220/242), which the server replaces with its networking sink, so the emission networks to clients; the client decodes it and renders. The !Predicted gate prevents the predicting client from also emitting locally (which would double the ring). Server-side emit matches Base #ifdef SVQC.", result: pass }
+    confidence: high
+    notes: "Faithful and live, RE-VERIFIED 2026-06-27 (unchanged). The if(!args.Predicted) gate keeps the emit server-only (matching Base SVQC) so the networked ring is not doubled by client prediction. Emit call line moved 120->127; SMOKE_RING registration EffectsList.cs:228->244."
+
+  - id: mutator-walljump.fx.sound
+    name: "Wall-jump jump voice (PlayerSound playersound_jump)"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/walljump/walljump.qc:66"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs:133"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundSystem.cs:335"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/GameSound.cs:195"
+      - "game/loaders/PlayerSoundResolver.cs:Install"
+      - "game/net/NetGame.cs:401"
+    constants:
+      - { name: "sound cue", base: "playersound_jump (per-model voice, CH_PLAYER, VOL_BASE, VOICETYPE_PLAYERSOUND)", port: "PlayPlayerSound(player,\"jump\",ModelSoundsFile(model,skin),VolBase,AttenNorm) — resolves via .sounds manifest to sound/player/espeak/player/jump.ogg (default pack)", match: true }
+      - { name: "channel", base: "CH_PLAYER", port: "SoundChannel.VoiceAuto (CH_VOICE/-2)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Minor channel divergence: Base plays on CH_PLAYER; SoundSystem.PlayPlayerSound hardcodes SoundChannel.VoiceAuto (CH_VOICE, SoundSystem.cs:342). Audible and per-model-correct otherwise; channel only affects which slot the cue occupies/cuts. UNCHANGED."
+    verification:
+      - { kind: code, ref: "WalljumpMutator.cs:133 SoundSystem.PlayPlayerSound(player,\"jump\",Sounds.ModelSoundsFile(player.Model,(int)player.Skin),VolBase,AttenNorm) INSIDE the if(!args.Predicted) block (matching Base #ifdef SVQC). PlayPlayerSound -> resolver maps `jump -> sound/player/<pack>/player/jump`; asset assets/data/xonotic-data.pk3dir/sound/player/espeak/player/jump.ogg EXISTS (re-confirmed on disk this pass; 20+ per-model jump.ogg shipped). Plays on SoundChannel.VoiceAuto. RE-VERIFIED 2026-06-27.", result: pass }
+      - { kind: code, ref: "resolver is LIVE: PlayerSoundResolver.Install(_vfs) is called in NetGame._Ready (NetGame.cs:401) when a VFS is mounted, installing Sounds.ModelSoundResolver = Resolve. ModelSounds.ParseEntries faithfully parses the id/path/variant lines (last-wins, //comments skipped), matching QC LoadPlayerSounds.", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-27. liveness live: the cue is networked from the server (the !Predicted gate keeps it server-only, exactly matching Base's #ifdef SVQC PlayerSound — it was never meant to play in CSQC prediction). Only the CH_PLAYER vs CH_VOICE channel choice remains as a residual (values/channel match:false). Call line moved 126->133; resolver Install ref 398->401."
+
+  - id: mutator-walljump.fx.anim_and_oldvel
+    name: "Jump animation action + post-impulse oldvelocity stash"
+    layer: [presentation, authority]
+    base_refs:
+      - "common/mutators/mutator/walljump/walljump.qc:64"
+      - "common/mutators/mutator/walljump/walljump.qc:67"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs:123"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:85"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "animdecide_setaction(player, ANIMACTION_JUMP, true) not triggered on a wall jump (no anim-action seam in the port; WalljumpMutator.cs:135 is a comment only). UNCHANGED — same missing server->client one-shot action channel noted on Dodging. Purely cosmetic (jump pose)."
+    verification:
+      - { kind: code, ref: "WalljumpMutator.cs:123 stashes player.OldVelocity = player.Velocity (the POST-impulse velocity) INSIDE the if(!args.Predicted) block, faithful to Base walljump.qc:64 (#ifdef SVQC; player.oldvelocity = player.velocity). Entity.OldVelocity is a real shared Vector3 field declared on the vehicles partial (VehicleCommon.cs:85). LastWallJumpTime (STAT LASTWJ) is also stamped here at WalljumpMutator.cs:117 (walljump.qc:63). animdecide ANIMACTION_JUMP still absent (line 135 is a comment only). RE-VERIFIED 2026-06-27 by reading the file.", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-27 (unchanged): oldvelocity/LASTWJ stash faithful and correctly gated to the server leg (if(!args.Predicted)) matching Base's #ifdef SVQC. liveness live: these stamps run on the live server path; the client predicts the impulse but does not re-stamp. animdecide (presentation) remains missing — still the only open gap on this row. Stash line moved 116->123; OldVelocity field VehicleCommon.cs:80->85."
+
+  - id: mutator-walljump.menu.describe
+    name: "MENUQC mutator description text (Mutators dialog)"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/walljump/walljump.qc:77-85"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs:41-44 (GuideDescription override — 2-paragraph describe text)"
+      - "game/menu/dialogs/DialogMediaGuide.cs:140-146 (Mutators topic enumerates Mutators.All, lists those with GuideDescription)"
+      - "game/menu/dialogs/DialogMediaGuide.cs:184-185 (selected mutator renders its GuideDescription in the description pane)"
+    constants:
+      - { name: "describe_paragraphs", base: "2 (mobility overview + how-to / versatility note)", port: "2 (GuideDescription string, same 2 paragraphs)", match: true }
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "WalljumpMutator.cs:41-44 GuideDescription override returns the two-paragraph describe prose ('Wall jump is a mutator that enables jumping off walls for added mobility. To do a wall jump, tap jump when against a wall.' + the versatility note), matching Base METHOD(MutatorWallJump, describe) walljump.qc:77-85 (COLORED_NAME(this)='Wall jump', %s='jump' pre-filled).", result: pass }
+      - { kind: code, ref: "DialogMediaGuide.cs:140-146 'Mutators' topic iterates Mutators.All and adds each mutator with a non-empty GuideDescription (Humanize(NetName) label); :184-185 OnEntrySelected renders the chosen mutator's GuideDescription. Wall Jump appears in the list and shows its describe text on the live media-guide page — same wiring verified faithful/live for mutator-offhand_blaster.", result: pass }
+    confidence: high
+    notes: "FIXED since the prior audit (presentation missing->faithful, liveness na->live): the MENUQC describe prose is now ported as WalljumpMutator.GuideDescription and rendered live by DialogMediaGuide (mirrors mutator-offhand_blaster, which was wired the same way). The baseline's port_refs:[]/presentation:missing was stale — the GuideDescription override and the DialogMediaGuide enumeration both exist and are reachable on the live media-guide dialog."

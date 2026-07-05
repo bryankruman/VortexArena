@@ -26,12 +26,28 @@ public interface IMovementInput
     bool ButtonAttack2 { get; }  // secondary fire
 
     /// <summary>
+    /// PHYS_INPUT_BUTTON_HOOK (player.qh:157, == BUTTON6) — the +hook / offhand-fire button. The weapon
+    /// system reads it each frame to drive the player's offhand weapon think (grapple hook, offhand blaster,
+    /// nade prime/throw). Defaulted to <c>false</c> so existing input sources keep compiling; the net layer
+    /// (ServerNet.ToMovementInput) and bots set it from the move command / brain.
+    /// </summary>
+    bool ButtonHook => false;
+
+    /// <summary>
     /// PHYS_INPUT_BUTTON_JETPACK — the dedicated jetpack key (separate from <see cref="ButtonJump"/>).
     /// Defaulted to <c>false</c> as a default-interface-method so existing input sources keep compiling;
     /// a source that supports the jetpack overrides it. (CheckPlayerJump also activates the jetpack from
     /// a held jump in mid-air when <c>cl_jetpack_jump</c> is set, independent of this key.)
     /// </summary>
     bool ButtonJetpack => false;
+
+    /// <summary>
+    /// PHYS_INPUT_BUTTON_ZOOM / PHYS_INPUT_BUTTON_ZOOMSCRIPT (player.qh) — the +zoom bind is held. The rifle
+    /// reads it to re-aim its shot straight from the eye while scoped (QC rifle.qc:16-20, pixel-accurate long
+    /// shots). Defaulted to <c>false</c> as a default-interface-method so existing input sources keep compiling;
+    /// the net layer (ServerNet.ToMovementInput) decodes it from the move command's <c>InputButtons.Zoom</c> bit.
+    /// </summary>
+    bool ButtonZoom => false;
 
     /// <summary>
     /// PHYS_INPUT_BUTTON_CHAT / PHYS_INPUT_BUTTON_MINIGAME — the player is typing in chat / a minigame, so
@@ -72,7 +88,9 @@ public struct MovementInput : IMovementInput
     public bool ButtonUse { get; set; }
     public bool ButtonAttack1 { get; set; }
     public bool ButtonAttack2 { get; set; }
+    public bool ButtonHook { get; set; }
     public bool ButtonJetpack { get; set; }
+    public bool ButtonZoom { get; set; }
     public bool Typing { get; set; }
     public int Impulse { get; set; }
     public bool Predicted { get; set; }

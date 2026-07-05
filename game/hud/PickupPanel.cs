@@ -161,11 +161,16 @@ public partial class PickupPanel : HudPanel
         float x = padding;
 
         // ---- optional leading match timer (QC hud_panel_pickup_showtimer) ----
-        // QC: outer `if (showtimer)` then `(showtimer == 1 && !forbid) || spectatee_status` — i.e. show when
-        // showtimer is nonzero AND (it is 1, OR we are spectating). 2 = "spectating only". (No SERVERFLAG here.)
+        // QC: outer `if (showtimer)` then `(showtimer == 1 && !(serverflags & SERVERFLAG_FORBID_PICKUPTIMER))
+        // || spectatee_status` — i.e. show when showtimer is nonzero AND (it is 1 AND the server doesn't forbid
+        // the timer, OR we are spectating). 2 = "spectating only"; the forbid serverflag forces that behavior.
+        // serverflags is the server's published bitfield (GameWorld.ReadLevelCvars → the `serverflags` cvar,
+        // read here from the shared store on a listen server).
+        bool forbidTimer = (Mathf.RoundToInt(GlobalF("serverflags", 0f))
+            & XonoticGodot.Common.Gameplay.ServerFlags.ForbidPickupTimer) != 0;
         float showTimerRaw = CvarF("showtimer", 1f);
         int showTimer = float.IsFinite(showTimerRaw) ? Mathf.RoundToInt(showTimerRaw) : 1;
-        if (showTimer != 0 && (showTimer == 1 || Spectating))
+        if (showTimer != 0 && ((showTimer == 1 && !forbidTimer) || Spectating))
         {
             string timer = ResolveTimerText();
             if (!string.IsNullOrEmpty(timer))

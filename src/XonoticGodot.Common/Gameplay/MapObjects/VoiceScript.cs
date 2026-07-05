@@ -141,8 +141,9 @@ namespace XonoticGodot.Common.Gameplay
             // on a malformed message — on well-formed data the index math keeps i+1 < n, so it never diverges).
             if (i >= 0 && i + 1 < n)
             {
-                // QC: play2(pl, strcat(vs.netname, "/", argv(i), ".wav"));
-                MapMover.Sound(pl, SoundChannel.Voice, vs.NetName + "/" + argv[i] + ".wav");
+                // QC voicescript.qc:61: play2(pl, strcat(vs.netname, "/", argv(i), ".wav")) — a per-recipient 2D
+                // cue (CH_INFO / VOL_BASE / ATTEN_NONE), not a positional Voice-channel emit.
+                MapMover.Play2(pl, vs.NetName + "/" + argv[i] + ".wav");
 
                 float dt = Stof(argv[i + 1]);
                 if (dt >= 0f)

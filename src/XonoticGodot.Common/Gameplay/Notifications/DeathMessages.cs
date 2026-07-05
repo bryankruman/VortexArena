@@ -215,12 +215,32 @@ public static class DeathMessages
             DeathTypes.Swamp => "SWAMP",
             DeathTypes.Void => "VOID",
             DeathTypes.Fire => "FIRE",
+            DeathTypes.Camp => "CAMP",             // campcheck: self-only (no DEATH_MURDER_CAMP); murder -> GENERIC below
             DeathTypes.Telefrag => "TELEFRAG",     // murder-only in QC; self falls to GENERIC below
             DeathTypes.BuffInferno => "BUFF_INFERNO",
             DeathTypes.BuffVengeance => "BUFF_VENGEANCE",
+            // touchexplode (all.inc:35): registers BOTH DEATH_SELF_TOUCHEXPLODE and DEATH_MURDER_TOUCHEXPLODE,
+            // shared suffix scheme -> "died in an accident" (self) / "died in an accident with" (murder).
+            DeathTypes.TouchExplode => "TOUCHEXPLODE",
+            // NADE family (all.inc:23-27): each registers BOTH DEATH_SELF_NADE* and DEATH_MURDER_NADE*, the
+            // shared-suffix scheme. The live nade booms (NadeNormalBoom/Ice/Heal/Darkness/Napalm) emit these
+            // through Combat.Damage when g_nades is on, so they were falling to GENERIC/FRAG before.
+            DeathTypes.Nade => "NADE",
+            DeathTypes.NadeNapalm => "NADE_NAPALM",
+            DeathTypes.NadeIce => "NADE_ICE",
+            DeathTypes.NadeHeal => "NADE_HEAL",
+            DeathTypes.NadeDarkness => "NADE_DARKNESS",
+            // cheat (all.inc:5): DEATH_SELF_CHEAT / DEATH_MURDER_CHEAT (the r00t cheat radius nuke).
+            DeathTypes.Cheat => "CHEAT",
+            // shooting_star (all.inc:30): DEATH_SELF_SHOOTING_STAR / DEATH_MURDER_SHOOTING_STAR.
+            DeathTypes.ShootingStar => "SHOOTING_STAR",
+            // rot (all.inc:29): DEATH_SELF_ROT self-only (NULL murder -> FRAG below).
+            DeathTypes.Rot => "ROT",
             DeathTypes.NoAmmo => "NOAMMO",         // self-only (NOAMMO has no murder line)
-            DeathTypes.Kill => "GENERIC",          // /kill -> generic suicide
-            DeathTypes.MirrorDamage => "GENERIC",
+            // kill (all.inc:12): DEATH_KILL registers DEATH_SELF_SUICIDE ("couldn't take it anymore"), NULL murder.
+            DeathTypes.Kill => "SUICIDE",
+            // mirrordamage (all.inc:14): DEATH_MIRRORDAMAGE registers DEATH_SELF_BETRAYAL ("you were betrayed"), NULL murder.
+            DeathTypes.MirrorDamage => "BETRAYAL",
             _ => "GENERIC",
         };
 
@@ -230,6 +250,11 @@ public static class DeathMessages
             name = "GENERIC";
         // QC: NOAMMO is a self-death only; there is no DEATH_MURDER_NOAMMO.
         if (murder && name == "NOAMMO")
+            name = "FRAG";
+        // QC: these specials register a NULL murder line (death_msgmurder == NULL); the murder direction has no
+        // line, so the obituary falls back to the generic frag. CAMP (all.inc:4), ROT (all.inc:29),
+        // SUICIDE/KILL (all.inc:12), BETRAYAL/MIRRORDAMAGE (all.inc:14).
+        if (murder && (name == "CAMP" || name == "ROT" || name == "SUICIDE" || name == "BETRAYAL"))
             name = "FRAG";
 
         return (murder ? "DEATH_MURDER_" : "DEATH_SELF_") + name;

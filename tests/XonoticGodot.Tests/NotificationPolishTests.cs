@@ -203,7 +203,15 @@ public class NotificationPolishTests : IDisposable
         var e = new Entity();
         var burning = StatusEffectsCatalog.Burning!;
         StatusEffectsCatalog.Apply(e, burning, duration: 5f, strength: 1f); // expires at t=105
-        Assert.True(StatusEffectsCatalog.SetPersistent(e, burning, true));
+
+        // Drive PERSISTENT through the QC m_tick BITSET path, NOT a manual flag: m_tick recomputes the
+        // flag from m_persistent() every tick (sv_status_effects.qc:16), so the only Base-faithful way to
+        // carry PERSISTENT is to satisfy Burning.m_persistent (burning.qc:9-12 — lava burn while in lava).
+        _cvars.Set("g_balance_contents_playerdamage_lava_burn", "1");
+        e.WaterLevel = 1;
+        e.WaterType = (int)Contents.Lava;
+        StatusEffectsCatalog.Tick(e, _clock.Time); // m_tick sets PERSISTENT from m_persistent()
+        Assert.True(StatusEffectsCatalog.FlagsOf(e, burning).HasFlag(StatusEffectFlags.Persistent));
 
         // PERSISTENT survives the bitmap round-trip.
         var decoded = StatusEffectsCatalog.Read(StatusEffectsCatalog.Write(e));
@@ -214,8 +222,8 @@ public class NotificationPolishTests : IDisposable
         StatusEffectsCatalog.Tick(e, _clock.Time);
         Assert.True(StatusEffectsCatalog.Has(e, burning));
 
-        // clearing PERSISTENT lets the next tick time it out.
-        StatusEffectsCatalog.SetPersistent(e, burning, false);
+        // leaving the lava clears m_persistent -> the next tick recomputes PERSISTENT off and times it out.
+        e.WaterLevel = 0;
         StatusEffectsCatalog.Tick(e, _clock.Time);
         Assert.False(StatusEffectsCatalog.Has(e, burning));
     }

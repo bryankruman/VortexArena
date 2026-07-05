@@ -42,9 +42,19 @@ public static class WeaponOrder
     /// DOWN to <paramref name="from"/>, SKIPPING any weapon whose spawnflags have
     /// <see cref="WeaponFlags.SpecialAttack"/> (QC <c>WEP_FLAG_SPECIALATTACK</c>). Returns the rebuilt
     /// space-separated id list. Unknown / non-integer tokens are dropped (matching QC's integer-range filter).
+    ///
+    /// <para><paramref name="menuRegistryView"/> = run as Base's MENU program would: a weapon absent from the
+    /// menu registry (<see cref="Weapon.MenuRegistered"/> false, i.e. the Nexball BallStealer) is neither kept
+    /// nor appended — in Base its name can't even resolve to an id there, so the menu fix-up drops a stray
+    /// token and never adds one. The default (false) is the client/server view, which sees every weapon.</para>
     /// </summary>
-    public static string FixPriorityList(string order, int from, int to, int subtract, bool complete)
+    public static string FixPriorityList(string order, int from, int to, int subtract, bool complete,
+        bool menuRegistryView = false)
     {
+        // A weapon the MENU program's registry doesn't contain (Base compiles menu QC with no WEP_NEXBALL).
+        bool MenuHidden(int id) =>
+            menuRegistryView && id >= 0 && id < Registry<Weapon>.Count && !Registry<Weapon>.ById(id).MenuRegistered;
+
         var sb = new StringBuilder();
         // First pass: keep in-range integer ids (QC: w == floor(w) && in range, else try w - subtract).
         foreach (string tok in Tokenize(order))
@@ -54,6 +64,7 @@ public static class WeaponOrder
                 continue; // non-integer (QC: w != floor(w) drops it)
             if (w >= from && w <= to)
             {
+                if (MenuHidden(w)) continue;
                 if (sb.Length > 0) sb.Append(' ');
                 sb.Append(w);
             }
@@ -62,6 +73,7 @@ public static class WeaponOrder
                 int w2 = w - subtract;
                 if (w2 >= from && w2 <= to)
                 {
+                    if (MenuHidden(w2)) continue;
                     if (sb.Length > 0) sb.Append(' ');
                     sb.Append(w2);
                 }
@@ -82,6 +94,8 @@ public static class WeaponOrder
                 int wflags = Registry<Weapon>.ById(w).SpawnFlags;
                 if ((wflags & WeaponFlags.SpecialAttack) != 0)
                     continue;
+                if (MenuHidden(w))
+                    continue;
                 if (present.Contains(w))
                     continue;
                 if (sb.Length > 0) sb.Append(' ');
@@ -98,8 +112,8 @@ public static class WeaponOrder
     /// WEP_IMPULSE_BEGIN - WEP_FIRST, complete)</c>. Here <c>WEP_FIRST = 0</c>, <c>WEP_LAST = Count-1</c>,
     /// <c>subtract = 0</c> (see the class-level divergence note).
     /// </summary>
-    public static string FixWeaponOrder(string order, bool complete)
-        => FixPriorityList(order, WepFirst, WepLast, 0, complete);
+    public static string FixWeaponOrder(string order, bool complete, bool menuRegistryView = false)
+        => FixPriorityList(order, WepFirst, WepLast, 0, complete, menuRegistryView);
 
     /// <summary>
     /// Port of <c>W_FixWeaponOrder_ForceComplete</c> (all.qc:171): if <paramref name="order"/> is empty, seed it

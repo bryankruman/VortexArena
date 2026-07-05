@@ -21,7 +21,8 @@ public sealed partial class WorldPvsCuller : Node
 {
     private readonly BspPvs _pvs;
     private readonly (MeshInstance3D Node, int[] Clusters)[] _cells;
-    private int _lastCluster = int.MinValue;   // sentinel: first frame always applies
+    private readonly List<int> _viewClusters = new();      // this frame's viewpoint clusters (main + portals)
+    private readonly List<int> _lastClusters = new();      // last applied set (sorted); empty = first frame
     private bool _disabled;
 
     public WorldPvsCuller(BspPvs pvs, List<(MeshInstance3D Node, int[] Clusters)> cells)
@@ -33,9 +34,9 @@ public sealed partial class WorldPvsCuller : Node
 
     public override void _Ready()
     {
-        // Escape hatch for A/B + safety (archived like the other r_* engine cvars).
-        XonoticGodot.Game.Menu.MenuState.Cvars.Register("r_pvs_cull", "1",
-            XonoticGodot.Common.Services.CvarFlags.Save);
+        // Escape hatch for A/B + safety. Deliberately NOT archived (no CvarFlags.Save): a `set r_pvs_cull 0`
+        // debug pin must not silently persist into the player's config.cfg.
+        XonoticGodot.Game.Menu.MenuState.Cvars.Register("r_pvs_cull", "1");
     }
 
     public override void _Process(double delta)
@@ -51,7 +52,7 @@ public sealed partial class WorldPvsCuller : Node
                     if (GodotObject.IsInstanceValid(node))
                         node.Visible = true;
                 _disabled = true;
-                _lastCluster = int.MinValue;
+                _lastClusters.Clear();
             }
             return;
         }
@@ -61,19 +62,47 @@ public sealed partial class WorldPvsCuller : Node
         if (cam is null)
             return;
 
+        // Viewpoint set: the main camera + every ACTIVE portal exit view (see PortalRenderer.ActiveExitViewsQuake
+        // — Visible=false applies to EVERY viewport sharing the World3D, so the exit room's cells must be kept
+        // visible whenever a portal renders it, or the portal image is black). A portal exit view whose point sits
+        // in solid (cluster < 0) is SKIPPED, not show-all — only the MAIN camera degrades to show-everything.
         System.Numerics.Vector3 quakeEye = Coords.ToQuake(cam.GlobalPosition);
         int cluster = _pvs.LeafCluster(_pvs.FindLeaf(quakeEye));
-        if (cluster == _lastCluster)
-            return;   // same cluster → same visible set; nothing to re-apply
-        _lastCluster = cluster;
+        _viewClusters.Clear();
+        _viewClusters.Add(cluster);
+        var portalViews = XonoticGodot.Game.Client.PortalRenderer.ActiveExitViewsQuake;
+        for (int i = 0; i < portalViews.Count; i++)
+        {
+            int pc = _pvs.LeafCluster(_pvs.FindLeaf(portalViews[i]));
+            if (pc >= 0 && !_viewClusters.Contains(pc))
+                _viewClusters.Add(pc);
+        }
+        _viewClusters.Sort();
+        if (_viewClusters.Count == _lastClusters.Count)
+        {
+            bool same = true;
+            for (int i = 0; i < _viewClusters.Count; i++)
+                if (_viewClusters[i] != _lastClusters[i]) { same = false; break; }
+            if (same)
+                return;   // same viewpoint-cluster set → same visible set; nothing to re-apply
+        }
+        _lastClusters.Clear();
+        _lastClusters.AddRange(_viewClusters);
 
-        bool showAll = cluster < 0;   // camera in solid / outside the tree → conservative: show everything
+        bool showAll = cluster < 0;   // MAIN camera in solid / outside the tree → conservative: show everything
         foreach ((MeshInstance3D node, int[] clusters) in _cells)
         {
             bool visible = showAll || clusters.Length == 0;
             if (!visible)
+            {
                 foreach (int c in clusters)
-                    if (_pvs.ClustersVisible(cluster, c)) { visible = true; break; }
+                {
+                    for (int v = 0; v < _viewClusters.Count && !visible; v++)
+                        if (_viewClusters[v] >= 0 && _pvs.ClustersVisible(_viewClusters[v], c))
+                            visible = true;
+                    if (visible) break;
+                }
+            }
             if (GodotObject.IsInstanceValid(node))
                 node.Visible = visible;
         }

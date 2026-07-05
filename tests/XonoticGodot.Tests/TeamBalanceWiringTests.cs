@@ -53,6 +53,50 @@ public class TeamBalanceWiringTests
     }
 
     [Fact]
+    public void WarmupSkillJoin_SendsJoinerToTheTeamFurthestInSkill()
+    {
+        // QC TeamBalance_FindBestTeams warmup branch (teamplay.qc:1036): in warmup, with sv_teamnagger AND
+        // g_balance_teams_skill, the joiner goes to the team whose weighted-mean skill differs MOST from theirs
+        // (z-score) — even if that unbalances sizes — to avoid clumping similar-skill players by join order.
+        _f.Cvars.Set("g_balance_teams_skill", "1");
+        _f.Cvars.Set("sv_teamnagger", "2");
+        _f.Cvars.Set("g_balance_teams_skill_significance_threshold", "1.645");
+        var tp = new Teamplay(isTeamGame: true, teamCount: 2) { IsWarmup = () => true };
+        tp.SkillProvider = p => p.BotSkill;
+
+        // Red holds a skill-2 bot, Blue a skill-2 bot too; the joiner is skill 9 → it should land on the team it
+        // differs from most. With both teams equal skill+size the branch ties → reservoir randomizes, so instead
+        // make the teams differ: Red ~2, Blue ~9. A skill-9 joiner is closest to Blue, furthest from Red → joins Red.
+        var roster = new List<Player>
+        {
+            Bot(Teams.Red, 0, skill: 2f),
+            Bot(Teams.Blue, 0, skill: 9f),
+        };
+        var joiner = new Player { IsBot = true, BotSkill = 9f, Flags = EntFlags.Client };
+
+        int team = tp.AssignBestTeam(joiner, roster);
+        Assert.Equal(Teams.Red, team); // furthest-in-skill team (the warmup spread rule), not the smaller one
+    }
+
+    [Fact]
+    public void MoveToTeam_MovesAcrossLockedTeamsAndRestoresLock()
+    {
+        // QC MoveToTeam (teamplay.qc:330): an admin move backs up the team lock, disables it for the move, then
+        // restores it — so the move goes through even while teams are locked and the lock state is unchanged after.
+        var tp = new Teamplay(isTeamGame: true, teamCount: 2);
+        bool locked = true;
+        tp.LockTeamsGet = () => locked;
+        tp.LockTeamsSet = v => locked = v;
+
+        var p = new Player { Team = Teams.Red, Flags = EntFlags.Client };
+        bool ok = tp.MoveToTeam(p, Teams.Blue);
+
+        Assert.True(ok);
+        Assert.Equal(Teams.Blue, (int)p.Team); // moved despite the lock
+        Assert.True(locked);                    // lock restored to its prior value
+    }
+
+    [Fact]
     public void SkillWeighting_SendsJoinerToLowerSkillTeam()
     {
         _f.Cvars.Set("g_balance_teams_skill", "1"); // enable inverse-variance skill weighting

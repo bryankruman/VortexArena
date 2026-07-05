@@ -255,11 +255,20 @@ public abstract partial class HudPanel : Control
         if (string.IsNullOrWhiteSpace(bg)) bg = GlobalStr("hud_panel_bg");
         if (string.IsNullOrWhiteSpace(bg)) bg = "0";
 
-        // bg color: "" inherits hud_panel_bg_color; "shirt"/"pants" not yet supported → inherit.
+        // bg color: "" inherits hud_panel_bg_color; the QC HUD_Panel_GetColor literals "shirt"/"pants"/"team"
+        // resolve to the local player's colormap shirt/pants color (colormapPaletteColor) / team color when fed by
+        // the manager — else they fall back to inheriting the global bg color (no local player yet).
         string bgColStr = CvarStr("bg_color");
-        if (string.IsNullOrWhiteSpace(bgColStr) || bgColStr == "shirt" || bgColStr == "pants")
-            bgColStr = GlobalStr("hud_panel_bg_color");
-        Color bgCol = TryParseRgb(bgColStr, out Color c) ? c : new Color(0f, 0.14f, 0.25f);
+        Color bgCol;
+        if (bgColStr == "shirt" && LocalShirtColor is { } shirt) bgCol = shirt;
+        else if (bgColStr == "pants" && LocalPantsColor is { } pants) bgCol = pants;
+        else if (bgColStr == "team" && LocalTeamColor is { } team) bgCol = team;
+        else
+        {
+            if (string.IsNullOrWhiteSpace(bgColStr) || bgColStr == "shirt" || bgColStr == "pants" || bgColStr == "team")
+                bgColStr = GlobalStr("hud_panel_bg_color");
+            bgCol = TryParseRgb(bgColStr, out Color c) ? c : new Color(0f, 0.14f, 0.25f);
+        }
 
         float bgAlpha = CvarF("bg_alpha", GlobalF("hud_panel_bg_alpha", 1f));
         float bgBorder = CvarF("bg_border", GlobalF("hud_panel_bg_border", 2f));
@@ -309,6 +318,10 @@ public abstract partial class HudPanel : Control
     }
 
     /// <summary>Parse a space-separated "r g b" (0..1) cvar string.</summary>
+    /// <summary>Public wrapper over the shared "r g b" parser (QC <c>stov</c>) so non-panel HUD draws
+    /// (e.g. <see cref="HudDock"/>) can resolve a color cvar with the same rules.</summary>
+    public static bool TryParseRgbColor(string s, out Color c) => TryParseRgb(s, out c);
+
     protected static bool TryParseRgb(string s, out Color c)
     {
         c = default;
@@ -389,13 +402,138 @@ public abstract partial class HudPanel : Control
         return true;
     }
 
-    /// <summary>Draw a horizontal progress bar (QC <c>HUD_Panel_DrawProgressBar</c>).</summary>
+    /// <summary>
+    /// The shared progress-bar primitive — faithful port of QC <c>HUD_Panel_DrawProgressBar</c>
+    /// (hud.qc:269-372). Fills <paramref name="area"/> to <paramref name="lengthRatio"/> using the skin art
+    /// <paramref name="art"/> (<c>progressbar</c> / <c>progressbar_vertical</c> / <c>accelbar</c>), tinted by
+    /// <paramref name="color"/> at <paramref name="alpha"/>, honoring all four QC alignments:
+    /// 0 = left/top, 1 = right/bottom, 2 = symmetric-centered (non-negative only — a negative ratio is dropped,
+    /// like the QC <c>length_ratio &lt; 0 → return</c>), 3 = SIGNED-centered (positive fills the right/bottom
+    /// half, negative the left/top half — the only mode that accepts a negative ratio, used by the accel bar).
+    /// <paramref name="vertical"/> selects the vertical art + fill axis. Falls back to a plain rect when the art
+    /// is missing so a bar is never invisible.
+    /// </summary>
+    protected void DrawProgressBar(Rect2 area, string art, float lengthRatio, bool vertical, int baralign,
+        Color color, float alpha)
+    {
+        Vector2 origin = area.Position;
+        Vector2 size = area.Size;
+
+        // QC: if (!length_ratio || !theAlpha) return;
+        if (alpha <= 0f || size.X <= 0f || size.Y <= 0f || lengthRatio == 0f) return;
+        // A non-finite ratio/geometry bypasses every comparison below (NaN compares false) and would spray a
+        // NaN rect into the renderer; bail before any clamp runs.
+        if (!float.IsFinite(lengthRatio) || !float.IsFinite(origin.X) || !float.IsFinite(origin.Y)
+            || !float.IsFinite(size.X) || !float.IsFinite(size.Y)) return;
+
+        // QC: clamp positive overflow; only baralign 3 may go negative (clamped to -1), the rest drop a negative.
+        if (lengthRatio > 1f) lengthRatio = 1f;
+        if (baralign == 3) { if (lengthRatio < -1f) lengthRatio = -1f; }
+        else if (lengthRatio < 0f) return;
+
+        // The skin art name (vertical gets the _vertical suffix, matching QC's strcat).
+        string skinArt = vertical ? art + "_vertical" : art;
+        var tint = new Color(color.R, color.G, color.B, Mathf.Clamp(alpha, 0f, 1f));
+
+        // Resolve the skin art once (skin → default → bare default), so the 3-slice cap split can blit
+        // sub-regions of the *same* texture (QC's drawsubpic). Null → flat-rect fallback.
+        Texture2D? tex = TextureCache.GetFirst(
+            $"gfx/hud/{HudSkin.SkinName}/{skinArt}", $"gfx/hud/default/{skinArt}",
+            vertical ? "gfx/hud/default/progressbar_vertical" : "gfx/hud/default/progressbar");
+
+        if (vertical)
+        {
+            float oy = origin.Y;
+            float h = size.Y;
+            switch (baralign)
+            {
+                case 1: oy += (1f - lengthRatio) * size.Y; break;              // bottom align
+                case 2: oy += 0.5f * (1f - lengthRatio) * size.Y; break;       // center align
+                case 3:                                                        // signed center (down +, up −)
+                    h = size.Y * 0.5f;
+                    if (lengthRatio > 0f) oy += h;
+                    else { oy += (1f + lengthRatio) * h; lengthRatio = -lengthRatio; }
+                    break;
+            }
+            h *= lengthRatio;
+            if (h <= 0f) return;
+
+            if (tex is null) { DrawRect(new Rect2(origin.X, oy, size.X, h), tint); return; }
+            // QC vertical 3-slice (hud.qc:315-329): cap UVs are y[0,.25]/[.25,.75]/[.75,1].
+            if (h <= size.X * 2f)
+            {
+                // not tall enough → just top + bottom halves, src y cropped to bH around the ends.
+                float half = h * 0.5f;
+                float bH = 0.25f * h / (size.X * 2f);
+                Blit3(tex, tint, new Rect2(origin.X, oy, size.X, half), new Rect2(0f, 0f, 1f, bH));
+                Blit3(tex, tint, new Rect2(origin.X, oy + half, size.X, half), new Rect2(0f, 1f - bH, 1f, bH));
+            }
+            else
+            {
+                float sq = size.X; // square chunk = bar width
+                Blit3(tex, tint, new Rect2(origin.X, oy, size.X, sq), new Rect2(0f, 0f, 1f, 0.25f));
+                Blit3(tex, tint, new Rect2(origin.X, oy + sq, size.X, h - 2f * sq), new Rect2(0f, 0.25f, 1f, 0.5f));
+                Blit3(tex, tint, new Rect2(origin.X, oy + h - sq, size.X, sq), new Rect2(0f, 0.75f, 1f, 0.25f));
+            }
+        }
+        else
+        {
+            float ox = origin.X;
+            float w = size.X;
+            switch (baralign)
+            {
+                case 1: ox += (1f - lengthRatio) * size.X; break;             // right align
+                case 2: ox += 0.5f * (1f - lengthRatio) * size.X; break;      // center align
+                case 3:                                                       // signed center (right +, left −)
+                    w = size.X * 0.5f;
+                    if (lengthRatio > 0f) ox += w;
+                    else { ox += (1f + lengthRatio) * w; lengthRatio = -lengthRatio; }
+                    break;
+            }
+            w *= lengthRatio;
+            if (w <= 0f) return;
+
+            if (tex is null) { DrawRect(new Rect2(ox, origin.Y, w, size.Y), tint); return; }
+            // QC horizontal 3-slice (hud.qc:351-365): cap UVs are x[0,.25]/[.25,.75]/[.75,1].
+            if (w <= size.Y * 2f)
+            {
+                // not wide enough → just left + right halves, src x cropped to bW around the ends.
+                float half = w * 0.5f;
+                float bW = 0.25f * w / (size.Y * 2f);
+                Blit3(tex, tint, new Rect2(ox, origin.Y, half, size.Y), new Rect2(0f, 0f, bW, 1f));
+                Blit3(tex, tint, new Rect2(ox + half, origin.Y, half, size.Y), new Rect2(1f - bW, 0f, bW, 1f));
+            }
+            else
+            {
+                float sq = size.Y; // square chunk = bar height
+                Blit3(tex, tint, new Rect2(ox, origin.Y, sq, size.Y), new Rect2(0f, 0f, 0.25f, 1f));
+                Blit3(tex, tint, new Rect2(ox + sq, origin.Y, w - 2f * sq, size.Y), new Rect2(0.25f, 0f, 0.5f, 1f));
+                Blit3(tex, tint, new Rect2(ox + w - sq, origin.Y, sq, size.Y), new Rect2(0.75f, 0f, 0.25f, 1f));
+            }
+        }
+    }
+
+    /// <summary>Blit a UV sub-region (QC <c>drawsubpic</c>) of <paramref name="tex"/> into the panel-local
+    /// dest <paramref name="dst"/>. <paramref name="srcUv"/> is in 0..1 UV space (origin + size); converted to
+    /// the texture's pixel rect. Used by the 3-slice progress-bar cap render.</summary>
+    private void Blit3(Texture2D tex, Color tint, Rect2 dst, Rect2 srcUv)
+    {
+        if (dst.Size.X <= 0f || dst.Size.Y <= 0f) return;
+        Vector2 ts = tex.GetSize();
+        var srcPx = new Rect2(srcUv.Position.X * ts.X, srcUv.Position.Y * ts.Y,
+                              srcUv.Size.X * ts.X, srcUv.Size.Y * ts.Y);
+        DrawTextureRectRegion(tex, dst, srcPx, tint);
+    }
+
+    /// <summary>Draw a horizontal, left-aligned progress bar (QC <c>HUD_Panel_DrawProgressBar</c>, baralign 0).
+    /// Convenience wrapper over <see cref="DrawProgressBar"/> that first lays a dark track + a thin frame (the
+    /// port's existing look) then fills it with the skin <c>progressbar</c> art (flat-rect fallback). Kept so the
+    /// existing 3-arg callers (ammo / vehicle / vote) are unchanged.</summary>
     protected void DrawBar(Rect2 area, float fraction, Color fill)
     {
         fraction = Mathf.Clamp(fraction, 0f, 1f);
         DrawRect(area, new Color(0f, 0f, 0f, 0.35f));
-        if (fraction > 0f)
-            DrawRect(new Rect2(area.Position, new Vector2(area.Size.X * fraction, area.Size.Y)), fill);
+        DrawProgressBar(area, "progressbar", fraction, vertical: false, baralign: 0, fill, fill.A);
         DrawRect(area, new Color(1f, 1f, 1f, 0.15f), filled: false, width: 1f);
     }
 
@@ -437,16 +575,75 @@ public abstract partial class HudPanel : Control
 
     // ---- color helpers (QC HUD_Get_Num_Color: tint a value by how low it is) ----
 
-    /// <summary>Color a resource number by its fraction of max (QC <c>HUD_Get_Num_Color</c>).</summary>
-    protected Color NumColor(float value, float max)
+    /// <summary>The local player's resolved SHIRT (top-colormap) color (QC <c>HUD_Panel_GetColor</c>'s
+    /// <c>"shirt"</c> literal = <c>colormapPaletteColor(floor(_cl_color/16), false)</c>), or null when there is no
+    /// local player (pre-spawn / pure --connect). Fed once per frame by <see cref="Hud._Process"/>. Lets a panel's
+    /// <c>hud_panel_&lt;id&gt;_bg_color shirt</c> (and the dock's <c>hud_dock_color shirt</c>) tint to the player's
+    /// own upper color, matching Base; in a team game the engine forces both colormap nibbles to the team color, so
+    /// this naturally resolves to the team tint there.</summary>
+    public static Color? LocalShirtColor { get; set; }
+
+    /// <summary>The local player's resolved PANTS (bottom-colormap) color (QC <c>"pants"</c> literal =
+    /// <c>colormapPaletteColor(_cl_color % 16, true)</c>), or null when there is no local player. Fed once per frame
+    /// by <see cref="Hud._Process"/>. See <see cref="LocalShirtColor"/>.</summary>
+    public static Color? LocalPantsColor { get; set; }
+
+    /// <summary>The local player's TEAM color (QC <c>myteamcolors</c> — used by the <c>"team"</c> bg-color literal),
+    /// or null when not on a team / not teamplay. Fed once per frame by <see cref="Hud._Process"/>.</summary>
+    public static Color? LocalTeamColor { get; set; }
+
+    /// <summary>The shared HUD clock (QC <c>time</c>), fed once per frame by <see cref="Hud._Process"/>. Drives
+    /// the <see cref="NumColor"/> blink/pulse (and any other wall-clock HUD animation). Defaults to 0 so unit
+    /// tests that never tick the manager see a stable, deterministic color.</summary>
+    public static float HudClock { get; set; }
+
+    /// <summary>
+    /// Color a resource number by its fraction of max — the faithful port of QC <c>HUD_Get_Num_Color</c>
+    /// (hud.qc:123-163): a 5-stop ramp green→lightgreen→white→lightyellow→red by percent, with (when
+    /// <paramref name="blink"/>) a sine flash at ≥100% and a stronger pulse below 25%. <paramref name="blink"/>
+    /// defaults to true to match every QC panel caller (healtharmor / engineinfo); the crosshair passes false.
+    /// </summary>
+    protected Color NumColor(float value, float max, bool blink = true)
     {
         if (max <= 0f) return FgColor;
-        float f = Mathf.Clamp(value / max, 0f, 1f);
-        Color c = f >= 0.5f
-            ? new Color(1f, 1f, Mathf.Lerp(0.4f, 1f, (f - 0.5f) * 2f))
-            : new Color(1f, Mathf.Lerp(0.1f, 1f, f * 2f), 0.1f);
-        c.A = LiveFgAlpha;
-        return c;
+
+        // QC const vectors (hud.qc:125-129).
+        var color100 = new NVec3(0f, 1f, 0f);    // green
+        var color75 = new NVec3(0.4f, 0.9f, 0f); // lightgreen
+        var color50 = new NVec3(1f, 1f, 1f);     // white
+        var color25 = new NVec3(1f, 1f, 0.2f);   // lightyellow
+        var color10 = new NVec3(1f, 0f, 0f);     // red
+
+        float pct = value / max * 100f;
+        NVec3 c;
+        if (pct > 100f) c = color100;
+        else if (pct > 75f) c = Between(color75, color100, pct, 75f, 100f);
+        else if (pct > 50f) c = Between(color50, color75, pct, 50f, 75f);
+        else if (pct > 25f) c = Between(color25, color50, pct, 25f, 50f);
+        else if (pct > 10f) c = Between(color10, color25, pct, 10f, 25f);
+        else c = color10;
+
+        if (blink)
+        {
+            if (pct >= 100f) // hud.qc:148-154 — sine flash; fill the zero channels with sin(2πt).
+            {
+                float f = Mathf.Sin(2f * Mathf.Pi * HudClock);
+                if (c.X == 0f) c.X = f;
+                if (c.Y == 0f) c.Y = f;
+                if (c.Z == 0f) c.Z = f;
+            }
+            else if (pct < 25f) // hud.qc:155-159 — low-health pulse (stronger as pct→0).
+            {
+                float f = (1f - pct / 25f) * Mathf.Sin(2f * Mathf.Pi * HudClock);
+                c *= 1f - f;
+            }
+        }
+
+        return new Color(Mathf.Clamp(c.X, 0f, 1f), Mathf.Clamp(c.Y, 0f, 1f), Mathf.Clamp(c.Z, 0f, 1f),
+            LiveFgAlpha);
+
+        static NVec3 Between(NVec3 lo, NVec3 hi, float pctv, float min, float max2)
+            => lo + (hi - lo) * ((pctv - min) / (max2 - min));
     }
 
     /// <summary>Convert a sim-side (System.Numerics) color vector to a Godot <see cref="Color"/>.</summary>

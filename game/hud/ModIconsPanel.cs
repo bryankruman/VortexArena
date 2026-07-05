@@ -31,7 +31,7 @@ namespace XonoticGodot.Game.Hud;
 public partial class ModIconsPanel : HudPanel
 {
     /// <summary>Which gametype's objective renderer to draw (QC <c>gametype.m_modicons</c> selection).</summary>
-    public enum ModIconsMode { None, Ctf, Keyhunt, Domination, ClanArena, FreezeTag, Survival, Assault }
+    public enum ModIconsMode { None, Ctf, Keyhunt, Domination, ClanArena, FreezeTag, Survival, Assault, Keepaway, TeamKeepaway, Lms, Race, NexBall }
 
     /// <summary>The active renderer; <see cref="ModIconsMode.None"/> draws nothing (QC: no m_modicons set).</summary>
     public ModIconsMode Mode { get; set; } = ModIconsMode.None;
@@ -70,6 +70,94 @@ public partial class ModIconsPanel : HudPanel
     /// so this is fed by the port's net layer when it knows the role; 0 keeps parity (panel blank).</summary>
     public int AssaultStatus { get; set; }
 
+    /// <summary>Keepaway (QC <c>HUD_Mod_Keepaway</c>): true when the LOCAL player carries the ball (QC
+    /// <c>STAT(OBJECTIVE_STATUS) &amp; KA_CARRYING</c>). The port networks the carrier's net id in the status block;
+    /// <see cref="NetGame"/> resolves it against the local net id and sets this. The carrying icon flashes
+    /// (<c>blink</c>) + does the QC status-change expand transition; false draws nothing.</summary>
+    public bool KeepawayCarrying { get; set; }
+
+    /// <summary>NexBall (QC <c>HUD_Mod_NexBall</c>, cl_nexball.qc): true when the LOCAL player holds the nexball
+    /// (the wire carries the carrier net id; <see cref="NetGame"/> resolves it against the local net id). The
+    /// <c>nexball_carrying</c> icon flashes (<c>blink</c>) + does the QC status-change expand transition; false
+    /// draws nothing (QC mod_active forced 1 but nothing to show when not carrying).</summary>
+    public bool NexBallCarrying { get; set; }
+
+    /// <summary>NexBall power-meter phase (QC <c>HUD_Mod_NexBall</c> charge bar, cl_nexball.qc): the carrier's
+    /// <c>nb_pb_period</c> triangle-wave phase byte (0..255), networked in the NexBall status block and resolved by
+    /// <see cref="NetGame"/>. -1 = inactive (no charge → no bar drawn). While &gt;= 0 the local carrier is charging a
+    /// throw, and <see cref="DrawNexBall"/> draws the power bar whose length is the QC triangle wave
+    /// (launch power ramps minpower→maxpower→minpower over the meter period).</summary>
+    public int NexBallMeterPhase { get; set; } = -1;
+
+    // QC nexball prevstatus / statuschange_time: the carry edge + flip time for the expand transition (parallel to
+    // the Keepaway tracker).
+    private bool _nbPrevCarrying;
+    private double _nbStatusChangeTime;
+
+    // QC kaball_prevstatus / kaball_statuschange_time: the carrying-state edge + the time it last flipped, so the
+    // expanding-icon transition (drawpic_aspect_skin_expanding) plays for the first ~0.5s after pickup/loss.
+    private bool _kaPrevCarrying;
+    private double _kaStatusChangeTime;
+
+    /// <summary>Team Keepaway (QC <c>HUD_Mod_TeamKeepaway</c>): the LOCAL player's <c>STAT(TKA_BALLSTATUS)</c> bit
+    /// pack (carrying / per-team taken / dropped) — fed by <see cref="NetGame"/> from the per-recipient status
+    /// block. The carrying icon (or the team-taken icon) flashes (<c>blink</c>) + does the QC status-change expand
+    /// transition; 0 draws nothing.</summary>
+    public int TkaBallStatus { get; set; }
+
+    /// <summary>LMS (QC <c>HUD_Mod_LMS_Draw</c>): the leader count (QC <c>STAT(REDALIVE)</c>); 0 hides the panel.</summary>
+    public int LmsLeaderCount { get; set; }
+    /// <summary>LMS: the leader(s)' lives lead over the next-best player (QC <c>STAT(BLUEALIVE)</c>) — the colored
+    /// "+N" readout (yellow / orange at 3 / red at ≥4).</summary>
+    public int LmsLivesDiff { get; set; }
+    /// <summary>LMS: leaders are inside their radar show-window (QC <c>STAT(OBJECTIVE_STATUS)</c>) — overlays the
+    /// flag_stalemate icon while true.</summary>
+    public bool LmsLeadersVisible { get; set; }
+
+    // ---- Race/CTS mod-icon data (QC HUD_Mod_Race, cl_race.qc:59-164) ----
+    // The Race/CTS mod-icon shows the client's personal best (cached clientside in QC's ClientProgsDB) and the
+    // server record for this map, plus the race-award medal flash (race_status + race_status_name) with a 5-second
+    // fade.  The net layer feeds the three values + the medal-flash state on each record event and each frame.
+
+    /// <summary>QC <c>t = stof(db_get(ClientProgsDB, strcat(mi_shortname, rr, "time")))</c>: the local player's
+    /// personal-best lap time (seconds) for this map + record type. 0 = no personal best yet.</summary>
+    public float RaceModIconPb { get; set; }
+
+    /// <summary>QC <c>race_server_record</c> (RACE_NET_SERVER_RECORD): the server's all-time rank-1 time (seconds)
+    /// for this map. 0 = no server record yet.</summary>
+    public float RaceModIconServerRecord { get; set; }
+
+    // QC crecordtime_prev / srecordtime_prev: previous values to detect changes (for the expand animation).
+    private float _racePbPrev = -1f;
+    private double _racePbChangeTime;
+    private float _raceServerRecordPrev = -1f;
+    private double _raceServerRecordChangeTime;
+
+    // QC race_status / race_status_name / race_status_time: the medal flash state.
+    /// <summary>QC <c>race_status</c>: -1 none, 0 fail, 1 new personal best (newtime), 2 new rank (green/yellow),
+    /// 3 new server record. The mod-icon reflects the same event as the split-timer medal flash.</summary>
+    public int RaceModIconStatus { get; set; } = -1;
+
+    /// <summary>QC <c>race_status_name</c>: the player name shown under the medal (record holder / local player).</summary>
+    public string RaceModIconStatusName { get; set; } = "";
+
+    // QC race_status_prev / race_status_name_prev: edge-detect to re-arm the 5-second fade window.
+    private int _raceStatusPrev = -1;
+    private string _raceStatusNamePrev = "";
+    private double _raceStatusTime; // QC race_status_time = time + 5 (absolute expiry)
+
+    /// <summary>QC rank-color resolution for status==2: true = green medal (local player improved their own rank),
+    /// false = yellow (someone else moved into the rank). Set by the net layer alongside the status.</summary>
+    public bool RaceModIconStatusRankIsMine { get; set; } = true;
+
+    // QC tka.qh TKA_BALLSTATUS bits: per-team taken (BIT 0..3), self-carrying (BIT 4), dropped (BIT 5).
+    private const int TkaTakenRed = 1 << 0, TkaTakenBlue = 1 << 1, TkaTakenYellow = 1 << 2, TkaTakenPink = 1 << 3;
+    private const int TkaCarrying = 1 << 4;
+
+    // QC tkaball_prevstatus / tkaball_statuschange_time: the carrying edge + flip time for the expand transition.
+    private int _tkaPrevCarrying;
+    private double _tkaStatusChangeTime;
+
     // ---- CTF flag-status bit layout (QC common/gametypes/gametype/ctf/ctf.qh CTF_*_FLAG_TAKEN) ----
     // Each flag's 2-bit status is packed at a multiplier base; status = (stat / base) & 3:
     //   1 = taken (away from base), 2 = lost (dropped), 3 = carrying (you hold it).
@@ -81,6 +169,13 @@ public partial class ModIconsPanel : HudPanel
     private const int CtfFlagNeutral = 2048; // CTF_FLAG_NEUTRAL (one-flag mode marker, ctf.qh:56)
     private const int CtfShielded = 4096;   // CTF_SHIELDED (ctf.qh:57)
     private const int CtfStalemate = 8192;  // CTF_STALEMATE (ctf.qh:58)
+
+    // QC cl_ctf.qc per-flag status-change tracking (redflag_prevframe/_prevstatus/_statuschange_time, …): when a
+    // flag's 2-bit status changes the OLD status crossfades out (drawpic_aspect_skin_expanding) while the NEW one
+    // fades in over 0.5s (f = bound(0, elapsed*2, 1)). Index 0..4 = red/blue/yellow/pink/neutral.
+    private readonly int[] _ctfFlagPrevFrame = new int[5];
+    private readonly int[] _ctfFlagPrevStatus = new int[5];
+    private readonly double[] _ctfFlagChangeTime = new double[5];
 
     // QC NUM_TEAM_* team-membership bits of _teams_available: BIT(0)=red BIT(1)=blue BIT(2)=yellow BIT(3)=pink.
     private const int Num1 = 1, Num2 = 2, Num3 = 3, Num4 = 4;
@@ -130,6 +225,11 @@ public partial class ModIconsPanel : HudPanel
             case ModIconsMode.FreezeTag:  DrawCaStyle(LayoutCvar("freezetag_layout")); break;
             case ModIconsMode.Survival:   DrawSurvival(); break;
             case ModIconsMode.Assault:    DrawAssault(); break;
+            case ModIconsMode.Keepaway:   DrawKeepaway(); break;
+            case ModIconsMode.TeamKeepaway: DrawTeamKeepaway(); break;
+            case ModIconsMode.Lms:        DrawLms(); break;
+            case ModIconsMode.Race:       DrawRace(); break;
+            case ModIconsMode.NexBall:    DrawNexBall(); break;
             default: return; // None: draw nothing
         }
     }
@@ -213,6 +313,22 @@ public partial class ModIconsPanel : HudPanel
         return DrawSkinPic(pic, fit, new Color(1f, 1f, 1f, alpha));
     }
 
+    /// <summary>QC <c>drawpic_aspect_skin_expanding</c> (client/draw.qc): draw <paramref name="pic"/> aspect-fitted,
+    /// scaled up around its center by the QC <c>expandingbox_sizefactor</c> (<c>1.2/(1.2-fadelerp)</c>) and faded by
+    /// <c>(1-fadelerp)</c>. Used by the CTF status-change crossfade for the OLD-status flag icon. Silent on a miss
+    /// (the new icon already draws the swatch fallback).</summary>
+    private void DrawIconExpanding(Rect2 box, string pic, float alpha, float fadelerp)
+    {
+        fadelerp = Mathf.Clamp(fadelerp, 0f, 1f);
+        Rect2 fit = AspectFit(box, 1f);
+        float sz = 1.2f / (1.2f - fadelerp);              // QC expandingbox_sizefactor_from_fadelerp
+        var newSize = fit.Size * sz;
+        var newPos = fit.Position + fit.Size * (0.5f * (1f - sz)); // QC expandingbox_resize_centered_box_offset
+        float a = alpha * (1f - fadelerp);               // QC theAlpha * (1 - fadelerp)
+        if (a > 0f)
+            DrawSkinPic(pic, new Rect2(newPos, newSize), new Color(1f, 1f, 1f, a));
+    }
+
     /// <summary>Resolve a skin pic (skin -> default fall-through) the same way <see cref="HudPanel.DrawSkinPic"/>
     /// does, returning the raw texture (or null on miss) — needed for region draws.</summary>
     private static Texture2D? ResolveSkinPic(string bareName)
@@ -262,18 +378,39 @@ public partial class ModIconsPanel : HudPanel
         double now = CurrentTime();
         float carryAlpha = Blink(0.85f, 0.15f, 5f, now);
 
-        // Resolve each flag's icon name + alpha (QC X(team, cond) macro).
-        string? redIcon = CtfIcon("red", redflag, s, MyTeam != Num1 && (nteams & (1 << 0)) != 0, carryAlpha, out float ra);
-        string? blueIcon = CtfIcon("blue", blueflag, s, MyTeam != Num2 && (nteams & (1 << 1)) != 0, carryAlpha, out float ba);
-        string? yellowIcon = CtfIcon("yellow", yellowflag, s, MyTeam != Num3 && (nteams & (1 << 2)) != 0, carryAlpha, out float ya);
-        string? pinkIcon = CtfIcon("pink", pinkflag, s, MyTeam != Num4 && (nteams & (1 << 3)) != 0, carryAlpha, out float pa);
+        // QC X(team) status-change tracker: latch prevstatus on each change, compute elapsed → expand factor f.
+        float fRed = CtfTrack(0, redflag, now);
+        float fBlue = CtfTrack(1, blueflag, now);
+        float fYellow = CtfTrack(2, yellowflag, now);
+        float fPink = CtfTrack(3, pinkflag, now);
+        float fNeutral = CtfTrack(4, neutralflag, now);
+
+        // Resolve each flag's current icon + alpha (QC X(team, cond) macro).
+        bool redCond = MyTeam != Num1 && (nteams & (1 << 0)) != 0;
+        bool blueCond = MyTeam != Num2 && (nteams & (1 << 1)) != 0;
+        bool yellowCond = MyTeam != Num3 && (nteams & (1 << 2)) != 0;
+        bool pinkCond = MyTeam != Num4 && (nteams & (1 << 3)) != 0;
+        string? redIcon = CtfIcon("red", redflag, s, redCond, carryAlpha, out float ra);
+        string? blueIcon = CtfIcon("blue", blueflag, s, blueCond, carryAlpha, out float ba);
+        string? yellowIcon = CtfIcon("yellow", yellowflag, s, yellowCond, carryAlpha, out float ya);
+        string? pinkIcon = CtfIcon("pink", pinkflag, s, pinkCond, carryAlpha, out float pa);
         string? neutralIcon = CtfIcon("neutral", neutralflag, s, oneFlag, carryAlpha, out float na);
+
+        // Resolve each flag's PREVIOUS-status icon + alpha (QC X switch on team##flag_prevstatus). The crossfade-out
+        // art uses the carrying icon while currently carrying (QC "make it more visible") and the same shielded gate.
+        string? redPrev = CtfPrevIcon("red", _ctfFlagPrevStatus[0], redflag, s, redCond, carryAlpha, out float rpa);
+        string? bluePrev = CtfPrevIcon("blue", _ctfFlagPrevStatus[1], blueflag, s, blueCond, carryAlpha, out float bpa);
+        string? yellowPrev = CtfPrevIcon("yellow", _ctfFlagPrevStatus[2], yellowflag, s, yellowCond, carryAlpha, out float ypa);
+        string? pinkPrev = CtfPrevIcon("pink", _ctfFlagPrevStatus[3], pinkflag, s, pinkCond, carryAlpha, out float ppa);
+        string? neutralPrev = CtfPrevIcon("neutral", _ctfFlagPrevStatus[4], neutralflag, s, oneFlag, carryAlpha, out float npa);
 
         // QC layout split factors by team count (cl_ctf.qc:123-132).
         float fs, fs2, fs3;
         if (oneFlag)
         {
-            redIcon = blueIcon = yellowIcon = pinkIcon = null; // only the neutral flag in one-flag mode
+            // only the neutral flag in one-flag mode (QC nulls the team icons + their prevstatus)
+            redIcon = blueIcon = yellowIcon = pinkIcon = null;
+            redPrev = bluePrev = yellowPrev = pinkPrev = null;
             fs = fs2 = fs3 = 1f;
         }
         else
@@ -306,11 +443,44 @@ public partial class ModIconsPanel : HudPanel
         // flag_size: e1 * fs * size1 (long axis) + e2 * size2 (short axis).
         Vector2 flagSize = wide ? new Vector2(fs * size1, size2) : new Vector2(size2, fs * size1);
 
-        DrawFlag(redIcon, OffsetPos(redOff, size1, wide), flagSize, ra, stalemate, "R", TeamColors[0]);
-        DrawFlag(blueIcon, OffsetPos(blueOff, size1, wide), flagSize, ba, stalemate, "B", TeamColors[1]);
-        DrawFlag(yellowIcon, OffsetPos(yellowOff, size1, wide), flagSize, ya, stalemate, "Y", TeamColors[2]);
-        DrawFlag(pinkIcon, OffsetPos(pinkOff, size1, wide), flagSize, pa, stalemate, "P", TeamColors[3]);
-        DrawFlag(neutralIcon, Vector2.Zero, flagSize, na, stalemate, "N", new Color(0.85f, 0.85f, 0.85f, 1f));
+        DrawFlag(redIcon, redPrev, fRed, OffsetPos(redOff, size1, wide), flagSize, ra, rpa, stalemate, "R", TeamColors[0]);
+        DrawFlag(blueIcon, bluePrev, fBlue, OffsetPos(blueOff, size1, wide), flagSize, ba, bpa, stalemate, "B", TeamColors[1]);
+        DrawFlag(yellowIcon, yellowPrev, fYellow, OffsetPos(yellowOff, size1, wide), flagSize, ya, ypa, stalemate, "Y", TeamColors[2]);
+        DrawFlag(pinkIcon, pinkPrev, fPink, OffsetPos(pinkOff, size1, wide), flagSize, pa, ppa, stalemate, "P", TeamColors[3]);
+        DrawFlag(neutralIcon, neutralPrev, fNeutral, Vector2.Zero, flagSize, na, npa, stalemate, "N", new Color(0.85f, 0.85f, 0.85f, 1f));
+    }
+
+    /// <summary>QC X(team) status-change tracker (cl_ctf.qc:63-70): when the flag's status differs from the
+    /// previous frame, latch the old status into prevstatus and stamp the change time. Returns
+    /// <c>f = bound(0, elapsed*2, 1)</c> — the 0→1 fade-in factor for the new icon (and 1→0 expand for the old).</summary>
+    private float CtfTrack(int idx, int flag, double now)
+    {
+        if (flag != _ctfFlagPrevFrame[idx])
+        {
+            _ctfFlagChangeTime[idx] = now;
+            _ctfFlagPrevStatus[idx] = _ctfFlagPrevFrame[idx];
+            _ctfFlagPrevFrame[idx] = flag;
+        }
+        float elapsed = (float)(now - _ctfFlagChangeTime[idx]);
+        return Mathf.Clamp(elapsed * 2f, 0f, 1f);
+    }
+
+    /// <summary>QC X(team) prevstatus icon resolver (cl_ctf.qc:95-107): the crossfade-out art for the OLD status.
+    /// Like <see cref="CtfIcon"/> but the default branch keeps the carrying icon when the flag is currently being
+    /// carried ("make it more visible"), else falls to the shielded icon under the same gate.</summary>
+    private string? CtfPrevIcon(string team, int prevStatus, int curFlag, int statItems, bool cond, float carryAlpha, out float alpha)
+    {
+        alpha = 1f;
+        switch (prevStatus)
+        {
+            case 1: return $"flag_{team}_taken";
+            case 2: return $"flag_{team}_lost";
+            case 3: alpha = carryAlpha; return $"flag_{team}_carrying";
+            default:
+                if (curFlag == 3) return $"flag_{team}_carrying";
+                if ((statItems & CtfShielded) != 0 && cond) return $"flag_{team}_shielded";
+                return null;
+        }
     }
 
     private Vector2 OffsetPos(float frac, float size1, bool wide)
@@ -332,18 +502,26 @@ public partial class ModIconsPanel : HudPanel
         }
     }
 
-    /// <summary>QC X(team) draw macro: optional stalemate overlay, then the flag icon (aspect-fit skin pic with
-    /// a colored-swatch + tag fallback).</summary>
-    private void DrawFlag(string? icon, Vector2 offset, Vector2 flagSize, float alpha, bool stalemate,
-        string fallbackLabel, Color fallbackColor)
+    /// <summary>QC X(team) draw macro (cl_ctf.qc:180-188): stalemate overlay (when a current icon is set), then the
+    /// PREVIOUS-status icon expanding+fading out while the transition factor <paramref name="f"/> &lt; 1, then the
+    /// current flag icon faded in by <paramref name="f"/> (aspect-fit skin pic with a colored-swatch + tag fallback).</summary>
+    private void DrawFlag(string? icon, string? prevIcon, float f, Vector2 offset, Vector2 flagSize,
+        float alpha, float prevAlpha, bool stalemate, string fallbackLabel, Color fallbackColor)
     {
-        if (string.IsNullOrEmpty(icon)) return;
         var box = new Rect2(offset, flagSize);
 
-        if (stalemate)
+        // QC: if (team##_icon && ctf_stalemate) draw flag_stalemate.
+        if (!string.IsNullOrEmpty(icon) && stalemate)
             DrawIconAspect(box, "flag_stalemate", LiveFgAlpha);
 
-        float a = LiveFgAlpha * alpha;
+        // QC: if (team##_icon_prevstatus && f < 1) drawpic_aspect_skin_expanding(... prevstatus, alpha_prevstatus, f).
+        if (!string.IsNullOrEmpty(prevIcon) && f < 1f)
+            DrawIconExpanding(box, prevIcon, LiveFgAlpha * prevAlpha, f);
+
+        if (string.IsNullOrEmpty(icon)) return;
+
+        // QC: if (team##_icon) drawpic_aspect_skin(... team##_icon, alpha * f).
+        float a = LiveFgAlpha * alpha * f;
         if (!DrawIconAspect(box, icon, a))
         {
             // Stand-in so the flag is never invisible: a team swatch + a short state tag.
@@ -645,6 +823,375 @@ public partial class ModIconsPanel : HudPanel
         }
     }
 
+    // ------------------------------------------------------------------------------------------ Keepaway
+    // Port of HUD_Mod_Keepaway (cl_keepaway.qc): one centered keepawayball_carrying icon shown only while the
+    // LOCAL player holds the ball (KA_CARRYING). The carrying flag pulses (blink 0.85/0.15/5) and a status-change
+    // expand transition (drawpic_aspect_skin_expanding) plays for the first ~0.5s after the carry state flips.
+    private void DrawKeepaway()
+    {
+        double now = CurrentTime();
+
+        // QC: kaball != kaball_prevstatus → record the change time (drives the expand transition's elapsed clock).
+        if (KeepawayCarrying != _kaPrevCarrying)
+        {
+            _kaStatusChangeTime = now;
+            _kaPrevCarrying = KeepawayCarrying;
+        }
+
+        if (!KeepawayCarrying)
+            return; // QC mod_active is forced 1, but with no carry there's nothing to draw → blank panel
+
+        DrawBackground();
+
+        float kaAlpha = Blink(0.85f, 0.15f, 5f, now);
+        float f = Mathf.Clamp((float)(now - _kaStatusChangeTime) * 2f, 0f, 1f); // QC bound(0, elapsed*2, 1)
+
+        var box = new Rect2(Vector2.Zero, Size2);
+        float a = LiveFgAlpha * kaAlpha * f;
+        if (!DrawIconAspect(box, "keepawayball_carrying", a))
+        {
+            // Stand-in so the carry indicator is never invisible: a small ball glyph + "BALL" tag.
+            Rect2 fit = AspectFit(box, 1f);
+            var col = new Color(1f, 0.85f, 0.2f, a);
+            DrawRect(new Rect2(fit.Position.X + fit.Size.X * 0.3f, fit.Position.Y + fit.Size.Y * 0.18f,
+                fit.Size.X * 0.4f, fit.Size.Y * 0.4f), col);
+            int sz = (int)Mathf.Clamp(fit.Size.Y * 0.28f, 8f, 16f);
+            DrawTextCentered(new Vector2(fit.Position.X, fit.Position.Y + fit.Size.Y * 0.62f),
+                fit.Size.X, "BALL", new Color(1f, 1f, 1f, a), sz);
+        }
+    }
+
+    // -------------------------------------------------------------------------------------- TeamKeepaway
+    // Port of HUD_Mod_TeamKeepaway (cl_tka.qc): always-active mod icon. Draws keepawayball_carrying while the
+    // LOCAL player carries (TKA_BALL_CARRYING), else the tka_taken_<color> icon for the team that holds the ball
+    // (TKA_BALL_TAKEN_*). The carrying flag pulses (blink 0.85/0.15/5) and a status-change expand transition
+    // plays for the first ~0.5s after the carry state flips.
+    private void DrawTeamKeepaway()
+    {
+        double now = CurrentTime();
+        int stat = TkaBallStatus;
+        int carrying = stat & TkaCarrying; // QC: tkaball = stat_items & TKA_BALL_CARRYING
+
+        // QC: tkaball != tkaball_prevstatus → record the change time (drives the expand transition's clock).
+        if (carrying != _tkaPrevCarrying)
+        {
+            _tkaStatusChangeTime = now;
+            _tkaPrevCarrying = carrying;
+        }
+
+        // QC mod_active is forced 1, but with no carrying/taken bit there's nothing to draw → blank panel.
+        string? icon = null;
+        if (carrying != 0) icon = "keepawayball_carrying"; // QC TODO: unique team-based icon while carrying
+        else if ((stat & TkaTakenRed) != 0) icon = "tka_taken_red";
+        else if ((stat & TkaTakenBlue) != 0) icon = "tka_taken_blue";
+        else if ((stat & TkaTakenYellow) != 0) icon = "tka_taken_yellow";
+        else if ((stat & TkaTakenPink) != 0) icon = "tka_taken_pink";
+        if (icon is null)
+            return;
+
+        DrawBackground();
+
+        float tkaAlpha = Blink(0.85f, 0.15f, 5f, now);
+        float f = Mathf.Clamp((float)(now - _tkaStatusChangeTime) * 2f, 0f, 1f); // QC bound(0, elapsed*2, 1)
+
+        var box = new Rect2(Vector2.Zero, Size2);
+        float a = LiveFgAlpha * tkaAlpha * f;
+        if (!DrawIconAspect(box, icon, a))
+        {
+            // Stand-in so the indicator is never invisible: a small ball glyph + tag.
+            Rect2 fit = AspectFit(box, 1f);
+            var col = carrying != 0 ? new Color(1f, 0.85f, 0.2f, a) : new Color(0.85f, 0.85f, 0.85f, a);
+            DrawRect(new Rect2(fit.Position.X + fit.Size.X * 0.3f, fit.Position.Y + fit.Size.Y * 0.18f,
+                fit.Size.X * 0.4f, fit.Size.Y * 0.4f), col);
+            int sz = (int)Mathf.Clamp(fit.Size.Y * 0.28f, 8f, 16f);
+            DrawTextCentered(new Vector2(fit.Position.X, fit.Position.Y + fit.Size.Y * 0.62f),
+                fit.Size.X, carrying != 0 ? "BALL" : "TKA", new Color(1f, 1f, 1f, a), sz);
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------ NexBall
+    // Port of HUD_Mod_NexBall (common/gametypes/gametype/nexball/cl_nexball.qc): one centered nexball_carrying icon
+    // shown only while the LOCAL player holds the ball. The carrying flag pulses (blink 0.85/0.15/5) and a
+    // status-change expand transition (drawpic_aspect_skin_expanding) plays for the first ~0.5s after the carry
+    // state flips — identical shape to HUD_Mod_Keepaway, with the nexball_carrying skin art (shipped in every skin).
+    private void DrawNexBall()
+    {
+        double now = CurrentTime();
+
+        // QC: nb != nb_prevstatus → record the change time (drives the expand transition's elapsed clock).
+        if (NexBallCarrying != _nbPrevCarrying)
+        {
+            _nbStatusChangeTime = now;
+            _nbPrevCarrying = NexBallCarrying;
+        }
+
+        if (!NexBallCarrying)
+            return; // QC mod_active is forced 1, but with no carry there's nothing to draw → blank panel
+
+        DrawBackground();
+
+        float nbAlpha = Blink(0.85f, 0.15f, 5f, now);
+        float f = Mathf.Clamp((float)(now - _nbStatusChangeTime) * 2f, 0f, 1f); // QC bound(0, elapsed*2, 1)
+
+        var box = new Rect2(Vector2.Zero, Size2);
+        float a = LiveFgAlpha * nbAlpha * f;
+        if (!DrawIconAspect(box, "nexball_carrying", a))
+        {
+            // Stand-in so the carry indicator is never invisible: a small ball glyph + "BALL" tag.
+            Rect2 fit = AspectFit(box, 1f);
+            var col = new Color(1f, 0.85f, 0.2f, a);
+            DrawRect(new Rect2(fit.Position.X + fit.Size.X * 0.3f, fit.Position.Y + fit.Size.Y * 0.18f,
+                fit.Size.X * 0.4f, fit.Size.Y * 0.4f), col);
+            int sz = (int)Mathf.Clamp(fit.Size.Y * 0.28f, 8f, 16f);
+            DrawTextCentered(new Vector2(fit.Position.X, fit.Position.Y + fit.Size.Y * 0.62f),
+                fit.Size.X, "BALL", new Color(1f, 1f, 1f, a), sz);
+        }
+
+        // QC HUD_Mod_NexBall power-meter bar (cl_nexball.qc): while the carrier is charging a throw, draw a
+        // progress bar whose length is the nb_pb_period triangle wave — launch power ramps minpower→maxpower→
+        // minpower across the meter period. NexBallMeterPhase carries the wave PHASE (0..255); -1 = not charging.
+        int meterPhase = NexBallMeterPhase;
+        if (meterPhase >= 0)
+        {
+            // QC nb_pb_period triangle wave: 0→127 ramps up, 128→255 ramps down (peak at the half period).
+            int mp = Mathf.Clamp(meterPhase, 0, 255);
+            float tri = mp < 128 ? mp / 127f : (255 - mp) / 127f;
+            tri = Mathf.Clamp(tri, 0f, 1f);
+
+            // Skin-tinted (hud_progressbar_nexball_color), QC default '1 0.85 0.2'. Sized to the panel box, sitting
+            // along the bottom band so it reads under the carrying icon — reuse the shared progress-bar primitive.
+            Color barCol = GlobalColor("hud_progressbar_nexball_color", new Color(1f, 0.85f, 0.2f));
+            float pad = Padding;
+            float barH = Mathf.Max(2f, Size2.Y * 0.18f);
+            var barBox = new Rect2(pad, Size2.Y - pad - barH, Mathf.Max(0f, Size2.X - pad * 2f), barH);
+            if (barBox.Size.X > 0f && barBox.Size.Y > 0f)
+            {
+                DrawRect(barBox, new Color(0f, 0f, 0f, 0.35f * LiveFgAlpha));
+                DrawProgressBar(barBox, "progressbar", tri, vertical: false, baralign: 0, barCol, LiveFgAlpha);
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------------------------------ LMS
+    // Port of HUD_Mod_LMS_Draw (common/gametypes/gametype/lms/cl_lms.qc:27-64): a 2-item HUD_GetRowCount grid
+    // (aspect 2) — item 1 = the leader-count icon (player_neutral, with a flag_stalemate overlay when the
+    // leaders are inside their radar show-window) + the leader count; item 2 = the colored "+N" lives lead
+    // (yellow / orange at diff==3 / red at diff>=4). Drawn only when there is at least one leader.
+    private void DrawLms()
+    {
+        int leadersCount = LmsLeaderCount; // QC STAT(REDALIVE)
+        if (leadersCount == 0)
+            return; // QC: mod_active = 0; return; — nothing to show
+
+        DrawBackground();
+
+        // QC: rows = HUD_GetRowCount(2, mySize, 2); columns = ceil(2 / rows).
+        const float aspectRatio = 2f;
+        int rows = Mathf.Max(1, HudGetRowCount(2, Size2, aspectRatio));
+        int columns = Mathf.Max(1, Mathf.CeilToInt(2f / rows));
+        var itemSize = new Vector2(Size2.X / columns, Size2.Y / rows);
+
+        // ---- item 1: the leader-count icon (left half = icon, right half = the count). ----
+        var pos = Vector2.Zero;
+        bool visibleLeaders = LmsLeadersVisible; // QC STAT(OBJECTIVE_STATUS)
+        var iconBox = new Rect2(pos, new Vector2(0.5f * itemSize.X, itemSize.Y));
+
+        // QC: a flag_stalemate overlay flashes under the player_neutral icon while the leaders are radar-visible.
+        if (visibleLeaders)
+            DrawIconAspect(iconBox, "flag_stalemate", LiveFgAlpha);
+        if (!DrawIconAspect(iconBox, "player_neutral", LiveFgAlpha))
+        {
+            Rect2 ifit = AspectFit(iconBox, 1f);
+            DrawRect(new Rect2(ifit.Position.X + ifit.Size.X * 0.12f, ifit.Position.Y + ifit.Size.Y * 0.12f,
+                ifit.Size.X * 0.76f, ifit.Size.Y * 0.76f), new Color(0.85f, 0.85f, 0.85f, 0.85f * LiveFgAlpha));
+        }
+        int countFont = (int)Mathf.Clamp(itemSize.Y * 0.8f, 9f, 40f);
+        DrawTextCentered(new Vector2(pos.X + 0.5f * itemSize.X, pos.Y + (itemSize.Y - countFont) * 0.5f),
+            0.5f * itemSize.X, leadersCount.ToString(), new Color(1f, 1f, 1f, LiveFgAlpha), countFont);
+
+        // QC: the second item is below (rows > 1) or to the right (single row).
+        if (rows > 1) pos.Y += itemSize.Y;
+        else pos.X += itemSize.X;
+
+        // ---- item 2: the colored "+N" lives lead (QC color ladder: yellow, orange at 3, red at >=4). ----
+        int livesDiff = LmsLivesDiff; // QC STAT(BLUEALIVE)
+        Color color = livesDiff >= 4 ? new Color(1f, 0f, 0f, LiveFgAlpha)
+                    : livesDiff == 3 ? new Color(1f, 0.5f, 0f, LiveFgAlpha)
+                    : new Color(1f, 1f, 0f, LiveFgAlpha);
+        const float scale = 0.75f; // QC drawstring_aspect(... itemSize * scale ...)
+        int diffFont = (int)Mathf.Clamp(itemSize.Y * scale, 9f, 40f);
+        DrawTextCentered(new Vector2(pos.X, pos.Y + (itemSize.Y - diffFont) * 0.5f),
+            itemSize.X, "+" + livesDiff, color, diffFont);
+    }
+
+    // --------------------------------------------------------------------------------------------- Race/CTS
+    // Port of HUD_Mod_Race (cl_race.qc:59-164): the Race/CTS mod-icon — personal best + server best times
+    // + the race-award medal flash (race_new* art: fail / newtime PB / new-rank green or yellow / server record),
+    // faded over 5s. Only shown when the score primary column is a TIME column and the game is NOT a team race
+    // (QC: "if(!(scores_flags(ps_primary) & SFL_TIME) || teamplay) { mod_active = 0; return; }").
+    //
+    // The layout: when the panel is wider than tall (the default), text+time rows sit on the left half and the
+    // medal icon on the right half (each in a centered squareSize×squareSize box). Tall panels use the upper
+    // half for text+time and the lower half for the medal.
+    //
+    // QC race_showTime draws "Personal best" + TIME_ENCODED_TOSTRING(pb), "Server best" + TIME_ENCODED_TOSTRING(sr).
+    // An expand transition (drawstring_aspect_expanding) fades in the row for ~1 s when the value changes. The port
+    // approximates this with an alpha ramp from 0 → 1 over 1 s after the value changes.
+    private void DrawRace()
+    {
+        double now = CurrentTime();
+
+        // QC: if(!(scores_flags(ps_primary) & SFL_TIME) || teamplay) { mod_active = 0; return; }
+        // The net layer sets Mode=Race only when the local gametype is Race/CTS with SFL_TIME primary; skip in
+        // a team race (no records shown).  An empty pb+server-record is fine to show (draws "0:00.00").
+
+        // ---- personal-best change detection → re-arm the expand animation ---
+        float pb = RaceModIconPb;
+        if (pb != _racePbPrev)
+        {
+            _racePbPrev = pb;
+            _racePbChangeTime = now;
+        }
+        // ---- server-record change detection → re-arm the expand animation ---
+        float sr = RaceModIconServerRecord;
+        if (sr != _raceServerRecordPrev)
+        {
+            _raceServerRecordPrev = sr;
+            _raceServerRecordChangeTime = now;
+        }
+
+        // ---- medal-status edge → set the 5-second fade window (QC race_status_time = time + 5) ----
+        int status = RaceModIconStatus;
+        string statusName = RaceModIconStatusName;
+        if (status != _raceStatusPrev || statusName != _raceStatusNamePrev)
+        {
+            if (status >= 0)
+                _raceStatusTime = now + 5.0; // QC: race_status_time = time + 5
+            _raceStatusPrev = status;
+            _raceStatusNamePrev = statusName;
+        }
+        // QC: if (race_status_time - time <= 0) reset
+        if (_raceStatusTime - now <= 0.0 && status >= 0)
+        {
+            RaceModIconStatus = -1;
+            RaceModIconStatusName = "";
+            status = -1;
+        }
+
+        // Any data to show?  Suppress entirely when there is nothing (QC mod_active = 0 => blank).
+        bool hasPb = pb > 0f;
+        bool hasServer = sr > 0f;
+        if (!hasPb && !hasServer && status < 0)
+            return;
+
+        DrawBackground();
+
+        Vector2 size = Size2;
+        float squareSize;
+        Vector2 textPos, medalPos;
+        if (size.X > size.Y)
+        {
+            // QC: text on left, medal on right.
+            squareSize = Mathf.Min(size.Y, size.X / 2f);
+            float ox = 0.5f * Mathf.Max(0f, size.X / 2f - squareSize);
+            float oy = 0.5f * (size.Y - squareSize);
+            textPos = new Vector2(ox, oy);
+            medalPos = new Vector2(ox + size.X * 0.5f, oy);
+        }
+        else
+        {
+            // QC: text on top, medal below.
+            squareSize = Mathf.Min(size.X, size.Y / 2f);
+            float ox = 0.5f * (size.X - squareSize);
+            float oy = 0.5f * Mathf.Max(0f, size.Y / 2f - squareSize);
+            textPos = new Vector2(ox, oy);
+            medalPos = new Vector2(ox, oy + size.Y * 0.5f);
+        }
+
+        // QC textSize = vec2(squareSize, 0.25 * squareSize); each row is 0.25*squareSize tall.
+        float rowH = 0.25f * squareSize;
+        int rowSz = (int)Mathf.Clamp(rowH * 0.75f, 8f, 20f);
+
+        // QC race_showTime draws the label on the left and the time on the right of the row.
+        // "Personal best" at textPos, "Server best" at textPos + eY * 0.5 * squareSize.
+        float pbFade = Mathf.Clamp((float)(now - _racePbChangeTime), 0f, 1f);
+        float srFade = Mathf.Clamp((float)(now - _raceServerRecordChangeTime), 0f, 1f);
+        float baseAlpha = LiveFgAlpha;
+
+        DrawRaceTimeRow(textPos, squareSize, rowH, rowSz, "Personal best", pb, baseAlpha * pbFade);
+        DrawRaceTimeRow(new Vector2(textPos.X, textPos.Y + 0.5f * squareSize), squareSize, rowH, rowSz,
+            "Server best", sr, baseAlpha * srFade);
+
+        // ---- medal flash (QC race_status 0/1/2/3, faded over last second of the 5-s window) ----
+        if (status < 0 || _raceStatusTime <= now) return;
+        float a = Mathf.Clamp((float)(_raceStatusTime - now), 0f, 1f); // QC bound(0, race_status_time - time, 1)
+        if (a <= 0f) return;
+
+        string art = status switch
+        {
+            0 => "race_newfail",
+            1 => "race_newtime",
+            2 => RaceModIconStatusRankIsMine ? "race_newrankgreen" : "race_newrankyellow",
+            3 => "race_newrecordserver",
+            _ => "",
+        };
+        if (art == "") return;
+
+        // QC: if(race_status == 0) drawpic at medalPos '1 1 0' * squareSize, else '1 1 0' * 0.8 * squareSize offset
+        float iconSz = status == 0 ? squareSize : squareSize * 0.8f;
+        float iconOff = status == 0 ? 0f : squareSize * 0.1f;
+        var iconBox = new Rect2(medalPos.X + iconOff, medalPos.Y, iconSz, iconSz);
+        if (!DrawIconAspect(iconBox, art, baseAlpha * a))
+        {
+            // Stand-in: a colored disc in the medal square.
+            Color disc = status switch
+            {
+                0 => new Color(0.8f, 0.2f, 0.1f, baseAlpha * a),
+                3 => new Color(1f, 0.55f, 0f, baseAlpha * a),
+                2 => RaceModIconStatusRankIsMine
+                    ? new Color(0.3f, 1f, 0.3f, baseAlpha * a)
+                    : new Color(1f, 0.9f, 0.2f, baseAlpha * a),
+                _ => new Color(0.6f, 0.8f, 1f, baseAlpha * a),
+            };
+            Rect2 fit = AspectFit(iconBox, 1f);
+            DrawCircle(fit.GetCenter(), fit.Size.X * 0.4f, disc);
+        }
+
+        // QC: player name at medalPos + '0 0.8 0' * squareSize; ordinal at + '0 0.15 0' * squareSize.
+        int nameSz = (int)Mathf.Clamp(squareSize * 0.1f, 7f, 14f);
+        if (!string.IsNullOrEmpty(statusName))
+            DrawTextCentered(new Vector2(medalPos.X, medalPos.Y + 0.8f * squareSize), squareSize,
+                statusName, new Color(1f, 1f, 1f, baseAlpha * a), nameSz);
+    }
+
+    /// <summary>QC <c>race_showTime</c>: draw a label on the left half and the formatted time on the right half of
+    /// a row, with the QC expand-transition (approximated as an alpha ramp from 0 → 1 over 1s after the value
+    /// changes; <paramref name="fade"/> = elapsed since last change clamped to 0..1).</summary>
+    private void DrawRaceTimeRow(Vector2 origin, float squareSize, float rowH, int sz,
+        string label, float seconds, float fade)
+    {
+        float alpha = LiveFgAlpha * fade;
+        if (alpha <= 0f) return;
+        string timeStr = FormatRaceTime(seconds);
+        float halfW = squareSize * 0.5f;
+        var col = new Color(1f, 1f, 1f, alpha);
+        DrawTextCentered(new Vector2(origin.X, origin.Y + (rowH - sz) * 0.5f), halfW, label, col, sz);
+        DrawTextCentered(new Vector2(origin.X + halfW, origin.Y + (rowH - sz) * 0.5f), halfW, timeStr, col, sz);
+    }
+
+    /// <summary>QC <c>TIME_ENCODED_TOSTRING</c> M:SS.HH format for the mod-icon time rows.</summary>
+    private static string FormatRaceTime(float seconds)
+    {
+        if (!float.IsFinite(seconds) || seconds <= 0f) return "";
+        if (seconds > 5999.99f) seconds = 5999.99f;
+        int h = Mathf.RoundToInt(seconds * 100f);
+        int minutes = h / 6000;
+        int rem = h - minutes * 6000;
+        int s = rem / 100;
+        int hh = rem % 100;
+        return $"{minutes}:{s:D2}.{hh:D2}";
+    }
+
     // -------------------------------------------------------------------------------------------------
     //  Helpers
     // -------------------------------------------------------------------------------------------------
@@ -666,4 +1213,10 @@ public partial class ModIconsPanel : HudPanel
         float a = baseAlpha + amplitude * Mathf.Sin((float)now * frequency);
         return float.IsFinite(a) ? Mathf.Clamp(a, 0f, 1f) : baseAlpha;
     }
+
+    /// <summary>Resolve a global <c>hud_progressbar_*_color</c> skin cvar to a Color (QC '1 0.85 0.2' RGB triplet),
+    /// falling back to <paramref name="fallback"/> when unset/unparseable. Same shape as the per-panel helper in
+    /// HealthArmorPanel/PhysicsPanel.</summary>
+    private static Color GlobalColor(string name, Color fallback)
+        => TryParseRgb(GlobalStr(name), out Color c) ? c : fallback;
 }

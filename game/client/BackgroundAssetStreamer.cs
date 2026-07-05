@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
-using System.Threading.Tasks;
 using Godot;
 using XonoticGodot.Common.Diagnostics;
 
@@ -12,9 +11,9 @@ namespace XonoticGodot.Game.Client;
 /// Background asset streaming pipeline (PERFORMANCE_REPORT.md §5 S1). Turns a synchronous cold asset load (a
 /// 30–300 ms main-thread stall to read + parse + decode + GPU-upload) into a two-phase async job: the pure-C#
 /// OFF-THREAD phase (VFS read + format parse + image decode — none of it touches Godot's RenderingServer) runs
-/// on the thread pool, and the MAIN-THREAD phase (turning the parsed data into a <c>Mesh</c>/<c>Material</c>/
-/// <c>Texture</c> + attaching the node) is drained from a priority queue in <see cref="_Process"/> under a small
-/// millisecond budget — so even a burst of requests never spikes a frame.
+/// on a small dedicated worker lane (see the lane note below), and the MAIN-THREAD phase (turning the parsed
+/// data into a <c>Mesh</c>/<c>Material</c>/<c>Texture</c> + attaching the node) is drained from a priority queue
+/// in <see cref="_Process"/> under a small millisecond budget — so even a burst of requests never spikes a frame.
 ///
 /// <para>Requests carry a <see cref="Priority"/> (a viewmodel swap the player is waiting on = High, a distant
 /// player's model = Low); the main-thread drain always builds the highest-priority ready job first. The off-
@@ -40,7 +39,7 @@ public partial class BackgroundAssetStreamer : Node
     private int _inFlight; // off-thread phases still running (diagnostics)
 
     /// <summary>
-    /// Queue an asset for streaming: run <paramref name="offThread"/> on the thread pool, then hand its result to
+    /// Queue an asset for streaming: run <paramref name="offThread"/> on the worker lane, then hand its result to
     /// <paramref name="onMain"/> on the main thread within the per-frame budget. <paramref name="offThread"/> must
     /// be pure C# (no Godot RenderingServer/scene-tree calls); a null result is dropped.
     /// <paramref name="label"/> (optional) names the asset in the profiler's forensic event stream, so a hitch
@@ -51,7 +50,7 @@ public partial class BackgroundAssetStreamer : Node
     {
         Interlocked.Increment(ref _inFlight);
         long seq = Interlocked.Increment(ref _seq);
-        Task.Run(() =>
+        PostWork(priority, seq, () =>
         {
             T? result = null;
             try { result = offThread(); }
@@ -109,6 +108,75 @@ public partial class BackgroundAssetStreamer : Node
                 Prof.Event($"stream: {label} built ({sw.Elapsed.TotalMilliseconds - t0:0.0}ms)");
             if (sw.Elapsed.TotalMilliseconds >= BudgetMs)
                 break; // budget spent — finish the rest next frame
+        }
+    }
+
+    // -------------------------------------------------------------------------------------------------
+    //  Bounded off-thread worker lane (perf 2026-07-03). Request used to fan every job out via raw
+    //  Task.Run, so a model/texture wave (one job per texture × a roster of models at load/bot-join)
+    //  landed on a dozen+ DISTINCT thread-pool threads on a many-core box. Every [ThreadStatic] read/
+    //  decode scratch (AssetSystem/AssetLoader file buffers, and RgbaDecodeBuffer before it went shared)
+    //  grew one copy PER THREAD and never converged — the 100-230 MB single-frame alloc storms at
+    //  load/join — and the herd competed with the main thread for cores. A small FIXED set of dedicated
+    //  workers pins thread identity (per-thread scratch converges and stays warm), caps concurrent
+    //  buffer demand, and honours Priority for the OFF-thread phase too (a live player-model job
+    //  overtakes queued idle-warm work; Task.Run ran them all at once). The lane is process-wide and
+    //  outlives the per-session streamer NODES — like the thread pool it replaces; idle workers park in
+    //  Monitor.Wait and, being background threads, never block process exit.
+    // -------------------------------------------------------------------------------------------------
+
+    /// <summary>Worker-lane width: enough for a load-time texture wave to overlap the main thread's build
+    /// work without herding a many-core pool (see the lane note above).</summary>
+    public static int WorkerCount { get; } = Math.Clamp(System.Environment.ProcessorCount / 4, 2, 4);
+
+    private static readonly object WorkGate = new();
+    private static readonly List<(Priority Prio, long Seq, Action Work)> WorkQueue = new();
+    private static Thread[]? _workers;
+
+    private static void PostWork(Priority priority, long seq, Action work)
+    {
+        lock (WorkGate)
+        {
+            if (_workers is null)
+            {
+                _workers = new Thread[WorkerCount];
+                for (int i = 0; i < _workers.Length; i++)
+                {
+                    _workers[i] = new Thread(WorkerLoop) { IsBackground = true, Name = $"AssetStreamer-{i}" };
+                    _workers[i].Start();
+                }
+            }
+            WorkQueue.Add((priority, seq, work));
+            Monitor.Pulse(WorkGate);
+        }
+    }
+
+    private static void WorkerLoop()
+    {
+        while (true)
+        {
+            Action work;
+            lock (WorkGate)
+            {
+                while (WorkQueue.Count == 0)
+                    Monitor.Wait(WorkGate);
+                // Highest priority (lowest enum), then FIFO by sequence — the same order as the main-thread
+                // drain. The queue peaks at a few hundred texture jobs during a warm wave; linear scan.
+                int best = 0;
+                for (int i = 1; i < WorkQueue.Count; i++)
+                {
+                    var a = WorkQueue[i];
+                    var b = WorkQueue[best];
+                    if (a.Prio < b.Prio || (a.Prio == b.Prio && a.Seq < b.Seq))
+                        best = i;
+                }
+                work = WorkQueue[best].Work;
+                WorkQueue.RemoveAt(best);
+            }
+            // The posted body handles its own exceptions (Request wraps offThread); this guard only keeps a
+            // worker alive if the bookkeeping itself ever throws.
+            try { work(); }
+            catch (Exception ex) { GD.PrintErr($"[Streamer] worker job failed: {ex.Message}"); }
         }
     }
 }

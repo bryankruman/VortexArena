@@ -1,6 +1,7 @@
 using Godot;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Services;
+using XonoticGodot.Game.Hud;           // TextureCache (VFS art resolver) for gfx/blood
 using SC = XonoticGodot.Engine.Collision.SuperContents;
 
 namespace XonoticGodot.Game.Client;
@@ -35,8 +36,16 @@ namespace XonoticGodot.Game.Client;
 public partial class ViewEffects : CanvasLayer
 {
     // ColorRects stretched across the whole viewport; their alpha is what we animate (the RGB is the tint).
-    private ColorRect _damage = null!;
+    private ColorRect _damage = null!;        // gentle-mode solid flash (cl_gentle / cl_gentle_damage) + texture fallback
+    private TextureRect _bloodSplat = null!;  // QC drawpic("gfx/blood", ...) — the centred blood splatter
     private ColorRect _contents = null!;
+    private ColorRect _frozen = null!;
+    private ColorRect _darkBlind = null!; // Darkness nade blind: blinking near-black full-screen overlay (HUD_DarkBlinking)
+    private ColorRect _orbFlash = null!;  // In-orb 2D additive colour flash (orb_draw2d)
+
+    // QC view.qc:1304 cl_gentle_damage==2: a randomized colour latched while the flash is gone (myhealth_gentlergb).
+    private Color _myHealthGentleRgb = new(1f, 0.7f, 1f);
+    private readonly System.Random _gentleRng = new();
 
     // ---- HUD_Damage state (view.qc: myhealth / myhealth_flash / myhealth_prev) ----
     private float _myHealthFlash;   // the decaying damage accumulator
@@ -67,6 +76,12 @@ public partial class ViewEffects : CanvasLayer
     private const float DefDamagePainThresholdLowerHealth = 50f;   // hud_damage_pain_threshold_lower_health
     private const float DefDamagePainPulsatingMin         = 0.6f;  // hud_damage_pain_threshold_pulsating_min
     private const float DefDamagePainPulsatingPeriod      = 0.8f;  // hud_damage_pain_threshold_pulsating_period
+    // Gentle-mode (cl_gentle / cl_gentle_damage) — _hud.cfg:300-301, _all.cfg:878/881.
+    private const float DefDamageGentleAlphaMultiplier    = 0.10f; // hud_damage_gentle_alpha_multiplier
+    private static readonly Color DefDamageGentleColor    = new(1f, 0.7f, 1f); // hud_damage_gentle_color "1 0.7 1"
+
+    // Nades — Darkness blind + in-orb colour flash (mutators/mutator/nades).
+    private const float DefColorFlashAlpha     = 0.5f;   // hud_colorflash_alpha (orb_draw2d screen-flash strength)
 
     private const float DefContentsWaterAlpha  = 0.5f;   // hud_contents_water_alpha
     private const float DefContentsLavaAlpha   = 0.7f;   // hud_contents_lava_alpha
@@ -87,12 +102,41 @@ public partial class ViewEffects : CanvasLayer
         Layer = -1;
 
         _contents = MakeFullScreenRect("ContentsTint");
+        _bloodSplat = MakeBloodSplat();
         _damage = MakeFullScreenRect("DamageFlash");
+        _frozen = MakeFullScreenRect("FrozenOverlay");
+        _darkBlind = MakeFullScreenRect("DarknessBlind");
+        _orbFlash = MakeFullScreenRect("OrbColorFlash");
+        // orb_draw2d paints the screen ADDITIVELY (drawfill DRAWFLAG_ADDITIVE) so the orb's colour brightens the
+        // view rather than darkening it; a CanvasItemMaterial in Add blend mode reproduces that compositing.
+        _orbFlash.Material = new CanvasItemMaterial { BlendMode = CanvasItemMaterial.BlendModeEnum.Add };
         AddChild(_contents);
-        AddChild(_damage); // damage on top of the liquid tint
+        AddChild(_bloodSplat); // the gfx/blood splatter — the default (non-gentle) damage flash
+        AddChild(_damage);     // gentle-mode solid flash, on top of the liquid tint
+        AddChild(_frozen);     // the Freeze-Tag icy overlay composites on top of both
+        AddChild(_darkBlind);  // Darkness-nade blind: blinking near-black, on top of the icy overlay
+        AddChild(_orbFlash);   // in-orb additive colour flash, the topmost view-effect layer
+
+        // hud_colorflash_alpha — the orb_draw2d screen-flash strength (Base default 0.5).
+        if (Api.Services is not null)
+            Api.Cvars.Register("hud_colorflash_alpha", "0.5");
 
         _myHealthPrev = 0f;
     }
+
+    /// <summary>The centred <c>gfx/blood</c> splatter (QC HUD_Damage <c>drawpic(splash_pos, "gfx/blood", splash_size,
+    /// …)</c>): a SQUARE sized to the larger screen axis (<c>splash_size = max(conwidth, conheight)</c>) and centred,
+    /// so it always covers the viewport and overflows the shorter axis (it is NOT aspect-stretched in Base).</summary>
+    private static TextureRect MakeBloodSplat() => new()
+    {
+        Name = "DamageBlood",
+        Texture = TextureCache.Get("gfx/blood"),
+        // Centre anchor; the square size + centred position are set each frame in UpdateDamage from the viewport.
+        ExpandMode = TextureRect.ExpandModeEnum.IgnoreSize,
+        StretchMode = TextureRect.StretchModeEnum.Scale, // fill the square (the square itself stays 1:1)
+        Modulate = new Color(1f, 1f, 1f, 0f),
+        MouseFilter = Control.MouseFilterEnum.Ignore,
+    };
 
     private static ColorRect MakeFullScreenRect(string name) => new()
     {
@@ -159,6 +203,7 @@ public partial class ViewEffects : CanvasLayer
             _pendingDamage = 0f;
             _myHealthFlash = 0f;
             SetAlpha(_damage, damageColor, 0f);
+            SetSplatAlpha(0f, damageColor);
             _myHealthPrev = health;
             return;
         }
@@ -220,7 +265,64 @@ public partial class ViewEffects : CanvasLayer
 
         _myHealthPrev = myhealth;
 
-        SetAlpha(_damage, damageColor, flashTemp * global);
+        // QC HUD_Damage draw split (view.qc:1293-1305):
+        //   cl_gentle / cl_gentle_damage -> a SOLID coloured flash (no blood), alpha multiplied by
+        //     hud_damage_gentle_alpha_multiplier; cl_gentle_damage==2 randomizes the colour while the flash is gone.
+        //   else                          -> the gfx/blood splatter, tinted hud_damage_color.
+        bool gentle = Cvar("cl_gentle", 0f) != 0f || Cvar("cl_gentle_damage", 0f) != 0f;
+        if (gentle)
+        {
+            if (Cvar("cl_gentle_damage", 0f) == 2f)
+            {
+                // only re-randomize once the previous flash has fully faded (QC: myhealth_flash < pain_threshold)
+                if (_myHealthFlash < painThreshold)
+                    _myHealthGentleRgb = new Color(
+                        (float)_gentleRng.NextDouble(), (float)_gentleRng.NextDouble(), (float)_gentleRng.NextDouble());
+            }
+            else
+            {
+                _myHealthGentleRgb = CvarColor("hud_damage_gentle_color", DefDamageGentleColor);
+            }
+
+            float gentleMul = Cvar("hud_damage_gentle_alpha_multiplier", DefDamageGentleAlphaMultiplier);
+            SetAlpha(_damage, _myHealthGentleRgb, gentleMul * flashTemp * global);
+            SetSplatAlpha(0f, damageColor); // hide the blood splatter in gentle mode
+        }
+        else
+        {
+            // gentle solid rect off first; SetSplatAlpha re-tints _damage only if gfx/blood is missing (fallback).
+            SetAlpha(_damage, damageColor, 0f);
+            SetSplatAlpha(flashTemp * global, damageColor);
+        }
+    }
+
+    /// <summary>Size + centre the <c>gfx/blood</c> splatter to the viewport (QC <c>splash_size = max(conwidth,
+    /// conheight)</c>, centred) and set its alpha/tint. Falls back to a solid red rect when the texture is missing
+    /// (so the damage reaction is never silently lost on a stripped data tree).</summary>
+    private void SetSplatAlpha(float alpha, Color tint)
+    {
+        alpha = Mathf.Clamp(alpha, 0f, 1f);
+        bool visible = alpha > 0.0001f;
+        // Lazy texture load: the VFS art resolver may not be wired yet at _Ready (mirrors ReticleOverlay's
+        // per-frame TextureCache.Get). Retry the resolve until it succeeds, then it is cached.
+        if (_bloodSplat.Texture is null && visible)
+            _bloodSplat.Texture = TextureCache.Get("gfx/blood");
+        if (_bloodSplat.Texture is null)
+        {
+            // No gfx/blood available — degrade to the solid coloured rect (uses _damage's slot via the gentle path
+            // is taken in UpdateDamage; here just tint _damage so the flash still reads). Keep the splat hidden.
+            _bloodSplat.Visible = false;
+            SetAlpha(_damage, tint, alpha);
+            return;
+        }
+        _bloodSplat.Visible = visible;
+        if (!visible)
+            return;
+        Vector2 vp = GetViewport().GetVisibleRect().Size;
+        float side = Mathf.Max(vp.X, vp.Y);
+        _bloodSplat.Size = new Vector2(side, side);
+        _bloodSplat.Position = new Vector2((vp.X - side) * 0.5f, (vp.Y - side) * 0.5f);
+        _bloodSplat.Modulate = new Color(tint.R, tint.G, tint.B, alpha);
     }
 
     // -------------------------------------------------------------------------------------------------
@@ -276,6 +378,95 @@ public partial class ViewEffects : CanvasLayer
         _contentAvgAlpha = _contentAvgAlpha * (1f - a) + inContent * a;
 
         SetAlpha(_contents, _liquidColorPrev, _contentAvgAlpha * _liquidAlphaPrev);
+    }
+
+    /// <summary>
+    /// The Freeze-Tag full-screen icy overlay — port of <c>MUTATOR_HOOKFUNCTION(cl_ft, HUD_Draw_overlay)</c>
+    /// (common/gametypes/gametype/freezetag/cl_freezetag.qc): while the local player is frozen, fill the screen
+    /// with an icy-blue tint (<c>'0.25 0.90 1'</c>) whose colour warms (toward white) and whose alpha fades out as
+    /// the thaw ring (<c>STAT(REVIVE_PROGRESS)</c>) fills, so the player can see the world again as they thaw.
+    /// </summary>
+    /// <param name="frozen">True iff the local player currently has the Freeze-Tag freeze (QC STAT(FROZEN)).</param>
+    /// <param name="reviveProgress">The local player's 0..1 thaw progress (QC STAT(REVIVE_PROGRESS)).</param>
+    public void UpdateFrozenOverlay(bool frozen, float reviveProgress)
+    {
+        if (!frozen)
+        {
+            SetAlpha(_frozen, new Color(0f, 0f, 0f), 0f);
+            return;
+        }
+
+        float p = Mathf.Clamp(reviveProgress, 0f, 1f);
+        float colFade = Mathf.Max(0f, p * 2f - 1f);            // QC col_fade = max(0, REVIVE_PROGRESS*2 - 1)
+        float alphaFade = 0.3f + 0.7f * (1f - Mathf.Max(0f, p * 4f - 3f)); // QC alpha_fade
+        // QC base col '0.25 0.90 1'; as col_fade rises the tint warms (R up, G/B down toward white-ish).
+        Color col = new(0.25f + colFade, 0.90f - colFade, 1f - colFade);
+        SetAlpha(_frozen, col, alphaFade);
+    }
+
+    /// <summary>
+    /// The Darkness-nade blind overlay — port of <c>HUD_DarkBlinking</c>
+    /// (mutators/mutator/nades/nades.qc). While the local player is blinded by a Darkness nade
+    /// (<c>STAT(NADE_DARKNESS_TIME) - time &gt; 0</c>) the whole screen is filled near-black with a BLINKING
+    /// alpha, so the view pulses dark while the blind lasts. Cleared when the blind has expired.
+    /// </summary>
+    /// <param name="darknessRemaining">Seconds of blind left (QC <c>NADE_DARKNESS_TIME - time</c>); &lt;= 0 = none.</param>
+    public void UpdateDarknessOverlay(float darknessRemaining)
+    {
+        if (darknessRemaining <= 0f)
+        {
+            SetAlpha(_darkBlind, new Color(0f, 0f, 0f), 0f);
+            return;
+        }
+
+        // QC HUD_DarkBlinking: drawfill('0 0 0', bound(0.2, sin(time*const)*0.25 + 0.75, 0.9)) — a near-black
+        // fill whose alpha throbs between 0.2 and 0.9. _time is the same frametime-accumulated clock the
+        // pain-threshold pulse uses, so the blink keeps ticking with the rest of the view effects.
+        float alpha = Mathf.Clamp(Mathf.Sin(_time * 10f) * 0.25f + 0.75f, 0.2f, 0.9f);
+        SetAlpha(_darkBlind, new Color(0f, 0f, 0f), alpha);
+    }
+
+    /// <summary>
+    /// The in-orb 2D colour flash — port of <c>orb_draw2d</c> (mutators/mutator/nades/nades.qc). When the eye
+    /// is inside a nade orb's radius, the screen is painted ADDITIVELY with that orb's colour at
+    /// <c>hud_colorflash_alpha * orb.Alpha</c>, so standing inside e.g. a heal/veil orb tints the view its colour.
+    /// When the eye sits inside several overlapping orbs the STRONGEST one wins (the QC orbs draw in turn but the
+    /// additive layer is dominated by the brightest contribution; we take the max so it reads stably).
+    /// </summary>
+    /// <param name="eyeOrigin">The local view origin in world space (QC <c>view_origin</c>), Quake units.</param>
+    /// <param name="orbs">The live orbs: each (world Origin, containment Radius, flash Color, per-orb Alpha 0..1).</param>
+    public void UpdateOrbColorFlash(
+        System.Numerics.Vector3 eyeOrigin,
+        System.Collections.Generic.IReadOnlyList<(System.Numerics.Vector3 Origin, float Radius, Color Color, float Alpha)> orbs)
+    {
+        float flashAlpha = Cvar("hud_colorflash_alpha", DefColorFlashAlpha);
+
+        // Find the strongest orb whose radius contains the eye (QC: each orb tints if vlen(view_origin-org) < radius).
+        bool any = false;
+        Color best = new(0f, 0f, 0f);
+        float bestAlpha = 0f;
+        if (orbs is not null)
+        {
+            for (int i = 0; i < orbs.Count; i++)
+            {
+                var orb = orbs[i];
+                if ((eyeOrigin - orb.Origin).Length() >= orb.Radius)
+                    continue;
+                float a = flashAlpha * orb.Alpha;
+                if (a <= bestAlpha)
+                    continue;
+                bestAlpha = a;
+                best = orb.Color;
+                any = true;
+            }
+        }
+
+        if (!any)
+        {
+            SetAlpha(_orbFlash, new Color(0f, 0f, 0f), 0f);
+            return;
+        }
+        SetAlpha(_orbFlash, best, bestAlpha);
     }
 
     private static void SetAlpha(ColorRect rect, Color rgb, float alpha)

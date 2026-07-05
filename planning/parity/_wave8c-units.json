@@ -1,0 +1,105 @@
+[
+ {
+  "unit": "cl-crosshair",
+  "tier": "opus",
+  "notes": [
+   "[presentation] cl-crosshair.core.origin_chase: Crosshair is always drawn at the geometric panel centre (DrawPanel: center = Size2*0.5f). The chase-camera branch (trace from player org along view_forward MOVE_WORLDONLY, project the impact, fade the player body alpha toward crosshair_chase_playeralpha while it obstructs the view, restore on chase-off via the crosshair_chase_state latch) is not implemented. ; crosshair_chase and crosshair_chase_playeralpha are not even registered in RegisterDefaults (CrosshairPanel.cs:297-370).",
+   "[presentation] cl-crosshair.color.special_modes: crosshair_color_special 3 (rainbow: randomvec()*brightness re-rolled every rainbow_delay, crosshair.qc:189-196) is not ported — ColorModeCvar (CrosshairPanel.cs:537-542) maps only 0/1/2, so mode 3 silently falls back to fixed color. The rainbow_brightness/delay cvars are registered but dead.",
+   "[presentation] cl-crosshair.anim.smooth_ease: Color is NOT eased: Base eases scale, alpha AND color toward goal over effect_time (crosshair.qc:444 `wcross_color = f*wcross_color + (1-f)*wcross_color_prev`); the port's SmoothGoal eases only scale+alpha and sets color directly each frame. Visually equivalent only for slow color changes within the effect_time window.",
+   "[presentation] cl-crosshair.trueaim.teammate_blur_signal: Teammate shrink divisor diverges at DEFAULT cvars: Base `wcross_scale /= crosshair_hittest` divides by 1 (crosshair_hittest default 1 => NO shrink), but the port divides by a separate HitTestTeammateShrink property (default 1.25 => visibly shrinks). The port shrinks where Base does not. ; Blur is a 5x5 spread of 0.04-alpha texture copies (matches Base's CROSSHAIR_DO_BLUR for textured crosshairs, crosshair.qc:585-596); only applies to the textured path (DrawCrosshairTexture), not the vector fallb",
+   "[presentation] cl-crosshair.objring.nade_capture_revive: PARTIAL FIX: REVIVE_PROGRESS is now fed (NetGame:2328, _fullHud.Crosshair.ReviveProgress = LocalServerPlayer?.ReviveProgress) alongside NadeTimer (2327), both host-only inside `if (_server is not null)`. Player.ReviveProgress is genuinely mirrored each tick by FreezeTag (FreezeTag.cs), so the host player's thaw ring now renders. STILL OPEN: CAPTURE_PROGRESS is never assigned on any production path (grep finds only test-side .CaptureProgress= plus the networked NetEntity.CaptureProgress field whi",
+   "[presentation] cl-crosshair.per_weapon_2d_vehicle: Per-weapon crosshair: PerWeaponNumber dict is never populated by any caller (grep finds zero assignments outside the property def CrosshairPanel.cs:97), so every weapon shows the same `crosshair` number (Base maps each weapon to its own w_crosshair pic + w_crosshair_size multiplier). ; crosshair_2d (side-scroller, default 54) is NOT registered and has no port. HUD_Crosshair_Vehicle (info.vr_crosshair) has no port."
+  ]
+ },
+ {
+  "unit": "cl-csqcmodel",
+  "tier": "opus",
+  "notes": [
+   "[presentation] cl-csqcmodel.predraw.dispatch_order: Order is appearance->LOD->effects (skeletal anim runs in a separate PlayerModel.Pose pass, not interleaved here); the appearance-before-LOD ordering is moot because LOD is a no-op swap. ; AutoTagIndex recursion + drawmask=0 on null-model are not part of this pass (held weapons attach via ViewEntityRenderer).",
+   "[presentation] cl-csqcmodel.skeleton.upper_lower_aim: Presentation gap is on the ACTION side, not the split mechanism: the upper-body torso always shows a stable idle/aim frame (LocomotionBlend.Split torsoTime=0), so the bone split + fixbone + aim-pitch are structurally faithful but the torso never animates beyond the aim-bone pitch bend (the upper-body ACTION overlay is the animdecide feature's gap). ; Aim pitch reads Entity.Angles.X instead of a separately-networked v_angle_x (BIT(10)); for remote players these can differ slightly (the visible he",
+   "[presentation] cl-csqcmodel.animdecide.state_machine: animdecide is NOT ported: the networked anim_state / anim_upper_action / anim_lower_action / anim_time inputs are not sent or read (grep confirms zero anim_* bits in NetEntity/ClientEntityView), so upper-body ACTIONS (shoot/melee/pain/draw/taunt overlays on the torso) never play on the third-person model. ; The 8-direction + duck-variant locomotion (~24 movement clips incl. runbackwards, strafeleft/right, forwardleft/right, backleft/right, duckwalk* directional set) is replaced by a coarse 6-sta",
+   "[presentation] cl-csqcmodel.tagindex.weapon_attach: The QC h_/v_ model tag resolution cascade (weapon bone -> gettagindex weapon/tag_weapon -> shot/tag_shot, with recursive parent predraw and drawmask=0 when the tag can't resolve) is simplified to a tag_weapon marker attach; weapon-on-weapon and the shot-muzzle tag chain are not faithfully reproduced. ; No recursive predraw of the parent entity to fix forcemodel/LOD bone-index mismatch (forcemodel is live, so a forced-model bone-index mismatch on the held weapon attach is a possible edge case; LO",
+   "[presentation] cl-csqcmodel.effects.ef_mf_trail_lights: FIX (Wave 5): the per-player forced-effects seam is now LIVE for MF_ROCKET. ClientWorld.DriveCsqcModelHooks composes ForcedAppearance(jetpackActive:true) from the networked e.UsingJetpack and passes it to CsqcModelEffects.Apply(...,forced); forced.ModelFlags ORs MF_ROCKET into modelFlags, driving both the rocket trail return and the jetpack loop. So MF_ROCKET trail + loop now fire for remote players. ; STILL OPEN: the OTHER MF trails (grenade/gib/tracer/zomgib/tracer2/tracer3) are mapped in Csqc",
+   "[presentation] cl-csqcmodel.networking.csqcmodel_contract: FIX (Wave 5): ALPHA is now FULLY wired end-to-end (closed the baseline 'half-wired/dead-on-consume' gap). The producer (ServerNet.QuantizeAlpha for players + entities), codec (WriteByte/ReadByte at EntityField.Alpha 1<<17), the client consume (ClientEntityView: `e.Alpha = s.Alpha == 0 ? 1f : s.Alpha/255f`), and the render (PlayerModel.ApplyAlpha sets per-instance GeometryInstance3D.Transparency on every mesh) are all live. A Cloaked (0.25) / Invisibility / fading player now renders translucent o"
+  ]
+ },
+ {
+  "unit": "cl-hud",
+  "tier": "opus",
+  "notes": [
+   "[presentation] cl-hud.engine.registry_and_order: Draw order follows Godot child order, not the QC _hud_panelorder reverse-walk; relative panel layering may differ but panels don't overlap in luma.",
+   "[presentation] cl-hud.engine.skin_border: Directional border variants (_south/_north/_east/_corner_*) render as the full 9-slice frame rather than the engine's edge-masked crops; bg-enabled panels show a full frame where Base shows a partial edge.",
+   "[presentation] cl-hud.engine.progressbar: Rendering is a single stretched DrawTextureRect of the progressbar art, not the QC 3-slice (drawsubpic square+middle+cap) that gives rounded end-caps; the bar geometry/alignment is now faithful but the texture is stretched rather than cap-split.",
+   "[presentation] cl-hud.panel.weapons: Selection-slide animation, accuracy-tint overlay and per-weapon ammo clip bar fidelity not runtime-verified; bars use the flat DrawBar.",
+   "[presentation] cl-hud.panel.ammo: Clip progressbar uses the flat DrawBar; nade-bonus display fidelity not verified.",
+   "[presentation] cl-hud.panel.powerups: Countdown expanding-flash (<=5s) + per-powerup bar fidelity not runtime-verified.",
+   "[presentation] cl-hud.panel.healtharmor: Bars use the flat DrawBar (not the skin progressbar); number tint lacks the NumColor blink. Combined/split/fuel/oxygen/damage-flash/smooth logic is faithful.",
+   "[presentation] cl-hud.panel.radar: Full BSP-minimap texture render + maximized clickable mode (ons spawn / teleport select) are still unported; the live radar is the standalone _radar (the discovered one is force-hidden to avoid a double radar). The minimap is the procedural blip/arrow render, not the map's _mini texture.",
+   "[presentation] cl-hud.panel.modicons: Mode coverage is now CA/FreezeTag/Keyhunt/Survival/Assault/Domination/CTF/Keepaway; the full per-gametype icon-art fidelity (dom point ownership icons, some flag transitions) is partial.",
+   "[presentation] cl-hud.panel.pressedkeys: Spectating-only enable gate + the key_*/key_*_inv art coverage not runtime-verified; only shows for the local/spectated pressed-keys stat.",
+   "[presentation] cl-hud.panel.physics: Bars now go through the shared faithful DrawProgressBar primitive (accelbar art + real baralign-3 signed center bar), so the geometry is faithful; only the 3-slice rounded-cap rendering remains stretched (the cl-hud.engine.progressbar presentation gap). topspeed peak fidelity not runtime-verified.",
+   "[presentation] cl-hud.panel.itemstime: Progressbar / dynamicsize / ratio-columns fidelity not runtime-verified.",
+   "[presentation] cl-hud.panel.quickmenu: Nested quick-chat tree from a quickmenu file + translatecommands/server_is_default parity not verified.",
+   "[presentation] cl-hud.panel.strafehud: Bar zones / best-angle marker / wturn-switch indicator + mode/style/range fidelity not runtime-verified.",
+   "[presentation] cl-hud.panel.minigame: Board + status are merged into one MinigameRenderer (board square + team pieces + win-line + status line) rather than the QC BOARD/STATUS split; only the implemented minigame rule-sets are renderable. Per-game _hud_board/_hud_status art coverage not all runtime-verified."
+  ]
+ },
+ {
+  "unit": "cl-scoreboard",
+  "tier": "opus",
+  "notes": [
+   "[presentation] cl-scoreboard.field.formatting: SP_FPS and SP_SKILL columns never render (FieldByLabel returns null for fps/skill — client-only display fields with no port plumbing); Base shows them colorized (fps red<=32 / yellow 64-96 / white>=128). ; scores_per_round averaging (frags/kdr/sum/dmg/score divided by SP_ROUNDS_PL) is absent (no scores_per_round toggle). ; SP_KDRATIO collapses the QC 3-branch (denom==0 raw-kills/green ported; the %.1f-vs-raw and red-on-num<=0 paths approximated — port uses '0.0' format and red on num<=0 only).",
+   "[presentation] cl-scoreboard.field.name_icons: Handicap icon is now PORTED + LIVE (DrawRow:977-985 draws a square at the EXACT QC tint '1 0 0' + '0 1 1' * ((16-lvl)/15), white@1 → red@16, fed by the networked handicap_level). ; Still missing: player-color shirt/pants swatch (gfx/scoreboard/playercolor_*), pulsing ready check, ignored icon, the pulsing (Q) wants-join team marker, and the playerid '#N' prefix (Scoreboard_AddPlayerId). ; Handicap icon is drawn as a flat colored square (no gfx/scoreboard/player_handicap texture); presentation fa",
+   "[presentation] cl-scoreboard.teams.grouping_totals: Only the primary team slot total is shown (SetWireRows stores wire.Teams primary slot); the secondary teamscore (e.g. keyhunt) and the team-size N/M side display (team_size_position) are not rendered. ; team_size_position (score-on-left vs right) layout option absent; totals drawn as colored banner boxes, not the QC bold hud_fontsize*1.5 side numbers.",
+   "[presentation] cl-scoreboard.header.gameinfo: Leadlimit / leadlimit-and-fraglimit ('& ') header term not built (only timelimit + fraglimit; Scoreboard_Fraglimit_Draw is_leadlimit path absent). ; Lead limit, m_hidelimits, and campaign player-count suppression not handled.",
+   "[presentation] cl-scoreboard.block.spectators: Spectator-row ping is still -1 (per-row ping not networked) so showping shows a dim '-' rather than a real value. ; spectators_position (0/1/2/3 placement around the blocks) and spectators_aligned column alignment not implemented (drawn after the table only).",
+   "[presentation] cl-scoreboard.block.accuracy: Drawn as plain text '%' cells, not the per-weapon ICON grid (drawpic weapon model2) with column/row highlighting. ; No accuracy_showdelay gating, no warmup suppression, no doublerows, no Accuracy_GetColor weapon ramp or nocolors option; the port's average color ramp differs from QC's per-weapon ramp.",
+   "[presentation] cl-scoreboard.block.itemstats: No item-stats block at all: Base shows a per-item icon grid of pickup counts (g_inventory.inv_items), filtered by itemstats_filter_mask=12. The port has no SetItemStats / DrawItemStats and inventory is not networked for it.",
+   "[presentation] cl-scoreboard.block.rankings: No speed-award / all-time-fastest line, no multi-column wrap / horizontal scroll (single-column list).",
+   "[presentation] cl-scoreboard.block.respawn: RespawnJumpKey is never fed (stays the default literal 'jump') — the 'press JUMP to respawn' line shows the action name, not the player's actual +jump keybind (QC getcommandkey).",
+   "[presentation] cl-scoreboard.ui.interactive: No interactive UI: the port scoreboard is a passive overlay. Missing TAB panel cycling (SCOREBOARD↔RANKINGS), arrow-key player/team selection, ENTER/SPACE team-join + spectate, Ctrl+C column-layout cycle, Ctrl+R scores_per_round toggle, Ctrl+T tell, Ctrl+K vote-kick, ESC exit, and the team-selection screen (scoreboard_ui_enabled==2) with its join prompts and world dimming (0.7).",
+   "[presentation] cl-scoreboard.draw.export: No equivalent of Scoreboard_Draw_Export (writes the scoreboard table to a file handle for the dump-scoreboard console command); the port has no scoreboard-export command."
+  ]
+ },
+ {
+  "unit": "cl-shownames",
+  "tier": "sonnet",
+  "notes": [
+   "[presentation] cl-shownames.gate.self_spectatee: Chase own-tag for the truly-local player still can't draw: the predicted local player is never in ClientNet.RemoteIds (HandleSnapshot skips LocalNetId), so the self branch only fires for the spectatee. In stock play this matters only for hud_shownames_self + chase_active on your OWN model in third person — a residual deferral; the spectatee path (the common observed case) is live.",
+   "[presentation] cl-shownames.status.bar: Bar is drawn as flat colored rects (DrawRect), not the QC HUD_Panel_DrawProgressBar with the nametag_statusbar skin image, so it lacks the skinned texture look.",
+   "[presentation] cl-shownames.name.decolorize: Decolorized teammate name renders in flat white (1,1,1,a) rather than the team-tint that QC's playername(s, team, true) applies; minor cosmetic divergence (both strip the name's own ^codes). ; Name comes from the scoreboard name slice (ResolveScoreboardName, NetGame.cs:1484 NameResolver), not a dedicated entcs name stream; if the scoreboard row is missing the name is empty and the tag shows no text (status bar still draws)."
+  ]
+ },
+ {
+  "unit": "cl-teamradar",
+  "tier": "opus",
+  "notes": [
+   "[presentation] cl-teamradar.links.onslaught: Onslaught radar links (ENT_CLIENT_RADARLINK / draw_teamradar_link / g_radarlinks) not networked or drawn — ONS radar shows control points but no connection lines.",
+   "[presentation] cl-teamradar.maximized.map: Maximized fullscreen radar entirely absent: no m-bind (+hud_panel_radar_maximized → cl_cmd hud radar 1), no fullscreen tactical overview, no separate maximized rotation/zoom/scale runtime, no default-border swap.",
+   "[presentation] cl-teamradar.maximized.click: No clickable ONS spawn-point selection (cmd ons_spawn), no teleport-click, no mouse/key input handling (MOUSE1/MOUSE2/ESC/console-key passthrough), no dead+showscores temp-hide, no 'Click to select…' prompt, no icon hover-glow.",
+   "[presentation] cl-teamradar.cvar.zoomscale: Zoom/scale uses a RangeUnits=2500 + scale/ScaleReferenceDivisor heuristic for the bigsize/normalsize endpoints, not the Base mi_scale/scale2d-derived sizes; the actual arena-fit big size is approximated by a fixed 2500u range. ; Big-zoom recentering only happens when map bounds are loaded (HasMapBounds); the standalone path always has bounds, so this is live there, but the heuristic scale endpoints still differ from Base's exact fit.",
+   "[presentation] cl-teamradar.mutator.hook: No TeamRadar_Draw client mutator hook: mutators cannot add custom blips/icons to the radar, and the hook's return value (which Base ORs into the per-icon team-match gate for hover-glow visibility) is unmodeled.",
+   "[presentation] cl-teamradar.cvar.dynamichud: hud_panel_radar_dynamichud is registered with the correct default (1) but nothing consumes it: the port has no HUD_Scale_Enable/Disable (the dynamic-HUD shrink applied when the player is alive) so the radar never participates in dynamic-HUD scaling. ; HUD_Radar_Export (writing the radar's 8 aesthetic cvars into a saved hud skin file) has no port analogue; the port's skin/HUD-config export path does not round-trip these radar cvars."
+  ]
+ },
+ {
+  "unit": "cl-view",
+  "tier": "opus",
+  "notes": [
+   "[presentation] cl-view.chase.classic_thirdperson: Spectator third-person (View_SpectatorCamera + STAT(CAMERA_SPECTATOR) 1/2 toggle, IMP_weapon_drop cycling) is NOT ported — spectating a player renders FIRST person: the follow-cam builds its own first-person ViewState and returns before the chase_active CameraMode logic runs. ; chase_front (the frontal selfie cam) is effectively dead: ApplyClassicChase hardcodes `spectating = false` (FirstPersonView:728), and chase_front is QC-guarded to spectating only — so it never engages. The view-flip + ove",
+   "[presentation] cl-view.screen.damage_flash: Draws a flat red ColorRect, not the gfx/blood splatter texture Base uses. ; The gentle-mode (cl_gentle / cl_gentle_damage) solid/randomized-colour path is not ported.",
+   "[presentation] cl-view.demo.free_camera_lockview_ortho: No demo free/chase camera (CSQC_Demo_Camera), no view lock (cl_lockview), no orthographic radar-render view (cl_orthoview / View_Ortho), no viewloc 2.5D side-scroller camera (GetViewLocationFOV), and no FPS report to the server (fpscounter_update STAT(SHOWFPS))."
+  ]
+ },
+ {
+  "unit": "cl-viewmodel",
+  "tier": "opus",
+  "notes": [
+   "[presentation] cl-viewmodel.anim.networked_frames: No networked weapon fire/idle/reload animation (the QC wframe temp entity is not networked); the gun never visibly cycles or reloads.",
+   "[presentation] cl-viewmodel.model.skin_colormap_glow_effects: View-model ignores player team colormap and per-weapon glowmod: the gun never tints to your team color or glows (e.g. Vortex charge glow), unlike Base viewmodel_draw. ; Per-child m_skin not applied; the gun renders with its base material.",
+   "[presentation] cl-viewmodel.muzzle.flash_particle: Local muzzle position is a heuristic at the tag_shot socket rather than Base's view-projected movedir_aligned (not verified to read identically on-screen). ; Secondary fire does not flash (only the primary _attackHeld path calls Fire; UpdateLocalFireFeedback comments 'secondary FX stay networked for now'). ; ClientWorld.OnMuzzleFlash wrapper (ClientWorld:914) has no caller (NetGame calls _viewModel.Fire() directly) — dead wrapper, but the feature is live by another path.",
+   "[presentation] cl-viewmodel.muzzle.flash_model: No muzzle-flash MODEL (the spinning flash md3 for Devastator + Machinegun, m_muzzlemodel) — only the particle burst is emitted.",
+   "[presentation] cl-viewmodel.model.wr_viewmodel_override: Per-weapon wr_viewmodel override is not ported; the view-model always uses the weapon's static v_ model. Only Tuba uses this in Base (swaps its view-model by the currently played note/instrument)."
+  ]
+ }
+]

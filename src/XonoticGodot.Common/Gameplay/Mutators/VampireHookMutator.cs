@@ -14,16 +14,17 @@ namespace XonoticGodot.Common.Gameplay;
 /// <c>g_vampirehook_damagerate</c> seconds and heals the hook's owner. (With <c>g_vampirehook_teamheal</c> a
 /// teammate can be hooked to heal them, draining the owner instead.) Enabled by the <c>g_vampirehook</c> cvar.
 ///
-/// Ported: the GrappleHookThink hook, the damage-rate gate (per-hook <c>last_dmg</c>), the team/enemy + frozen +
-/// alive guards, the <c>Damage(..WEP_HOOK..)</c> drain on the chosen damage entity, and the
-/// <c>Heal(...)</c> on the chosen heal target (mapped to GiveResourceWithLimit capped at the small-health max).
+/// Ported: the GrappleHookThink hook, the three entry gates (damage non-zero, per-hook <c>last_dmg</c> debounce,
+/// and the <c>time &lt; game_starttime</c> pre-match block), the owner/aiment + frozen + team + alive predicate,
+/// the <c>Damage(..WEP_HOOK..)</c> drain on the chosen damage entity, the <c>Heal(...)</c> on the chosen heal
+/// target (faithful <c>Heal</c>/<c>PlayerHeal</c> guards + dead-target floor, see <see cref="HealPlayer"/>),
+/// and the team-heal self-drain. The hooked-player <see cref="Entity.Aiment"/> is set on any direct player latch
+/// by GrapplingHookTouch (Hook.cs, fixed in Wave-2), so the drain is reachable on the live path.
 ///
-/// BLOCKER (documented partial): QC operates on <c>thehook.aiment</c> — a hooked PLAYER (the "tarzan"/reel-to-
-/// victim variant). The port's grapple (Hook.cs) latches onto GEOMETRY and never sets a hooked-player aiment, so
-/// in practice <see cref="Entity.Aiment"/> is null here and the drain is inert (the guards fail). The handler is
-/// the faithful body for the day the hooked-player mechanic lands; modelling that reel-to-victim mechanic is a
-/// Weapons-side change recorded in crossTaskNeeds. <c>hitsound_damage_dealt</c> is a HUD/stats accumulator the
-/// port doesn't carry, so it's omitted (cosmetic).
+/// Known omission: <c>hitsound_damage_dealt</c> is a HUD/stats accumulator the port doesn't carry, so the
+/// owner's per-tick hit-confirm "ding" is omitted (cosmetic). The QC <c>DMG_NOWEP</c> weaponentity-slot flag on
+/// the Damage call has no analogue in the port's deathtype-string model (no weaponentity is threaded through
+/// <c>Combat.Damage</c>), so the drain kill is attributed as a normal hook-weapon kill.
 /// </summary>
 [Mutator]
 public sealed class VampireHookMutator : MutatorBase
@@ -34,8 +35,8 @@ public sealed class VampireHookMutator : MutatorBase
     /// <summary>QC autocvar_g_vampirehook_damage — health drained per tick.</summary>
     public float Damage;
 
-    /// <summary>QC autocvar_g_vampirehook_damagerate — seconds between drain ticks.</summary>
-    public float DamageRate = 0.1f;
+    /// <summary>QC autocvar_g_vampirehook_damagerate — seconds between drain ticks (mutators.cfg:427 default 0.2).</summary>
+    public float DamageRate = 0.2f;
 
     /// <summary>QC autocvar_g_vampirehook_health_steal — health the owner gains per tick.</summary>
     public float HealthSteal;
@@ -81,10 +82,14 @@ public sealed class VampireHookMutator : MutatorBase
         float[] slot = _lastDmg.GetValue(thehook, static _ => new float[1]);
 
         // QC: if (!autocvar_g_vampirehook_damage || thehook.last_dmg > time || time < game_starttime) return;
-        if (Damage == 0f || slot[0] > time || VehicleCommon.GameStopped) return false;
+        // game_starttime = the match-start clock (drain is blocked during the pre-match warmup/countdown, NOT at
+        // match end). Sourced from the host-wired StartItem.GameStartTimeProvider (the same seam DamageSystem uses
+        // for its own game_starttime gate); 0 when unwired, so the gate is a no-op outside a live match.
+        float gameStartTime = StartItem.GameStartTimeProvider?.Invoke() ?? 0f;
+        if (Damage == 0f || slot[0] > time || time < gameStartTime) return false;
 
         Entity? owner = thehook.RealOwner;
-        Entity? aiment = thehook.Aiment; // NOTE: null with the port's geometry-latching grapple (documented partial).
+        Entity? aiment = thehook.Aiment; // set to the latched player by GrapplingHookTouch on a direct hit (Hook.cs).
         if (owner is null || aiment is null) return false;
 
         // QC: if (hook_owner != hook_aiment && IS_PLAYER(hook_aiment) && !STAT(FROZEN, hook_aiment)
@@ -109,12 +114,38 @@ public sealed class VampireHookMutator : MutatorBase
         // QC: targ = SAME_TEAM(owner, aiment) ? hook_aiment : hook_owner; Heal(targ, owner, health_steal, healthsmall_max);
         Entity targ = sameTeam ? aiment : owner;
         float healthSmallMax = Cvar("g_pickup_healthsmall_max", 5f);
-        targ.GiveResourceWithLimit(ResourceType.Health, HealthSteal, healthSmallMax);
+        HealPlayer(targ, HealthSteal, healthSmallMax);
 
         // QC: if(dmgent == hook_owner) TakeResource(dmgent, RES_HEALTH, damage); // FIXME: friendly fire?!
         if (ReferenceEquals(dmgent, owner))
             owner.TakeResource(ResourceType.Health, Damage);
         return false;
+    }
+
+    /// <summary>
+    /// QC <c>Heal(targ, owner, amount, limit)</c> (server/damage.qc:948) → <c>event_heal = PlayerHeal</c>
+    /// (server/player.qc:615) for a player target. Reproduces both the <c>Heal</c> guards
+    /// (<c>game_stopped</c> / spectator / FROZEN / IS_DEAD) AND <c>PlayerHeal</c>'s
+    /// <c>hlth &lt;= 0 || hlth &gt;= limit</c> floor, then the capped give — instead of a raw
+    /// GiveResourceWithLimit (which would heal a dead/frozen/spectating target). The non-player /
+    /// objective <c>event_heal</c> branch isn't reachable here (the heal target is always a player), so
+    /// it's not modelled.
+    /// </summary>
+    private static void HealPlayer(Entity targ, float amount, float limit)
+    {
+        // QC Heal(): if (game_stopped || (IS_CLIENT && killcount == FRAGS_SPECTATOR) || FROZEN || IS_DEAD) return false;
+        if (VehicleCommon.GameStopped) return;
+        if (targ is Player p && p.FragsStatus == Player.FragsSpectator) return;
+        if (StatusEffectsCatalog.Frozen is { } fz && StatusEffectsCatalog.Has(targ, fz)) return;
+        if (targ.DeadState != DeadFlag.No) return;
+
+        // QC PlayerHeal(): if (hlth <= 0 || hlth >= limit) return false; — no-op on a dead target or one already
+        // at/above the small-health cap (the dead-target floor the raw give lacked).
+        float hlth = targ.GetResource(ResourceType.Health);
+        if (hlth <= 0f || hlth >= limit) return;
+
+        // QC GiveResourceWithLimit(targ, RES_HEALTH, amount, limit) — caps the post-give total at limit.
+        targ.GiveResourceWithLimit(ResourceType.Health, amount, limit);
     }
 
     private static float Cvar(string name, float fallback)

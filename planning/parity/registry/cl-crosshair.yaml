@@ -1,0 +1,553 @@
+unit: cl-crosshair
+category: client
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"  # OPUS re-verify of the VIEW-PRIMITIVES wave (commit 60d45f5 "parity Phase 1 (foundations): wepent channel + objective/turret entity stream + view primitives"). This wave added game/client/CrosshairTrace.cs (new) + rewired FirstPersonView/NetGame/CrosshairPanel. TWO rows CHANGED this pass: (1) cl-crosshair.core.origin_chase CLOSED — the chase-camera crosshair re-projection is now live (DrawPanel:593-599 traces CrosshairTrace.ChaseImpact off the player origin MOVE_WORLDONLY + ProjectToScreen through the live chase camera, drawing the crosshair on the aimed surface instead of dead-centre) AND the crosshair_chase_playeralpha body-alpha fade is wired (NetGame.UpdateCrosshairGate:4261-4265 -> _render.SetLocalBodyAlpha); both crosshair_chase/_playeralpha cvars now have real readers; fed live each frame via UpdateCrosshairGate (called at NetGame:3092) from _view.ChaseActive/_camera (ChaseActive set in FirstPersonView:393/714); missing->faithful + liveness na->live. (2) cl-crosshair.trueaim.hit_classification: the previously-dead AimOrigin/AimForward feed is now LIVE — NetGame:4251-4252 feeds the authoritative rendered eye/forward (_view.RenderedEyeQuake/RenderedForwardQuake) so the true-aim trace runs off the real render eye instead of the Player-reconstruction fallback; status unchanged (was already liveness:live, logic:partial — the screen-space obstruction / teamplay-gate / Rifle-zoomscript gaps PERSIST) but the trace INPUT is now authoritative (notes refreshed). UNCHANGED + re-confirmed this pass: all five weapon-stat ring rows + hit_indication + objring nade/revive stay liveness:live end-to-end (ServerNet.ResolveOwnerWeaponRings:2818 -> OwnerWeaponRings.Write:2831; ClientNet:1055 OwnerWeaponRings.Read -> LocalWeaponRings; NetGame.UpdateCrosshairWeaponRings:3363 + UpdateCrosshairFeedback:3242 both called UNCONDITIONALLY at 2750/2757; spectatee WepentView branch NetGame:3375). Still-dead re-confirmed: CAPTURE_PROGRESS hardcoded 0 (NetGame:3254, ServerNet:2100 no producer); pickup pulse host-only (UpdatePickupFeed:3297 reads LocalServerPlayer only). PRIOR 2026-06-28 wepent-rings note: confirmed the full networked path end-to-end; all five ring rows + hit-indication + nade/revive objring liveness:live (host + pure-remote + spectatee). ORIGINAL 2026-06-27 note: W17 added UpdateCrosshairFeedback (NetGame:3163, live at 2681) which reads the networked own-entity slice ClientNet.LocalState -> the NADE_TIMER + REVIVE_PROGRESS objective rings AND the hit-indication flash now also work on a PURE REMOTE client (not just the listen host). hit_indication liveness UPGRADED partial->live; objring nade/revive remote read-back CLOSED (capture still dead). FIX (post-W17, wepent-rings): the weapon-stat rings (vortex charge/chargepool, clip/ammo, Hagar, Mine Layer, Arc heat) are now networked on the owner block (ServerNet.ResolveOwnerWeaponRings -> OwnerWeaponRings.Write; ClientNet reads via OwnerWeaponRings.Read -> LocalWeaponRings; UpdateCrosshairWeaponRings feeds them on a pure remote client) so all three ring rows go liveness partial->live. This ALSO fixed a latent desync: W16 (b3a9c06) added the WriteOwnerState ring tail but no matching client read, so the 9 unread floats corrupted every owner-block-following section for a real remote client; the shared OwnerWeaponRings struct + OwnerWeaponRingsTests now guard the layout. Only the pickup pulse remains host-only (no networked LAST_PICKUP).
+summary:
+  feature_count: 18
+  worst_gaps:
+    - "The pickup pulse is fed ONLY on the host/listen-server path: UpdatePickupFeed (NetGame:3214) reads only LocalServerPlayer (3218), so a PURE REMOTE client gets no pickup bump — there is no networked STAT(LAST_PICKUP) in the LocalState slice. (The weapon-stat rings, by contrast, ARE now networked — see the wepent-rings FIX in last_audited and the three cl-crosshair.ring.* rows — and the nade/revive/hit FEEDBACK fields were wired remote in W17 via UpdateCrosshairFeedback.)"
+    - "CAPTURE_PROGRESS objective ring is still fully DEAD end-to-end: no producer assigns Player.CaptureProgress, ServerNet.cs:2100 leaves NetEntityState.CaptureProgress at 0 (commented), the host feed hardcodes x.CaptureProgress=0 (NetGame:3175), and the remote read (ls.CaptureProgress, NetGame:3189) is always 0. Only test-side use (ClientFeedbackTests.cs:275). NADE_TIMER + REVIVE_PROGRESS, by contrast, are now fed on BOTH host and remote (W17 LocalState read-back)."
+    - "CLOSED this pass (view-primitives wave 60d45f5): the third-person chase crosshair (crosshair_chase / _chase_playeralpha) is now LIVE — DrawPanel:593-599 re-projects the crosshair onto the aimed world surface (CrosshairTrace.ChaseImpact MOVE_WORLDONLY + ProjectToScreen), and the body-alpha fade is wired via UpdateCrosshairGate->SetLocalBodyAlpha (NetGame:4261-4265). Both cvars now have real readers. cl-crosshair.core.origin_chase moved missing->faithful/live."
+    - "Per-weapon crosshair pic is still partial: PerWeaponNumber dict is never populated, so every weapon shows the same `crosshair` number; crosshair_2d (registered at 323 but no reader) and the vehicle crosshair are absent; color_special 3 (rainbow) not ported. UNCHANGED this pass."
+    - "Objective rings drawn centred on the crosshair panel (radius 64px) rather than Base's `0.5*conwidth, 0.6*conheight` screen anchor with `0.1*conheight` radius; nade-timer text label (cl_nade_timer 2) not drawn. UNCHANGED this pass."
+    - "crosshair_hittest_showimpact (Base crosshair.qc:320-321: keep the crosshair drawn at the reprojected impact point) is registered (CrosshairPanel.cs:352) but never read — the panel always draws at the geometric centre. Minor debug cvar."
+features:
+  - id: cl-crosshair.core.master_gating
+    name: "Master gating + enable/size/alpha early-outs"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/crosshair.qc:HUD_Crosshair (213-256)"
+    port_refs:
+      - "game/hud/CrosshairPanel.cs:DrawPanel (564-574)"
+      - "game/net/NetGame.cs:UpdateFullHudPlayer (4036-4082)"
+      - "game/net/NetGame.cs:UpdateCrosshairGate (4096-4118)"
+      - "game/net/NetGame.cs:3015-3016 (live call)"
+      - "game/hud/HudManager.cs:419"
+    constants:
+      - { name: "crosshair_enabled", base: "1", port: "1", match: true }
+      - { name: "crosshair (number)", base: "16", port: "16", match: true }
+      - { name: "crosshair_size", base: "0.4", port: "0.4", match: true }
+      - { name: "crosshair_alpha", base: "0.8", port: "0.8", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "NARROWED: a dedicated UpdateCrosshairGate (NetGame:3980, called live at 2996) now reproduces the REACHABLE subset of Base's per-frame suppress-set (crosshair.qc:226-235): HEALTH<=0/dead (LocalDeadNow), intermission==2/GAME_STOPPED (MatchIntermission), scoreboard_active, spectatee_status==-1 (IsObserving) — the crosshair shows only when havePlayer AND none of these hold. STILL MISSING from the suppress-set: cl_lockview, CAMERA_SPECTATOR==2 dead-spectator mode, the viewloc/non-FREEAIM gate, the DrawCrosshair mutator hook, the minigame-menu gate, and hud!=HUD_NORMAL (vehicle handoff). Gate runs only where the skinned panel draws (host path); a pure remote client's reticle is owned by NetHud and gated separately."
+    verification:
+      - { kind: code, ref: "Crosshair.Player set HudManager.cs:419; Visible base state set on player-change in UpdateFullHudPlayer:4059-4060; per-frame suppression in UpdateCrosshairGate:4109-4117 (dead/intermission/scoreboard/observer) called live at NetGame:3016; enabled/size/alpha read in DrawPanel:574; cfg defaults verified against crosshairs.cfg", result: pass }
+    confidence: high
+    notes: "Panel is genuinely live each frame. Defaults bit-faithful to crosshairs.cfg (incl. number 16). crosshair_size 0 / alpha 0 early-outs ported. IMPROVED this pass: the prior baseline recorded the suppress-set as reduced to a bare havePlayer toggle; a live UpdateCrosshairGate now adds the dead/intermission/scoreboard/observer skips. logic stays partial (the lockview/CAMERA_SPECTATOR==2/viewloc/mutator-hook/minigame/vehicle conditions remain unported)."
+
+  - id: cl-crosshair.core.origin_chase
+    name: "Crosshair origin + third-person chase trace & body-alpha fade"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/crosshair.qc:HUD_Crosshair (216-301)"
+    port_refs:
+      - "game/client/CrosshairTrace.cs:ChaseImpact (86-90) + ProjectToScreen (68-78)"
+      - "game/hud/CrosshairPanel.cs:DrawPanel (593-599, chase re-projection)"
+      - "game/net/NetGame.cs:UpdateCrosshairGate (4251-4254 feed ChaseActive/Camera; 4261-4265 body-alpha fade)"
+      - "game/client/FirstPersonView.cs:ChaseActive (393, 714)"
+      - "game/client/ClientWorld.cs:SetLocalBodyAlpha (997)"
+    constants:
+      - { name: "crosshair_chase", base: "1", port: "1 (registered CrosshairPanel.cs:341, read DrawPanel:593 + NetGame:4262)", match: true }
+      - { name: "crosshair_chase_playeralpha", base: "0.25", port: "0.25 (registered CrosshairPanel.cs:342, read NetGame:4265)", match: true }
+      - { name: "max_shot_distance (origin ray)", base: "32768", port: "32768 (WeaponFiring.MaxShotDistance via CrosshairTrace)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Minor: in the normal first-person case (chase off) the crosshair still draws at the geometric panel centre — Base's centre path is project_3d_to_2d(view_origin + max_shot_distance*view_forward), which the port approximates as the fixed panel centre. Cosmetically identical for FOV-centred rendering; only the chase branch needed the real world-projection and now has it."
+    verification:
+      - { kind: code, ref: "CLOSED (wave 60d45f5): DrawPanel:593-599 traces CrosshairTrace.ChaseImpact (player-origin+ViewHeight, MOVE_WORLDONLY, MaxShotDistance) and ProjectToScreen through the live chase Camera3D, drawing the crosshair on the aimed surface; ChaseActive/ChaseCamera3D fed live each frame in UpdateCrosshairGate:4251-4254 (called NetGame:3092) from _view.ChaseActive (set FirstPersonView:393/714) + _camera; crosshair_chase_playeralpha body fade wired via SetLocalBodyAlpha (NetGame:4264). Both cvars now have real readers (grep-confirmed).", result: pass }
+    confidence: high
+    notes: "CLOSED this pass (the view-primitives wave). Was missing/dead at the prior baseline; the chase-camera crosshair re-projection AND the body-alpha fade are now live with real cvar readers and a faithful MOVE_WORLDONLY world trace. MaxShotDistance constant matches. Off-screen (behind-camera) impacts fall back to the geometric centre."
+
+  - id: cl-crosshair.trueaim.hit_classification
+    name: "True-aim forward trace + HITTEAM/HITENEMY/HITWORLD/HITOBSTRUCTION classification"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/crosshair.qc:TrueAimCheck (71-154)"
+      - "client/hud/crosshair.qc:EnemyHitCheck (50-69)"
+      - "client/hud/crosshair.qc:HUD_Crosshair (303-324)"
+    port_refs:
+      - "game/hud/CrosshairPanel.cs:ComputeShotType (995-1059)"
+      - "game/hud/CrosshairPanel.cs:EnemyHitCheck (1120-1132)"
+      - "game/hud/CrosshairPanel.cs:ClassifyObstruction (1098-1114)"
+      - "game/hud/CrosshairPanel.cs:ProjectileBox (1167-1174)"
+      - "game/net/NetGame.cs:UpdateCrosshairGate (4251-4252, feeds AimOrigin/AimForward)"
+      - "game/client/CrosshairTrace.cs:TraceForward (46-61)"
+    constants:
+      - { name: "crosshair_hittest", base: "1", port: "1", match: true }
+      - { name: "g_trueaim_minrange", base: "44 (networked)", port: "44 (hardcoded const)", match: true }
+      - { name: "Devastator box", base: "+/-3", port: "+/-3", match: true }
+      - { name: "Fireball box", base: "+/-16", port: "+/-16", match: true }
+      - { name: "Seeker box", base: "+/-2", port: "+/-2", match: true }
+      - { name: "Electro box", base: "(0,0,-3)", port: "(0,0,-3)", match: true }
+      - { name: "rail-family move filter", base: "MOVE_NORMAL (Vortex/OK-Nex/Vaporizer)", port: "Normal (vortex/vaporizer; OK-Nex absent)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: partial
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "True-aim throttle (TrueAimCanReuse + cl_crosshair_trueaim_rate, default 30 Hz with an always-on view-unchanged cache, CrosshairPanel.cs:1069-1092) caps the two full-range world traces; Base traces every frame. Documented perf change behind the spawn-area low-FPS fix (Brush.cs broadphase). Cosmetic-only, so deliberate."
+    gaps:
+      - "Obstruction test is 3D-distance (the dead Base `#if 0` form, crosshair.qc:145-151) restricted to zero-box hitscan weapons, not Base's screen-space reprojected-endpoint drift test (crosshair.qc:312-319) — HITOBSTRUCTION blur is approximate and missing for projectile-box weapons (RL/Fireball/Seeker/Electro)."
+      - "EnemyHitCheck is not gated on `teamplay` and omits the NUM_SPECTATOR->HITWORLD branch (crosshair.qc:64-67); team test is `hit.Team != 0 && hit.Team == Player.Team` (close but diverges from Base's branch structure)."
+      - "Rifle zoomscript single-tracebox branch (crosshair.qc:90-94) and the SHOTORG-decompressed shot-origin offset (decompressShotOrigin, crosshair.qc:125-138) are not reproduced (port traces from the eye + ViewHeight, a single point-trace + box-trace)."
+    verification:
+      - { kind: code, ref: "ComputeShotType runs each _Process (gated on _cvEnabled); IMPROVED (wave 60d45f5): AimOrigin/AimForward are now FED with the authoritative rendered eye/forward (NetGame:4251-4252 from _view.RenderedEyeQuake/RenderedForwardQuake), so the trace runs off the real render eye, not the Player-reconstruction fallback; projectile boxes + min-range 44 match Base exactly; the open logic gaps below are UNCHANGED", result: pass }
+    confidence: medium
+    notes: "Live; the aim-ray INPUT is now authoritative — the view-primitives wave wired AimForward/AimOrigin from the rendered eye (previously the dead reconstruction fallback carried it). Status UNCHANGED (already liveness:live; logic:partial): the screen-space obstruction test, the teamplay/NUM_SPECTATOR EnemyHitCheck gate, and the Rifle-zoomscript/SHOTORG branch all still diverge. NoTrueAim weapons skip (Mortar/Hook/Porto/Tuba via WeaponFlags.NoTrueAim)."
+
+  - id: cl-crosshair.trueaim.showimpact
+    name: "Debug: draw crosshair at the reprojected impact point (crosshair_hittest_showimpact)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/crosshair.qc:HUD_Crosshair (306-322)"
+    port_refs: []
+    constants:
+      - { name: "crosshair_hittest_showimpact", base: "0", port: "0 (registered CrosshairPanel.cs:352, NO reader)", match: false }
+    status:
+      logic: missing
+      values: faithful
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base (crosshair.qc:306-321): the hit-test block reprojects the box-trace endpoint into screen space (wcross_origin) and, unless crosshair_hittest_showimpact is set, restores wcross_origin to the geometric centre. With showimpact=1 the crosshair is left drawn AT the projected impact point (a debug/aim-assist cue). The port always draws at the geometric panel centre (DrawPanel: center = Size2*0.5f) and never reprojects — the cvar is registered with the Base default (0) but has no reader."
+      - "Tied to the same missing screen-space reprojection as the trueaim HITOBSTRUCTION test; default 0 so the visible default behaviour matches Base."
+    verification:
+      - { kind: grep, ref: "crosshair_hittest_showimpact registered CrosshairPanel.cs:352; grep finds no reader in game/ or src/; the crosshair draw centre is the fixed geometric centre, never the impact projection", result: fail }
+    confidence: high
+    notes: "Newly mapped this pass (was a registry coverage gap). Off by default in Base, so the default behaviour is faithful; the showimpact=1 path is unported. Minor debug feature."
+
+  - id: cl-crosshair.color.special_modes
+    name: "Crosshair color: weapon / health+armor / fixed (crosshair_color_special)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/crosshair.qc:crosshair_getcolor (165-204)"
+    port_refs:
+      - "game/hud/CrosshairPanel.cs:BaseColor (687-710)"
+      - "game/hud/CrosshairPanel.cs:HealthArmorColor (714-724)"
+      - "game/hud/CrosshairPanel.cs:NumRampColor (727-745)"
+    constants:
+      - { name: "crosshair_color_special", base: "1", port: "1", match: true }
+      - { name: "crosshair_color", base: "0.6 0.8 1", port: "0.6 0.8 1", match: true }
+      - { name: "health ramp max", base: "200", port: "200", match: true }
+      - { name: "armorblockpercent (health calc)", base: "0.7", port: "0.7", match: true }
+      - { name: "rainbow_brightness (mode 3)", base: "20", port: "20 registered, mode 3 unreachable", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "crosshair_color_special 3 (rainbow: randomvec()*brightness re-rolled every rainbow_delay, crosshair.qc:189-196) is not ported — ColorModeCvar (CrosshairPanel.cs:537-542) maps only 0/1/2, so mode 3 silently falls back to fixed color. The rainbow_brightness/delay cvars are registered but dead."
+    verification:
+      - { kind: code, ref: "BaseColor switches on ColorModeCvar (Weapon/Health/Fixed); health ramp 5 stops in NumRampColor match HUD_Get_Num_Color; healtharmor_maxdamage approximated with armorBlock 0.7; unchanged vs main", result: pass }
+    confidence: high
+    notes: "Weapon-color path uses WeaponHud.ColorOf. Health ramp + healtharmor_maxdamage approximation faithful. mode 3 is the only logic/presentation gap. UNCHANGED this pass."
+
+  - id: cl-crosshair.anim.pickup_pulse
+    name: "Item-pickup crosshair pulse (crosshair_pickup)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/crosshair.qc:HUD_Crosshair (362-380)"
+    port_refs:
+      - "game/hud/CrosshairPanel.cs:PulsePickup (512-516)"
+      - "game/hud/CrosshairPanel.cs:_Process (447-451)"
+      - "game/hud/CrosshairPanel.cs:DrawPanel (570-571)"
+      - "game/net/NetGame.cs:UpdatePickupFeed (3214-3267)"
+      - "game/net/NetGame.cs:3260"
+    constants:
+      - { name: "crosshair_pickup", base: "0.25", port: "0.25", match: true }
+      - { name: "crosshair_pickup_speed", base: "4", port: "4", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Host path only: UpdatePickupFeed calls CrosshairPanel.PulsePickup() (NetGame:3260) when a new weapon or a resource jump is detected on the LocalServerPlayer (re-baselined on respawn so the spawn loadout isn't counted). The crosshair bumps on item pickup on the host/listen-server. STILL host-only: the detection reads only LocalServerPlayer (NetGame:3218), so a pure remote client (LocalServerPlayer==null) gets no pulse — there is no networked STAT(LAST_PICKUP) equivalent in the LocalState slice (unlike the nade/hit feedback fields, which W17 wired for remote). UNCHANGED this pass."
+      - "Pickup trigger is derived (new-weapon-owned or per-frame resource jump > threshold) rather than the Base STAT(LAST_PICKUP) tick; approximate but matches the visible cue for the host player."
+    verification:
+      - { kind: code, ref: ".PulsePickup() called UpdatePickupFeed NetGame:3260 (UpdatePickupFeed call at NetGame:3086, internally gated on LocalServerPlayer != null/alive at 3218-3223); decay math (scale += sin(_pickupSize)*pickup, decays by pickup_speed*dt) faithful in CrosshairPanel _Process/DrawPanel", result: pass }
+    confidence: high
+    notes: "Live on the host path (was DEAD pre-W16). Decay math is a faithful port. Liveness partial because remote clients are still unfed (no networked LAST_PICKUP). Line refs re-pinned this pass; behaviour UNCHANGED."
+
+  - id: cl-crosshair.anim.hit_indication
+    name: "Hit-indication scale bump + color flash (crosshair_hitindication)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/crosshair.qc:HUD_Crosshair (383-399)"
+      - "client/view.qc:UpdateDamage (892-911)"
+    port_refs:
+      - "game/hud/CrosshairPanel.cs:_Process (452-462)"
+      - "game/hud/CrosshairPanel.cs:DrawPanel (593-613)"
+      - "game/net/NetGame.cs:2616 (host damagetext flash)"
+      - "game/net/NetGame.cs:UpdateCrosshairFeedback (3195-3201, remote LocalState diff)"
+    constants:
+      - { name: "crosshair_hitindication", base: "0.5", port: "0.5", match: true }
+      - { name: "crosshair_hitindication_color", base: "10 -10 -10", port: "10 -10 -10", match: true }
+      - { name: "crosshair_hitindication_per_weapon_color", base: "10 10 10", port: "10 10 10", match: true }
+      - { name: "crosshair_hitindication_speed", base: "5", port: "5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "NOW LIVE ON BOTH PATHS (W17): the host path still sets HitFlash=1 inside `if (_server is not null)` off the damagetext drain (NetGame:2616), but a NEW remote-client path was added — UpdateCrosshairFeedback (NetGame:3163, called unconditionally at 2681) reads the networked own-entity slice ClientNet.LocalState and diffs ls.HitDamageDealtTotal frame-to-frame (NetGame:3195-3201), setting HitFlash=1 (and the hitsound) when it advances. HitDamageDealtTotal is genuinely produced server-side (DamageSystem.cs:353 -> p.HitsoundDamageDealtTotal) and networked (ServerNet.cs:2102 -> NetEntityState.HitDamageDealtTotal, codec NetEntity.cs Feedback field). So a pure remote client now gets the hit flash, matching Base's STAT(HITSOUND_DAMAGE_DEALT_TOTAL)-diff UpdateDamage path more closely than the host's damagetext coupling."
+      - "Host path is still coupled to the damagetext mutator events rather than a STAT diff (NetGame:2613-2616, fires on ev.Attacker==localPlayer && ev.Target!=localPlayer); the remote path uses the faithful cumulative-stat diff. The first remote sample is skipped (_remoteHitInit) so joining mid-match doesn't flash."
+    verification:
+      - { kind: code, ref: "Host flash NetGame:2616 (damagetext block); remote flash via UpdateCrosshairFeedback diffing ls.HitDamageDealtTotal at NetGame:3195-3201 (LocalState slice, networked from ServerNet:2102 via NetEntity Feedback codec); _Process drives the QC-style _hitIndSize countdown from HitFlash; per-channel color add + per-weapon-color cvar match Base 383-398", result: pass }
+    confidence: high
+    notes: "PREVIOUSLY host-only; W17 added a remote-client read-back (LocalState HitDamageDealtTotal diff) so the hit flash is now live on both the listen-host and pure-client paths — liveness UPGRADED partial->live. Decay + per-channel color add match Base; the legacy HitColor lerp (DrawPanel:591-592) is layered on as an equivalent cue."
+
+  - id: cl-crosshair.anim.smooth_ease
+    name: "Goal-based smooth scale/alpha/color ease (crosshair_effect_time)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/crosshair.qc:HUD_Crosshair (408-449)"
+    port_refs:
+      - "game/hud/CrosshairPanel.cs:SmoothGoal (730-758)"
+    constants:
+      - { name: "crosshair_effect_time", base: "0.4", port: "0.4", match: true }
+      - { name: "crosshair_effect_scalefade", base: "1", port: "1 (size folded into draw scale)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Color is NOT eased: Base eases scale, alpha AND color toward goal over effect_time (crosshair.qc:444 `wcross_color = f*wcross_color + (1-f)*wcross_color_prev`); the port's SmoothGoal eases only scale+alpha and sets color directly each frame. Visually equivalent only for slow color changes within the effect_time window."
+    verification:
+      - { kind: code, ref: "SmoothGoal uses f = dt/(changedonetime-now+dt), the QC frame-rate-independent ease, on scale+alpha refs only (no color ref); unchanged vs main", result: pass }
+    confidence: high
+    notes: "Scale/alpha ease bit-faithful. Color-ease omission downgrades presentation to partial. UNCHANGED this pass."
+
+  - id: cl-crosshair.anim.switch_crossfade
+    name: "Weapon-switch crosshair image cross-fade"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/crosshair.qc:HUD_Crosshair (411-422, 601-615)"
+    port_refs:
+      - "game/hud/CrosshairPanel.cs:_Process (469-485)"
+      - "game/hud/CrosshairPanel.cs:DrawPanel (627-647)"
+    constants:
+      - { name: "crosshair_effect_time", base: "0.4", port: "0.4", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Keyed on the resolved Texture2D changing rather than the wcross_name/resolution string pair; with the per-weapon dict unpopulated the trigger only fires on a `crosshair` cvar change, NOT on every weapon switch — so in normal play (one crosshair number for all weapons) the cross-fade effectively never runs."
+    verification:
+      - { kind: code, ref: "_crossPrev fade-out under fade-in `pic` over EffectTime; ResolveCrosshair drives _lastResolved; switch detected at _Process:472; unchanged vs main", result: pass }
+    confidence: medium
+    notes: "Mechanism is faithful; liveness partial because the only retrigger is a crosshair-cvar change (per-weapon pic gap means weapons resolve the same texture). UNCHANGED this pass."
+
+  - id: cl-crosshair.trueaim.teammate_blur_signal
+    name: "Teammate shrink + wall/teammate blur signalling"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/crosshair.qc:HUD_Crosshair (405-435, 585-599)"
+    port_refs:
+      - "game/hud/CrosshairPanel.cs:DrawPanel (615-630)"
+      - "game/hud/CrosshairPanel.cs:DrawCrosshairTexture (1341-1363)"
+    constants:
+      - { name: "crosshair_hittest_blur_wall", base: "1", port: "1", match: true }
+      - { name: "crosshair_hittest_blur_teammate", base: "0", port: "0", match: true }
+      - { name: "teammate shrink divisor", base: "/= crosshair_hittest (=1, no shrink)", port: "/= GlobalF(crosshair_hittest, 1) (=1, no shrink)", match: true }
+      - { name: "blur alpha multiplier", base: "0.75", port: "0.75", match: true }
+      - { name: "blur grid", base: "5x5 @ 0.04 alpha", port: "5x5 @ 0.04 alpha", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Blur is a 5x5 spread of 0.04-alpha texture copies (matches Base's CROSSHAIR_DO_BLUR for textured crosshairs, crosshair.qc:585-596); only applies to the textured path (DrawCrosshairTexture), not the vector fallback (DrawVectorCrosshair)."
+    verification:
+      - { kind: code, ref: "DrawPanel now divides scale by GlobalF(crosshair_hittest, 1f) on HitTeam (DrawPanel:623-625) — default 1 => NO shrink, matching Base crosshair.qc:406 exactly; the legacy HitTestTeammateShrink property defaults to 1 (CrosshairPanel.cs:216) and is no longer on the live path; blur=true dims alpha to 0.75 (630) and DrawCrosshairTexture spreads the 5x5 0.04-alpha copies; unchanged vs main", result: pass }
+    confidence: high
+    notes: "Depends on the (live) true-aim classification. The teammate-shrink divisor now matches Base (divides by the crosshair_hittest cvar, default 1 = no shrink) — the prior baseline's 1.25-shrink divergence is GONE. Only the vector-path blur omission remains (presentation partial)."
+
+  - id: cl-crosshair.ring.vortex_charge
+    name: "Vortex / Overkill-Nex charge ring (+ inner chargepool / moving-average ring)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/crosshair.qc:HUD_Crosshair (476-521, 578-582)"
+    port_refs:
+      - "game/hud/CrosshairPanel.cs:DrawStatRing (919-1030)"
+      - "game/hud/CrosshairPanel.cs:ChargeRingValue (1033-1038)"
+      - "game/net/NetGame.cs:UpdateCrosshairWeaponRings (3283-3369, vortex feed 3305-3306)"
+    constants:
+      - { name: "crosshair_ring_vortex", base: "1", port: "1", match: true }
+      - { name: "crosshair_ring_vortex_alpha", base: "0.15", port: "0.15", match: true }
+      - { name: "crosshair_ring_vortex_inner_alpha", base: "0.15", port: "0.15", match: true }
+      - { name: "currentcharge_scale", base: "30", port: "30", match: true }
+      - { name: "currentcharge_movingavg_rate", base: "0.05", port: "0.05", match: true }
+      - { name: "vortex_inner_color", base: "0.8 0 0", port: "0.8 0 0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "NOW LIVE ON BOTH PATHS (wepent-rings fix): UpdateCrosshairWeaponRings feeds CrosshairPanel.ChargeFraction = st.VortexCharge and .ChargePool = st.VortexChargePoolAmmo on a listen host (off LocalServerPlayer's slot-0 WeaponSlotState), and on a PURE REMOTE client it now mirrors the networked owner-block scalars instead (ClientNet.LocalWeaponRings, resolved server-side by ServerNet.ResolveOwnerWeaponRings and read via OwnerWeaponRings.Read). VortexCharge is genuinely produced server-side. (This also fixed a latent W16 desync — the server wrote the ring tail with no matching client read; see last_audited.)"
+      - "Minor fidelity: ChargePool is fed unconditionally for vortex-like weapons (default VortexChargePoolAmmo=1f), so the inner chargepool ring shows even when secondary chargepool isn't enabled; Base gates the inner-pool branch on use_vortex_chargepool. Overkill-Nex weapon itself is otherwise absent from this port."
+    verification:
+      - { kind: code, ref: "ChargeFraction/ChargePool fed NetGame:3305-3306 on the active vortex-like slot; sentinel -1 reset otherwise (3310-11); feeder reads LocalServerPlayer only (3286, host); panel ChargeRingValue + DrawStatRing inner/outer math faithful (CrosshairPanel:919-1030)", result: pass }
+    confidence: high
+    notes: "PREVIOUSLY DEAD; now live on BOTH the host AND pure-remote paths (remote fed via networked OwnerWeaponRings). Ring math (outer nexgun ring + inner pool/movingavg) is a faithful port. Liveness partial->live."
+
+  - id: cl-crosshair.ring.reload_ammo
+    name: "Reload / ammo (clip) ring (+ Rifle ring art)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/crosshair.qc:HUD_Crosshair (536-549)"
+    port_refs:
+      - "game/hud/CrosshairPanel.cs:DrawStatRing (986-996)"
+      - "game/net/NetGame.cs:UpdateCrosshairWeaponRings (3314-3324)"
+    constants:
+      - { name: "crosshair_ring_reload", base: "1", port: "1", match: true }
+      - { name: "crosshair_ring_reload_size", base: "2.5", port: "2.5", match: true }
+      - { name: "crosshair_ring_reload_alpha", base: "0.2", port: "0.2", match: true }
+      - { name: "Rifle clip-size special art", base: "80 -> crosshair_ring_rifle", port: "80 -> crosshair_ring_rifle", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "NOW LIVE ON BOTH PATHS (wepent-rings fix): UpdateCrosshairWeaponRings feeds CrosshairPanel.ClipLoad/.ClipSize when the active slot has a clip — off LocalServerPlayer on a listen host, and off the networked owner-block scalars (ClientNet.LocalWeaponRings.ClipLoad/ClipSize, resolved by ServerNet.ResolveOwnerWeaponRings) on a pure remote client. ClipLoad/ClipSize are genuinely maintained on the slot by WeaponFireGate/WeaponFireDriver."
+    verification:
+      - { kind: code, ref: "ClipLoad/ClipSize fed NetGame:3317-3318 when st.ClipSize>0 (host, LocalServerPlayer); panel DrawStatRing reload branch (987-996) + Rifle-80 art faithful; clip state produced by WeaponFireGate.cs", result: pass }
+    confidence: high
+    notes: "PREVIOUSLY DEAD; now live on BOTH the host AND pure-remote paths (remote fed via networked OwnerWeaponRings). Faithful clip_load/clip_size fraction + Rifle-80 art branch. Liveness partial->live."
+
+  - id: cl-crosshair.ring.minelayer_hagar_arc
+    name: "Mine Layer / Hagar load / Arc heat rings"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/crosshair.qc:HUD_Crosshair (522-535, 550-557)"
+    port_refs:
+      - "game/hud/CrosshairPanel.cs:DrawStatRing (968-1010)"
+      - "game/net/NetGame.cs:UpdateCrosshairWeaponRings (3326-3368)"
+    constants:
+      - { name: "crosshair_ring_minelayer_alpha", base: "0.15", port: "0.15", match: true }
+      - { name: "crosshair_ring_hagar_alpha", base: "0.15", port: "0.15", match: true }
+      - { name: "crosshair_ring_arc_cold_alpha", base: "0.2", port: "0.2", match: true }
+      - { name: "crosshair_ring_arc_hot_alpha", base: "0.5", port: "0.5", match: true }
+      - { name: "crosshair_ring_arc_hot_color", base: "1 0 0", port: "1 0 0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "NOW LIVE ON BOTH PATHS (wepent-rings fix): UpdateCrosshairWeaponRings feeds CrosshairPanel.HagarLoad, .MineCount, and .ArcHeat (with the overheat-jam latch) when the matching weapon is active. On a listen host these come off LocalServerPlayer (incl. the live g_mines scan); on a pure remote client they come from the networked owner-block scalars (ClientNet.LocalWeaponRings.HagarLoad/MineCount/ArcHeat, resolved server-side by ServerNet.ResolveOwnerWeaponRings — which runs the same mine scan + arc-heat expression off the authoritative player). HagarLoad/BeamHeat/ArcOverheat are genuinely produced server-side (Hagar.cs/Arc.cs)."
+    verification:
+      - { kind: code, ref: "HagarLoad/MineCount/ArcHeat fed NetGame:3329-3363 on the matching active weapon (host, LocalServerPlayer); panel DrawStatRing branches (968-1010) faithful; Arc heat percent (st.BeamHeat/OverheatMax + latch) mirrors Arc_GetHeat_Percent; weapon-side state produced by Hagar.cs/Arc.cs", result: pass }
+    confidence: high
+    notes: "PREVIOUSLY DEAD; now live on BOTH the host AND pure-remote paths (remote fed via networked OwnerWeaponRings). Mine fraction, Hagar load fraction, and Arc cold/hot alpha+color lerp all match Base. Liveness partial->live."
+
+  - id: cl-crosshair.ring.switch_fade
+    name: "Weapon-switch ring fade-out/in (wcross_ring_prev)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/crosshair.qc:HUD_Crosshair (559-576)"
+    port_refs:
+      - "game/hud/CrosshairPanel.cs:SwitchRingFade (1041-1053)"
+    constants:
+      - { name: "crosshair_effect_time", base: "0.4", port: "0.4", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Now reachable on the host path: with the weapon-stat rings fed (UpdateCrosshairWeaponRings), DrawStatRing produces rings and calls SwitchRingFade (DrawStatRing:943), so the switch fade runs when the host player swaps between ring-bearing weapons. Still dead for a pure remote client (no ring ever draws there)."
+    verification:
+      - { kind: code, ref: "SwitchRingFade mirrors wcross_ring_prev fade math; called from DrawStatRing:1015, now reachable on the host path because the ring stats are fed", result: pass }
+    confidence: medium
+    notes: "PREVIOUSLY effectively dead (no ring drew); now reachable on the host path. Faithful port. Liveness partial (remote clients unfed)."
+
+  - id: cl-crosshair.dot
+    name: "Center dot (crosshair_dot)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/crosshair.qc:HUD_Crosshair (617-627)"
+    port_refs:
+      - "game/hud/CrosshairPanel.cs:DrawDot (1366-1389)"
+    constants:
+      - { name: "crosshair_dot", base: "0", port: "0", match: true }
+      - { name: "crosshair_dot_size", base: "0.6", port: "0.6", match: true }
+      - { name: "crosshair_dot_alpha", base: "1", port: "1", match: true }
+      - { name: "crosshair_dot_color", base: "1 0 0", port: "1 0 0", match: true }
+      - { name: "crosshair_dot_color_custom", base: "1", port: "1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "DrawDot reads dot/size/alpha/custom-color; gated on crosshair_dot in DrawPanel:652; custom-color override + gfx/crosshairdot art with procedural fallback; unchanged vs main", result: pass }
+    confidence: high
+    notes: "Off by default (matches Base). Lives in the same draw guard as the crosshair pic (live whenever the panel draws). UNCHANGED this pass."
+
+  - id: cl-crosshair.objring.nade_capture_revive
+    name: "Objective rings: NADE_TIMER > CAPTURE_PROGRESS > REVIVE_PROGRESS"
+    layer: [presentation]
+    base_refs:
+      - "client/view.qc:HUD_Draw (1006-1022)"
+    port_refs:
+      - "game/hud/CrosshairPanel.cs:DrawObjectiveRings (884-917)"
+      - "game/net/NetGame.cs:UpdateCrosshairFeedback (3163-3202)"
+    constants:
+      - { name: "priority order", base: "NADE > CAPTURE > REVIVE", port: "NADE > CAPTURE > REVIVE", match: true }
+      - { name: "nade ring color", base: "'0.25 0.90 1' + (t,-t,-t)", port: "same", match: true }
+      - { name: "cl_nade_timer gate", base: "1", port: "1", match: true }
+      - { name: "ring screen anchor", base: "0.5*conwidth, 0.6*conheight; radius 0.1*conheight", port: "crosshair panel centre; radius 64px", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "IMPROVED (W17): NADE_TIMER + REVIVE_PROGRESS are now fed on BOTH paths via the consolidated UpdateCrosshairFeedback (NetGame:3163, called unconditionally at 2681). Host: reads the live LocalServerPlayer (NadeTimer 3173 / ReviveProgress 3174). Pure remote client: reads the networked own-entity slice ClientNet.LocalState (NadeTimer 3188 / ReviveProgress 3190) — these ARE produced server-side (NadesMutator.cs:187 -> p.NadeTimer; FreezeTag.cs:796 -> p.ReviveProgress) and networked (ServerNet.cs:2102-2104 -> NetEntityState, NetEntity.cs Feedback codec). So the nade + thaw rings now render for a remote client too (the prior baseline's 'remote read-back missing' gap is CLOSED for nade/revive)."
+      - "STILL DEAD: CAPTURE_PROGRESS has no production producer — nothing assigns Player.CaptureProgress, ServerNet.cs:2100 deliberately leaves NetEntityState.CaptureProgress at 0 (commented 'no gametype sets it'), and on the host path UpdateCrosshairFeedback hardcodes x.CaptureProgress = 0f (NetGame:3175). The remote path reads ls.CaptureProgress (3189) but it is always 0. The 2nd-priority capture ring never draws in production (grep finds only test-side ClientFeedbackTests.cs:275)."
+      - "Rings drawn centred on the crosshair panel (radius 64px) rather than at Base's `0.5*conwidth, 0.6*conheight` screen anchor with `0.1*conheight` radius; nade-timer text label (cl_nade_timer 2) not drawn. UNCHANGED."
+    verification:
+      - { kind: code, ref: "NadeTimer/ReviveProgress fed on host (NetGame:3173-74, LocalServerPlayer) AND remote (3188/3190, ClientNet.LocalState networked from ServerNet:2102-04 via NetEntity Feedback codec); CaptureProgress hardcoded 0 host (3175) + never produced server-side (ServerNet:2100); DrawObjectiveRings priority+color+gate faithful to view.qc:1006-1022, called from DrawPanel:571", result: pass }
+    confidence: high
+    notes: "Color/priority/gate faithful. Nade + thaw rings now live on BOTH host and pure-remote-client paths (remote read-back ADDED this pass via LocalState). Capture ring still fully dead (no server producer). Liveness stays partial only because of capture; anchor + label remain the presentation gaps."
+
+  - id: cl-crosshair.per_weapon_2d_vehicle
+    name: "Per-weapon crosshair pic + 2D side-scroller + vehicle crosshair"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/crosshair.qc:HUD_Crosshair (237-247, 331-349)"
+      - "client/hud/crosshair.qc:HUD_Crosshair_Vehicle (156-163)"
+    port_refs:
+      - "game/hud/CrosshairPanel.cs:ResolveCrosshair (1181-1191)"
+    constants:
+      - { name: "crosshair_per_weapon", base: "1", port: "1 registered, dict never populated", match: false }
+      - { name: "crosshair_2d", base: "54", port: "54 (registered CrosshairPanel.cs:323, NO reader)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Per-weapon crosshair: PerWeaponNumber dict is never populated by any caller (grep finds zero assignments outside the property def CrosshairPanel.cs:97), so every weapon shows the same `crosshair` number (Base maps each weapon to its own w_crosshair pic + w_crosshair_size multiplier)."
+      - "crosshair_2d (side-scroller, default 54) is now REGISTERED (CrosshairPanel.cs:323) but has no reader — the FREEAIM/viewloc side-scroller crosshair selection is unported. HUD_Crosshair_Vehicle (info.vr_crosshair) has no port."
+    verification:
+      - { kind: grep, ref: "PerWeaponNumber assigned only as the property def in CrosshairPanel.cs:97; no host/config populator found in game/ or src/; crosshair_2d absent from RegisterDefaults; unchanged vs main", result: fail }
+    confidence: high
+    notes: "ResolveCrosshair supports the per-weapon override mechanism but it is fed nothing; falls back to the single crosshair number. UNCHANGED this pass."
+
+  - id: cl-crosshair.reticle.zoom_scope
+    name: "Zoom reticle (DrawReticle) — full-screen scope overlay"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/crosshair.qc:DrawReticle (648-717)"
+    port_refs:
+      - "game/client/ReticleOverlay.cs:UpdateReticle"
+      - "game/net/NetGame.cs:3008 (live call)"
+    constants:
+      - { name: "cl_reticle", base: "1", port: "1", match: true }
+      - { name: "cl_reticle_weapon", base: "1", port: "1", match: true }
+      - { name: "cl_reticle_normal_alpha", base: "1", port: "1", match: true }
+      - { name: "cl_reticle_weapon_alpha", base: "1", port: "1", match: true }
+      - { name: "cl_reticle_stretch", base: "0", port: "0", match: true }
+      - { name: "cl_reticle_chase", base: "0", port: "0", match: true }
+      - { name: "zoomfraction alpha floor", base: "0.25", port: "0.25", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "ReticleOverlay.UpdateReticle called live NetGame.cs:3008; type 1/2 + zoomfraction alpha + dead/spectate/chase suppression match DrawReticle 648-717; ReticleOverlay.cs unchanged vs main", result: pass }
+    confidence: medium
+    notes: "Lives in crosshair.qc in Base but is a separate full-screen scope; scored as its own row. UNCHANGED this pass."

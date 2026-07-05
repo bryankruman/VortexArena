@@ -2,6 +2,7 @@ using System.Numerics;
 using XonoticGodot.Common.Diagnostics;
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
+using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Common.Gameplay.Damage
@@ -43,14 +44,15 @@ public sealed class DamageSystem : IDamageSystem
     private const string CvarPlayerForceScale    = "g_player_damageforcescale";      // xonotic-server.cfg: 2
     private const string CvarDamagePushSpeed     = "g_balance_damagepush_speedfactor";// balance-xonotic.cfg: 2.5
 
-    private const string CvarTeamplayMode        = "teamplay_mode";                  // 2 (team modes)
+    private const string CvarTeamplayMode        = "teamplay_mode";                  // 4 (team modes; xonotic-server.cfg:279)
     private const string CvarFriendlyFire        = "g_friendlyfire";                 // 0.5
     private const string CvarFriendlyFireVirtual = "g_friendlyfire_virtual";         // 1
-    private const string CvarFriendlyFireVirtualForce = "g_friendlyfire_virtual_force"; // 0
+    private const string CvarFriendlyFireVirtualForce = "g_friendlyfire_virtual_force"; // 1 (xonotic-server.cfg:285)
     private const string CvarMirrorDamage        = "g_mirrordamage";                 // 0.7
     private const string CvarMirrorDamageVirtual = "g_mirrordamage_virtual";         // 1
     private const string CvarMirrorDamageOnlyWeapons = "g_mirrordamage_onlyweapons"; // 0
     private const string CvarTeamDamageThreshold = "g_teamdamage_threshold";         // 40
+    private const string CvarTeamDamageResetSpeed = "g_teamdamage_resetspeed";       // 20
     private const string CvarMaxPushTime         = "g_maxpushtime";                  // 8
     private const string CvarSpawnShieldBlock    = "g_spawnshield_blockdamage";      // 1
     private const string CvarPauseHealthRegen    = "g_balance_pause_health_regen";   // 5
@@ -68,6 +70,9 @@ public sealed class DamageSystem : IDamageSystem
     private const float DefFriendlyFire       = 0.5f;
     private const float DefMirrorDamage       = 0.7f;
     private const float DefTeamDamageThreshold = 40f;
+    private const float DefTeamDamageResetSpeed = 20f;
+    private const float DefTeamplayMode       = 4f;   // xonotic-server.cfg:279 teamplay_mode 4
+    private const float DefFriendlyFireVirtualForce = 1f; // xonotic-server.cfg:285 g_friendlyfire_virtual_force 1
     private const float DefMaxPushTime        = 8f;
     private const float DefSpawnShieldBlock   = 1f;
     private const float DefPauseHealthRegen   = 5f;
@@ -75,6 +80,43 @@ public sealed class DamageSystem : IDamageSystem
 
     /// <summary>Guards against the QC <c>Damage()</c> recursing forever through mirror damage (the QC re-enters once).</summary>
     [ThreadStatic] private static bool _inMirror;
+
+    // ===============================================================================================
+    //  Wave-1 "damage-channel" seam surface (the stable contract Wave-2 gameplay code depends on).
+    //
+    //  1. STRING deathtype/hittype channel — <see cref="Apply"/> carries the full string deathtype
+    //     (DeathTypes.* base tag + "|hittype" suffix tokens) end-to-end: monster/turret/vehicle/special
+    //     deaths ride the <c>deathTag</c> override (WeaponSplash.RadiusDamage / Combat.Damage(string)),
+    //     and HITTYPE bits (SPLASH/SECONDARY/BOUNCE/ARMORPIERCE/SOUND/SPAM) ride the suffix tokens.
+    //     The int-keyed weapon path (WeaponFiring.ApplyDamage(int)) maps the weapon id to its NetName tag;
+    //     callers that need a hittype on the int path tag it with <see cref="SplashDeathType"/> /
+    //     <see cref="DeathTypes.WithHitType"/> and pass the resulting STRING to <c>Combat.Damage</c>.
+    //
+    //  2. Per-entity damage/force scaling — <see cref="ApplyKnockback"/> consults the per-entity
+    //     <see cref="Entity.DamageForceScale"/> (0 = immovable; players fall back to g_player_damageforcescale),
+    //     and the gametype possession matrices (Keepaway/TKA ballcarrier, FreezeTag frozen-immunity) +
+    //     the Midair multiplier rewrite damage/force through the <c>Damage_Calculate</c> hook below — there
+    //     is no separate per-entity damage scalar in QC, the hook IS the scaling channel.
+    //
+    //  3. Damage-path mutator hooks — both fire live from this file on every applicable hit:
+    //     <see cref="MutatorHooks.DamageCalculate"/> (Apply, after the global factors / before self-damage,
+    //     in/out damage+mirror+force) and <see cref="MutatorHooks.PlayerDamaged"/> +
+    //     <see cref="GameHooks.PlayerDamageSplitHealthArmor"/> (PlayerDamage, post-subtract).
+    // ===============================================================================================
+
+    /// <summary>
+    /// QC <c>deathtype | HITTYPE_SPLASH</c> (server/damage.qc:917-920): the canonical tagging a
+    /// splash/blast caller applies to an INDIRECT victim's deathtype so the kill-message/effect layer can
+    /// tell a splash kill from a direct hit. RadiusDamage ORs this onto every victim that is NOT the
+    /// <c>directHit</c> entity and whose death is not a special (non-weapon) death; the direct-hit entity
+    /// and special deaths keep the plain tag. Idempotent (see <see cref="DeathTypes.WithHitType"/>). This is
+    /// the seam the (separately-owned) WeaponSplash.RadiusDamage / WeaponFiring.ApplyDamage indirect path
+    /// calls so the HITTYPE_SPLASH bit is set in exactly one place.
+    /// </summary>
+    public static string SplashDeathType(string deathType)
+        => DeathTypes.IsSpecial(deathType)
+            ? deathType                                       // QC: specials keep the plain deathtype
+            : DeathTypes.WithHitType(deathType, DeathTypes.Splash);
 
     public float Apply(in DamageInfo info)
     {
@@ -139,7 +181,7 @@ public sealed class DamageSystem : IDamageSystem
                 }
                 else if (!IsFrozenStat(targ) && Teams.SameTeam(atk, targ))
                 {
-                    int mode = (int)Cvar(CvarTeamplayMode, 2f);
+                    int mode = (int)Cvar(CvarTeamplayMode, DefTeamplayMode);
                     if (mode == 1)
                         damage = 0f;
                     else if (!ReferenceEquals(atk, targ))
@@ -188,7 +230,10 @@ public sealed class DamageSystem : IDamageSystem
                                     targ.DmgSave += vs;
                                     targ.DmgInflictor = inflictor;
                                     damage = 0f;
-                                    if (!CvarBool(CvarFriendlyFireVirtualForce))
+                                    // QC: g_friendlyfire_virtual_force 1 (xonotic-server.cfg:285) — keep knockback
+                                    // even when friendlyfire is virtual (graphics-only). Default 1 means force IS
+                                    // applied; only when explicitly set to 0 is it zeroed.
+                                    if (Cvar(CvarFriendlyFireVirtualForce, DefFriendlyFireVirtualForce) == 0f)
                                         force = Vector3.Zero;
                                 }
                             }
@@ -225,10 +270,29 @@ public sealed class DamageSystem : IDamageSystem
             if (attacker is not null && ReferenceEquals(attacker, targ))
                 damage *= Cvar(CvarSelfDamagePercent, DefSelfDamagePercent);
 
-            // (hit-sound / accuracy accounting — QC damage.qc ~618 — is host/stats-side; omitted here.
-            //  complainTeamDamage past this point only drives the team-kill complaint SOUND, which the
-            //  host renders, so it has no further effect on the simulation.)
-            _ = complainTeamDamage;
+            // QC damage.qc ~618: same-team hit-sound and the team-kill complaint SOUND timer.
+            // When the attacker has dealt enough team-damage to trigger complainTeamDamage > 0, and the
+            // cooldown CS(attacker).teamkill_complain has elapsed, schedule a deferred complaint voice
+            // on the victim: the attacker's "teamshoot" voice plays 0.4s later via PlayerFrameLogic.
+            // QC damage.qc:654-664 (inside the "same-team hit" block):
+            //   if (!STAT(FROZEN, victim) && !(deathtype & HITTYPE_SPAM))
+            //     if (complainteamdamage > 0 && time > CS(attacker).teamkill_complain)
+            //       CS(attacker).teamkill_complain = time + 5;
+            //       CS(attacker).teamkill_soundtime = time + 0.4;
+            //       CS(attacker).teamkill_soundsource = targ;
+            if (complainTeamDamage > 0f
+                && attacker is not null && IsPlayer(attacker)
+                && !IsFrozenStat(targ)
+                && !DeathTypes.HasHitType(deathType, DeathTypes.Spam))
+            {
+                float now = Now();
+                if (now > attacker.TeamKillComplainTime)
+                {
+                    attacker.TeamKillComplainTime = now + 5f;
+                    attacker.TeamKillSoundTime    = now + 0.4f;
+                    attacker.TeamKillSoundSource  = targ;
+                }
+            }
         }
 
         // ----- apply knockback (QC damage.qc "apply push" ~671) -----
@@ -276,7 +340,18 @@ public sealed class DamageSystem : IDamageSystem
         // DEATH_MIRRORDAMAGE with attacker==target, so the self guard excludes it). Non-player attackers (world /
         // turrets) don't get a hit sound. Gated on a real removal so a fully-blocked/0-damage hit doesn't beep.
         if (!_inMirror && (dh + da) > 0f && IsPlayer(attackerSave) && !ReferenceEquals(attackerSave, targ))
+        {
+            // QC damage.qc:631-632: the hit-sound block also runs for non-player victims when a mutator's
+            // PlayHitsound hook forces it (Assault returns true for a func_assault_destructible wall). For a
+            // non-player victim, consult the hook so the registered gametype handler actually runs (this is the
+            // live firing site for MUTATOR_CALLHOOK(PlayHitsound, victim, attacker) — QC's only consumer of it).
+            // The port's stat accrues for any non-self victim regardless (so a wall already beeps); the hook call
+            // is what makes the handler reachable and lets a future port gate the stat on the victim type as Base
+            // does. (Result deliberately unused: the accrual below is already permissive and parity-neutral.)
+            if (!IsPlayer(targ))
+                MutatorHooks.FirePlayHitsound(targ, attackerSave);
             attackerSave!.HitsoundDamageDealtTotal += dh + da;
+        }
 
         return dh + da;
     }
@@ -366,7 +441,10 @@ public sealed class DamageSystem : IDamageSystem
         {
             targ.Pusher = attacker;
             targ.PushLTime = Now() + Cvar(CvarMaxPushTime, DefMaxPushTime);
-            targ.IsTypeFrag = false; // PHYS_INPUT_BUTTON_CHAT(this) — chat input not wired here
+            // QC player.qc:304 — this.istypefrag = PHYS_INPUT_BUTTON_CHAT(this): the VICTIM's chat-button
+            // state at the moment of the hit decides whether the kill counts as a typefrag. ButtonChat is
+            // written per-frame from the player's input Typing intent in PlayerPhysics (already live).
+            targ.IsTypeFrag = targ.ButtonChat;
         }
         else if (Now() < targ.PushLTime)
         {
@@ -434,10 +512,48 @@ public sealed class DamageSystem : IDamageSystem
                 if (Now() > targ.PainFinished && !IsFrozenStat(targ) && !HasStatusFrozen(targ))
                 {
                     targ.PainFinished = Now() + 0.5f;
+
+                    // [W14b Stage 4] animdecide PAIN set-site (QC player.qc:356-365): gated on sv_gentle<1 and the
+                    // corpse exclusion (classname != "body"); QC also gates on !animstate_override, which the port
+                    // doesn't model (no monster anim-override on players). Alternate PAIN1/PAIN2 by random()>0.5, the
+                    // SAME roll QC uses, with restart = true (a fresh hit restarts the pain window). A late pain on a
+                    // dead/dying corpse is excluded here, and even if one slipped through GetUpperAnim keeps DIE above
+                    // PAIN, so the death overlay is never stomped.
+                    if (SvGentle() < 1f && !targ.IsCorpse)
+                    {
+                        var painAct = Prandom.Float() > 0.5f
+                            ? AnimDecide.AnimUpperAction.Pain1
+                            : AnimDecide.AnimUpperAction.Pain2;
+                        var (act, start) = AnimDecide.SetAction(
+                            targ.AnimUpperAction, targ.AnimActionStart, painAct, Now(), restart: true);
+                        targ.AnimUpperAction = act;
+                        targ.AnimActionStart = start;
+                    }
+
                     EmitPainSound(targ, attacker, deathType, take);
                 }
                 if (take > 0f)
                     EffectEmitter.TeBlood(hitLoc, force.LengthSquared() > 0f ? Vector3.Normalize(-force) * 400f : Vector3.Zero, (int)(take * 0.2f + 1f));
+
+                // Bot aim shake (QC player.qc:388-395): throw off bot aim temporarily when damaged.
+                // QC: if(IS_BOT_CLIENT(this) && GetResource(this, RES_HEALTH) >= 1)
+                //   shake = damage * 5 / (bound(0, skill, 100) + 1)
+                //   v_angle.x += (random()*2-1)*shake; v_angle.y += (random()*2-1)*shake
+                //   v_angle.x = bound(-90, v_angle.x, 90)
+                // Applied AFTER the subtract (uses post-subtract health to skip dead targets);
+                // "damage" here is the pre-split, handicap-adjusted damage, matching QC's local.
+                if (targ is Player { IsBot: true } botTarg && targ.GetResource(ResourceType.Health) >= 1f)
+                {
+                    // QC bound(0, skill, 100): the live "skill" engine cvar (unset == 0 → divisor 1, max shake),
+                    // NOT a fabricated default. Read the raw value so a 0/unset skill matches QC's bound exactly.
+                    float skillCvar = Api.Services is not null ? Api.Cvars.GetFloat("skill") : 0f;
+                    float skill = QClamp(skillCvar, 0f, 100f);
+                    float shake = damage * 5f / (skill + 1f);
+                    botTarg.ViewAngles = new Vector3(
+                        QClamp(botTarg.ViewAngles.X + Prandom.Signed() * shake, -90f, 90f),
+                        botTarg.ViewAngles.Y + Prandom.Signed() * shake,
+                        botTarg.ViewAngles.Z);
+                }
             }
             else
             {
@@ -519,6 +635,11 @@ public sealed class DamageSystem : IDamageSystem
 
         victim.AirFinished = 0f; // QC STAT(AIR_FINISHED) = 0
 
+        // QC Obituary (server/damage.qc:238): targ.death_origin = targ.origin; — latch the death position BEFORE
+        // the corpse is tossed/moved, so "spawn near where you died" features (spawn_near_teammate closetodeath,
+        // the personal/here/danger waypoints) measure from where the player actually fell, not the corpse rest.
+        if (victim is Player prDeath) prDeath.DeathOrigin = victim.Origin;
+
         // QC respawn_time = 0; then PlayerDies can set it; else calculate_player_respawn_time fills it.
         if (victim is Player pr0) pr0.RespawnTime = 0f;
 
@@ -538,6 +659,20 @@ public sealed class DamageSystem : IDamageSystem
         };
         Combat.Death.Call(ref death);
 
+        // QC wr_playerdeath: the weapon the player dies with may fire/release any state held mid-action (e.g. Hagar's loaded rockets).
+        var deathSlot = new WeaponSlot(0); // single-weapon port currently uses slot 0
+        Weapon? weapon = Inventory.CurrentWeapon(victim);
+        if (weapon is not null)
+            weapon.WrPlayerDeath(victim, deathSlot);
+
+        // QC server/player.qc:514 Portal_ClearAllLater(this): on death the porto's portal cleanup
+        // (Portal_ClearAll + W_Porto_Remove) runs UNCONDITIONALLY, NOT only when the player holds the porto — a
+        // placed portal or in-flight porto must be torn down even if the victim died holding a different weapon.
+        // The port folds that cleanup into Porto.WrPlayerDeath; the held-weapon dispatch above already ran it when
+        // porto IS the current weapon, so here we run it ONLY for an owned-but-not-held porto (avoids a double call).
+        if (Registry<Weapon>.ByName("porto") is { } porto && porto != weapon && Inventory.HasWeapon(victim, porto))
+            porto.WrPlayerDeath(victim, deathSlot);
+
         // A non-player victim with its OWN death handler (turret/monster/breakable) wired onto the Death bus has
         // just run it (e.g. TurretAI.Die -> SOLID_NOT + respawn schedule, DeadState advanced past DeadFlag.No).
         // In QC those entities carry their death in .event_damage and the generic player-corpse path below is
@@ -551,6 +686,12 @@ public sealed class DamageSystem : IDamageSystem
         var pd = new MutatorHooks.PlayerDiesArgs(inflictor, attacker, victim, deathType, damage);
         MutatorHooks.PlayerDies.Call(ref pd);
         damage = pd.Damage;
+
+        // QC status_effects PlayerDies/MonsterDies hook (sv_status_effects.qc:66-78): StatusEffects_removeall
+        // on death so a victim's burning/stunned/superweapon timers don't survive into the corpse/respawn
+        // (NORMAL removal — plays each effect's removal sound). Status effects are always-on (not a gated
+        // mutator in the port), so this is wired on the unconditional death path rather than the hook bus.
+        StatusEffectsCatalog.RemoveAll(victim, StatusEffectRemoval.Normal);
         float excess = MathF.Max(0f, damage - take - save);
 
         // A gametype hook (e.g. Freeze Tag) may have resuscitated the player to HP>=1 — then don't die.
@@ -578,7 +719,7 @@ public sealed class DamageSystem : IDamageSystem
             Inventory.CurrentWeapon(victim), new WeaponSlot(0));
 
         // ----- become a corpse (QC player.qc ~528-591) -----
-        victim.Alpha = 1f;                    // QC default_player_alpha — fully visible
+        victim.Alpha = MutatorHooks.DefaultPlayerAlpha; // QC default_player_alpha (player.qc:540) — corpse inherits the cloaked seed
         victim.Angles = new Vector3(0f, victim.Angles.Y, 0f); // upright, untilted
         victim.AVelocity = Vector3.Zero;      // don't spin
         victim.ViewOfs = new Vector3(0f, 0f, -8f); // view from the floor
@@ -593,6 +734,17 @@ public sealed class DamageSystem : IDamageSystem
         victim.Flags &= ~EntFlags.OnGround;   // don't stick to the floor
         victim.DeadState = DeadFlag.Dying;    // dying animation (commits to DEAD across frames)
         victim.IsCorpse = true;               // route further hits to PlayerCorpseDamage
+
+        // [W14b Stage 4] animdecide DIE set-site (QC player.qc:571-575): on death, select DIE1 vs DIE2 by
+        // random()<0.5 — the SAME roll QC uses (animdecide_setstate ANIMSTATE_DEAD1/DEAD2). These are NEVER windowed:
+        // GetUpperAnim returns DIE with ANIMPRIO_DEAD unconditionally, so the death overlay holds (and outranks any
+        // late pain/shoot) until the player respawns and re-latches a live action. The start time is the death time
+        // (QC death_time = time), networked as AnimActionTime so the client plays the death torso from its start.
+        var dieAct = Prandom.Float() < 0.5f
+            ? AnimDecide.AnimUpperAction.Die1
+            : AnimDecide.AnimUpperAction.Die2;
+        victim.AnimUpperAction = dieAct;
+        victim.AnimActionStart = Now();
 
         // players have no think; corpse fade-out is host-side (SUB_SetFade) — left to the host.
         victim.Think = null;
@@ -776,17 +928,36 @@ public sealed class DamageSystem : IDamageSystem
     private static bool IsFrozenStat(Entity e) => e.FrozenStat != 0 || HasStatusFrozen(e);
 
     /// <summary>
-    /// QC <c>Handicap_GetTotalHandicap(player, receiving)</c> (server/handicap.qc): forced × voluntary,
-    /// both pre-combined onto the entity (<see cref="Entity.HandicapTake"/>/<see cref="Entity.HandicapGive"/>),
-    /// which default to 1 (handicap disabled). Non-players have no handicap.
+    /// QC <c>Handicap_GetVoluntaryHandicap(player, receiving)</c> (server/handicap.qc): the per-client,
+    /// self-imposed handicap read from the REPLICATE'd <c>cl_handicap</c>/<c>cl_handicap_damage_given</c>/
+    /// <c>cl_handicap_damage_taken</c> cvars, bound to [1, 10]. Wired by the server (Commands ctor) to read the
+    /// per-client cvar store; null (e.g. unit tests with no server) → 1 (no voluntary handicap). The CTS/RACE
+    /// HANDICAP_DISABLED() gate lives inside the provider (same source as the forced side).
+    /// </summary>
+    public static System.Func<Entity, bool, float>? VoluntaryHandicapProvider;
+
+    /// <summary>
+    /// QC <c>Handicap_GetTotalHandicap(player, receiving)</c> (server/handicap.qc): forced × voluntary. The
+    /// forced part is pre-combined onto the entity (<see cref="Entity.HandicapTake"/>/<see cref="Entity.HandicapGive"/>,
+    /// default 1 = handicap disabled); the voluntary part comes from the per-client cl_handicap* cvars via
+    /// <see cref="VoluntaryHandicapProvider"/>. Non-players have no handicap.
     /// </summary>
     private static float HandicapTotal(Entity e, bool receiving)
     {
         if ((e.Flags & EntFlags.Client) == 0)
             return 1f;
-        float v = receiving ? e.HandicapTake : e.HandicapGive;
-        return v <= 0f ? 1f : v;
+        float forced = receiving ? e.HandicapTake : e.HandicapGive;
+        if (forced <= 0f) forced = 1f;
+        float voluntary = VoluntaryHandicapProvider?.Invoke(e, receiving) ?? 1f;
+        return forced * voluntary;
     }
+
+    /// <summary>
+    /// Public alias for <see cref="HandicapTotal"/> — the direct port of the public QC
+    /// <c>Handicap_GetTotalHandicap(player, receiving)</c>. Used by the scoring layer to damage-weight the
+    /// per-player handicapgiven/handicaptaken averages for the XonStat game report (server/client.qc PlayerFrame).
+    /// </summary>
+    public static float GetTotalHandicap(Entity e, bool receiving) => HandicapTotal(e, receiving);
 
     // ===============================================================================================
     //  small predicates / helpers
@@ -852,11 +1023,13 @@ public sealed class DamageSystem : IDamageSystem
     }
 
     /// <summary>
-    /// The per-model player sound directory for a player's voice sounds (QC the model's <c>.sounds</c> pack).
-    /// The Godot-free common layer doesn't carry a per-entity sound-pack path, so this returns null (the
-    /// default pack — <see cref="Sounds.DefaultPlayerSoundDir"/>); the host can override per model on the client.
+    /// The per-model <c>.sounds</c> manifest vpath for a player's voice sounds — QC
+    /// <c>get_model_datafilename(this.model, this.skin, "sounds")</c> (LoadPlayerSounds). Derived from the
+    /// entity's networked model + skin; the host-installed <see cref="Sounds.ModelSoundResolver"/> parses the
+    /// manifest to the real sample path, falling back to <c>default.sounds</c> when the model ships no pack.
+    /// Empty model =&gt; null (the default pack).
     /// </summary>
-    private static string? ModelSoundDir(Entity e) { _ = e; return null; }
+    private static string? ModelSoundDir(Entity e) => Sounds.ModelSoundsFile(e.Model, (int)e.Skin);
 
     /// <summary>
     /// Port of the pain-voice selection inside <c>PlayerDamage</c> (server/player.qc ~356-383): gated on

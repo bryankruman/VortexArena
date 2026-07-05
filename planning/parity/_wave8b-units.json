@@ -1,0 +1,152 @@
+[
+ {
+  "unit": "overkill-weapons",
+  "tier": "opus",
+  "notes": [
+   "[presentation/audio] overkill-weapons.okmachinegun.primary_auto: FIXED (Wave-2, re-confirmed): AttackAuto:136 uses FireBullet with the damagefalloff cvars + the EFFECT_RIFLE tracer trail (tracerEffect:\"RIFLE\" → registered trail EffectsList.cs:106, EmitTrail networks to clients); casing eject (AttackAuto:145 EjectCasing(Bullet), g_casings>=2 gate, up-vel 70-rand*5 matching machinegun.qc:111) and the punchangle recoil PRNG (AttackAuto:129 Prandom.Float()-0.5 on pitch/yaw, gated EntFlags.Client && !g_norecoil) are wired LIVE on the WrThink→AttackAuto player path",
+   "[presentation/audio] overkill-weapons.okhmg.primary_auto: STILL OPEN (NOT touched by the waves, unlike okmachinegun): no W_MuzzleFlash, no SpawnCasing (Base okhmg.qc:53-58 does both), no punchangle recoil (Base okhmg.qc:36-37), no EFFECT_RIFLE tracer (Base okhmg.qc:48 passes it to fireBullet). ; STILL OPEN: no wr_impacteffect (impact puff + ric sound).",
+   "[presentation/audio] overkill-weapons.oknex.primary_rail: STILL OPEN: no CSQC beam particle (SendCSQCVortexBeamParticle), no wr_glow charge glow. OkNex.cs unchanged by the waves. ; STILL OPEN: Yoda / Impressive achievement announcements never fire. ; STILL OPEN: no client rail-impact particle / impact sound.",
+   "[presentation/audio] overkill-weapons.okshotgun.primary_pellets: spread_pattern>0 deterministic pattern path not handled (default 0 = random, matches QC). ; STILL OPEN: no muzzle flash; no shotgun-shell casing (the base Shotgun port DOES eject a casing); no client shotgun-impact particle; ricochet-throttle sound not wired. OkShotgun.cs unchanged by the waves.",
+   "[presentation/audio] overkill-weapons.okrpc.primary_chainsaw_missile: FIXED this pass (shoot-down DEAD→LIVE+faithful): OkRpc.Attack:166 now calls Projectiles.MakeShootable(missile, exception:-1), installing the GtEventDamage shim. DamageSystem.Damage:280 dispatches a non-player TakeDamage=Yes victim through EventDamage:331→GtEventDamage→ShootDown, which runs W_CheckProjectileDamage(-1) + RES_HEALTH subtract and fires ProjectileDamage→Explode only at hp<=0. Verified that under stock balance-xonotic.cfg g_projectiles_damage=-2 this is correctly INERT (CheckProjectil",
+   "[presentation] overkill-weapons.shared.secondary_blaster_jump: refire_type==0 secondary path (blaster on the shared ATTACK_FINISHED timer) is not handled; only refire_type==1 is. Default is 1 for all five OK weapons, so no observable gap at stock balance. ; FIRE2 weapon animation / animdecide_setaction not driven (no third-person fire-2 pose).",
+   "[presentation/audio] overkill-weapons.presentation.fx: FIXED for okmachinegun ONLY: casing eject (g_casings>=2) + punchangle recoil PRNG + EFFECT_RIFLE tracer are wired LIVE (re-confirmed this pass). ; STILL OPEN: okhmg/okshotgun/oknex got NONE of the Wave-2 FX seam — OkHmg.cs/OkNex.cs/OkShotgun.cs are byte-identical to main. No casings (okhmg type3 + okshotgun type1), no recoil (okhmg), no tracer (okhmg EFFECT_RIFLE). ; STILL OPEN: NO OK weapon (incl. okmachinegun) emits W_MuzzleFlash — the muzzle flash from okhmg.qc:51 / okmachinegun.qc:51 / okrpc"
+  ]
+ },
+ {
+  "unit": "weapon-arc",
+  "tier": "opus",
+  "notes": [
+   "[presentation] weapon-arc.identity.attributes: Muzzle effect EFFECT_ARC_MUZZLEFLASH and the flash.md3 muzzle model are not carried/emitted (no muzzle flash on the beam or bolt). crosshair gfx/crosshairhlac size 0.7 is a CSQC attribute not carried in the headless Arc.cs (HUD-side concern). UNCHANGED.",
+   "[presentation/audio] weapon-arc.beam.heat_overheat: Structural divergence (UNCHANGED): Base stores beam_heat on the beam ENTITY (arc_beam) and DELETES that entity when the beam ends — heat is gone, and arc_overheat/arc_cooldown are pure timestamps. The port keeps heat as a persistent slot-state value (st.BeamHeat) drained over time by BeamCooldown. Observably close at stock values; not bit-structurally identical. ; cooldown_release still ignored at stock (Arc.cs:225 CooldownSpeed branch only sets ArcOverheat when CooldownRelease != 0); Base sets ",
+   "[presentation] weapon-arc.beam.burst_variant: ARC_BT_BURST visual thickness (14) and burst beam color/visuals absent (depends on the beam.visual feature). UNCHANGED.",
+   "[presentation] weapon-arc.bolt.secondary_burst: Whole bolt_count burst fires in ONE WrThink call (one PrepareAttack, a for-loop over count at Arc.cs:410); Base fires one bolt per bolt_refire via misc_bulletcounter counting up from -to_shoot, enforcing bolt_refire2 only after the last bolt. Dormant at stock bolt_count 1. UNCHANGED. ; Ammo-fraction scaling IS now ported (Arc.cs:395-403: to_shoot = floor(count*min(1,ammo/bolt_ammo)), TakeResource(min(bolt_ammo,ammo))) matching arc.qc:610-622 — but it is applied once to the whole one-shot burst, ",
+   "[presentation] weapon-arc.beam.visual: The beam does NOT route through BeamRenderer.Beam. arc_beam is registered isTrail:true (EffectsList.cs:51), classified as Trail first, so the EffectClass.Beam route is never reached; the arc_beam effectinfo block is `type spark` trailspacing 10 with no `orientation beam` line. Renders as a SPARK PARTICLE TRAIL swept origin->endpos, not a cylindric beam. UNCHANGED. ; No dedicated networked beam entity (ENT_CLIENT_ARC_BEAM): the beam is re-emitted as an arc_beam trail each SERVER tick and drawn ST",
+   "[presentation/audio] weapon-arc.smoke_overheat_fx: No heat-fraction EFFECT_ARC_SMOKE while heating, no EFFECT_ARC_OVERHEAT_FIRE while overheated+firing, and no SND_ARC_LOOP_OVERHEAT loop (with its stop-on-cool/switch logic). The barrel never visibly/audibly smokes or jams. UNCHANGED."
+  ]
+ },
+ {
+  "unit": "weapon-blaster",
+  "tier": "opus",
+  "notes": [
+   "[presentation] weapon-blaster.identity.registration: model/anim/crosshair fidelity (view/world/item models, gfx/crosshairlaser, weaponlaser image) not audited here — names declared only.",
+   "[presentation] weapon-blaster.bolt.think_lifetime: CSQCProjectile(PROJECTILE_BLASTER) client trail/sprite STILL not networked: the flying bolt has no DP-style render trail (Wave-1/2 added no client-render seam for the bolt)."
+  ]
+ },
+ {
+  "unit": "weapon-devastator",
+  "tier": "sonnet",
+  "notes": [
+   "[presentation] weapon-devastator.presentation.flight_fx: Muzzle-flash MODEL (models/flash.md3) is not attached at the muzzle — only the ROCKET_MUZZLEFLASH particle effect is emitted (Attack: EffectEmitter.Emit ROCKET_MUZZLEFLASH, no flash-model attach). ; Crosshair image/size (gfx/crosshairrocketlauncher, 0.7) not audited in this pass."
+  ]
+ },
+ {
+  "unit": "weapon-electro",
+  "tier": "opus",
+  "notes": [
+   "[presentation] electro.orb.csqc_netlink_draw: The dedicated REGISTER_NET_LINKED(Electro_Orb) link/draw is not reproduced 1:1: Base streams the orb as its own CSQC entity (electro_orb_send writes origin+owner+lifetime; electro_orb_draw applies a (ltime-time)-based scale shrink as the orb nears expiry plus an avelocity spin '7 0 11', alpha 0.7). The port renders the orb via the generic ProjectileCatalog/ProjectileRenderer Electro body (ebomb model + TR_NEXUIZPLASMA trail + dynamic light + electro_fly loop). The in-flight identity matches; the",
+   "[presentation] electro.describe_guide: The MENUQC weapon-guide describe paragraphs (electro.qc:753-767 — primary/secondary/combo description + DPS guide line) are not ported; the port has no in-menu weapon guide for electro."
+  ]
+ },
+ {
+  "unit": "weapon-fireball",
+  "tier": "opus",
+  "notes": [
+   "[presentation] weapon-fireball.primary.launch: No projectile flight sound (fireball_fly) / FIREBALL trail attached to the live plasma_prim entity (deferred CSQC render concern, same as other weapons).",
+   "[presentation] weapon-fireball.primary.explode: modeleffect_spawn(sphere.md3) BFG visual ball not produced (CSQC render layer); FIREBALL_EXPLODE + impact sound at ATTEN_NORM*0.25 are emitted.",
+   "[presentation] weapon-fireball.primary.bfg: IS_INDEPENDENT_PLAYER(e) is checked but Entity.IsIndependentPlayer is a hardcoded stub (always false) — faithful for all non-independent (default) modes; the filter is a no-op until that mode is wired. ; EFFECT_FIREBALL_BFGDAMAGE per-victim Emit is now wired, but its render fidelity (and the sphere.md3 ball) is the deferred CSQC layer.",
+   "[presentation] weapon-fireball.primary.laserscorch: Target pick is a deterministic argmax (highest 1/(1+d), not-burning wins) rather than QC's stochastic RandomSelection — usually the same nearest target, but the random tie-break among equidistant candidates differs. The weight + prefer-not-burning priority match. ; find is a plain radius, not WarpZone_FindRadius (no warpzone-spanning scorch); same omission as all radius finds in the port. ; EFFECT_FIREBALL_LASER scorch beam is now Emit-wired (render fidelity deferred).",
+   "[presentation] weapon-fireball.secondary.firemine: Port omits the bulletcounter%4 muzzle-corner f_diff offset + traceline nudge (cosmetic spawn-point spread of consecutive mines); all mines spawn from the same muzzle point. Unchanged from baseline. ; No firemine flight sound / FIREMINE trail attached (deferred CSQC render)."
+  ]
+ },
+ {
+  "unit": "weapon-hlac",
+  "tier": "haiku",
+  "notes": [
+   "[presentation] weapon-hlac.fx.muzzle_impact: Runtime green->blaster effect fallback (v0.8.6 compat, hlac.qc:225-228) not ported; cosmetic, only matters on a build missing the green HLAC effects (both are registered in the port). Unchanged by Wave-2."
+  ]
+ },
+ {
+  "unit": "weapon-hook",
+  "tier": "opus",
+  "notes": [
+   "[presentation] weapon-hook.identity.attributes: Crosshair string/size not carried on the port weapon (cosmetic).",
+   "[presentation] weapon-hook.primary.fire_grapplinghook: No dedicated hook entity stream (GrapplingHookSend / ENT_CLIENT_HOOK with hook_start/hook_end). The chain HEAD IS networked via the generic projectile feed (ServerNet.Classify -> Projectile: FL_PROJECTILE/Item + Owner + MoveType.Fly) and renders as a red Hookbomb spike — but with no rope-endpoint stream there is no rope line (see weapon-hook.presentation.rope_line). ; No WarpZone refsys tracking (WarpZone_RefSys_SpawnSameRefSys).",
+   "[presentation] weapon-hook.primary.latch: Latched hook becomes INVISIBLE: GrapplingHook_Stop sets MoveType.None, which is NOT a projectile movetype, so ServerNet.Classify (IsProjectileMoveType, ServerNet.cs:2095/2115) no longer classifies it as Projectile; with no model it falls to Generic and is dropped from the render. The rendered spike disappears on latch. Base keeps the latched hook drawn via CSQC.",
+   "[presentation] weapon-hook.secondary.blast_curve: HITTYPE_SPAM flag not OR'd into the deathtype after the first blast tick (cosmetic deathtype/obituary detail). ; EF_NODRAW is not set on the bomb at blast start (Base hides the model while the pull ticks); minor visual.",
+   "[presentation] weapon-hook.presentation.rope_line: No hook ROPE line is drawn. There is no GrapplingHookSend/ENT_CLIENT_HOOK stream (with hook_start/hook_end), no Draw_CylindricLine, and no team-coloured rope texture/WarpZone-traced segment in game/. The chain HEAD is networked + rendered as a Hookbomb spike while in flight (and disappears once latched), but the connecting rope between the firer's gun and the latch point is entirely absent."
+  ]
+ },
+ {
+  "unit": "weapon-machinegun",
+  "tier": "haiku",
+  "notes": [
+   "[presentation] machinegun.fire.bullet_trace: g_ballistics_solidpenetration_exponent and g_ballistics_mindistance are hardcoded consts (1,1) in FireBullet (WeaponFiring.cs:259-260) rather than live cvars; matches default but won't follow a ruleset that retunes ballistics. ; EFFECT_BULLET tracer trail STILL not drawn for the MachineGun. FireBullet has the tracerEffect param and BULLET is registered (EffectsList.cs:230 -> tr_bullet, isTrail), but Machinegun.FireOne (Machinegun.cs:367) calls FireBullet WITHOUT a tracerEffect, so the MG bullet "
+  ]
+ },
+ {
+  "unit": "weapon-minelayer",
+  "tier": "opus",
+  "notes": [
+   "[presentation] minelayer.mine.stick: Surface-normal facing not reproduced: Base sets angles = vectoangles(-trace_plane_normal); the port approximates the surface normal as -normalize(velocity) and stores it in movedir (PunchVector) for the remote-explode fx direction, but does not re-orient the placed mine's angles to it (it keeps its incoming-flight angles). ; SetMovetypeFollow (sticking to a moving platform) is still not modeled. ; Liveness partial: MUTATORBLOCKED weapon (see minelayer.fire.lay_mine).",
+   "[audio] minelayer.fire.remote_detonate: Sound semantics differ: Base plays SND_MINE_DET if W_MineLayer_PlacedMines newly set minelayer_detonate on ANY mine (i.e. as soon as you have a placed mine), whereas the port plays mine_det only if at least one mine actually passed the spawnshield+team-safety gate and detonated. With detonatedelay=-1 + proximity safety, pressing secondary while standing on your own mines plays the sound in Base but is silent in the port. ; Port detonates inline in RemoteDetonate rather than flagging minelayer_de",
+   "[presentation] minelayer.mine.render: No CSQCProjectile(PROJECTILE_MINE) in-flight networking analogue: Base networks the in-flight mine as a CSQC projectile and only the STUCK mine is a plain server entity. The port renders the mine as a plain server model for its whole life, so in-flight prediction/trail networking differs (functional but not the CSQC path)."
+  ]
+ },
+ {
+  "unit": "weapon-porto",
+  "tier": "opus",
+  "notes": [
+   "[presentation] weapon-porto.identity.attributes: Crosshair string/size (crosshairporto, 0.6) not carried on the port weapon (cosmetic).",
+   "[presentation] weapon-porto.presentation.trajectory_preview: While holding porto (non-secondary mode), Base draws a reflecting red/blue cylindric-line polyline (with the same slick-continue / noimpact-stop / CheckWireframeBox size checks the placement uses) predicting where the in/out portals will land. The port STILL renders nothing — the signature porto view feature is absent.",
+   "[presentation] weapon-porto.presentation.projectile_render: Net-side CSQCProjectile type swap on red->blue chaining is done by flipping EF_RED/EF_BLUE on the entity, but the client classifier (ProjectileCatalog.cs:267) STILL returns PortoRed unconditionally for classname 'porto' — the blue variant almost certainly never renders mid-flight (classifier keys on classname only, never reads the effect flags)."
+  ]
+ },
+ {
+  "unit": "weapon-rifle",
+  "tier": "opus",
+  "notes": [
+   "[presentation] rifle.fx.impact: Emit PATH still diverges from Base: the port emits RIFLE_IMPACT server-side per bullet inside FireBullets off a world-only re-trace; Base emits it CSQC in wr_impacteffect off the Damage_DamageInfo feed. The effect NAME + the org2/backoff offsets now match QC, but the per-bullet server emit is a different fan-out than the CSQC damageinfo path — remote-client render not visually verified.",
+   "[audio] rifle.audio.ric: MINOR channel mismatch: Base plays SND_RIC_RANDOM on CH_SHOTS; the port's PlayRic->PlayOn uses the RIC sound's default channel hint (Weapon), not CH_SHOTS. Inaudible difference in practice (affects only same-channel sound cutoff), but not byte-faithful.",
+   "[presentation] rifle.zoom_eye: UNCHANGED by Wave-2. When zoomed, Base re-aims the rifle shot straight from the eye (w_shotdir = v_forward) for pixel-accurate long shots; the port keeps the trueaim origin (the headless server input has no zoom button). Low impact: only matters while scoped, and the secondary-zoom path is OFF at stock secondary 1."
+  ]
+ },
+ {
+  "unit": "weapon-seeker",
+  "tier": "sonnet",
+  "notes": [
+   "[presentation] weapon-seeker.missile_fire: missile.scale=2 (Base draws the missile body at 2x) is not applied to the port projectile body.",
+   "[presentation] weapon-seeker.tag_fire: Tag-strike spark missing: TagTouch plays the tag_impact cue but never emits te_knightspike(findbetterlocation(this.origin,8)). No TE_SPIKE/knightspike point-effect is ported (only the TR_KNIGHTSPIKE trail is registered, a different effect). ; Type-1 waypoint sprite (WaypointSprite_Spawn WP_Seeker / RADARICON_TAGGED over the tagged player) not implemented; no WP_Seeker registered (type-1-only path, non-default layout)."
+  ]
+ },
+ {
+  "unit": "weapon-tuba",
+  "tier": "opus",
+  "notes": [
+   "[presentation] weapon-tuba.reload.instrument_cycle: weaponname (akordeon/kleinbottle) is not set — in Base it feeds only the CSQC wr_viewmodel (per-instrument view model h_akordeon/h_kleinbottle). The instrument index (TubaInstrument) IS tracked, so the obituary/sound branch correctly; only the per-instrument VIEW MODEL swap is unwired (render-only gap).",
+   "[presentation] weapon-tuba.fx.smoke_ring: Ring origin uses the player eye (Origin + ViewOfs) rather than the weapon muzzle tag (gettaginfo), so the puff spawns slightly off from Base — but Base itself FIXMEs that gettaginfo doesn't return the real tag origin (tuba.qc:309), so this is a near-equivalent approximation, not a faithful tag read. Per-instrument vertical offsets and the 0.25s throttle are bit-exact.",
+   "[presentation/audio] weapon-tuba.audio.note_sound: No pitch-step crossfade / sound7 speed shift: Base rounds note to the nearest multiple-of-step sample AND crossfades to its neighbour while pitch-shifting the remainder m via sound7; the port now correctly snaps to the nearest recorded sample (PitchStepNote) so a real file always plays, but it plays that one sample flat — the residual pitch is not shifted. ; No sustained note: the port fires one static one-shot per blast tick (~0.05s) rather than a held loop that fades on release (cl_tuba_fadeti",
+   "[presentation] weapon-tuba.melody.recognition: The cosmetic 'NAME played on the @!#%'n Tuba/Accordeon/Klein Bottle: ...' bprint chat line on a recognised melody is NOT emitted — the magic-ear TRIGGER (UseTargets) fires, but the broadcast-print of the matched message text needs a bprint seam absent in Common (Tuba.NoteOff:213-214 notes this).",
+   "[presentation] weapon-tuba.identity.metadata: wr_aim (bots fire primary/secondary when an enemy is within radius) still not implemented -> bots won't use the tuba. ; Per-instrument view models (h_akordeon/h_kleinbottle, driven by CSQC wr_viewmodel/weaponname) still unwired; render-only (see weapon-tuba.reload.instrument_cycle). ; Crosshair gfx/crosshairtuba and weapon-image weapontuba assets exist in data but live-render wiring not verified (headless audit).",
+   "[presentation] weapon-tuba.describe.guide: The MENUQC weapon-guide describe paragraphs (tuba.qc:600-612 — close-range ear-bleeding music, secondary higher pitch, breath-only ammo, movement-key pitch, keybinds, DPS line) are not ported; the port has no in-menu weapon guide for the tuba."
+  ]
+ },
+ {
+  "unit": "weapon-vaporizer",
+  "tier": "opus",
+  "notes": [
+   "[presentation] weapon-vaporizer.primary.beam_particle: Beam is a generic networked trail effect (TE_TEI_G3 / _HIT), not the Base cylindric gauntletbeam/lgbeam beam; no team-color (cl_vaporizerbeam_teamcolor) or colorboost tint, no 0.8 beam lifetime cvar.",
+   "[presentation] weapon-vaporizer.rm.primary_explosion: No explosion presentation: RocketMinstaExplosion deals the radius damage but never emits a Devastator-style explosion sprite/sound at the RM endpoint. Confirmed WeaponSplash.RadiusDamage does NOT emit an effect centrally (the caller is responsible — see WeaponSplash.cs:275 comment); so the RM blast is visually/audibly silent. ; Liveness of g_rm in a shipped/normal match (a map or mutator that sets g_rm) not traced end-to-end.",
+   "[presentation] weapon-vaporizer.rm.laser_barrage: No confirmed distinct CSQC bolt visual: Vaporizer.cs:359 tags netname 'rocketminsta' to pick a RocketMinstaLaser/elaser descriptor, but no such client projectile descriptor exists in the port — the bolt likely renders as a generic plasma/laser. No weapon_thinkf rapid_animtime. ; Liveness of the RM-laser path (requires g_rm + g_rm_laser, or g_rm_laser==2) in a shipped/normal match not traced end-to-end.",
+   "[presentation] weapon-vaporizer.client.reticle: CSQC wr_init reticle precache and wr_zoom (zoom-script reticle gate) are not ported. The Vaporizer has no weapon-specific zoom image (wr_zoom returns false unless a generic zoom button is held), so the observable gap is mainly the reticle precache; low gameplay impact."
+  ]
+ },
+ {
+  "unit": "weapon-vortex",
+  "tier": "opus",
+  "notes": [
+   "[audio] weapon-vortex.attack.railgun_pierce: The nexwhoosh beam fly-by sound (FireRailgunBullet plays SND_NEXWHOOSH to nearby real clients along the beam) is STILL deferred — no whoosh when a rail passes near you (WeaponFiring.cs:358 comment still lists it as deferred).",
+   "[presentation] weapon-vortex.fx.beam: Beam is emitted at a constant intensity: alpha/fade/trail-spacing are NOT scaled by sqrt(charge), so a barely-charged shot and a full shot look identical. EffectRequest carries colorMin/colorMax but no per-emission alpha, so the sqrt(charge) brightness modulation has no port-side hook. ; Team tint is computed server-side from the FIRER's charge+team and broadcast as a single colour (EmitBeam), so the per-recipient cl_tracers_teamcolor / cl_particles_oldvortexbeam client-cvar nuance is collapsed ",
+   "[presentation] weapon-vortex.fx.charge_glow: QC's wr_glow brightens the wielder's player model proportionally to vortex_charge (via vortex_glowcolor, team-tinted, f scaled by charge_animlimit). The port has no wr_glow override and emits no charge-driven player-model glow — the carrier looks identical regardless of charge. Also blocked by charge not being networked to clients."
+  ]
+ }
+]

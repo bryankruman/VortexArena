@@ -1,0 +1,384 @@
+unit: weapon-hook
+category: weapon
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 12
+  worst_gaps:
+    - "Hook ROPE line is NOW DRAWN on the listen-host/demo path: this wave added HookRopeRenderer (game/client/HookRopeRenderer.cs, the Draw_GrapplingHook successor) + the shared CylindricLine cross-ribbon primitive (game/client/CylindricLine.cs), hosted LIVE by ClientWorld (ClientWorld.cs:427, injected with the shared CylindricLines pool). It is an ambient-entity-facade scanner (FindByClass(\"grapplinghook\")) like LaserRenderer/PortoPreview, so it draws a team-tinted muzzle->hook line both in flight AND after the latch — closing the long-standing 'never a rope' gap on the listen/demo path. RESIDUAL: idles on a pure --connect client (no entity facade, liveness:partial); the team colour is a ModelTint stand-in tint, NOT the real particles/hook_<team> texture set; no dedicated GrapplingHookSend/ENT_CLIENT_HOOK net stream; not runtime-verified."
+    - "Latched hook still goes INVISIBLE *as a snapshot entity*: GrapplingHook_Stop sets MoveType.None (Hook.cs:340), so the server entity classifier drops the model-less chain head from the projectile snapshot. The in-flight Hookbomb SPIKE still vanishes on latch — but the ROPE LINE now persists across the latch (HookRopeRenderer reads the chain off the listen-host's live entity facade, not the snapshot), so the player no longer sees 'nothing' once latched on the listen/demo path."
+    - "A central RemoveGrapplingHooks(pl) reset EXISTS (Hook.cs:516) and is wired LIVE into observer/disconnect (ClientManager.cs:571/828), freezetag/status-effect Frozen apply (StatusEffects.cs:164 OnApply=Hook.RemoveGrapplingHooks), teleport (Teleporters.cs:251/273), vehicle-enter (VehicleBoarding.cs:229), and wr_resetplayer (Hook.cs:627, dispatched per slot by SpawnSystem.cs:960 + NixMutator.cs:296). The offhand +hook is SAME-TICK (published in OnClientMove before PlayerPreThink, GameWorld.cs:2218-2227) with a vehicle gate. The weaponLocked/vehicle top guard in FireGrapplingHook is now also ported (Hook.cs:278)."
+features:
+  - id: weapon-hook.identity.attributes
+    name: "Weapon identity, models, color, flags, ammo type"
+    layer: [shared, presentation]
+    base_refs:
+      - "common/weapons/weapon/hook.qh:CLASS(Hook)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hook.cs:Hook()"
+    constants:
+      - { name: "ammo_type", base: "RES_FUEL", port: "ResourceType.Fuel", match: true }
+      - { name: "m_color", base: "'0.471 0.817 0.392'", port: "(0.471,0.817,0.392)", match: true }
+      - { name: "spawnflags", base: "CANCLIMB|TYPE_SPLASH|NOTRUEAIM", port: "CanClimb|TypeSplash|NoTrueAim", match: true }
+      - { name: "view/world/item model", base: "h_hookgun.iqm / v_hookgun.md3 / g_hookgun.md3", port: "same", match: true }
+      - { name: "crosshair", base: "gfx/crosshairhook size 0.5", port: "gfx/crosshairhook size 0.5 (Hook.cs:75-76)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Hook.cs ctor vs hook.qh CLASS(Hook)", result: pass }
+      - { kind: code, ref: "Hook in WeaponOrder.cs registry list; ItemSpawnFuncs.cs registers weapon_hook map pickup", result: pass }
+      - { kind: code, ref: "Crosshair override (Hook.cs:75-76 'gfx/crosshairhook'/0.5) vs hook.qh:31-32 ATTRIB w_crosshair/w_crosshair_size; consumed LIVE by CrosshairPanel.cs (weapon.Crosshair + weapon.CrosshairSize)", result: pass }
+    confidence: high
+    notes: "Unchanged since 2026-06-25. Per-weapon crosshair carried on the port weapon (Hook.cs:75-76) and consumed live by CrosshairPanel. Auto-registered via [Weapon]; obtainable + selectable on the normal match path."
+
+  - id: weapon-hook.primary.state_machine
+    name: "Primary grapple lifecycle (fire/reel/remove hook_state machine)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/hook.qc:Hook.wr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hook.cs:WrThink"
+    constants:
+      - { name: "pri.refire", base: "0.2 s", port: "0.2 s", match: true }
+      - { name: "pri.ammo", base: "5 fuel", port: "5 fuel", match: true }
+      - { name: "pri.animtime", base: "0.3 s", port: "0.3 s", match: true }
+      - { name: "W_WeaponRateFactor on refire", base: "applied", port: "applied (Hook.cs:208,262)", match: true }
+      - { name: "pauseregen 1s regen inhibit", base: "yes (g_balance_pause_fuel_regen)", port: "yes (Hook.cs:213-214, PauseRegenFinished)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Hook.WrThink Primary branch vs wr_think; WeaponRateFactor(actor) applied on HookRefire (Hook.cs:208,262); PauseRegenFinished set 1s w/ IT_UNLIMITED_AMMO guard (Hook.cs:213-214)", result: pass }
+      - { kind: code, ref: "WeaponFireDriver.Frame calls WrThink(Primary) every tick for the active slot-0 weapon", result: pass }
+      - { kind: code, ref: "fuel-out best-weapon switch ported (Hook.cs:239-241): if this Hook is the active in-hand weapon, SwitchWeapon to GetBestWeapon — mirrors QC `if m_weapon != WEP_Null W_SwitchWeapon_Force(w_getbestweapon)` (hook.qc:190-191)", result: pass }
+    confidence: high
+    notes: "2026-06-27 re-verify: the prior 'no fuel-out best-weapon auto-switch' gap is RESOLVED — Hook.cs:239-241 switches to the best weapon when fuel runs out, gated to the in-hand Hook (the offhand slot's m_weapon stays WEP_Null, so it never switches your main weapon, matching QC). Press/release latch, WAITING_FOR_RELEASE, hooked_time_max, HOOK_PULLING, FIRING/REMOVING tail all faithful; latched .state==1 modelled as hook.Health>0; W_WeaponRateFactor refire scaling + 1s pauseregen inhibit ported."
+
+  - id: weapon-hook.primary.hooked_fuel_drain
+    name: "Hooked-state fuel drain + free grace period"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/hook.qc:Hook.wr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hook.cs:WrThink"
+    constants:
+      - { name: "pri.hooked_ammo", base: "5 fuel/s", port: "5 fuel/s", match: true }
+      - { name: "pri.hooked_time_free", base: "2 s", port: "2 s", match: true }
+      - { name: "pri.hooked_time_max", base: "0 (infinite)", port: "0 (infinite)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "WrThink hooked-fuel block vs QC fuel drain; IT_UNLIMITED_AMMO guard present (Hook.cs:223, !unlimitedAmmo)", result: pass }
+    confidence: high
+    notes: "Unchanged. The drain block skips entirely under IT_UNLIMITED_AMMO. Free for hooked_time_free seconds, then drains hooked_ammo/s; fuel-out forces remove. Offhand path tops fuel up when useammo off (so the drain is a no-op)."
+
+  - id: weapon-hook.primary.fire_grapplinghook
+    name: "FireGrapplingHook: launch the chain projectile"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/hook.qc:FireGrapplingHook"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hook.cs:FireGrapplingHook"
+    constants:
+      - { name: "grapplehook_speed_fly", base: "1800 qu/s", port: "Bal(g_balance_grapplehook_speed_fly,1800)", match: true }
+      - { name: "grapplehook_health", base: "50 hp", port: "Bal(g_balance_grapplehook_health,50)", match: true }
+      - { name: "chain bbox", base: "'-3 -3 -3'..'3 3 3'", port: "same", match: true }
+      - { name: "movetype", base: "FLY (TOSS if grapplehook_gravity)", port: "FLY (TOSS if GrappleGravity, Hook.cs:293)", match: true }
+      - { name: "muzzle flash", base: "W_MuzzleFlash (EFFECT_HOOK_MUZZLEFLASH)", port: "EffectEmitter.Emit(HOOK_MUZZLEFLASH) (Hook.cs:285)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No dedicated hook entity stream (GrapplingHookSend / ENT_CLIENT_HOOK with hook_start/hook_end). The chain HEAD IS networked via the generic projectile feed (Item + Owner + MoveType.Fly classifies as a Projectile) and renders as a red Hookbomb spike — but with no rope-endpoint stream there is no rope line (see weapon-hook.presentation.rope_line)."
+      - "No WarpZone refsys tracking (WarpZone_RefSys_SpawnSameRefSys, server/hook.qc:323)."
+      - "weaponLocked(actor)/actor.vehicle early-return guard at the top of FireGrapplingHook IS now ported (Hook.cs:278, IsWeaponLocked || Vehicle is not null) — the prior 'weaponLocked guard absent' note is resolved; only the broader weaponLocked subset (game-start/player_blocked/LockWeapon) remains unmodeled, gated upstream."
+    verification:
+      - { kind: code, ref: "Hook.FireGrapplingHook vs server/hook.qc FireGrapplingHook", result: pass }
+      - { kind: code, ref: "server entity classifier: grapplinghook (Item+Owner+MoveType.Fly, Hook.cs:293-296) -> Projectile; ProjectileCatalog maps grapplinghook/hook -> Hookbomb render", result: pass }
+      - { kind: code, ref: "W_MuzzleFlash ported: EffectEmitter.Emit(HOOK_MUZZLEFLASH) at shot origin (Hook.cs:285); gravity-TOSS movetype honoured (Hook.cs:293-294)", result: pass }
+      - { kind: code, ref: "weaponLocked/vehicle top guard ported (Hook.cs:278) vs server/hook.qc:313", result: pass }
+    confidence: high
+    notes: "2026-06-27 re-verify: the weaponLocked(actor)/actor.vehicle top guard IS now ported (Hook.cs:278), resolving the prior 'unported guard' logic gap. Logic stays partial ONLY for the still-absent WarpZone refsys (server/hook.qc:323/119). Hook muzzle flash emitted (HOOK_MUZZLEFLASH = grapple_muzzleflash) and g_balance_grapplehook_gravity TOSS-mode movetype honoured. Presentation stays partial because the dedicated rope-endpoint stream is still absent (tracked in rope_line). Plays hook_fire sound; shootable HP set; EditProjectile mutator hook called."
+
+  - id: weapon-hook.primary.latch
+    name: "GrapplingHookTouch / GrapplingHook_Stop: latch onto what it hits"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/hook.qc:GrapplingHookTouch"
+      - "server/hook.qc:GrapplingHook_Stop"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hook.cs:GrapplingHookTouch"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Latched hook becomes INVISIBLE: GrapplingHook_Stop sets MoveType.None (Hook.cs:340), which is NOT a projectile movetype, so the server entity classifier (IsProjectileMoveType requires Fly/Toss/Bounce) no longer classifies it as Projectile; with no model it falls to Generic and is dropped from the render. The rendered spike disappears on latch. Base keeps the latched hook drawn via CSQC."
+    verification:
+      - { kind: code, ref: "GrapplingHookTouch (Hook.cs:332) vs QC touch+Stop+SetMovetypeFollow (server/hook.qc:273/66/284)", result: pass }
+      - { kind: code, ref: "EFFECT_HOOK_IMPACT emitted: EffectEmitter.Emit(\"HOOK_IMPACT\", origin) (Hook.cs:337); hook_impact sound played (Hook.cs:335)", result: pass }
+      - { kind: code, ref: "server entity classifier: MoveType.None model-less entity (Hook.cs:340) -> Generic (no alias model) -> dropped (IsProjectileMoveType excludes None)", result: fail }
+    confidence: high
+    notes: "Unchanged. Emits the EFFECT_HOOK_IMPACT particle on latch AND ports SetMovetypeFollow — records the hit entity as hook.Aiment, clamps the follow-offset into the player bbox, and tracks a moving aiment each think (GrapplingHookThink re-origins the chain to follow.Origin+ViewOfs). This is the precondition vampirehook drains off. STILL OPEN: the latched head is invisible (MoveType.None drops it from the snapshot)."
+
+  - id: weapon-hook.primary.reel_pull
+    name: "GrapplingHookThink: reel the firer toward the latch"
+    layer: [authority]
+    base_refs:
+      - "server/hook.qc:GrapplingHookThink"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hook.cs:GrapplingHookThink"
+    constants:
+      - { name: "g_grappling_hook_tarzan", base: "2 (rubber-band, can pull players)", port: "Bal(g_grappling_hook_tarzan,2) -> tarzan branch", match: true }
+      - { name: "grapplehook_speed_pull", base: "2000 qu/s", port: "Bal(...,2000)", match: true }
+      - { name: "grapplehook_force_rubber", base: "2000", port: "Bal(...,2000)", match: true }
+      - { name: "grapplehook_stretch", base: "50 qu", port: "Bal(...,50)", match: true }
+      - { name: "grapplehook_airfriction", base: "0.2", port: "Bal(...,0.2)", match: true }
+      - { name: "grapplehook_force_rubber_overstretch", base: "1000", port: "Bal(...,1000)", match: true }
+      - { name: "grapplehook_length_min", base: "50 qu", port: "Bal(...,50)", match: true }
+      - { name: "reel myorg origin", base: "origin+view_ofs+hook_shotorigin('8 8 -12')", port: "origin+ViewOfs+hook_shotorigin('8 8 -12') (Hook.cs:402-405)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base applies the rubber-band velocity to pull_entity only `if (!frozen_pulling && !(aiment.flags & FL_PROJECTILE))`; the port guards the projectile-aiment case (Hook.cs:475-478) but not the frozen_pulling case (modeled as always-false since g_balance_grapplehook_pull_frozen is 0). Differs only when pull_frozen is enabled (edge case)."
+      - "Mutator tarzan/pull_entity/velocity_multiplier rewrite from GrappleHookThink not honoured (port's GrappleHookThinkArgs carries no such args); pull_frozen (g_balance_grapplehook_pull_frozen) and the frozen-pull early-remove are not ported; no WarpZone refsys transforms."
+      - "pusher/pushltime/istypefrag frag attribution on the PULLED aiment (tarzan>=2 reel-to-victim, server/hook.qc:223-225) not set (the shoot-down frag credit IS set, but the reel-pull credit window is separate; out of scope)."
+    verification:
+      - { kind: code, ref: "GrapplingHookThink tarzan branch (Hook.cs:419-479: newlength/overstretch/spring/airfriction + tarzan>=2 aiment pull) vs server/hook.qc tarzan branch", result: pass }
+      - { kind: code, ref: "reel myorg = origin+view_ofs+hook_shotorigin('8 8 -12') ported (Hook.cs:402-405) vs server/hook.qc:125-128 — the gun-offset gap is resolved", result: pass }
+      - { kind: value, ref: "balance-xonotic.cfg g_grappling_hook_tarzan 2; speed_pull/force_rubber/stretch/airfriction all match Base", result: pass }
+    confidence: high
+    notes: "2026-06-27 re-verify: the prior 'reel origin omits the gun shot-origin offset' gap is RESOLVED — the reel now pulls toward origin+view_ofs+hook_shotorigin('8 8 -12') (Hook.cs:402-405) matching Base's gun-muzzle offset. The elastic tarzan rubber-band reel + the tarzan>=2 half-impulse pull of a hooked player/nade is a near-bit transcription of Base's tarzan branch; the straight tarzan-0 reel is the else branch. Residual divergences: mutator velocity_multiplier, pull_frozen, warpzone, reel-pull frag credit. Fires the GrappleHookThink mutator hook (feeds vampirehook)."
+
+  - id: weapon-hook.primary.remove_reset
+    name: "RemoveHook / RemoveGrapplingHooks / reset + shoot-down"
+    layer: [authority]
+    base_refs:
+      - "server/hook.qc:RemoveHook"
+      - "server/hook.qc:RemoveGrapplingHooks"
+      - "server/hook.qc:GrapplingHook_Damage"
+      - "common/weapons/weapon/hook.qc:Hook.wr_resetplayer"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hook.cs:RemoveHook"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hook.cs:RemoveGrapplingHooks"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hook.cs:WrResetPlayer"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Shoot-down frag attribution sets pusher/pushltime + istypefrag=actor.ButtonChat (Hook.cs:314-318), which is faithful to Base's PHYS_INPUT_BUTTON_CHAT classification (server/hook.qc:303-305)."
+    verification:
+      - { kind: code, ref: "Hook.RemoveHook (Hook.cs:496) + ProjectileDamage callback vs server/hook.qc RemoveHook/GrapplingHook_Damage; FLY->WALK restore in RemoveHook (Hook.cs:501-502); pusher/pushltime/istypefrag credit set (Hook.cs:312-318)", result: pass }
+      - { kind: code, ref: "RemoveGrapplingHooks(pl) static (Hook.cs:516) wired LIVE: ClientManager.cs:571 (PutObserverInServer) + :828 (ClientDisconnect); StatusEffects.cs:164 (Frozen OnApply=Hook.RemoveGrapplingHooks); Teleporters.cs:251/273; VehicleBoarding.cs:229 (vehicles_enter)", result: pass }
+      - { kind: code, ref: "WrResetPlayer (Hook.cs:627) calls RemoveGrapplingHooks + resets hook timers; dispatched per populated slot by SpawnSystem.cs:960 (and NixMutator.cs:296)", result: pass }
+    confidence: high
+    notes: "2026-06-27 re-verify (unchanged): the central RemoveGrapplingHooks reset EXISTS (Hook.cs:516-529, FLY->WALK + clears every slot's .hook) and is wired LIVE into observer/disconnect, freezetag/Frozen-status apply, teleport, vehicle-enter, and wr_resetplayer (live via SpawnSystem) — the 'no central reset' worst-gap stays resolved. RemoveHook restores FLY->WALK; shoot-down credits pusher/pushltime + istypefrag=ButtonChat. The top-of-think guard drops a hook whose followed entity vanished / is a non-nade projectile. The only residual divergence from GrapplingHook_Damage is that the port's callback re-applies damage via the projectile-HP path rather than the QC TakeResource ordering (behaviourally equivalent shoot-down)."
+
+  - id: weapon-hook.secondary.gravity_bomb
+    name: "Secondary: lob the gravity bomb (W_Hook_Attack2)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/weapons/weapon/hook.qc:W_Hook_Attack2"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hook.cs:AttackGravityBomb"
+    constants:
+      - { name: "sec.refire", base: "3 s", port: "3 s (via refire gate)", match: true }
+      - { name: "sec.gravity", base: "5", port: "5", match: true }
+      - { name: "sec.speed", base: "0 qu/s", port: "0", match: true }
+      - { name: "sec.health", base: "15 hp", port: "15", match: true }
+      - { name: "sec.lifetime", base: "5 s", port: "5 s", match: true }
+      - { name: "setup recoil", base: "4", port: "4", match: true }
+      - { name: "newton_style velocity add", base: "if g_projectiles_newton_style", port: "not modelled", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base gates the secondary via weapon_prepareattack on sec.refire; the ammo-free port bomb is routed through Weapon.RefireFor(Secondary)=sec.refire so holding ATK2 can't spawn one bomb per tick. Net 3 s cadence matches Base."
+    gaps:
+      - "No Newton-style owner-velocity add to the bomb (g_projectiles_newton_style)."
+      - "No bot_dodge/bot_dodgerating, missile_flags (MIF_SPLASH|MIF_ARC), or damagedbycontents on the bomb (bot AI + lava/contents-detonation; out of scope here)."
+    verification:
+      - { kind: code, ref: "AttackGravityBomb vs W_Hook_Attack2", result: pass }
+      - { kind: code, ref: "hookbomb (Item+Owner+MoveType.Toss, Hook.cs:542-544) -> classified Projectile; ProjectileCatalog -> Hookbomb render; HOOK_MUZZLEFLASH emitted (Hook.cs:568)", result: pass }
+    confidence: high
+    notes: "Unchanged. Toss launch, lifetime+touch+shoot-down detonation, shootable HP all faithful; bomb networked + rendered as a Hookbomb projectile; hookbomb_fire sound + HOOK_MUZZLEFLASH effect emitted."
+
+  - id: weapon-hook.secondary.blast_curve
+    name: "Secondary blast: duration-spread power-curve pull (W_Hook_ExplodeThink)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/hook.qc:W_Hook_Explode2"
+      - "common/weapons/weapon/hook.qc:W_Hook_ExplodeThink"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hook.cs:StartBlast"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hook.cs:ExplodeThink"
+    constants:
+      - { name: "sec.damage", base: "25", port: "25", match: true }
+      - { name: "sec.edgedamage", base: "5", port: "5", match: true }
+      - { name: "sec.radius", base: "500 qu", port: "500", match: true }
+      - { name: "sec.force", base: "-2000 (pull inward)", port: "-2000", match: true }
+      - { name: "sec.duration", base: "1.5 s", port: "1.5 s", match: true }
+      - { name: "sec.power", base: "3 (falloff exponent)", port: "3", match: true }
+      - { name: "explode tick", base: "0.05 s", port: "0.05 s", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "ExplodeThink power-curve delta vs W_Hook_ExplodeThink", result: pass }
+      - { kind: code, ref: "EF_NODRAW set on blast start (Hook.cs:578, self.Effects |= EffectFlags.NoDraw); HITTYPE_SPAM OR'd into deathtype after the first tick (Hook.cs:610, DeathTypes.WithHitType(..., Spam))", result: pass }
+    confidence: high
+    notes: "2026-06-27 re-verify (unchanged): EF_NODRAW is set on the bomb at blast start (Hook.cs:578, hides the model while the pull ticks) and HITTYPE_SPAM is OR'd into the deathtype after the first blast tick (Hook.cs:610), matching W_Hook_ExplodeThink. The centrepiece power-curve (f = prev_remaining - clamp(1-dt/duration,0,1)^power applied each 0.05s tick so the cumulative blast == one full RadiusDamage) is faithful. EFFECT_HOOK_EXPLODE emitted at blast start."
+
+  - id: weapon-hook.offhand.mutator
+    name: "Grappling Hook offhand mutator (g_grappling_hook)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/hook/sv_hook.qc:REGISTER_MUTATOR(hook)"
+      - "common/mutators/mutator/hook/sv_hook.qc:OFFHAND_HOOK.offhand_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/HookMutator.cs"
+    constants:
+      - { name: "g_grappling_hook", base: "0 (string; instahook=1)", port: "ExprEvaluate(g_grappling_hook)", match: true }
+      - { name: "g_grappling_hook_useammo", base: "0", port: "read", match: true }
+      - { name: "fuel grant (useammo)", base: "FuelRegen + g_balance_fuel_rotstable", port: "same", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No useammo ammo_factor toggle on the Hook weapon (handled via fuel top-up instead) — behaviourally equivalent; only matters with g_grappling_hook_useammo on."
+      - "weaponUseForbidden side of the QC gate (weaponsystem.qc:609-611) is not modelled (WeaponUseForbidden is a stub returning false); the vehicle case IS now gated (GameWorld.cs:2227 `hookPressed && Vehicle is null`)."
+    verification:
+      - { kind: code, ref: "HookMutator OnPlayerPreThink (HookMutator.cs:94-112, st.ButtonAttack=OffhandFirePressed at :103); MutatorHooks.PlayerPreThink dispatched live", result: pass }
+      - { kind: code, ref: "Full input chain traced LIVE: BindInput -> input.ButtonHook -> GameWorld.cs:2225-2227 (hookPressed = InputProvider(p).ButtonHook; OffhandFirePressed = hookPressed && Vehicle is null) -> HookMutator.cs:103 (st.ButtonAttack = OffhandFirePressed) -> Hook.WrThink fires FireGrapplingHook. (Bot/driver path: WeaponFireDriver.cs:69 OffhandFirePressed = input.ButtonHook.)", result: pass }
+      - { kind: code, ref: "ordering: OffhandFirePressed published in OnClientMove (GameWorld.cs:2218-2227) BEFORE PlayerPreThink -> SAME-TICK offhand-think, no read/publish latency (bots keep the PostThink publish in WeaponFireDriver.cs:69)", result: pass }
+    confidence: high
+    notes: "2026-06-27 re-verify (unchanged from prior fix): the human offhand button is published in OnClientMove BEFORE the PlayerPreThink hook (GameWorld.cs:2183-2190), so the grapple reacts same-tick like QC's W_WeaponFrame; bots (who never bind +hook) keep the PostThink publish (WeaponFireDriver.cs:69). A vehicle gate is present (GameWorld.cs:2227 zeroes the key in a vehicle, QC weaponsystem.qc:609-611). Offhand assign + filter-item suppress + start-fuel grant remain faithful. Residual: useammo ammo_factor toggle + the weaponUseForbidden half of the QC gate."
+
+  - id: weapon-hook.mutator.vampirehook
+    name: "Vampire Hook (drain HP while hooked to an enemy)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/vampirehook/sv_vampirehook.qc:MUTATOR_HOOKFUNCTION(vh, GrappleHookThink)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/VampireHookMutator.cs:OnGrappleHookThink"
+    constants:
+      - { name: "g_vampirehook_damagerate", base: "0.1 s (mutators.cfg 0.2)", port: "0.2 s default", match: true }
+      - { name: "g_vampirehook_damage / health_steal / teamheal", base: "cvars", port: "read", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "hitsound_damage_dealt HUD/stats accumulator on the drain is omitted (cosmetic; port doesn't carry it)."
+      - "Drains only on a DIRECT hook hit onto an enemy player; with tarzan reel-to-victim a hooked player can also be pulled, which works, but the drain still requires the chain's aiment to be that player (matches Base, since Base also keys on thehook.aiment)."
+    verification:
+      - { kind: code, ref: "VampireHookMutator.OnGrappleHookThink vs sv_vampirehook.qc (last_dmg gate, time<game_starttime block, team/enemy/frozen/alive guards, Damage(WEP_HOOK)+Heal, team-heal self-drain)", result: pass }
+      - { kind: code, ref: "Hook.GrapplingHookTouch sets self.Aiment=other (SetMovetypeFollow port, Hook.cs:347); thehook.RealOwner=>Owner=firing actor; GrappleHookThink.Call invoked each think (Hook.cs:385-386)", result: pass }
+    confidence: high
+    notes: "Unchanged. The latch records the hit entity as hook.Aiment (SetMovetypeFollow port in GrapplingHookTouch), so a direct hook hit on an enemy player satisfies the IS_PLAYER(aiment) guard and the per-damagerate drain/heal fires on the live match path (when g_vampirehook is set). The GrappleHookThink mutator hook is dispatched each think by Hook.GrapplingHookThink. Body is a faithful transcription of the QC guards + Damage/Heal."
+
+  - id: weapon-hook.presentation.rope_line
+    name: "CSQC rope line rendering (Draw_GrapplingHook)"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/hook.qc:Draw_GrapplingHook"
+      - "common/weapons/weapon/hook.qc:NET_HANDLE(ENT_CLIENT_HOOK)"
+      - "server/hook.qc:GrapplingHookSend"
+    port_refs:
+      - "game/client/HookRopeRenderer.cs:UpdateRope"
+      - "game/client/CylindricLine.cs:Segment.Update"
+      - "game/client/ClientWorld.cs:427 (HookRope hosted + injected with the shared CylindricLines pool)"
+    constants:
+      - { name: "rope thickness", base: "8", port: "8 (HookRopeRenderer.RopeWidth)", match: true }
+      - { name: "team textures", base: "particles/hook_red/blue/yellow/pink/white", port: "ModelTint.TeamColor tint (no per-team texture asset)", match: false }
+      - { name: "cl_grapplehook_alpha", base: "1", port: "cl_grapplehook_alpha read, default 1 (HookRopeRenderer.Alpha)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: unknown
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Team colour is a ModelTint.TeamColor TINT on a white cross-ribbon, NOT the Base particles/hook_<team> texture set (red/blue/yellow/pink/white). Visually approximate, not the textured rope."
+      - "No dedicated GrapplingHookSend/ENT_CLIENT_HOOK net stream (with hook_start/hook_end). The renderer instead reads the chain + its Owner straight off the listen-host's live entity facade (FindByClass), so on a PURE --connect client (no entity facade) the rope idles and is not drawn — liveness:partial (listen-host/demo only), the same seam as LaserRenderer/PortoPreview."
+      - "No WarpZone-traced segmentation: the line is a single straight muzzle->hook segment, not traced/broken through warpzones as Base's Draw_GrapplingHook does."
+    verification:
+      - { kind: code, ref: "HookRopeRenderer.cs (Draw_GrapplingHook successor): per-live-hook CylindricLine.Segment from muzzle (owner.origin+view_ofs+hook_shotorigin '8 8 -12' rotated by view angles — matches Hook.GrapplingHookThink's reel origin) to hook.Origin, width 8, cl_grapplehook_alpha, team tint; persists across the latch", result: pass }
+      - { kind: code, ref: "LIVE wiring: ClientWorld.cs:391 builds the shared CylindricLines pool; ClientWorld.cs:427 hosts HookRope and injects Lines=CylindricLines, AddChild'd into the scene tree; self-driving _Process scans the ambient facade", result: pass }
+      - { kind: visual, ref: "in-game observation of the rendered rope (colour/width/anchor) on a listen host", result: pending }
+    confidence: medium
+    notes: "2026-06-28 re-audit: this wave CLOSED the rope-line presentation on the listen-host/demo path. HookRopeRenderer.cs + CylindricLine.cs landed and are hosted LIVE by ClientWorld (injected with the shared cross-ribbon pool, AddChild'd). The muzzle anchor mirrors the server reel origin exactly (hook_shotorigin '8 8 -12' rotated by the owner's view angles), width 8 and cl_grapplehook_alpha match Base, and the line persists after the latch (read off the live facade, not the dropped snapshot). NOT fully closed: presentation:unknown (team colour is a tint stand-in, not the particles/hook_<team> texture; single straight segment, no warpzone tracing; not runtime-verified) and liveness:partial (idles on a pure --connect client — no entity facade — exactly like LaserRenderer/PortoPreview)."

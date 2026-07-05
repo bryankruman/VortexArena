@@ -1,7 +1,8 @@
 // Port of Base/data/xonotic-data.pk3dir/qcsrc — N/A (this is a QA harness, not a gameplay port).
 // Visual-system ground truth (what these assertions guard against regressing) lives in Darkplaces, NOT QuakeC:
 //   - maps:    model_brush.c  Mod_Q3BSP_Load* (lump directory: models/brushes/faces/lightmaps/deluxemaps).
-//   - models:  model_alias.c  Mod_INTERQUAKEMODEL_Load (iqm), Mod_IDP3_Load (md3), Mod_DARKPLACESMODEL_Load (dpm).
+//   - models:  model_alias.c  Mod_INTERQUAKEMODEL_Load (iqm), Mod_IDP3_Load (md3), Mod_DARKPLACESMODEL_Load (dpm),
+//              Mod_IDP0_Load (mdl).
 //   - shaders: model_shared.c Mod_LoadQ3Shaders (the .shader material scripts).
 //
 // SCOPE — read this before adding to the file. T5 (Wave A5) is a VERIFY-THEN-SCOPE task. The hard constraint is
@@ -30,6 +31,7 @@ using XonoticGodot.Formats.Dpm;
 using XonoticGodot.Formats.Iqm;
 using XonoticGodot.Formats.Materials;
 using XonoticGodot.Formats.Md3;
+using XonoticGodot.Formats.Mdl;
 using XonoticGodot.Formats.Vfs;
 using Xunit;
 
@@ -131,17 +133,20 @@ public class VisualQaTests
     // asset quirk the engine handles by dispatching every model load on its leading MAGIC, never its extension
     // (game/loaders/AssetLoader.cs:214 "extensions lie: h_*.iqm are often DPM"; DP model_shared.c). So these
     // sweeps gather candidate files by extension but VALIDATE each by its TRUE magic — the same dispatch the
-    // engine uses — routing an "iqm" that is really a DPM to the DPM validator, etc. A file in one of the
-    // deliberately-unported magics (MDL/MD2/ZYM/PSK — see AssetLoader's "FORMAL CUT") is not a failure here: the
-    // engine returns null+log for those, so the test treats them as "not a structurally-checkable model" and
-    // passes. (Each theory still walks every shipped model of its nominal extension — nothing escapes coverage.)
+    // engine uses — routing an "iqm" that is really a DPM to the DPM validator, etc. A file whose magic is one of
+    // the not-yet-implemented formats (MD2/ZYM/PSK — TODO T72; MDL IS supported and validated by ValidateMdl) is
+    // not a failure here: the engine returns null+log for those, so the test treats them as "not a
+    // structurally-checkable model" and passes. (Each theory still walks every shipped model of its nominal
+    // extension — nothing escapes coverage.)
     public static IEnumerable<object[]> AllIqm() => PathsOrSkip("models/", "iqm");
     public static IEnumerable<object[]> AllMd3() => PathsOrSkip("models/", "md3");
     public static IEnumerable<object[]> AllDpm() => PathsOrSkip("models/", "dpm");
+    public static IEnumerable<object[]> AllMdl() => PathsOrSkip("models/", "mdl");
 
     private const string MagicIqm = "INTERQUAKEMODEL";
     private const string MagicDpm = "DARKPLACESMODEL";
     private const string MagicMd3 = "IDP3";
+    private const string MagicMdl = "IDPO";
 
     [Theory]
     [MemberData(nameof(AllIqm))]
@@ -171,11 +176,19 @@ public class VisualQaTests
         ValidateModelByMagic(modelPath);
     }
 
+    [Theory]
+    [MemberData(nameof(AllMdl))]
+    public void MdlModel_Loads_Geometry_Skin_And_UnitNormals(string? modelPath)
+    {
+        if (modelPath is null) return; // skip-if-missing
+        ValidateModelByMagic(modelPath);
+    }
+
     /// <summary>
     /// Dispatch a model file to the validator for its TRUE on-disk format (by leading magic, exactly as
     /// <c>AssetLoader.LoadModel</c> / DP <c>model_shared.c</c> do), then run that format's structural checks.
-    /// A file whose magic is none of the three ported model magics is one of the deliberately-cut formats
-    /// (MDL/MD2/ZYM/PSK) the engine also declines to load — not a failure, so it is skipped.
+    /// A file whose magic is none of the four ported model magics (IQM/DPM/MD3/MDL) is one of the not-yet-ported
+    /// formats (MD2/ZYM/PSK — TODO T72) the engine also declines to load — not a failure, so it is skipped.
     /// </summary>
     private static void ValidateModelByMagic(string modelPath)
     {
@@ -189,8 +202,10 @@ public class VisualQaTests
             ValidateDpm(modelPath, bytes);
         else if (magic.StartsWith(MagicMd3, StringComparison.Ordinal))
             ValidateMd3(modelPath, bytes);
-        // else: a deliberately-unported model magic (MDL/MD2/ZYM/PSK) — the engine returns null+log for these,
-        // so there is nothing structurally checkable here; treat as a pass (coverage is by magic, not extension).
+        else if (magic.StartsWith(MagicMdl, StringComparison.Ordinal))
+            ValidateMdl(modelPath, bytes);
+        // else: a not-yet-implemented model magic (MD2/ZYM/PSK — TODO T72) the engine returns null+log for, so
+        // there is nothing structurally checkable here; treat as a pass (coverage is by magic, not extension).
     }
 
     private static void ValidateIqm(string modelPath, byte[] bytes)
@@ -244,6 +259,28 @@ public class VisualQaTests
                     Assert.Equal(1f, v.Normal.Length(), 2);
             }
         }
+    }
+
+    private static void ValidateMdl(string modelPath, byte[] bytes)
+    {
+        // Loader success: the Quake1 alias format parses without throwing == the model can reach the GPU. Like
+        // MD3 it is vertex-morph (no skeleton); its geometry is a set of frames + the seam-resolved render corners.
+        MdlData mdl = MdlReader.Read(bytes);
+        Assert.True(mdl.VertexCount >= 1, $"{modelPath}: no vertices");
+        Assert.True(mdl.Frames.Length >= 1, $"{modelPath}: no frames");
+        Assert.True(mdl.Corners.Length >= 3, $"{modelPath}: no triangles (nothing to render)");
+
+        // Every render corner indexes a real vertex; each frame carries one vertex per model vertex with a unit
+        // normal (a zero normal renders black). The skin, when present, is a fully-formed RGBA buffer.
+        Assert.All(mdl.Corners, c => Assert.InRange(c.Vertex, 0, mdl.VertexCount - 1));
+        foreach (MdlFrame f in mdl.Frames)
+        {
+            Assert.Equal(mdl.VertexCount, f.Vertices.Length);
+            foreach (MdlVertex v in f.Vertices)
+                Assert.Equal(1f, v.Normal.Length(), 2);
+        }
+        if (mdl.SkinWidth > 0 && mdl.SkinHeight > 0)
+            Assert.Equal(mdl.SkinWidth * mdl.SkinHeight * 4, mdl.SkinRgba.Length);
     }
 
     private static void ValidateDpm(string modelPath, byte[] bytes)

@@ -42,12 +42,20 @@ public static class WeaponThrowing
 
         Entity wep = Api.Entities.Spawn();
         // QC: ITEM_SET_LOOT (done by SpawnLoot's isLoot path); setorigin; velocity; owner = enemy = own;
-        // FL_TOSSED + colormap are render/physics nits the port doesn't model (no FL_TOSSED flag/colormap field).
+        // wep.flags |= FL_TOSSED (throwing.qc:32) is a dead marker — FL_TOSSED is set here and read NOWHERE
+        // else in the Base codebase, so it carries no behavior; intentionally unmodeled.
         Api.Entities.SetOrigin(wep, org);
         wep.Origin = org;
         wep.Velocity = velo;
         wep.Owner = wep.Enemy = own; // SpawnLoot clears Owner ("anyone can pick it up"); the 0.5s shield covers the thrower
         // (QC W_DropEvent wr_drop — Mine Layer recounts placed mines; no port weapon implements wr_drop yet.)
+
+        // QC: wep.colormap = own.colormap (throwing.qc:33); StartItem then leaves loot's colormap untouched
+        // (items.qc:1209 only greys non-loot to 1024), so the thrown gun inherits the thrower's team/player tint.
+        // The csqcmodel derives glowmod from the colormap nibble client-side (the "// wep.glowmod will be set in
+        // weapon_defaultspawnfunc" QC note), so writing the authoritative colormap is the load-bearing decision —
+        // the established render seam (Entity.ColorMapOverride + RENDER_COLORMAPPED), same as MonsterAI/MapModels.
+        wep.ColorMapOverride = ThrowerColormap(own);
 
         // ---- the superweapon time split (throwing.qc:39-71) ----
         if (wpn.IsSuperWeapon)
@@ -224,6 +232,29 @@ public static class WeaponThrowing
     // =================================================================================================
     //  helpers
     // =================================================================================================
+
+    /// <summary>RENDER_COLORMAPPED (BIT(10)) — the render flag the csqcmodel reads to apply a colormap tint
+    /// (same constant as MonsterAI/MapModels).</summary>
+    private const int RenderColormapped = 1 << 10;
+
+    /// <summary>
+    /// QC <c>own.colormap</c> as inherited by the thrown loot (throwing.qc:33). For a player the engine maps
+    /// <c>.colormap</c> through <c>.clientcolors</c>, which the csqcmodel resolves to <c>1024 + (shirt&lt;&lt;4) + pants</c>
+    /// (the player's packed shirt/pants, team-forced in teamplay). The port resolves it directly here from
+    /// <see cref="Player.ClientColors"/> (packed <c>16*shirt + pants</c>). A non-player thrower (e.g. a monster
+    /// death drop) inherits its own already-set colormap via <see cref="Entity.ColorMapOverride"/>.
+    /// </summary>
+    private static int ThrowerColormap(Entity own)
+    {
+        if (own is Player p)
+        {
+            int pants = p.ClientColors & 0x0F;
+            int shirt = (p.ClientColors >> 4) & 0x0F;
+            return (1024 + (shirt << 4) + pants) | RenderColormapped;
+        }
+        // already-colormapped thrower (monster/turret): re-use its authoritative value, or none.
+        return own.ColorMapOverride;
+    }
 
     /// <summary>QC <c>StatusEffects_gettime(def, e)</c>: the ABSOLUTE expire time, 0 when not active.</summary>
     private static float StatusEffectExpire(Entity e, StatusEffectDef def)

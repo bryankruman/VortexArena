@@ -24,6 +24,14 @@ namespace XonoticGodot.Common.Framework
         public int PressedKeys;
         /// <summary>QC PHYS_INPUT_BUTTON_CROUCH — crouch button currently held.</summary>
         public bool ButtonCrouch;
+        /// <summary>QC PHYS_INPUT_BUTTON_ATCK2 — secondary-fire button currently held. Published each frame
+        /// (alongside <see cref="OffhandFirePressed"/>) for the PlayerPreThink hooks that read it — e.g. the
+        /// Overkill countdown-blaster (sv_overkill.qc PlayerPreThink), which fires the secondary blaster during
+        /// a round countdown when the normal weapon-fire path has the fire buttons forbidden.</summary>
+        public bool ButtonAttack2;
+        /// <summary>QC PHYS_INPUT_BUTTON_CHAT — the player has the chat console open (typing). Mirrors the input
+        /// <c>Typing</c> intent; read by the campcheck mutator's typecheck gate (sv_campcheck.qc:43).</summary>
+        public bool ButtonChat;
         /// <summary>QC v_angle — the player's exact view angles (used for air-dodge / multijump redirect). Falls back to <see cref="Angles"/> when unset.</summary>
         public System.Numerics.Vector3 ViewAngles;
 
@@ -32,6 +40,13 @@ namespace XonoticGodot.Common.Framework
         public float InstagibNextThink;
         /// <summary>QC .instagib_needammo — countdown/"find ammo" warning is active.</summary>
         public bool InstagibNeedAmmo;
+        /// <summary>
+        /// QC global <c>yoda = 1</c> set by the instagib Damage_Calculate branch (sv_instagib.qc:245-247): the
+        /// target had alpha in (0,1) (partially transparent — cloaked/invisible) at the moment of the Vaporizer
+        /// hit. The Vaporizer's Announce() reads this instead of IsFlying when the flag is set, matching QC's
+        /// <c>if (yoda &amp;&amp; flying)</c> gate (vaporizer.qc:159). Cleared per-attack in Vaporizer.Announce.
+        /// </summary>
+        public bool InstagibAlphaYoda;
 
         // --- bloodloss (bloodloss.qc) ---
         /// <summary>QC .bloodloss_timer — next time a bloodloss health-rot tick is allowed.</summary>
@@ -149,6 +164,15 @@ namespace XonoticGodot.Common.Framework
         public XonoticGodot.Common.Gameplay.StatusEffectDef? BuffDef;
         /// <summary>QC .buff_active — a buff pickup is currently collectable (vs. on its respawn cooldown).</summary>
         public bool BuffActive;
+        /// <summary>QC .lifetime (on a buff pickup) — absolute time the untouched buff re-randomizes/relocates
+        /// (g_buffs_random_lifetime); 0 = no lifetime timer running.</summary>
+        public float BuffLifetime;
+        /// <summary>QC buff spawnflag 64 ("always randomize/relocate") — set on auto-seeded buffs by
+        /// buffs_DelayedInit so they relocate on every reset even when g_buffs_random_location is 0.</summary>
+        public bool BuffAlwaysRelocate;
+        /// <summary>QC .team_forced (on a buff pickup) — a teamplay buff item only pickupable by this team number;
+        /// 0 = any team. Set by buff_Init_Compat from spawnflags 2/4.</summary>
+        public int TeamForced;
 
         // --- movement stat overrides (QC STAT(MOVEVARS_*)) set by movement-affecting buffs ---
         // The C# successors to QC's per-player movement stats. The buffs PlayerPhysics hook writes these
@@ -178,7 +202,10 @@ namespace XonoticGodot.Common.Framework
         public const int Additive   = 32;    // EF_ADDITIVE
         public const int NoDraw     = 16;    // EF_NODRAW — model not rendered
         public const int NoShadow   = 4096;  // EF_NOSHADOW (dpextensions.qc:171) — was mislabeled as 8192 (=EF_NODEPTHTEST)
+        public const int NoDepthTest = 8192; // EF_NODEPTHTEST (dpextensions.qc) — draw-through-walls (g_nodepthtestplayers)
         public const int Stardust   = 2048;  // EF_STARDUST — sparkle particles (buff pickups)
+        public const int RestartAnim = 1 << 20; // EF_RESTARTANIM_BIT (dpextensions.qc:187) — restart the model anim
+        public const int Teleport    = 1 << 21; // EF_TELEPORT_BIT (dpextensions.qc:205) — teleport sparkle on (re)spawn
     }
 
     /// <summary>

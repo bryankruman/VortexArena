@@ -22,6 +22,7 @@ public sealed class Machinegun : Weapon
     public struct Balance
     {
         public int   Mode;              // g_balance_machinegun_mode (0 or 1)
+        public bool  First;             // g_balance_machinegun_first (mode-0 secondary "snipe" enabled; else ATCK2 zooms)
 
         public float SustainedDamage;   // g_balance_machinegun_sustained_damage
         public float SustainedSpread;   // g_balance_machinegun_sustained_spread
@@ -74,6 +75,7 @@ public sealed class Machinegun : Weapon
     public override void Configure()
     {
         Cvars.Mode = BalInt("g_balance_machinegun_mode", 1);
+        Cvars.First = BalBool("g_balance_machinegun_first", true); // bal-wep-xonotic.cfg: 1
 
         Cvars.SustainedDamage = Bal("g_balance_machinegun_sustained_damage", 10f);
         Cvars.SustainedSpread = Bal("g_balance_machinegun_sustained_spread", 0.03f);
@@ -100,15 +102,27 @@ public sealed class Machinegun : Weapon
         Cvars.BurstRefire = Bal("g_balance_machinegun_burst_refire", 0.06f);
         Cvars.BurstRefire2 = Bal("g_balance_machinegun_burst_refire2", 0.45f);
         Cvars.BurstAnimtime = Bal("g_balance_machinegun_burst_animtime", 0.3f);
-        Cvars.BurstSpread = Bal("g_balance_machinegun_burst_spread", 0.04f);
-        Cvars.SpreadDecay = Bal("g_balance_machinegun_spread_decay", 0f);
-        Cvars.SpreadCrouchmod = Bal("g_balance_machinegun_spread_crouchmod", 0.25f);
+        Cvars.BurstSpread = Bal("g_balance_machinegun_burst_spread", 0f);       // bal-wep-xonotic.cfg: 0 (no-spread burst)
+        Cvars.SpreadDecay = Bal("g_balance_machinegun_spread_decay", 0.048f);   // bal-wep-xonotic.cfg: 0.048 (time-decay model)
+        Cvars.SpreadCrouchmod = Bal("g_balance_machinegun_spread_crouchmod", 1f); // bal-wep-xonotic.cfg: 1
     }
 
     // METHOD(MachineGun, wr_think) — common/weapons/weapon/machinegun.qc
     public override void WrThink(Entity actor, WeaponSlot slot, FireMode fire)
     {
         var st = actor.WeaponState(slot);
+
+        // QC machinegun.qc:280-286 — forced-reload head of wr_think: if reloading is enabled
+        // (reload_ammo != 0) and the clip dropped below the cheapest per-shot cost, reload before firing —
+        // BUT not while a burst is running (misc_bulletcounter < 0). Uses the shared reload subsystem
+        // (WrReload/WReload/clip_load), matching the Rifle/Crylink/Hlac siblings. Dead at stock balance
+        // (reload_ammo defaults 0) but genuinely live when a server enables it.
+        if (ReloadingAmmo() != 0f && st.ClipLoad < ReloadingAmmoMin() && st.MiscBulletCounter >= 0)
+        {
+            WrReload(actor, slot);
+            return;
+        }
+
         if (Cvars.Mode == 1)
         {
             if (fire == FireMode.Primary)
@@ -117,7 +131,10 @@ public sealed class Machinegun : Weapon
                 // The QC multi-frame loop is summarized to one bullet per fire tick; the spread/heat
                 // accumulator persists across calls so held-fire spread still grows.
                 if (PrepareAttack(actor, slot, fire))
+                {
+                    st.MiscBulletCounter = 0; // QC machinegun.qc:293 resets the counter on each auto trigger pull.
                     AttackAuto(actor, slot, st);
+                }
             }
             else if (fire == FireMode.Secondary && Cvars.Burst > 0f)
             {
@@ -127,16 +144,31 @@ public sealed class Machinegun : Weapon
                 // round; W_MachineGun_Attack_Burst self-reschedules every burst_refire for each remaining round.
                 if (PrepareAttack(actor, slot, fire, attackTime: 0f))
                 {
-                    float available = actor.GetResource(AmmoType);
+                    // QC machinegun.qc:301-307 — wr_checkammo2 gate: if secondary is zoom or not enough ammo
+                    // for a burst, bail out. At default balance (mode 1, burst 3), ZoomOnSecondary is false
+                    // (burst > 0), so this mostly gates on ammo.
+                    if (!CheckAmmoSecondary(actor)
+                        && !(actor.UnlimitedAmmo || (actor.Items & (1 << 0)) != 0)) // !IT_UNLIMITED_AMMO
+                    {
+                        // Not enough ammo: switch away (QC W_SwitchWeapon_Force) and return to ready.
+                        // The port skips forced switch (handled by higher-level AI); just mark ready.
+                        st.State = WeaponFireState.Ready;
+                        return;
+                    }
+
+                    // QC machinegun.qc:309-311: ammo_available = clip_load when reload is enabled, else the
+                    // resource pool. Identical to the resource at stock balance (reload_ammo=0).
+                    float available = ReloadingAmmo() != 0f ? st.ClipLoad : actor.GetResource(AmmoType);
                     int toShoot = (int)MathF.Max(0f, Cvars.Burst);
                     bool unlimited = actor.UnlimitedAmmo || (actor.Items & (1 << 0)) != 0; // IT_UNLIMITED_AMMO
                     if (!unlimited)
                     {
                         // Don't mag-dump: scale rounds to a <=1 fraction of the magazine, and only use what's
-                        // there (QC burst_fraction + to_use). reload_ammo isn't modeled, so ammo == the resource.
+                        // there (QC burst_fraction + to_use).
                         float burstFraction = Cvars.BurstAmmo > 0f ? MathF.Min(1f, available / Cvars.BurstAmmo) : 1f;
                         toShoot = (int)MathF.Floor(toShoot * burstFraction);
-                        actor.TakeResource(AmmoType, MathF.Min(Cvars.BurstAmmo, available));
+                        // QC to_use = min(burst_ammo, ammo_available), drained via W_DecreaseAmmo (clip-aware).
+                        DecreaseAmmo(actor, slot, MathF.Min(Cvars.BurstAmmo, available));
                     }
                     // Bursting counts up to 0 from a negative (QC misc_bulletcounter = -to_shoot).
                     st.MiscBulletCounter = -toShoot;
@@ -147,7 +179,7 @@ public sealed class Machinegun : Weapon
                         // toShoot==0 (custom balance where sustained_ammo < burst_ammo/burst): QC's wr_checkammo2
                         // would have blocked the burst. Don't enter AttackBurst (counter 0 would never re-reach 0
                         // → infinite self-reschedule); just return the slot to READY after the fire anim.
-                        float rate = WeaponRateFactor();
+                        float rate = WeaponRateFactor(actor);
                         WeaponFireDriver.ScheduleThink(st, Cvars.BurstAnimtime * rate, static (pl, sl) =>
                         {
                             WeaponSlotState s2 = pl.WeaponState(sl);
@@ -160,18 +192,50 @@ public sealed class Machinegun : Weapon
         }
         else
         {
-            // mode 0: primary = single "first" shot, secondary (if first enabled) = a first-type snipe shot.
+            // mode 0: primary = a held-fire stream whose FIRST round is the more-powerful "first" shot and whose
+            // held continuation rounds are sustained shots; secondary (if first enabled) = a single first-type snipe.
             if (fire == FireMode.Primary)
             {
                 if (PrepareAttack(actor, slot, fire))
+                {
+                    // QC wr_think mode-0 primary: misc_bulletcounter=1 (=> first shot), W_MachineGun_Attack sets
+                    // ATTACK_FINISHED via first_refire, then weapon_thinkf(..., sustained_refire, ..._Attack_Frame)
+                    // hands the held-fire continuation to the self-rescheduling frame think below.
+                    st.MiscBulletCounter = 1;
                     AttackSingle(actor, slot, st, secondary: false);
+                    float rate = WeaponRateFactor(actor);
+                    WeaponFireDriver.ScheduleThink(st, Cvars.SustainedRefire * rate,
+                        (pl, sl) => AttackFrame(pl, sl, pl.WeaponState(sl)));
+                }
             }
-            else if (fire == FireMode.Secondary)
+            else if (fire == FireMode.Secondary && Cvars.First)
             {
+                // QC wr_think mode-0 secondary gate: (fire & 2) && WEP_CVAR(first). When first==0 the ATCK2 is a
+                // zoom, not a fire mode (handled by ZoomOnSecondary), so the snipe shot is suppressed here.
                 if (PrepareAttack(actor, slot, fire))
+                {
+                    st.MiscBulletCounter = 1;
                     AttackSingle(actor, slot, st, secondary: true);
+                }
             }
         }
+    }
+
+    // METHOD(MachineGun, wr_zoom/wr_zoomdir) — common/weapons/weapon/machinegun.qc:406/431. ATTACK2 is a zoom
+    // (not a fire mode) when the active mode's secondary fire is disabled: mode 1 with burst==0, or mode 0 with
+    // first==0. At the stock balance (mode 1, burst 3) this is false — ATTACK2 fires the burst.
+    public override bool ZoomOnSecondary
+        => (Cvars.Mode == 1 && Cvars.Burst <= 0f) || (Cvars.Mode == 0 && !Cvars.First);
+
+    // METHOD(MachineGun, wr_aim) — common/weapons/weapon/machinegun.qc:269. Bots press the long-range no-spread
+    // burst SECONDARY beyond a skill-scaled switch distance, and the spread-prone primary inside it:
+    //   close  (dist <  3000 - bound(0,skill,10)*200) -> ATCK  (primary)
+    //   far    (dist >= 3000 - bound(0,skill,10)*200) -> ATCK2 (secondary burst)
+    // Returning true routes the already-decided shot onto the secondary button (BotBrain).
+    public override bool BotWantsSecondary(float enemyDistance, float skill, ref BotAimState ctx)
+    {
+        float switchDistance = 3000f - QMath.Clamp(skill, 0f, 10f) * 200f;
+        return enemyDistance >= switchDistance;
     }
 
     // QC the MachineGun refire is mode/burst-specific (no _primary_/_secondary_ cvar naming): mode 1 primary
@@ -191,7 +255,7 @@ public sealed class Machinegun : Weapon
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
         // fired credit: QC machinegun.qc:164 passes the raw sustained_damage (heat scaling applies to the
         // dealt damage only, not the accuracy denominator).
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.MaxShotDistance, penetrateWalls: true,
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.CurrentMaxShotDistance, penetrateWalls: true,
             wep: this, maxDamage: Cvars.SustainedDamage);
         Recoil(actor);
 
@@ -211,7 +275,9 @@ public sealed class Machinegun : Weapon
 
         st.MachinegunSpreadAccumulation = spreadAccum + Cvars.SpreadAdd;
         ++st.MiscBulletCounter;
-        actor.TakeResource(AmmoType, Cvars.SustainedAmmo);
+        // QC W_DecreaseAmmo: drains the clip when reload is enabled, else the resource pool (identical at
+        // stock reload_ammo=0). Was a bare TakeResource (correct only with reload off).
+        DecreaseAmmo(actor, slot, Cvars.SustainedAmmo);
     }
 
     // W_MachineGun_Attack_Burst — fires ONE burst round (fresh aim + recoil each round), then self-reschedules
@@ -222,7 +288,7 @@ public sealed class Machinegun : Weapon
         // Re-sample the shot each round (QC W_SetupShot per call) so aim tracks the player mid-burst.
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
         // fired credit per burst round: sustained_damage (QC machinegun.qc:217).
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.MaxShotDistance, penetrateWalls: true,
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.CurrentMaxShotDistance, penetrateWalls: true,
             wep: this, maxDamage: Cvars.SustainedDamage);
         Recoil(actor); // per-round punchangle kick (QC sets it every W_MachineGun_Attack_Burst call)
 
@@ -235,7 +301,7 @@ public sealed class Machinegun : Weapon
 
         st.MachinegunSpreadAccumulation += Cvars.SpreadAdd;
 
-        float rate = WeaponRateFactor();
+        float rate = WeaponRateFactor(actor);
         ++st.MiscBulletCounter;
         if (st.MiscBulletCounter == 0)
         {
@@ -261,36 +327,91 @@ public sealed class Machinegun : Weapon
     private float CrouchSpreadMod(Entity actor)
         => (actor.IsDucked && actor.OnGround) ? Cvars.SpreadCrouchmod : 1f;
 
-    // W_MachineGun_Attack (mode 0) — a single first/sustained-type shot.
+    // W_MachineGun_Attack (mode 0) — one shot whose values are the powerful "first" round when
+    // misc_bulletcounter == 1 (the trigger pull / snipe) and the weaker sustained round otherwise (a held-fire
+    // continuation round, machinegun.qc:59/74-103). The caller sets misc_bulletcounter before calling.
     private void AttackSingle(Entity actor, WeaponSlot slot, WeaponSlotState st, bool secondary)
     {
-        // misc_bulletcounter == 1 selects the "first" (more powerful, less spread) values.
-        st.MiscBulletCounter = 1;
+        bool isFirst = st.MiscBulletCounter == 1;
+        float damage = isFirst ? Cvars.FirstDamage : Cvars.SustainedDamage;
+        float spread = isFirst ? Cvars.FirstSpread : Cvars.SustainedSpread;
+        float force = isFirst ? Cvars.FirstForce : Cvars.SustainedForce;
+        float ammo = isFirst ? Cvars.FirstAmmo : Cvars.SustainedAmmo;
+
         QMath.AngleVectors(actor.Angles, out Vector3 forward, out _, out _);
-        // fired credit: first_damage (QC machinegun.qc:59 — misc_bulletcounter==1 here, set just above).
-        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.MaxShotDistance, penetrateWalls: true,
-            wep: this, maxDamage: Cvars.FirstDamage);
+        // fired credit: the selected per-shot damage (QC W_SetupShot uses the same first/sustained pick).
+        ShotInfo shot = WeaponFiring.SetupShot(actor, forward, WeaponFiring.CurrentMaxShotDistance, penetrateWalls: true,
+            wep: this, maxDamage: damage);
         Recoil(actor);
 
         // QC W_MachineGun_Attack applies spread_crouchmod to the first/sustained spread when ducked+grounded.
-        FireOne(actor, shot, Cvars.FirstDamage, Cvars.FirstSpread * CrouchSpreadMod(actor), Cvars.FirstForce);
-        actor.TakeResource(AmmoType, Cvars.FirstAmmo);
+        // The mode-0 secondary "snipe" ORs HITTYPE_SECONDARY into the bullet deathtype (QC wr_think:
+        // thiswep.m_id | HITTYPE_SECONDARY) so the kill reads MURDER_SNIPE; primary stays the plain tag.
+        FireOne(actor, shot, damage, spread * CrouchSpreadMod(actor), force, secondary: secondary);
+        DecreaseAmmo(actor, slot, ammo); // QC W_DecreaseAmmo (clip-aware; resource pool at stock reload_ammo=0)
+
+        // QC W_MachineGun_Attack (machinegun.qc:68): every mode-0 round re-parks ATTACK_FINISHED at
+        // first_refire — the after-stream cooldown floor the held-fire frame loop runs above.
+        st.AttackFinished = Api.Clock.Time + Cvars.FirstRefire * WeaponRateFactor(actor);
+    }
+
+    // W_MachineGun_Attack_Frame (machinegun.qc:121) — the mode-0 primary held-fire self-continuation. While the
+    // player keeps ATCK held and has ammo, increment misc_bulletcounter (so all rounds after the first use the
+    // sustained values) and fire a sustained-type round every sustained_refire; otherwise return to READY.
+    private void AttackFrame(Entity actor, WeaponSlot slot, WeaponSlotState st)
+    {
+        float rate = WeaponRateFactor(actor);
+        // QC W_MachineGun_Attack_Frame: abort immediately if switching weapons (m_weapon != m_switchweapon).
+        bool switching = st.SwitchWeaponId >= 0 && st.SwitchWeaponId != st.CurrentWeaponId;
+        // QC: abort to ready if no longer holding fire (st.ButtonAttack is set live by the driver each tick).
+        bool held = st.ButtonAttack;
+        bool hasAmmo = actor.UnlimitedAmmo || (actor.Items & (1 << 0)) != 0 || CheckAmmoPrimary(actor);
+        if (switching || !held || !hasAmmo)
+        {
+            // QC weapon_thinkf(..., sustained_refire, w_ready): settle to READY after the fire anim.
+            WeaponFireDriver.ScheduleThink(st, Cvars.SustainedRefire * rate, static (pl, sl) =>
+            {
+                WeaponSlotState s2 = pl.WeaponState(sl);
+                if (s2.State == WeaponFireState.InUse)
+                    s2.State = WeaponFireState.Ready;
+            });
+            return;
+        }
+
+        ++st.MiscBulletCounter;            // QC: ++misc_bulletcounter (>1 now => sustained values)
+        AttackSingle(actor, slot, st, secondary: false);
+        // QC weapon_thinkf(..., sustained_refire, W_MachineGun_Attack_Frame): keep streaming.
+        WeaponFireDriver.ScheduleThink(st, Cvars.SustainedRefire * rate,
+            (pl, sl) => AttackFrame(pl, sl, pl.WeaponState(sl)));
     }
 
     // fireBullet_falloff with the machinegun's solid penetration + force.
-    private void FireOne(Entity actor, ShotInfo shot, float damage, float spread, float force)
+    private void FireOne(Entity actor, ShotInfo shot, float damage, float spread, float force, bool secondary = false)
     {
-        WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.MaxShotDistance, damage,
-            RegistryId, spread, Cvars.SolidPenetration, force: force);
-        Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.MaxShotDistance;
-        TraceResult impTr = Api.Trace.Trace(shot.Origin, Vector3.Zero, Vector3.Zero, impEnd, MoveFilter.WorldOnly, actor);
+        // mode-0 secondary snipe carries HITTYPE_SECONDARY (QC m_id | HITTYPE_SECONDARY) so the obituary reads
+        // MURDER_SNIPE; the int deathType path can't pack the bit, so override the deathtag for that one path.
+        string? deathTag = secondary
+            ? Damage.DeathTypes.WithHitType(Damage.DeathTypes.FromWeapon(NetName), Damage.DeathTypes.Secondary)
+            : null;
+        WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.CurrentMaxShotDistance, damage,
+            RegistryId, spread, Cvars.SolidPenetration, force: force, tracerEffect: "BULLET", deathTag: deathTag);
+        Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.CurrentMaxShotDistance;
+        TraceResult impTr = WeaponFiring.HitscanImpactTrace(actor, shot.Origin, impEnd).Trace; // [T45] warpzone-aware: impact FX land on the far side of a portal
         // QC: w_backoff * 1000 = the impact surface normal (trace_plane_normal), falling back to -force_dir when
         // no surface was hit. impTr.PlaneNormal IS that surface normal — far more faithful than -shot.Dir for
         // angled hits (the impact sprays off the wall, not straight back at the shooter).
         Vector3 backoff = impTr.PlaneNormal.LengthSquared() > 1e-6f ? impTr.PlaneNormal : -shot.Dir;
-        EffectEmitter.Emit("MACHINEGUN_IMPACT", impTr.EndPos, backoff * 1000f);
+        // QC wr_impacteffect (machinegun.qc:417-421): emit the impact puff AND, unless silent, the random
+        // ricochet ping (SND_RIC_RANDOM). The shared seam wires SoundSystem.PlayRic — bare EffectEmitter.Emit
+        // played no ric. Hitting a sky surface is silent (the bullet passes through it).
+        bool silent = (impTr.DpHitQ3SurfaceFlags & WeaponFiring.Q3SurfaceFlagSky) != 0 || impTr.Fraction >= 1f;
+        WeaponFiring.BulletImpactFx(actor, impTr.EndPos, backoff, "MACHINEGUN_IMPACT", silent);
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/uzi_fire.wav");
         EffectEmitter.Emit("MACHINEGUN_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
+
+        // QC casing code (machinegun.qc:108-112/205-209/250-254): eject a brass bullet casing per shot when
+        // g_casings >= 2 (the seam gates that internally and computes the QC view-frame eject velocity).
+        WeaponFiring.EjectCasing(actor, shot.Origin, WeaponFiring.CasingType.Bullet);
     }
 
     // Port of MachineGun_Update_Spread (machinegun.qc): time-based decay model, or the legacy
@@ -312,9 +433,12 @@ public sealed class Machinegun : Weapon
         st.SpreadUpdateTime = Api.Clock.Time;
     }
 
-    // QC recoil: punchangle gets a small random kick (g_norecoil default off). Deterministic PRNG.
+    // QC recoil: punchangle gets a small random kick, gated by !autocvar_g_norecoil (machinegun.qc:61,165,218).
+    // With g_norecoil 1 the kick is suppressed entirely. Deterministic PRNG.
     private static void Recoil(Entity actor)
     {
+        if (Api.Services is not null && Api.Cvars.GetFloat("g_norecoil") != 0f)
+            return;
         Vector3 p = actor.PunchAngle;
         p.X = Prandom.Float() - 0.5f;
         p.Y = Prandom.Float() - 0.5f;
@@ -347,5 +471,47 @@ public sealed class Machinegun : Weapon
     {
         float need = Cvars.Mode == 1 ? Cvars.SustainedAmmo : Cvars.FirstAmmo;
         return actor.GetResource(AmmoType) >= need;
+    }
+
+    // METHOD(MachineGun, wr_checkammo2) — machinegun.qc:366. Returns false if secondary is a zoom
+    // (not a fire mode), or if not enough ammo for a burst round. The check uses per-round ammo
+    // (burst_ammo / burst) for mode 1 burst secondary.
+    public bool CheckAmmoSecondary(Entity actor)
+    {
+        // QC machinegun.qc:368: want_zoom = (mode 1 && !burst) || (mode 0 && !first).
+        // If the secondary slot is a zoom, it's not a fire mode and wr_checkammo2 returns false.
+        bool wantZoom = (Cvars.Mode == 1 && Cvars.Burst <= 0f) || (Cvars.Mode == 0 && !Cvars.First);
+        if (wantZoom)
+            return false;
+
+        // Secondary fire mode exists: check ammo. QC computes per-shot: burst_ammo_per_shot = burst_ammo / burst.
+        if (Cvars.Mode == 1)
+        {
+            // Mode 1 burst secondary: need burst_ammo_per_shot
+            float burstPerShot = Cvars.Burst > 0f ? Cvars.BurstAmmo / Cvars.Burst : Cvars.BurstAmmo;
+            return actor.GetResource(AmmoType) >= burstPerShot;
+        }
+        else
+        {
+            // Mode 0 secondary snipe: need first_ammo (same as primary attack)
+            return actor.GetResource(AmmoType) >= Cvars.FirstAmmo;
+        }
+    }
+
+    // QC wr_reload (machinegun.qc:390) passes W_Reload's sent_ammo_min = min(max(sustained_ammo, first_ammo),
+    // burst_ammo): the cheapest per-shot floor below which a reload is pointless. Also the threshold the
+    // forced-reload gate in WrThink compares clip_load against (machinegun.qc:281).
+    protected override float ReloadingAmmoMin()
+        => MathF.Min(MathF.Max(Cvars.SustainedAmmo, Cvars.FirstAmmo), Cvars.BurstAmmo);
+
+    // METHOD(MachineGun, wr_reload) — machinegun.qc:386. Runs the shared reload pipeline, but FIRST honors the
+    // MachineGun's weapon-specific precondition: don't interrupt a running burst (misc_bulletcounter < 0 means a
+    // burst is counting up to 0). Dead at stock balance (reload_ammo defaults 0 -> base WReload early-outs).
+    public override void WrReload(Entity actor, WeaponSlot slot)
+    {
+        // QC machinegun.qc:388: if (actor.(weaponentity).misc_bulletcounter < 0) return;
+        if (actor.WeaponState(slot).MiscBulletCounter < 0)
+            return;
+        base.WrReload(actor, slot);
     }
 }

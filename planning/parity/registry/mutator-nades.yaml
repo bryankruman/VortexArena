@@ -1,0 +1,957 @@
+unit: mutator-nades
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28b"
+summary:
+  feature_count: 29
+  worst_gaps:
+    - "COVERAGE FOLD 2026-07-02 (7 new rows for the previously-uncited files nades.qh/all.inc/effects.inc/nades.qc/cl_nades.qh/sv_nades.qh/net.qh + the 11 nade/*.qh headers): the type CATALOG itself (ids/netnames/colors/alpha/impulses/projectile-ids/per-type enable cvars) is a verified faithful+live port (NadeRegistry.cs). New genuine gaps surfaced: (1) cl_nade_type/cl_pokenade_type REPLICATE (per-client type selection) is entirely MISSING (file-level confirmation of the existing prime.select gap); (2) the CTF flag-capture bonus-nade award (Base sv_ctf.qc:628 nades_GiveBonus(g_nades_bonus_score_high)) has NO port call in Ctf.cs (freezetag low + keyhunt high ARE wired), and KeyHunt's bare fallback for g_nades_bonus_score_high is 15 vs Base 60 (already in CVAR-DIFF.md); (3) trail presentation diverges: no team-colored normal-nade trail (EFFECT_NADE_TRAIL per NUM_TEAM), no burn-variant projectile swap on arm (nade_burn_spawn m_projectile[1] — the port wire key 'nade <netname>' never changes), and 8 of 11 types render with NO trail vs Base's colored NADE_TRAIL_* set; (4) the detonation effect substitutes generic EXPLOSION_*/ICEORGLASS/HEALING/AMMO_REGEN for Base's nade_neutral_explode effectinfo with the thrower-color tint; (5) the menu guide 'Nades' describe text (nades.qc MENUQC) is missing — NadesMutator has no GuideDescription so the guide's Mutators list filters it out. The orb wire (net.qh) is an intended divergence (port entity-stream protocol carries OrbType/OrbExpire/OrbRadius)."
+    - "RE-AUDIT 2026-06-28b (post nade-presentation wave, OPUS — WORKING-TREE, uncommitted): a dedicated client-presentation wave landed and now drives the nades render/audio on the LIVE entity-stream path. New/changed code (builds clean, 0 errors): (a) NadeOrbRenderer.cs (NEW) — 3D sphere orb (models/sphere.md3 via host ModelFactory, additive-glow fallback) with QC orb_draw scale-up(×4)/expiry-fade/90deg-spin, fed by ClientEntityView NetEntityKind.NadeOrb spawn/update/remove and wired in NetGame.SetupRender (_render.NadeOrbs); (b) the orb networking — new NetEntityKind.NadeOrb (=8) + EntityField.NadeOrbState (bit 23) carrying OrbType/OrbExpire/OrbRadius, ServerNet.Classify('nade_orb') + empty-model-drop exemption + state pack (ServerNet.cs:2294/2698/2201); (c) ViewEffects.UpdateOrbColorFlash (orb_draw2d additive in-orb 2D color flash, hud_colorflash_alpha=0.5 registered) + ViewEffects.UpdateDarknessOverlay (HUD_DarkBlinking blinking near-black fill) + SND_BLIND ('misc/blind') one-shot on the darkness onset edge (NetGame); (d) the owner-only nade STATs NadeDarknessTime/NadeBonus/NadeBonusType/NadeBonusScore networked in the Feedback block (ServerNet.cs:2102, ClientEntityView decode, privacy-gated owner-only) → AmmoPanel.DrawAmmoNades (NEW) the bonus-nade cell (per-type m_icon, count text, progress bar, rainbow random tint), fed live from both host + remote local-state paths (NetGame.cs:3319/3341); (e) ProjectileCatalog — 11 per-type NadeNormal..NadeDarkness entries (grenademodel.md3 scale 1.5, per-type m_color GlowColor + matching trail) + the ServerNet 'nade <netname>' catalog key (ServerNet.cs:2219) + HasNadeClass classifier (held nade told apart from the mortar 'grenade'); (f) NadeBoom.EmitDetonationFx — the per-type colored detonation particle (Send_Effect_Except) through the live networked effect feed; (g) NadeSpawnBoom plants models/marker.md3 so the EF_STARDUST spawn-loc survives the feed + CosmeticModelLayer (NEW, ClientWorld) renders the spawn-loc marker / frozen ice block / buff glow. ALL of this is wired into the live per-frame client passes (ClientEntityView entity stream + NetGame per-frame view-effects + ClientWorld cosmetic/projectile passes) and the throw path is already live (Wave-5), so the data FLOWS. **BUT none of it is RUNTIME/visually verified** — no in-game screenshot, no playtest, ZERO new tests cover the renderers/overlays/ammo-cell. Per parity-diff discipline (visible fidelity not runtime-verified ⇒ unknown, not faithful): the newly-coded presentation rows move missing→UNKNOWN (liveness missing/partial→live: the render path IS reached), NOT missing→faithful. Models present: grenademodel.md3 ✓, marker.md3 ✓; sphere.md3 is at models/sphere/sphere.md3 (renderer requests 'models/sphere.md3' → may miss → graceful glow-sprite fallback, a path nit to verify). Logic/values/audio of the new presentation are code-faithful to QC by inspection but the visual result is unconfirmed. The earlier-closed authority rows (throw input live, IsEnabled, boom dispatch logic, all 11 boom gameplay, bonus economy, lifecycle) are UNCHANGED by this wave and still hold."
+    - "RE-AUDIT 2026-06-28 (post parity Phase-1/Phase-2, OPUS): the Phase-1 (60d45f5) + Phase-2 (493c876) waves touched NO nades-mutator code — git show --stat confirms zero src/.../Nades/ files in either commit; they built the WaypointSprite subsystem, the wepent channel, the objective/turret entity stream, and weapon visuals. The `Grenade` hits in game/client/ProjectileCatalog.cs / ProjectileRenderer.cs are the MORTAR weapon projectile (string match `grenade|nade|mortar` for the GL bouncing model), NOT the nades-mutator offhand nade — so no nade-projectile/orb/trail presentation landed. All previously-closed rows RE-VERIFIED against current code and still hold: throw input live (GameWorld.cs:2225-2234 same-tick publish of OffhandFirePressed from InputProvider(p).ButtonHook BEFORE the PlayerPreThink hook — line drifted 2223->2225 from the phases' GameWorld edits, functionally identical, no regression; + ForbidThrowCurrentWeapon subscribed NadesMutator.cs:66 HookOrder.Last), IsEnabled = g_nades!=0 (NadesMutator.cs:31), BuildMutators*String overrides present (NadesMutator.cs:74+). No regressions, no newly-closed rows, no new gaps. The unit's open set is UNCHANGED from the 2026-06-27 audit: render/audio presentation (projectile model/trail, orb 3D model + 2D color flash, darkness blind overlay, EF_STARDUST, DrawAmmoNades) + a few logic seams (newton-style-0 blend, freezetag actual-unfreeze, g_nades_client_select per-client type, DropSpecialItems non-death toss, translocate move_out_of_solid robustness, blaster 0-damage dispatch)."
+    - "RE-AUDIT 2026-06-27 (post Wave-16/17, OPUS): Waves 16/17 made NO changes to any src/.../Nades/ file (git show --stat b3a9c06/2f0bfdb confirms — they touched GameWorld.cs etc. but nothing nade-related). All previously-closed rows RE-VERIFIED against current code and still hold live: throw input (GameWorld.cs:2223-2227 same-tick publish + ForbidThrowCurrentWeapon subscribed NadesMutator.cs:66), host seams ResetMapGlobal/OnPutClientInServer/OnSpectateCopy with live callers (GameWorld.cs:4628, ClientManager.cs:743/685), nade_damage melee branch + FireNadeDamage hook (NadeProjectile.cs:208/236-244) + Overkill subscriber (OverkillMutator.cs:142/496), napalm water-damp/round-guard/damageforcescale-inert (NadeNapalmBoom.cs:37/119/94), ice revival-skip/round-guard (NadeIceBoom.cs:105/60), entrap/veil/lifetime in MonsterAI (1131/1067/1396), bonus notif+sound (NadeBonus.cs:53/57) + live MonsterDies (MonsterAI.cs:1970). ONE refinement: the throw.input_wire '1-tick latency' caveat is now obsolete for humans (input published before PreThink same-tick); only bots read stale and they don't bind +hook. No regressions, no newly-closed rows, no new gaps."
+    - "THROW INPUT IS NOW LIVE (Wave-5, commit 66e378f): InputCommand.InputButtons gained the Hook bit (BIT(6) / PHYS_INPUT_BUTTON_HOOK, InputCommand.cs:20), and the full chain is wired end-to-end: the `+hook` bind (BindInput.cs:46 / KeyBindings.cs:43) -> BindTable._hook/HookHeld -> NetGame.cs:3984 sets the bit -> ServerNet.cs:1415 decodes ButtonHook -> WeaponFireDriver.Frame (GameWorld.cs:1368, live per-tick PostThink) sets player.OffhandFirePressed -> NadesMutator.OnPlayerPreThink reads it and drives NadeThrow.OffhandThink. The weapon_drop second-press path is ALSO live now: NadesMutator subscribes ForbidThrowCurrentWeapon (CBC_ORDER_LAST), which WeaponThrowing.ThrowWeapon/IsWeaponThrowable (the live impulse-17 `weapon_drop` path, WeaponImpulses.cs:117/181) dispatches -> NadeThrow.CheckThrow. So a player can now prime, charge, and throw a nade in a real match. The entire subsystem (charge, toss, all 11 booms, pickup, shoot-down, orbs, bonus economy) is reachable — liveness flips dead->live across nearly every row. Re-verified 2026-06-27 (post Wave-17; W16/W17 touched NO nade code — git show --stat confirms): for HUMANS the +hook button is now published BEFORE PlayerPreThink in the same tick (GameWorld.OnClientMove, GameWorld.cs:2223-2227: p.OffhandFirePressed = InputProvider(p).ButtonHook && Vehicle is null), so the offhand reacts same-tick with no latency (matching QC W_WeaponFrame). Only bots keep the WeaponFireDriver.cs:69 PostThink (1-tick stale) publish, and bots never bind +hook so the nade/offhand path is moot for them — the earlier 'all players 1-tick latency' caveat is superseded."
+    - "Most PRESENTATION is still missing (headless port): no projectile model/trail (nade_customize/spawn_held_nade trail), no orb 3D model + 2D color flash (orb_draw/orb_draw2d), no darkness blind overlay (HUD_DarkBlinking) + SND_BLIND, no spawn-loc EF_STARDUST, no DrawAmmoNades bonus-nade ammo-panel icon. The wired charge ring (CrosshairPanel.NadeTimer) NOW actually shows because a nade can finally be primed."
+    - "Lifecycle cleanup is now NEARLY COMPLETE (DRIFT 2026-06-27, post Wave-12b): on top of the Wave-6b MakePlayerObserver + ClientDisconnect leaks-fix, the port now ALSO wires reset_map_global (NadesMutator.ResetMapGlobal, called live GameWorld.cs:4454 ResetMap), PutClientInServer (OnPutClientInServer = RemoveBonus, called live ClientManager.cs:720 respawn), and SpectateCopy (OnSpectateCopy mirrors the spectatee's nade HUD/bonus stats, called live ClientManager.cs:662) — three of the four previously-missing hooks. All are g_nades-gated host seams (no MutatorHooks chain needed). The round-reset / respawn-into-server / spectator-mirror leaks are CLOSED. ONLY the dedicated DropSpecialItems hook remains unported, and its common case (the death-toss) is already covered by the PlayerDies hook; the residual is the non-death special-item-drop toss. lifecycle logic partial->faithful, liveness partial->live."
+    - "nade_damage NOW INCLUDES the melee-slap branch (force*10, damage=max_health*0.1 for WEP_TYPE_MELEE_PRI/SEC, faithful) AND the Nade_Damage MUTATOR_CALLHOOK is now invoked (NadeProjectile.cs:207 MutatorHooks.FireNadeDamage; OverkillMutator.OnNadeDamage subscribes for okhmg_nadesupport) — this closed the last logic gap on the damage row. Remaining: napalm ball damageforcescale 4 still not applied (modeled as Burning status, no knockback); ice revival_time<1.5s re-freeze skip omitted; freezetag revive-nade still suppresses damage but never unfreezes/revives (FreezeTag seam). pokenade monster_lifetime (150s despawn) is ported + live."
+    - "REGISTRY-FIX (2026-06-25): BuildMutatorsString/BuildMutatorsPrettyString are now OVERRIDDEN (NadesMutator.cs:79-80 -> ':Nades' / ', Nades'), so the display.mutators_string row flips missing->faithful (was newly-mapped 2026-06-25 as missing; the override exists in current code). MonsterDies bonus also flips dead->live: NadeBonus.OnMonsterDies now has a live caller at MonsterAI.cs:1695 (direct call from the monster death path, no MutatorHooks.MonsterDies chain needed)."
+    - "DRIFT 2026-06-27 (fixes, post Wave-12b commit 6da9e80): a broad fidelity sweep closed five logic/values gaps. (1) LIFECYCLE: reset_map_global + PutClientInServer + SpectateCopy now exist as NadesMutator static seams (ResetMapGlobal/OnPutClientInServer/OnSpectateCopy, NadesMutator.cs:321/337/349) AND have LIVE host callers (GameWorld.cs:4454 ResetMap, ClientManager.cs:720 respawn, ClientManager.cs:662 SpectateCopy) — three of the four previously-missing lifecycle hooks are now wired+live; only the dedicated DropSpecialItems hook remains unported (its common case, the death-toss, is already covered by PlayerDies). lifecycle logic partial->faithful, liveness partial->live. (2) ICE: the just-revived re-freeze skip (revival_time<1.5s, NadeIceBoom.cs:105) AND the round-not-started delete guard (RoundHandler.RoundGateBlocks, :60) are now implemented — ice logic partial->faithful. (3) NAPALM: water-contents velocity damping (WaterDamp via PointContents, NadeNapalmBoom.cs:37) AND the round-not-started guard are now ported; and damageforcescale=4 is RECLASSIFIED as inert-in-Base (the balls/fountain use PROJECTILE_MAKETRIGGER and never set takedamage=DAMAGE_AIM, so the Base force scale never multiplies anything either — napalm.qc:69-83) — napalm logic partial->faithful, values partial->faithful, the damageforcescale constant match false->true. (4) ENTRAP/VEIL/DARKNESS: the entrap monster run/walk slow (MonsterAI.cs:1011-1012) AND the veil monster-alpha lapse (MonsterAI.cs:945-946) are now ported inline in MonsterAI.Move — entrap_veil_darkness logic partial->faithful; only render (veil enemy tint, darkness blind overlay) + audio (SND_BLIND) gaps remain. All Base hooks remain mapped (no new_unmapped)."
+    - "DRIFT 2026-06-26 (fix): the bonus.economy bank-a-nade notification + sound are now EMITTED (NadeBonus.GiveBonus, NadeBonus.cs:53-54): CENTER_NADE_BONUS via NotificationSystem.Send + SND_NADE_BONUS via SoundSystem.PlayOn, both registered (NotificationsList.cs:496, SoundsList.cs:180 -> kh/alarm == Base SND_KH_ALARM) and on the live path. bonus.economy presentation+audio missing->faithful. Additionally the VIP/flagcarrier bonus multiplier (g_nades_bonus_score_time_flagcarrier=2 + GameRules_scoring_is_vip + KH key count) is now wired in OnPlayerDies/OnPlayerPreThink — the previously-MISSING flagcarrier cvar is consumed (constant match false->true); logic/values held at partial pending per-gametype ScoringIsVip/KeyHuntKeyCount fidelity."
+features:
+  - id: mutator-nades.enable.predicate
+    name: "Enable predicate + offhand assignment (g_nades)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:706 REGISTER_MUTATOR"
+      - "common/mutators/mutator/nades/sv_nades.qc:818 PlayerSpawn offhand assign"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:IsEnabled"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:OnPlayerSpawn"
+    constants:
+      - { name: "g_nades", base: "0 (mutators.cfg:196)", port: "GetFloat(g_nades)!=0", match: true }
+      - { name: "g_nades_onspawn", base: "1 (mutators.cfg:199)", port: "1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "NadesMutator.IsEnabled = g_nades!=0; Hook adds PlayerSpawn/PreThink/Dies/DamageCalc + (Wave-5) VehicleEnter + ForbidThrowCurrentWeapon + (Wave-6b) MakePlayerObserver + ClientDisconnect", result: pass }
+      - { kind: code, ref: "REGISTER_MUTATOR(nades, autocvar_g_nades) predicate is plain g_nades (sv_nades.qc:706) — no instagib/ok/arena exclusion (unlike NIX), so IsEnabled = g_nades!=0 is faithful", result: pass }
+      - { kind: code, ref: "MutatorActivation.Apply() (GameWorld.cs:511) subscribes enabled mutators at match start", result: pass }
+    confidence: high
+    notes: "The mutator is auto-discovered ([Mutator]) and its hooks ARE added when g_nades!=0. RegisterAll + boom-registry scan run on enable. Default off (on by default in Overkill in Base). PlayerSpawn assigns OFFHAND_NADE if no offhand, sets nade_refire (+refire unless g_nades_onspawn), NadesSmall flag."
+
+  - id: mutator-nades.throw.input_wire
+    name: "Throw input (offhand +hook release / weapon_drop double-press)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:625 nades_CheckThrow"
+      - "common/mutators/mutator/nades/sv_nades.qc:675 OFFHAND_NADE.offhand_think"
+      - "common/mutators/mutator/nades/sv_nades.qc:715 ForbidThrowCurrentWeapon"
+    port_refs:
+      - "src/XonoticGodot.Net/InputCommand.cs:20 InputButtons.Hook (BIT(6))"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:66 OffhandFirePressed = input.ButtonHook"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeThrow.cs:OffhandThink / CheckThrow"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:OnPlayerPreThink / OnForbidThrowCurrentWeapon"
+    constants:
+      - { name: "g_nades_nade_refire", base: "6 (mutators.cfg:208)", port: "6", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No latency gap for humans (re-verified 2026-06-27, post Wave-17): OffhandFirePressed is now published BEFORE the PlayerPreThink hook in the SAME tick for human players — GameWorld.OnClientMove (GameWorld.cs:2225-2234) reads InputProvider(p).ButtonHook and sets p.OffhandFirePressed = hookPressed && Vehicle is null right before the offhand_think runs, so the +hook offhand reacts same-tick (matching QC W_WeaponFrame's same-frame dispatch). Bots keep the WeaponFireDriver PostThink publish (WeaponFireDriver.cs:69), a 1-tick stale read — but bots never bind +hook so the offhand/nade path is moot for them. The earlier '1-tick latency for all players' note is superseded."
+      - "The QC PreThink (sv_nades.qc:733) calls offhand_think only when (offhand != OFFHAND_NADE || hasHook); the port calls OffhandThink when OffhandWeapon == \"nade\". This is the correct headless inversion: in QC, when the nade IS the offhand and no hook is held, the engine weapon-frame dispatches offhand_think itself (NOT the PreThink hook), whereas the headless port has no engine offhand dispatch so it drives it from PreThink. No double-drive (OffhandThink has exactly one caller)."
+      - "g_nades_override_dropweapon read in OnForbidThrowCurrentWeapon but the cvar is not in the default cvar table (defaults to 0 via GetFloat fallback — faithful at defaults)."
+    verification:
+      - { kind: code, ref: "Re-verified 2026-06-27 (post Wave-17, nade code untouched by W16/W17): +hook chain InputCommand.InputButtons.Hook=BIT(6) (InputCommand.cs:20) -> GameWorld.OnClientMove (GameWorld.cs:2223-2227, humans) publishes p.OffhandFirePressed = InputProvider(p).ButtonHook && Vehicle is null BEFORE the PlayerPreThink hook (same-tick) -> NadesMutator.OnPlayerPreThink reads player.OffhandFirePressed (NadesMutator.cs:177) -> NadeThrow.OffhandThink (NadesMutator.cs:179). Bots use the WeaponFireDriver.cs:69 PostThink publish (moot — bots don't bind +hook). LIVE.", result: pass }
+      - { kind: code, ref: "weapon_drop path: NadesMutator.Hook subscribes MutatorHooks.ForbidThrowCurrentWeapon (NadesMutator.cs:66, HookOrder.Last); OnForbidThrowCurrentWeapon (NadesMutator.cs:97-116) dispatches NadeThrow.CheckThrow when the nade is the offhand / hook held / override set, suppressing the real drop (return true) == sv_nades.qc:715. LIVE on the impulse-17 weapon_drop path.", result: pass }
+      - { kind: test, ref: "PowerupsAndNadesTests.Nade_Prime_ThenThrow_SpawnsAProjectile / Nade_Throw_ForceRampsWithChargeTime", result: pass }
+    confidence: high
+    notes: "FIXED in Wave-5; re-verified 2026-06-27 (W16/W17 made no nade-code changes — confirmed via git show --stat). Both the +hook offhand path and the weapon_drop double-press path are live on the real match path. The +hook button is now published same-tick BEFORE PreThink for humans (GameWorld.cs:2223-2227), so the prior 'all players 1-tick stale' caveat is superseded — only bots read it one tick stale and they don't bind +hook."
+
+  - id: mutator-nades.prime.select
+    name: "nade_prime: type selection (strength / bonus / client-select / cvar)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:576 nade_prime"
+      - "common/mutators/mutator/nades/sv_nades.qc:530 spawn_held_nade"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeThrow.cs:Prime"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeThrow.cs:SpawnHeldNade"
+    constants:
+      - { name: "g_nades_bonus_onstrength", base: "1 (mutators.cfg:233)", port: "1", match: true }
+      - { name: "g_nades_bonus_only", base: "0 (mutators.cfg:235)", port: "0", match: true }
+      - { name: "g_nades_nade_type", base: "1 (mutators.cfg:214)", port: "\"1\"", match: true }
+      - { name: "g_nades_bonus_type", base: "2 (mutators.cfg:232)", port: "\"2\"", match: true }
+      - { name: "g_nades_nade_lifetime", base: "3.5 (mutators.cfg:204)", port: "3.5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "g_nades_client_select / g_nades_bonus_client_select not honoured: the port always uses the server g_nades_nade_type / g_nades_bonus_type, never per-client cl_nade_type/cl_pokenade_type (the headless sim has no per-client cvar plumbed). PlayerSpawn's bonus_client_select bonus-type set is also omitted."
+    verification:
+      - { kind: code, ref: "NadeThrow.Prime vs nade_prime (strength/bonus/cvar branches) — match; client-select deferred", result: pass }
+      - { kind: code, ref: "Now LIVE: Prime is reachable from OffhandThink/CheckThrow (input wired in Wave-5)", result: pass }
+      - { kind: test, ref: "PowerupsAndNadesTests.Nade_Prime_ThenThrow_SpawnsAProjectile", result: pass }
+    confidence: high
+    notes: "spawn_held_nade .wait=time+lifetime, nextthink=max(wait-3,time) beep-start, nade_time_primed=time all faithful. fake_nade tracked for cleanup. g_nades_nade_type default 1 = NORMAL; bonus default 2 = NAPALM. liveness dead->live (input wired)."
+
+  - id: mutator-nades.throw.charge_force
+    name: "Charge-throw force ramp + spread cone"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:646 charge math (weapon_drop)"
+      - "common/mutators/mutator/nades/sv_nades.qc:695 charge math (offhand)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeThrow.cs:ChargeDir"
+    constants:
+      - { name: "g_nades_nade_minforce", base: "400 (mutators.cfg:205)", port: "400", match: true }
+      - { name: "g_nades_nade_maxforce", base: "2000 (mutators.cfg:206)", port: "2000", match: true }
+      - { name: "g_nades_spread", base: "0.04 (mutators.cfg:197)", port: "0.04", match: true }
+      - { name: "dir_weights_weapondrop", base: "fwd0.75 up0.2 right0.05", port: "0.75/0.2/0.05", match: true }
+      - { name: "dir_weights_offhand", base: "fwd0.7 up0.2 right0.1", port: "0.7/0.2/0.1", match: true }
+      - { name: "min_charge_time", base: "1s since prime", port: "1s (NadeTimePrimed+1)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "PowerupsAndNadesTests.Nade_Throw_ForceRampsWithChargeTime / Nade_CannotPrime_BeforeRefire", result: pass }
+      - { kind: code, ref: "Now LIVE: ChargeDir reached from OffhandThink (offhand weights) + CheckThrow (weapon_drop weights), both live", result: pass }
+    confidence: high
+    notes: "force = minforce + (held/lifetime)*(maxforce-minforce); spread via WeaponFiring.CalculateSpread(dir, g_nades_spread, mustNormalize:false). Both path direction weights match QC. liveness dead->live."
+
+  - id: mutator-nades.toss.projectile
+    name: "toss_nade: launch physics (size, newton-style, health, fuse)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:321 toss_nade"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeProjectile.cs:Toss"
+    constants:
+      - { name: "g_nades_nade_health", base: "25 (mutators.cfg:207)", port: "25", match: true }
+      - { name: "g_nades_nade_refire", base: "6 (mutators.cfg:208)", port: "6", match: true }
+      - { name: "g_nades_throw_offset", base: "\"0 -25 0\" (mutators.cfg:198)", port: "0,-25,0", match: true }
+      - { name: "nade_size", base: "32 (16 if small)", port: "32/16", match: true }
+      - { name: "newton_style", base: "0 absolute / 1 relative / 2 velocity-only (mutators.cfg:213)", port: "0/1/2", match: false }
+      - { name: "vertical_dribble", base: "v_angle.x in [70,110] + crouch -> '0 0 100'", port: "same", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Newton-style 0 is implemented as pure absolute _velocity rather than W_CalculateProjectileVelocity(e, e.velocity, _velocity, true); for non-default g_projectiles_newton_style this diverges from Base's velocity blending (style 0 is the shipped default, so identical at defaults)."
+    verification:
+      - { kind: code, ref: "NadeProjectile.Toss vs toss_nade (size/movetype/health/takedamage/event_damage/refire/dphitcontentsmask) — match except newton-0", result: pass }
+      - { kind: code, ref: "Now LIVE: Toss reached from OffhandThink/CheckThrow/auto-toss/death-toss/vehicle-toss, all live", result: pass }
+    confidence: high
+    notes: "MOVETYPE_BOUNCE, DAMAGE_AIM, event_damage routed via GtEventDamage (live damage seam), DamageForceScale kept 0 to avoid double knockback (nade_damage adds force manually). dphitcontentsmask via Projectiles.MakeTrigger; QC's translocate/spawn/monster PLAYERCLIP|BOTCLIP variant collapsed to the SOLID|BODY|CORPSE default. liveness dead->live."
+
+  - id: mutator-nades.touch.bounce_pickup_detonate
+    name: "nade_touch: owner pass-through, pickup, bounce, impact detonate"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:192 nade_touch"
+      - "common/mutators/mutator/nades/sv_nades.qc:179 nade_pickup"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeProjectile.cs:OnTouch"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeProjectile.cs:Pickup"
+    constants:
+      - { name: "g_nades_pickup", base: "0 (mutators.cfg:201)", port: "0", match: true }
+      - { name: "g_nades_pickup_time", base: "2 (mutators.cfg:202)", port: "2", match: true }
+      - { name: "spawnshieldtime", base: "time+0.1 re-pickup guard", port: "NadePickupShieldTime now+0.1", match: true }
+      - { name: "bounce_sound_set", base: "SND_GRENADE_BOUNCE_RANDOM = grenade_bounce1..6", port: "grenade_bounce{1..6} via Prandom.RangeInt(1,7)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "ITEM_TOUCH_NEEDKILL (lava/void/nodraw content) delete branch is omitted (content-trace engine concern); a nade in a kill volume is not destroyed-to-normal-boom."
+    verification:
+      - { kind: code, ref: "NadeProjectile.OnTouch vs nade_touch (pickup gate / full-health bounce / damaged detonate)", result: pass }
+      - { kind: code, ref: "Wave-5: bounce now plays grenade_bounce{Prandom.RangeInt(1,7)}.wav (1..6 inclusive) matching SND_GRENADE_BOUNCE1.m_id + rint(random()*5); the 6 grenade_bounce*.ogg files exist in Base", result: pass }
+    confidence: high
+    notes: "Pickup hands a pickup_time fuse + arms refire + copies nade_time_primed. Pickup plays misc/null.wav (matches QC SND_Null). Wave-5 fixed the bounce-sound randomization (audio partial->faithful). liveness dead->live."
+
+  - id: mutator-nades.damage.launch_destroy
+    name: "nade_damage: shoot-to-launch / shoot-to-destroy interactions"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:246 nade_damage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeProjectile.cs:NadeDamage"
+    constants:
+      - { name: "blaster", base: "force*1.5 damage=0", port: "force*1.5 damage=0", match: true }
+      - { name: "vortex/vaporizer/okvortex", base: "force*6 damage=max_health*0.55", port: "same", match: true }
+      - { name: "machinegun/okmachinegun", base: "damage=max_health*0.1", port: "same", match: true }
+      - { name: "shotgun/okshotgun(primary)", base: "damage=max_health*1.15", port: "same", match: true }
+      - { name: "melee", base: "force*10 damage=max_health*0.1 (WEP_TYPE_MELEE_PRI/SEC)", port: "force*10 damage=max_health*0.1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Blaster pure-force launch (damage=0): the DamageSystem only dispatches event_damage when damage>0 or damageforcescale!=0, and the nade keeps damageforcescale 0, so a 0-damage blaster hit may not reach NadeDamage — documented in NadeProjectile.cs header."
+    verification:
+      - { kind: code, ref: "NadeProjectile.NadeDamage weapon switch (blaster/vortex/mg/shotgun) + melee branch (NadeProjectile.cs:236-244: Weapons.ByName(wep).SpawnFlags & (secondary?TypeMeleeSec:TypeMeleePri)) vs nade_damage:279-285 — MATCH. Shotgun.cs:71 sets WeaponFlags.TypeMeleeSec, WeaponFlags.cs:19-20 = BIT(9)/BIT(10).", result: pass }
+      - { kind: code, ref: "Nade_Damage MUTATOR_CALLHOOK NOW INVOKED: NadeProjectile.cs:207-213 builds NadeDamageArgs and calls MutatorHooks.FireNadeDamage FIRST (skipping per-weapon defaults when it returns true) == nade_damage:259-260. OverkillMutator.cs:439 OnNadeDamage subscribes (okhmg_nadesupport). MutatorHooks.cs:1144/1159/1167 define the NadeDamageArgs struct + NadeDamage HookChain + FireNadeDamage dispatcher.", result: pass }
+      - { kind: code, ref: "LIVE: nade_damage runs via GtEventDamage when a thrown (live) nade is shot", result: pass }
+    confidence: high
+    notes: "Wave-5 added the melee-slap branch (force*10, damage=max_health*0.1; secondary selects MELEE_SEC). DRIFT 2026-06-25: the Nade_Damage MUTATOR_CALLHOOK is now wired (FireNadeDamage + OverkillMutator subscriber) — the last logic gap on this row is closed; only the 0-damage blaster-dispatch caveat remains. translocate/spawn ignore damage (no map-spanning launches). First full-health hit arms beep + extends fuse. HP<=0 runs spawn/translocate DestroyDamage then detonate. liveness live."
+
+  - id: mutator-nades.boom.dispatch
+    name: "nade_boom: type dispatch + destroyed->normal fallback"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:114 nade_boom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeBoom.cs:Detonate"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeBoom.cs:NadeBoomRegistry"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: faithful
+      presentation: unknown
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Colored detonation particle NOW EMITTED but UNVERIFIED (2026-06-28b): NadeBoom.EmitDetonationFx (NadeBoom.cs:160) emits a per-type effect (napalm->EXPLOSION_BIG, ice->ICEORGLASS, heal->HEALING, ammo->AMMO_REGEN, else EXPLOSION_MEDIUM) tinted by NadeDef.Color through the live networked effect feed (Send_Effect_Except analog, except:null). Code-faithful but no in-game/visual confirmation; the chosen EFFECT_* names + the min==max tint range need a runtime check (presentation unknown, not faithful)."
+      - "Base plays SND_Null on CH_SHOTS_SINGLE + SND_ROCKET_IMPACT on CH_SHOTS; the port plays only weapons/rocket_impact.wav."
+    verification:
+      - { kind: test, ref: "PowerupsAndNadesTests.BoomDispatch_RoutesToTheRegisteredHandler / BoomDispatch_DestroyedNade_FallsBackToNormal", result: pass }
+      - { kind: code, ref: "Now LIVE: Detonate reached from a live thrown nade's fuse/impact path; EmitDetonationFx wired into the live effect feed (builds clean)", result: pass }
+      - { kind: visual, ref: "NO runtime check of the colored detonation particle", result: unknown }
+    confidence: high
+    notes: "Reflection-discovered INadeBoom registry replaces the QC switch; destroyed (takedamage cleared) or Null -> NORMAL fallback faithful. RemoveHook of attached grapples on detonate present in QC; port has no offhand-hook attach so no-op. 2026-06-28b: EmitDetonationFx now emits the per-type colored boom particle through the live effect feed (presentation missing->unknown — coded+wired, not visually verified). liveness live."
+
+  - id: mutator-nades.boom.normal
+    name: "Normal nade explosion (RadiusDamage)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/nade/normal.qc:nade_normal_boom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeNormalBoom.cs:Boom"
+    constants:
+      - { name: "g_nades_nade_damage", base: "225 (mutators.cfg:209)", port: "225", match: true }
+      - { name: "g_nades_nade_edgedamage", base: "90 (mutators.cfg:210)", port: "90", match: true }
+      - { name: "g_nades_nade_radius", base: "300 (mutators.cfg:211)", port: "300", match: true }
+      - { name: "g_nades_nade_force", base: "650 (mutators.cfg:212)", port: "650", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: unknown
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "DamageInfo (Damage_DamageInfo) network record omitted (render-only)."
+      - "Normal detonation particle NOW EMITTED but UNVERIFIED (2026-06-28b): NadeBoom.EmitDetonationFx emits EXPLOSION_MEDIUM (white tint = no recolor) through the live effect feed. Not visually verified."
+    verification:
+      - { kind: code, ref: "NadeBlast.RadiusDamage replicates WeaponSplash falloff/knockback + nade string deathtype", result: pass }
+      - { kind: code, ref: "Now LIVE (input wired); EmitDetonationFx emits the normal boom particle on the live effect feed", result: pass }
+      - { kind: visual, ref: "NO runtime check of the explosion particle", result: unknown }
+    confidence: high
+    notes: "Routes through Combat.Damage with NadeDeathTypes.Nade (string) instead of int-only WeaponSplash so the obituary names the nade. .enemy = direct hit. Shared by ice/darkness explode. 2026-06-28b: detonation particle now emitted (EmitDetonationFx) — presentation missing->unknown. liveness live."
+
+  - id: mutator-nades.boom.napalm
+    name: "Napalm: fireballs + fountain fire damage"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/nade/napalm.qc:nade_napalm_boom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeNapalmBoom.cs:Boom"
+    constants:
+      - { name: "g_nades_napalm_ball_count", base: "6 (mutators.cfg:252)", port: "6", match: true }
+      - { name: "g_nades_napalm_ball_damage", base: "40 (mutators.cfg:255)", port: "40", match: true }
+      - { name: "g_nades_napalm_ball_radius", base: "100 (mutators.cfg:257)", port: "100", match: true }
+      - { name: "g_nades_napalm_ball_lifetime", base: "7 (mutators.cfg:256)", port: "7", match: true }
+      - { name: "g_nades_napalm_ball_spread", base: "500 (mutators.cfg:253)", port: "500", match: true }
+      - { name: "g_nades_napalm_ball_damageforcescale", base: "4 (mutators.cfg:254)", port: "inert in Base too (no takedamage=DAMAGE_AIM)", match: true }
+      - { name: "g_nades_napalm_fountain_lifetime", base: "3 (mutators.cfg:259)", port: "3", match: true }
+      - { name: "g_nades_napalm_fountain_delay", base: "0.5 (mutators.cfg:260)", port: "0.5", match: true }
+      - { name: "g_nades_napalm_fountain_damage", base: "50 (mutators.cfg:261)", port: "50", match: true }
+      - { name: "g_nades_napalm_fountain_edgedamage", base: "20 (mutators.cfg:262)", port: "20", match: true }
+      - { name: "g_nades_napalm_fountain_radius", base: "130 (mutators.cfg:263)", port: "130", match: true }
+      - { name: "g_nades_napalm_burntime", base: "0.5 (mutators.cfg:249)", port: "0.5", match: true }
+      - { name: "g_nades_napalm_selfdamage", base: "1 (mutators.cfg:250)", port: "1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: unknown
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Napalm presentation NOW PARTLY CODED but UNVERIFIED (2026-06-28b): the held napalm nade draws via ProjectileCatalog.NadeNapalm (orange grenademodel + FIREBALL trail) and EmitDetonationFx emits EXPLOSION_BIG on boom. The per-ball EF_FLAME / EFFECT_FIREBALL_LASER fireball trail (on the 6 spawned balls + fountain) is still NOT rendered (the balls are gameplay-only). Not visually verified."
+      - "SND_NADE_NAPALM_FIRE spamsound on ball-eject is not emitted (audio partial)."
+    verification:
+      - { kind: code, ref: "NadeNapalmBoom RandomSelection 1/(1+d) target pick + Fire_AddDamage->Burning(strength=dps) vs napalm_damage — match", result: pass }
+      - { kind: code, ref: "DRIFT 2026-06-27 (fix): water-contents velocity damping is now ported (WaterDamp via Api.Trace.PointContents, NadeNapalmBoom.cs:37-46) and the round-not-started delete guard (RoundHandler.RoundGateBlocks, :119/143) is wired. damageforcescale=4 RECLASSIFIED non-divergent: Base sets proj.damageforcescale (napalm.qc:83) but the ball/fountain use PROJECTILE_MAKETRIGGER and never set takedamage=DAMAGE_AIM (napalm.qc:69-76), so a trigger that can't receive a damage event never has the scale applied — inert in Base too. logic/values partial->faithful.", result: pass }
+    confidence: high
+    notes: "Fire_AddDamage(d*burntime, burntime) == d dps over burntime -> burn strength = d. Team/self/frozen exclusion faithful. DRIFT 2026-06-27: water-damp + round-guard now ported (logic partial->faithful); damageforcescale=4 reclassified inert-in-Base (values partial->faithful, constant match false->true). Residual: render trail/flame + the ball-eject napalm-fire sound."
+
+  - id: mutator-nades.boom.ice
+    name: "Ice: freeze field"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/nade/ice.qc:nade_ice_boom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeIceBoom.cs:Boom"
+    constants:
+      - { name: "g_nades_ice_freeze_time", base: "3 (mutators.cfg:267)", port: "3", match: true }
+      - { name: "g_nades_ice_radius", base: "300 (mutators.cfg:270)", port: "300", match: true }
+      - { name: "g_nades_ice_teamcheck", base: "2 (mutators.cfg:269)", port: "2", match: true }
+      - { name: "g_nades_ice_explode", base: "0 (mutators.cfg:268)", port: "0", match: true }
+      - { name: "tick", base: "0.1s, special 0.3s start", port: "0.1 / 0.3", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: unknown
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Ice presentation NOW PARTLY CODED but UNVERIFIED (2026-06-28b): the held ice nade draws via ProjectileCatalog.NadeIce (blue grenademodel + plasma trail) and EmitDetonationFx emits ICEORGLASS on boom/ice_explode. The persistent icefield muzzleflash/field particle gate is still NOT rendered. Not visually verified."
+    verification:
+      - { kind: code, ref: "NadeIceBoom.IceThink declining current_freeze_time + teamcheck 0/1/2 + STATUSEFFECT_Frozen apply vs nade_ice_think", result: pass }
+      - { kind: code, ref: "DRIFT 2026-06-27 (fix): the recently-revived re-freeze skip is now ported (NadeIceBoom.cs:105: if (it.RevivalTime != 0f && (now - it.RevivalTime) < 1.5f) continue == ice.qc:59), AND the round-not-started delete guard is wired (NadeIceBoom.cs:60 RoundHandler.RoundGateBlocks == ice.qc:14). logic partial->faithful.", result: pass }
+    confidence: high
+    notes: "ice_explode reuses NadeBlast.RadiusDamage with NadeDeathTypes.Ice. Freeze duration declines as the field ages (current_freeze_time = ltime-time-0.1) — faithful. DRIFT 2026-06-27: revival-skip + round-not-started guard now ported (logic partial->faithful); only the render particle gate remains."
+
+  - id: mutator-nades.boom.translocate
+    name: "Translocate: teleport thrower to detonation"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/nade/translocate.qc:nade_translocate_boom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeTranslocateBoom.cs:Boom"
+    constants:
+      - { name: "g_nades_translocate_destroy_damage", base: "25 (mutators.cfg:274)", port: "25", match: true }
+      - { name: "player_hull", base: "PL_MIN/MAX +-16 search box", port: "(-16,-16,-24)/(16,16,45) +-16", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: unknown
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "move_out_of_solid is a minimal upward-nudge approximation (no builtin), so embedded-in-solid recovery is less robust than Base's full search."
+      - "MUTATOR_CALLHOOK(PortalTeleport) is not fired (no subscribers in port)."
+      - "Translocate presentation NOW PARTLY CODED but UNVERIFIED (2026-06-28b): the held translocate nade draws via ProjectileCatalog.NadeTranslocate (magenta grenademodel) and EmitDetonationFx emits a NadeDef.Color-tinted EXPLOSION_MEDIUM. Not visually verified."
+    verification:
+      - { kind: code, ref: "NadeTranslocateBoom.Boom resize/MoveOutOfSolid/tracebox-down/TeleportPlayer + DestroyDamage(true) vs translocate.qc", result: pass }
+      - { kind: code, ref: "Now LIVE (input wired)", result: pass }
+    confidence: medium
+    notes: "DestroyDamage damages the OWNER (attacker=shooter), self-detonates as normal, returns true to suppress the projectile-path normal boom. Carries reprojected speed along facing. liveness dead->live."
+
+  - id: mutator-nades.boom.spawn
+    name: "Spawn: relocate respawn point"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/nade/spawn.qc:nade_spawn_boom"
+      - "common/mutators/mutator/nades/sv_nades.qc:821 PlayerSpawn consume marker"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeSpawnBoom.cs:Boom"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:OnPlayerSpawn"
+    constants:
+      - { name: "g_nades_spawn_count", base: "3 (mutators.cfg:278)", port: "3", match: true }
+      - { name: "g_nades_spawn_health_respawn", base: "0=normal (mutators.cfg:279)", port: "0", match: true }
+      - { name: "g_nades_spawn_destroy_damage", base: "25 (mutators.cfg:280)", port: "25", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: unknown
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "EF_STARDUST marker render NOW CODED but UNVERIFIED (2026-06-28b): NadeSpawnBoom plants models/marker.md3 + EffectFlags.Stardust on the nade_spawn_loc so the entity survives the empty-model feed drop, and CosmeticModelLayer (ClientWorld) renders the marker. No drawonlytoclient owner-only gating yet (the marker comment notes 'Owner-only is a follow-up'). Not visually verified."
+    verification:
+      - { kind: code, ref: "NadeSpawnBoom plants nade_spawn_loc cnt=spawn_count + models/marker.md3 + EF_STARDUST; PlayerSpawn relocates + sets spawn health + decrements cnt", result: pass }
+      - { kind: code, ref: "Now LIVE end-to-end: the spawn nade can be thrown (input wired) to plant the marker, the PlayerSpawn consume path was already live, and CosmeticModelLayer renders the marker on the live client pass (builds clean)", result: pass }
+      - { kind: visual, ref: "NO runtime check of the EF_STARDUST spawn-loc marker render", result: unknown }
+    confidence: high
+    notes: "DestroyDamage hurts the OWNER and returns false (normal boom still runs) — distinct from translocate which returns true. Both plant + consume halves are live. 2026-06-28b: EF_STARDUST marker now planted (models/marker.md3) + rendered via CosmeticModelLayer (presentation missing->unknown — coded+wired, not visually verified; owner-only gating is a follow-up). liveness live."
+
+  - id: mutator-nades.boom.heal
+    name: "Heal: healing orb (friend heal / foe harm / armor)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/nade/heal.qc:nade_heal_boom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeHealBoom.cs:Boom"
+    constants:
+      - { name: "g_nades_heal_time", base: "10 (mutators.cfg:284)", port: "10", match: true }
+      - { name: "g_nades_heal_radius", base: "300 (mutators.cfg:289)", port: "300", match: true }
+      - { name: "g_nades_heal_rate", base: "15 (mutators.cfg:285)", port: "15", match: true }
+      - { name: "g_nades_heal_friend", base: "1 (mutators.cfg:287)", port: "1", match: true }
+      - { name: "g_nades_heal_foe", base: "-4 (mutators.cfg:288)", port: "-4", match: true }
+      - { name: "g_nades_heal_armor_rate", base: "0 (mutators.cfg:286)", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: unknown
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Heal orb 3D model NOW RENDERED but UNVERIFIED (2026-06-28b): the heal orb is networked as a NadeOrb entity and drawn by NadeOrbRenderer (red-tinted sphere, scale-up/fade/spin) + the in-orb 2D color flash; EFFECT_HEALING detonation particle via EmitDetonationFx. Not visually verified."
+    verification:
+      - { kind: code, ref: "NadeHealBoom.HealTouch rate*frametime*0.5, friend/foe mult, healthmega/armormega caps, DEATH_NADE_HEAL on foe vs nade_heal_touch", result: pass }
+      - { kind: code, ref: "Now LIVE (input wired); the heal orb networks as NadeOrb + renders via NadeOrbRenderer", result: pass }
+      - { kind: visual, ref: "NO runtime check of the heal orb render", result: unknown }
+    confidence: high
+    notes: "Orb via shared NadeBoom.SpawnOrb. armor_rate 0 default => no-op armor branch (faithful). 2026-06-28b: the orb now renders (NadeOrbRenderer) + colored boom FX (EmitDetonationFx) — presentation missing->unknown (coded+wired, not visually verified). liveness live."
+
+  - id: mutator-nades.boom.ammo
+    name: "Ammo: ammo orb (refill friend / drain foe)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/nade/ammo.qc:nade_ammo_boom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeAmmoBoom.cs:Boom"
+    constants:
+      - { name: "g_nades_ammo_time", base: "4 (mutators.cfg:310)", port: "4", match: true }
+      - { name: "g_nades_ammo_radius", base: "300 (mutators.cfg:315)", port: "300", match: true }
+      - { name: "g_nades_ammo_rate", base: "30 (mutators.cfg:311)", port: "30", match: true }
+      - { name: "g_nades_ammo_friend", base: "1 (mutators.cfg:312)", port: "1", match: true }
+      - { name: "g_nades_ammo_foe", base: "-2 (mutators.cfg:313)", port: "-2", match: true }
+      - { name: "g_nades_ammo_clip_empty_rate", base: "0 (mutators.cfg:314)", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: unknown
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Per-weapon weapon_load[] persistent store collapsed onto each slot's live ClipLoad (port note)."
+      - "Ammo orb 3D model NOW RENDERED but UNVERIFIED (2026-06-28b): the ammo orb networks as a NadeOrb + draws via NadeOrbRenderer (blue-tinted sphere) + in-orb color flash; EFFECT_AMMO_REGEN detonation particle via EmitDetonationFx. Not visually verified."
+    verification:
+      - { kind: code, ref: "NadeAmmoBoom.AmmoTouch clip refill/empty + give/drain 4 resources at pickup maxes vs nade_ammo_touch", result: pass }
+      - { kind: code, ref: "Now LIVE (input wired); the ammo orb networks as NadeOrb + renders via NadeOrbRenderer", result: pass }
+      - { kind: visual, ref: "NO runtime check of the ammo orb render", result: unknown }
+    confidence: high
+    notes: "Friend magazines stay full; foe clips bleed at clip_empty_rate (0 default). Ammo given/drained at rate*frametime*0.5. 2026-06-28b: the orb now renders (NadeOrbRenderer) + colored boom FX — presentation missing->unknown (coded+wired, not visually verified). liveness live."
+
+  - id: mutator-nades.boom.entrap_veil_darkness
+    name: "Entrap / Veil / Darkness orbs + fields"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/nade/entrap.qc:nade_entrap_boom"
+      - "common/mutators/mutator/nades/nade/veil.qc:nade_veil_boom"
+      - "common/mutators/mutator/nades/nade/darkness.qc:nade_darkness_boom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeEntrapBoom.cs:Boom"
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeVeilBoom.cs:Boom"
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeDarknessBoom.cs:Boom"
+    constants:
+      - { name: "g_nades_entrap_strength", base: "0.01 (mutators.cfg:298)", port: "0.01", match: true }
+      - { name: "g_nades_entrap_speed", base: "0.5 (mutators.cfg:299)", port: "0.5", match: true }
+      - { name: "g_nades_entrap_time/radius", base: "10 / 500 (mutators.cfg:300-301)", port: "10/500", match: true }
+      - { name: "g_nades_veil_time/radius", base: "8 / 250 (mutators.cfg:305-306)", port: "8/250", match: true }
+      - { name: "g_nades_darkness_time/radius/teamcheck", base: "4 / 300 / 2 (mutators.cfg:319-322)", port: "4/300/2", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: unknown
+      audio: unknown
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Entrap/veil orb 3D models NOW RENDERED but UNVERIFIED (2026-06-28b): both network as NadeOrb entities + draw via NadeOrbRenderer (green/pale-green tinted spheres) + in-orb 2D color flash. Not visually verified."
+      - "Darkness blind overlay + SND_BLIND NOW CODED but UNVERIFIED (2026-06-28b): ViewEffects.UpdateDarknessOverlay draws the HUD_DarkBlinking blinking near-black fill from the networked NadeDarknessTime stat, and NetGame plays SND_BLIND ('misc/blind') once on the blind-onset edge. Wired live but no in-game confirmation (presentation/audio unknown, not faithful)."
+      - "Veil enemy-tint (render colormod on enemies) is STILL NOT ported — the orb renders + teammate alpha-hide works, but enemies are not recolored by the veil. Genuine residual render gap."
+    verification:
+      - { kind: code, ref: "EntrapTouch strength**dt damp + NadeEntrapSpeedMutator PlayerPhysics; VeilTouch alpha-hide; DarknessThink teamcheck+NadeDarknessTime vs the three .qc", result: pass }
+      - { kind: code, ref: "DRIFT 2026-06-27 (fix): the entrap monster run/walk slow (MonsterAI.cs:1011-1012: if (self.NadeEntrapTime > Now) speed *= EntrapSpeed() == entrap.qc:48) AND the veil monster-alpha lapse (MonsterAI.cs:945-946) are now ported inline in MonsterAI.Move (the port has no MonsterMove hook chain; MonsterMove-hook effects are inlined there). Both are dormant for the same reason as Base: the orb touch only flags nade_entrap_time/nade_veil_time on real clients, never on monsters. logic partial->faithful.", result: pass }
+      - { kind: code, ref: "2026-06-28b: entrap/veil orbs render via NadeOrbRenderer (NadeOrb net kind); darkness blind overlay (ViewEffects.UpdateDarknessOverlay, HUD_DarkBlinking) + SND_BLIND ('misc/blind' on the onset edge, NetGame) now wired live off the networked NadeDarknessTime stat. Builds clean.", result: pass }
+      - { kind: visual, ref: "NO runtime check of the entrap/veil orb render, the darkness blink overlay, or the SND_BLIND cue", result: unknown }
+    confidence: high
+    notes: "Entrap speed slow wired as a separate g_nades-gated [Mutator] on PlayerPhysics (SpeedMultiplier *= entrap_speed). Velocity damp is ticrate-independent (strength**dt, dt capped 0.15s). DRIFT 2026-06-27: entrap monster-slow + veil monster-alpha lapse ported inline (logic faithful). 2026-06-28b: entrap/veil orb 3D models + darkness blind overlay (HUD_DarkBlinking) + SND_BLIND now CODED and wired live (presentation/audio missing->unknown — not visually verified). Residual genuine render gap: the veil ENEMY-tint colormod (only teammate alpha-hide is ported)."
+
+  - id: mutator-nades.boom.monster
+    name: "Pokenade: spawn monster"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/nade/monster.qc:nade_monster_boom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/Booms/NadeMonsterBoom.cs:Boom"
+    constants:
+      - { name: "g_nades_pokenade_monster_type", base: "\"zombie\" (mutators.cfg:294)", port: "\"zombie\"", match: true }
+      - { name: "g_nades_pokenade_monster_lifetime", base: "150 (mutators.cfg:293)", port: "150 (set on MonsterState.Lifetime)", match: true }
+      - { name: "monster_skill", base: "INSANE", port: "Insane", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Gated by g_monsters (faithful — QC also requires g_monsters; nades_CheckTypes falls back to NORMAL when monsters off)."
+    verification:
+      - { kind: code, ref: "NadeMonsterBoom.Boom noalign + INSANE + MonsterAI.SpawnMonster(pokenade_type, owner) + (Wave-5) if(lifetime>0) StateOf(mon).Lifetime = time+lifetime vs nade_monster_boom", result: pass }
+      - { kind: code, ref: "monster_lifetime is LIVE: MonsterAI.RunThink (MonsterAI.cs:1012-1017) suicides the monster via Combat.Damage when Now>=st.Lifetime", result: pass }
+    confidence: high
+    notes: "Wave-5 wired monster_lifetime (150s): NadeMonsterBoom sets MonsterState.Lifetime = time+lifetime and MonsterAI.RunThink kills the monster at the deadline — values/timing partial->faithful, logic partial->faithful. Owner/team/INSANE faithful. liveness dead->live (input wired, still requires g_monsters)."
+
+  - id: mutator-nades.bonus.economy
+    name: "Bonus-nade economy (accrual / award / wipe)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:445 nades_GiveBonus"
+      - "common/mutators/mutator/nades/sv_nades.qc:836 PlayerDies bonus"
+      - "common/mutators/mutator/nades/sv_nades.qc:896 MonsterDies bonus"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeBonus.cs"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:OnPlayerPreThink"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:OnPlayerDies"
+    constants:
+      - { name: "g_nades_bonus_max", base: "3 (mutators.cfg:234)", port: "3", match: true }
+      - { name: "g_nades_bonus_score_max", base: "120 (mutators.cfg:238)", port: "120", match: true }
+      - { name: "g_nades_bonus_score_minor", base: "5 (mutators.cfg:239)", port: "5", match: true }
+      - { name: "g_nades_bonus_score_medium", base: "30 (mutators.cfg:241)", port: "30", match: true }
+      - { name: "g_nades_bonus_score_spree", base: "40 (mutators.cfg:243)", port: "40", match: true }
+      - { name: "g_nades_bonus_score_time", base: "-1 decays (mutators.cfg:244)", port: "-1", match: true }
+      - { name: "g_nades_bonus_score_time_flagcarrier", base: "2 (mutators.cfg:245)", port: "CvarRaw(g_nades_bonus_score_time_flagcarrier,2) via ScoringIsVip/KeyHuntKeyCount", match: true }
+      - { name: "spree_thresholds", base: "KILL_SPREE_LIST 3,5,10,15,20,25,30", port: "3,5,10,15,20,25,30", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "GameRules_scoring_is_vip / flagcarrier multiplier: the VIP-kill medium bonus + flagcarrier time-score multiplier (g_nades_bonus_score_time_flagcarrier=2, scaled by KH key count) ARE now wired in OnPlayerDies / OnPlayerPreThink (GametypeEntities.ScoringIsVip + KeyHuntKeyCount). Whether those two helpers return Base-faithful values for every gametype (CTF/KA/TKA VIP, KH key carrier) is the residual values:partial risk — the per-second accrual path now reads CvarRaw(g_nades_bonus_score_time_flagcarrier) and the VIP/key branches, so the previously-MISSING flagcarrier cvar is now consumed."
+    verification:
+      - { kind: test, ref: "PowerupsAndNadesTests.NadeBonus_AccruesAndBanksABonusNade / NadeBonus_TeamkillWipesAttackerBonus", result: pass }
+      - { kind: code, ref: "DRIFT 2026-06-25: bonus notification + sound NOW emitted. NadeBonus.cs:53 NotificationSystem.Send(NotifBroadcast.One, player, MsgType.Center, \"NADE_BONUS\") + :54 SoundSystem.Play2(player, \"NADE_BONUS\") == sv_nades.qc:456-457 Send_Notification(NOTIF_ONE, MSG_CENTER, CENTER_NADE_BONUS) + play2(player, SND(NADE_BONUS)). NADE_BONUS center notif registered (NotificationsList.cs:496) and sound mapped NADE_BONUS->\"kh/alarm\" (SoundsList.cs:180) == Base #define SND_NADE_BONUS SND_KH_ALARM (all.inc:183). DRIFT 2026-06-27 re-verify: the bonus sound now uses SoundSystem.Play2 (the correct play2 2D per-recipient analogue, NOT the earlier PlayOn positional emit) — audio stays faithful. presentation/audio missing->faithful.", result: pass }
+      - { kind: code, ref: "MonsterDies bonus is LIVE: NadeBonus.OnMonsterDies(attacker, monster, monsterWasSpawned:!natural) is called directly from the monster death path at MonsterAI.cs:1695 (no MutatorHooks.MonsterDies chain — direct call == nades MonsterDies hook, sv_nades.qc:896). Guards attacker-is-client / spawned / same-team internally.", result: pass }
+      - { kind: code, ref: "Accrual (PlayerPreThink) + PlayerDies award are live; the banked bonus is SPENDABLE (a primed bonus nade can be thrown, input wired)", result: pass }
+    confidence: high
+    notes: "Accrual normalized by bonus_score_max; banks at >=1 capped at bonus_max; teamkill/suicide wipes attacker; spree milestone -> spree bonus else minor; killcount-scaled bound(0, minor*kc, medium). MonsterDies minor bonus is live (direct MonsterAI.cs:1695 call). DRIFT 2026-06-26 re-verify: the bonus-bank notification + sound are now emitted (NadeBonus.cs:53-54, CENTER_NADE_BONUS + SND_NADE_BONUS=kh/alarm both registered + live) — presentation/audio missing->faithful; and the VIP/flagcarrier branches (ScoringIsVip + KeyHuntKeyCount + g_nades_bonus_score_time_flagcarrier) are now wired in OnPlayerDies/OnPlayerPreThink. Residual: values:partial only insofar as ScoringIsVip/KeyHuntKeyCount per-gametype fidelity; logic:partial held for the same reason. MonsterAI line moved 1682->1695."
+
+  - id: mutator-nades.lifecycle.cleanup
+    name: "Held-nade/bonus cleanup + spectate copy + vehicle/death-drop toss"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:470 PutClientInServer (RemoveBonus)"
+      - "common/mutators/mutator/nades/sv_nades.qc:667 VehicleEnter (toss)"
+      - "common/mutators/mutator/nades/sv_nades.qc:906 DropSpecialItems (toss)"
+      - "common/mutators/mutator/nades/sv_nades.qc:914 nades_RemovePlayer + MakePlayerObserver/ClientDisconnect/reset_map_global"
+      - "common/mutators/mutator/nades/sv_nades.qc:937 SpectateCopy"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeThrow.cs:Clear"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeBonus.cs:RemoveBonus"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:OnVehicleEnter"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:OnMakePlayerObserver / OnClientDisconnect / RemovePlayer"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:ResetMapGlobal / OnPutClientInServer / OnSpectateCopy (host seams)"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "DropSpecialItems (the dedicated special-item-drop toss hook, sv_nades.qc:906) has no port HookChain. The hook's common case — the death-toss — IS handled by the PlayerDies hook (OnPlayerDies tosses the held nade with '0 0 100'); the unported residual is the non-death special-item-drop toss ('0 0 0'), which has no live trigger in the port today. Minor."
+    verification:
+      - { kind: code, ref: "Wave-2 (commit ec788f7): NadesMutator.Hook adds MutatorHooks.VehicleEnter; OnVehicleEnter tosses player.Nade with Toss(player,true,(0,0,100),max(NadeWait,Time+0.05)) == sv_nades.qc:667 — faithful + live (VehicleEnter.Call live in VehicleBoarding.cs)", result: pass }
+      - { kind: code, ref: "Wave-6b: NadesMutator.cs:69-70 adds MakePlayerObserver + ClientDisconnect; RemovePlayer (NadesMutator.cs:293) = nades_Clear + RemoveBonus + delete NadeSpawnLoc == nades_RemovePlayer (sv_nades.qc:914-920); both Call sites live (ClientManager.cs MakePlayerObserver/ClientDisconnect)", result: pass }
+      - { kind: code, ref: "DRIFT 2026-06-27 (fix): reset_map_global + PutClientInServer + SpectateCopy are now implemented as g_nades-gated host seams (NadesMutator.cs:321 ResetMapGlobal = FOREACH_CLIENT RemovePlayer == sv_nades.qc:932; :337 OnPutClientInServer = RemoveBonus == sv_nades.qc:470; :349 OnSpectateCopy = copy NADE_TIMER/BONUS_TYPE/pokenade_type/BONUS/BONUS_SCORE == sv_nades.qc:937) and ALL THREE have live callers: GameWorld.cs:4454 (ResetMap), ClientManager.cs:720 (respawn Spawn path, before PlayerSpawn), ClientManager.cs:662 (SpectateCopy). The round-reset / respawn-into-server / spectator-mirror leaks are closed. logic partial->faithful, liveness partial->live.", result: pass }
+    confidence: high
+    notes: "DRIFT 2026-06-27: reset_map_global / PutClientInServer / SpectateCopy now wired as live host seams (gated by NadesMutator.Active = g_nades!=0), joining the already-live VehicleEnter (Wave-2), MakePlayerObserver/ClientDisconnect (Wave-6b), and the PlayerDies death-toss. The only unported piece is the dedicated DropSpecialItems hook (its death-toss case is covered by PlayerDies; the non-death special-item-drop toss is the residual). logic faithful, liveness live."
+
+  - id: mutator-nades.damage.freezetag_revive
+    name: "Damage_Calculate: freezetag revive-nade"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:876 Damage_Calculate"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:OnDamageCalculate"
+    constants:
+      - { name: "g_freezetag_revive_nade", base: "0 (gametype cvar)", port: "0", match: true }
+      - { name: "self_nade_window", base: "time-toss_time <= 0.1s", port: "0.1s", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The port suppresses the self-nade damage+force but does NOT call freezetag_Unfreeze / set freezetag_revive_nade_health / send EFFECT_ICEORGLASS + INFO_FREEZETAG_REVIVED_NADE/CENTER_FREEZETAG_REVIVE_SELF notifications (documented cross-task seam — FreezeTag owns the unfreeze). So the revive-nade does not actually revive."
+    verification:
+      - { kind: code, ref: "OnDamageCalculate matches the frozen-self-nade window + zeroes damage/force; unfreeze deferred to FreezeTag", result: pass }
+      - { kind: code, ref: "Now LIVE (DamageCalculate hook fires on the live damage path; input wired so a frozen player can hold/throw the revive nade)", result: pass }
+    confidence: high
+    notes: "Only the no-damage half of the QC hook is implemented; the actual unfreeze + revive-health is a noted seam to the FreezeTag gametype. liveness dead->live (hook fires; revive seam still open)."
+
+  - id: mutator-nades.presentation.client
+    name: "Client presentation: projectile/trail, orb model + 2D flash, darkness overlay, bonus ammo icon, charge ring"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/nades/cl_nades.qc:Ent_Projectile/EditProjectile/DrawAmmoNades"
+      - "common/mutators/mutator/nades/net.qc:orb_draw/orb_draw2d/orb_setup"
+      - "common/mutators/mutator/nades/nade/darkness.qc:HUD_DarkBlinking"
+    port_refs:
+      - "game/hud/CrosshairPanel.cs:NadeTimer (charge ring)"
+      - "game/client/NadeOrbRenderer.cs (orb 3D model: scale-up/fade/spin)"
+      - "game/client/ViewEffects.cs:UpdateOrbColorFlash / UpdateDarknessOverlay (orb_draw2d + HUD_DarkBlinking)"
+      - "game/client/ProjectileCatalog.cs:NadeNormal..NadeDarkness (held-nade projectile model/trail/tint)"
+      - "game/hud/AmmoPanel.cs:DrawAmmoNades (bonus-nade ammo cell)"
+      - "game/client/ClientWorld.cs:CosmeticModelLayer (spawn-loc marker / ice block / buff glow)"
+      - "game/net/{ServerNet.cs,ClientEntityView.cs,NetGame.cs}: NadeOrb net kind + NadeOrbState + owner-only nade STATs + SND_BLIND"
+    constants:
+      - { name: "nade_charge_ring", base: "cl_nade_timer modes", port: "CrosshairPanel.NadeTimer/NadeTimerMode networked", match: true }
+      - { name: "hud_colorflash_alpha", base: "0.5 (orb_draw2d)", port: "0.5 (ViewEffects, registered)", match: true }
+      - { name: "nade_model_scale", base: "1.5 (cl_nades grenademodel.md3)", port: "1.5 (ProjectileCatalog)", match: true }
+      - { name: "orb_scale/fade/spin", base: "grow×4 / fade×4 / avelocity '0 0 90'", port: "×4 / ×4 / 90deg-yaw (NadeOrbRenderer)", match: true }
+    status:
+      logic: unknown
+      values: unknown
+      timing: unknown
+      presentation: unknown
+      audio: unknown
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "NOT RUNTIME/VISUALLY VERIFIED (2026-06-28b): the full nade presentation stack (projectile model/trail, orb 3D model + 2D color flash, darkness blind overlay + SND_BLIND, EF_STARDUST spawn-loc marker, DrawAmmoNades bonus cell) is now CODED and WIRED on the live entity-stream + per-frame view passes — but no in-game screenshot/playtest confirms it draws correctly, and ZERO tests cover it. Status is unknown (not faithful) pending a behavioral check. Code is QC-faithful by inspection."
+      - "sphere.md3 path nit: NadeOrbRenderer requests 'models/sphere.md3' but the asset is at 'models/sphere/sphere.md3' — likely resolves to null and falls back to the additive glow sprite (graceful, but NOT the real sphere model). Verify the orb draws the intended body."
+      - "Owner-only nade STATs (NadeDarknessTime/NadeBonus/NadeBonusType/NadeBonusScore) are privacy-gated to the owning player; the DrawAmmoNades cell + darkness overlay only show for the local player (faithful — these are own-player HUD)."
+    verification:
+      - { kind: code, ref: "NadeOrbRenderer (orb scale/fade/spin) + ViewEffects.UpdateOrbColorFlash/UpdateDarknessOverlay + ProjectileCatalog NadeNormal..NadeDarkness + AmmoPanel.DrawAmmoNades + NadeBoom.EmitDetonationFx all present and wired into the live client passes (ClientEntityView NadeOrb spawn/update/remove, NetGame per-frame UpdateDarknessOverlay/UpdateOrbColorFlash + AmmoPanel feed, ServerNet NadeOrb net kind + NadeOrbState + Feedback STATs). Builds clean (0 errors).", result: pass }
+      - { kind: code, ref: "ServerNet.cs:1663 -> NetGame.cs networks NadeTimer to the crosshair ring; the ring shows because priming is reachable (Wave-5)", result: pass }
+      - { kind: visual, ref: "NO runtime/visual check performed — orb sphere, 2D color flash, darkness blink, nade projectile tint, bonus-nade cell all UNVERIFIED in-game", result: unknown }
+    confidence: medium
+    notes: "2026-06-28b nade-presentation wave (WORKING-TREE, uncommitted): the previously-missing nade presentation is now broadly IMPLEMENTED and wired live — orb 3D model (NadeOrbRenderer), in-orb 2D additive color flash + darkness blind overlay (ViewEffects), per-type held-nade projectile model/trail/tint (ProjectileCatalog), bonus-nade ammo cell (AmmoPanel.DrawAmmoNades), spawn-loc EF_STARDUST marker (CosmeticModelLayer), the per-type colored detonation FX (NadeBoom.EmitDetonationFx), SND_BLIND, and the supporting NadeOrb net kind + owner-only nade STATs. Code is QC-faithful by inspection and compiles, but is NOT runtime-verified and has no test coverage, so every render/audio dimension sits at UNKNOWN (NOT faithful) per parity-diff discipline. liveness partial->live (the render path is reached on the live stream + the throw path is live). A behavioral/visual pass is the next step to upgrade unknown->faithful/partial."
+
+  - id: mutator-nades.display.mutators_string
+    name: "Mutator-list display token (BuildMutatorsString / BuildMutatorsPrettyString)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qc:954 BuildMutatorsString (\":Nades\")"
+      - "common/mutators/mutator/nades/sv_nades.qc:949 BuildMutatorsPrettyString (\", Nades\")"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:79 BuildMutatorsString"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:80 BuildMutatorsPrettyString"
+    constants:
+      - { name: "mutators_string_token", base: "\":Nades\"", port: "\":Nades\"", match: true }
+      - { name: "mutators_pretty_token", base: "\", Nades\"", port: "\", Nades\"", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "NadesMutator.cs:79-80 overrides MutatorBase.BuildMutatorsString => s+\":Nades\" and BuildMutatorsPrettyString => s+\", Nades\", exactly matching Base sv_nades.qc:954/949. Same override pattern as BloodlossMutator.cs:104/107.", result: pass }
+      - { kind: code, ref: "The virtuals are consumed by the MutatorActivation.BuildMutatorsString chain (run from GameWorld gamelog init for each active mutator, per CampcheckMutator.cs:206-208), so the override is on the live active-mutators readout path (scoreboard / server browser / g_mutatorblacklist token).", result: pass }
+    confidence: high
+    notes: "DRIFT 2026-06-25 (fix): this row was newly-mapped 2026-06-25 as missing (empty port_refs), but the current code DOES override both virtuals (NadesMutator.cs:79-80). Nades now contributes ':Nades' to the machine token and ', Nades' to the human-readable mutators list. missing->faithful, na->live."
+
+  - id: mutator-nades.registry.type_catalog
+    name: "Nade type catalog (registry, class attribs, projectile ids, per-type enable cvars, small-nade flag)"
+    layer: [shared]
+    base_refs:
+      - "common/mutators/mutator/nades/nades.qh:8 REGISTRY(Nades, BITS(4)) + CLASS(Nade) + NullNade sentinel + PROJECTILE_NADE=71/BURN=72 + Nade_FromProjectile"
+      - "common/mutators/mutator/nades/all.inc (11 REGISTER_NADE definitions binding projectile ids + trails)"
+      - "common/mutators/mutator/nades/nades.qc:12 REGISTER_STAT(NADES_SMALL, g_nades_nade_small)"
+      - "common/mutators/mutator/nades/nade/normal.qh (NormalNade attribs)"
+      - "common/mutators/mutator/nades/nade/napalm.qh (NapalmNade attribs + g_nades_napalm_* autocvars + proj 73/74/75)"
+      - "common/mutators/mutator/nades/nade/ice.qh (IceNade attribs + g_nades_ice_* autocvars + proj 76/77)"
+      - "common/mutators/mutator/nades/nade/translocate.qh (TranslocateNade attribs + autocvars + proj 78)"
+      - "common/mutators/mutator/nades/nade/spawn.qh (SpawnNade attribs + autocvars + proj 79)"
+      - "common/mutators/mutator/nades/nade/heal.qh (HealNade attribs + g_nades_heal_* autocvars + proj 80/81)"
+      - "common/mutators/mutator/nades/nade/monster.qh (MonsterNade attribs + g_nades_pokenade_* autocvars + proj 82/83)"
+      - "common/mutators/mutator/nades/nade/entrap.qh (EntrapNade attribs + g_nades_entrap_* autocvars + proj 84/85)"
+      - "common/mutators/mutator/nades/nade/veil.qh (VeilNade attribs + m_alpha 0.45 + autocvars + proj 86/87)"
+      - "common/mutators/mutator/nades/nade/ammo.qh (AmmoNade attribs + g_nades_ammo_* autocvars + proj 88/89)"
+      - "common/mutators/mutator/nades/nade/darkness.qh (DarknessNade attribs + autocvars + proj 90/91)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeRegistry.cs:100 RegisterAll (Null=0 + the 11 types in all.inc order)"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs:144 NadesSmall = g_nades_nade_small"
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeProjectile.cs:63 small 16 / normal 32 hull"
+    constants:
+      - { name: "type ids", base: "Null=0, NORMAL=1 .. DARKNESS=11 (registry order)", port: "0..11 same order (NadeRegistry.cs:106-166)", match: true }
+      - { name: "netnames", base: "normal/napalm/ice/translocate/spawn/heal/pokenade/entrap/veil/ammo/darkness (Null='random')", port: "identical incl. 'pokenade' for the monster nade", match: true }
+      - { name: "m_color per type", base: "normal '1 1 1', napalm '1 0.5 0', ice '0 0.66 1', translocate '1 0 1', spawn '1 0.9 0', heal '1 0 0', monster '0.1 0.65 0', entrap '0.4 0.85 0.15', veil '0.65 0.85 0.65', ammo '0.33 0.33 1', darkness '0.23 0 0.23'", port: "all 11 identical (NadeRegistry.cs)", match: true }
+      - { name: "veil m_alpha", base: "0.45 (veil.qh:29; others 1)", port: "0.45 (Alpha field)", match: true }
+      - { name: "impulse", base: "1..11 in type order (legacy selection)", port: "1..11 (Impulse field, consumed by FromString)", match: true }
+      - { name: "projectile ids", base: "71/72, 73/74, 76/77, 78, 79, 80/81, 82/83, 84/85, 86/87, 88/89, 90/91 (nades.qh + per-type .qh)", port: "identical consts (NadeRegistry.cs:62-72)", match: true }
+      - { name: "per-type enable gates", base: "g_nades_<type> (+ g_monsters for pokenade); normal ungated", port: "EnableCvar + RequiresMonsters (IsAllowed)", match: true }
+      - { name: "g_nades_nade_small", base: "0 (server flag; STAT to CSQC)", port: "0 (NadesMutator.cs:144)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "m_icon is not carried in NadeDef — the per-type HUD icon mapping lives client-side (AmmoPanel DrawAmmoNades cell, see presentation.client row), so the catalog split is port-structural, not a behavior gap."
+      - "Nade_FromProjectile (nades.qh:65, resolve a nade type from a CSQC projectile id) has no direct port analogue — the client classifies by the ServerNet string key instead (ProjectileCatalog.cs:337 ClassifyNade/HasNadeClass); equivalent surface, different key."
+      - "The CSQC half of NADES_SMALL (cl_nades.qc:46 sets the client projectile hull 16/32 for prediction) is moot in the port: nade positions come server-authoritative over the entity stream (ProjectileCatalog nades use CollisionMode.None)."
+    verification:
+      - { kind: code, ref: "Read all 11 nade/*.qh + nades.qh + all.inc against NadeRegistry.cs:100-167 — every id/netname/color/alpha/impulse/projectile-id/enable-cvar matches, incl. the pokenade g_monsters extra gate (RequiresMonsters)", result: pass }
+      - { kind: code, ref: "LIVE: RegisterAll runs on mutator enable (NadesMutator, see enable.predicate row); CheckType/GetType/ChooseRandom are on the live prime path (NadeThrow.Prime); NadesSmall consumed at NadeProjectile.cs:63 on the live toss path", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). The data catalog that all.inc + nades.qh + the 11 per-type .qh headers define is fully and faithfully mirrored by NadeRegistry.cs (verified attrib-by-attrib). The per-type BALANCE autocvars declared in the same headers are already tracked as constants on their per-boom rows (boom.napalm/ice/heal/ammo/entrap_veil_darkness/monster/translocate/spawn)."
+
+  - id: mutator-nades.presentation.projectile_trails_wire
+    name: "Nade projectile wire ids + per-type/per-team trails + burn-variant swap"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/nades/all.inc (NADE_PROJECTILE trail bindings per type)"
+      - "common/mutators/mutator/nades/effects.inc:15-52 EFFECT_NADE_TRAIL_* + EFFECT_NADE_TRAIL(teamid)/EFFECT_NADE_TRAIL_BURN(teamid)"
+      - "common/mutators/mutator/nades/nades.qc:17 Nade_TrailEffect"
+      - "common/mutators/mutator/nades/sv_nades.qc:40 nade_spawn (CSQCProjectile m_projectile[0]) / :35 nade_burn_spawn (m_projectile[1]) / :494,:546 held-nade traileffectnum"
+      - "common/mutators/mutator/nades/cl_nades.qh:5 Projectile_isnade"
+    port_refs:
+      - "game/net/ServerNet.cs:2222-2227 ('nade <netname>' catalog key from NadeBonusType)"
+      - "game/client/ProjectileCatalog.cs:245-278 (NadeNormal..NadeDarkness descs: grenademodel.md3 scale 1.5, per-type GlowColor tint)"
+      - "game/client/ProjectileCatalog.cs:337,:393 (ClassifyNade + HasNadeClass — the Projectile_isnade analogue)"
+    constants:
+      - { name: "nade model + scale", base: "grenademodel.md3, scale 1.5 (cl_nades.qc:55)", port: "models/grenademodel.md3 ModelScale 1.5", match: true }
+      - { name: "normal-nade trail", base: "EFFECT_NADE_TRAIL(team): red/blue/yellow/pink by thrower team, neutral otherwise", port: "no trail (TrailEffect '')", match: false }
+      - { name: "napalm trail", base: "EFFECT_TR_ROCKET (burn: SPIDERBOT_ROCKET_TRAIL)", port: "FIREBALL/FireSmall approximation", match: false }
+      - { name: "ice trail", base: "EFFECT_TR_NEXUIZPLASMA (burn: RACER_ROCKET_TRAIL)", port: "TR_NEXUIZPLASMA/BluePlasma", match: true }
+      - { name: "spawn/heal/monster/entrap/veil/ammo/darkness trails", base: "NADE_TRAIL_YELLOW/RED/RED/YELLOW/NEUTRAL/BROWN/PURPLE (+_BURN variants)", port: "none (TrailEffect '' for all 7)", match: false }
+      - { name: "burn-variant swap", base: "nade_burn_spawn switches to m_projectile[1] when the nade is first shot/armed", port: "wire key never changes (no burn token)", match: false }
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Team-colored trails are NOT ported: Base picks the normal nade's trail (and the held-nade traileffectnum, sv_nades.qc:494/546) via EFFECT_NADE_TRAIL(team) — red/blue/yellow/pink by thrower team; the port's normal nade renders with NO trail and no team dependence."
+      - "The burn-variant projectile swap (nade_burn_spawn, sv_nades.qc:35: first arming hit re-sends the nade as m_projectile[1] with the *_BURN trail) is not carried on the port wire — ServerNet.cs:2225-2227 keys only classname+netname, so an armed nade keeps the un-burned look."
+      - "8 of 11 types have no trail at all in the port (only napalm + ice carry one, and napalm is an approximation vs TR_ROCKET); Base gives every non-normal type a colored NADE_TRAIL_* trail."
+      - "None of this is visually verified in-game (same caveat as the 2026-06-28b presentation wave)."
+    verification:
+      - { kind: code, ref: "all.inc trail bindings + effects.inc team switches + nades.qc:17 Nade_TrailEffect read against ProjectileCatalog.cs:245-278 (trail fields) and ServerNet.cs:2222-2227 (key construction — no team, no burn state)", result: pass }
+      - { kind: code, ref: "LIVE: the 'nade <netname>' key is emitted on the live entity stream for a thrown nade (ServerNet BuildEntitySet path) and ProjectileCatalog classification runs on the live client render pass (per the 2026-06-28b wave)", result: pass }
+      - { kind: visual, ref: "NO runtime check of nade model/tint/trail rendering", result: unknown }
+    confidence: medium
+    notes: "added 2026-07-02 (coverage fold). The wire scheme itself (string catalog key vs CSQCProjectile numeric id) is a port-structural substitution that preserves the type contract; the trail CONTENT diverges as itemized. cl_nades.qh's DrawAmmoNades declaration is tracked on the presentation.client row; its Projectile_isnade is the classification contract tracked here."
+
+  - id: mutator-nades.presentation.explode_effect
+    name: "Detonation particle effect name + thrower-color tint (nade_neutral_explode)"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/nades/effects.inc:12 EFFECT(0, NADE_EXPLODE, \"nade_neutral_explode\")"
+      - "common/mutators/mutator/nades/sv_nades.qc:139-152 SET_NADE_EFFECT per type + Send_Effect_Except(expef, findbetterlocation(origin,8), ..., expcol_min, expcol_max)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeBoom.cs:160 EmitDetonationFx"
+    constants:
+      - { name: "explode effectinfo", base: "nade_neutral_explode tinted expcol_min..expcol_max (normal boom tinted by nades_PlayerColor of the thrower)", port: "EXPLOSION_MEDIUM/EXPLOSION_BIG/ICEORGLASS/HEALING/AMMO_REGEN tinted by NadeDef.Color (min==max; normal untinted white)", match: false }
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The port substitutes generic registered effects (EXPLOSION_MEDIUM/BIG, ICEORGLASS, HEALING, AMMO_REGEN) for Base's dedicated nade_neutral_explode effectinfo — the visual character of the boom differs by construction."
+      - "The normal boom's thrower-color tint (SET_NADE_EFFECT(NADE_TYPE_NORMAL, ..., nades_PlayerColor(realowner, false/true)) — the explosion takes the killer's player/team color) is not applied: the port's normal boom is white, and the tint range is min==max NadeDef.Color for the typed booms."
+      - "findbetterlocation(origin, 8) (nudge the effect origin out of the impact surface) is not modeled; and none of this is visually verified."
+    verification:
+      - { kind: code, ref: "sv_nades.qc:139-152 (SET_NADE_EFFECT table + Send_Effect_Except) read against NadeBoom.cs EmitDetonationFx (per-type effect-name switch + NadeDef.Color tint, except:null)", result: pass }
+      - { kind: visual, ref: "NO runtime check of the detonation particle", result: unknown }
+    confidence: medium
+    notes: "added 2026-07-02 (coverage fold). Refines the boom.dispatch row's 'colored detonation particle UNVERIFIED' gap with the effects.inc-level detail: the effect NAME and the tint SOURCE both diverge from Base, independent of the pending visual check. The commented-out per-color NADE_EXPLODE_* registrations in effects.inc are dead in Base too (only NADE_EXPLODE is registered)."
+
+  - id: mutator-nades.select.client_type_replication
+    name: "Per-client nade type selection replication (cl_nade_type / cl_pokenade_type)"
+    layer: [shared]
+    base_refs:
+      - "common/mutators/mutator/nades/nades.qc:14-15 REPLICATE(cvar_cl_nade_type/cvar_cl_pokenade_type)"
+      - "common/mutators/mutator/nades/nades.qh:75-76 REPLICATE_INIT"
+      - "common/mutators/mutator/nades/sv_nades.qh:25,:29 g_nades_client_select / g_nades_bonus_client_select + :50-51 .cvar_cl_nade_type/.cvar_cl_pokenade_type fields"
+    port_refs: []
+    constants:
+      - { name: "cl_nade_type", base: "3 (xonotic-client.cfg; replicated to the server per client)", port: "absent", match: false }
+      - { name: "cl_pokenade_type", base: "\"zombie\" (replicated)", port: "absent", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The whole per-client selection channel is unported: no cl_nade_type/cl_pokenade_type cvars exist anywhere in the port (repo-wide grep over src/ + game/ + tests/), there is no cvar-replication plumbing for them, and nade_prime always uses the server g_nades_nade_type/g_nades_bonus_type (see the prime.select row's g_nades_client_select gap — this row is the file-level registration of the same hole)."
+    verification:
+      - { kind: code, ref: "grep cl_nade_type|cl_pokenade_type across the port repo: hits only in planning docs/CVAR lists, zero in code", result: fail }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). Only bites when a server sets g_nades_client_select or g_nades_bonus_client_select (both default 0), so the shipped-defaults behavior matches; the divergence is the missing capability."
+
+  - id: mutator-nades.net.orb_wire
+    name: "Nade orb network entity (type/origin/lifetime/radius wire contract)"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/nades/net.qh:5-6 SF_NADEORB_LIFETIME_FLOAT/SF_NADEORB_RADIUS_FLOAT (byte-vs-float compaction) + reused CSQC fields"
+      - "common/mutators/mutator/nades/sv_nades.qh:55 orb_send"
+    port_refs:
+      - "game/net/ServerNet.cs:2303-2306 (NadeOrbState pack: OrbType/OrbExpire/OrbRadius) + :2204-2207 empty-model exemption + :2705 Classify('nade_orb')"
+      - "game/net/ClientEntityView.cs:250-262 (NadeOrb decode -> NadeOrbRenderer.OnSpawn/OnUpdate) + :352-355 OnRemove"
+      - "game/client/NadeOrbRenderer.cs:138-152 (consumes NadeOrbExpire/type/radius)"
+    constants:
+      - { name: "orb payload", base: "type + origin + ltime(lifetime) + radius (Nade_Orb NET_LINKED)", port: "OrbType + Origin + OrbExpire + OrbRadius (EntityField.NadeOrbState)", match: true }
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The port replaces DarkPlaces NET_LINKED messages with its own entity-stream protocol; net.qh's SF_NADEORB_* byte/float compaction flags are wire-format details with no behavioral surface. The observable contract — each live orb delivers its type, origin, expiry and radius to the client — is carried by NetEntityKind.NadeOrb + EntityField.NadeOrbState."
+    gaps:
+      - "Runtime-unverified like the rest of the 2026-06-28b presentation wave: the pack/decode path is code-traced end-to-end but no in-game orb has been observed over the wire."
+    verification:
+      - { kind: code, ref: "ServerNet.cs:2303-2306 packs OrbType/OrbExpire/OrbRadius for kind==NadeOrb (Classify 'nade_orb' at :2705); ClientEntityView.cs:250-262 decodes and feeds NadeOrbRenderer on the live entity-stream spawn/update/remove path", result: pass }
+      - { kind: visual, ref: "NO runtime check of an orb crossing the wire", result: unknown }
+    confidence: medium
+    notes: "added 2026-07-02 (coverage fold). net.qh's CSQC reused-field declarations (ltime/update_time/animstate_entime/height) are client bookkeeping with no port analogue needed. The orb RENDER (scale-up/fade/spin/2D flash) is tracked on the presentation.client + per-boom rows; this row is only the wire contract."
+
+  - id: mutator-nades.menu.guide_describe
+    name: "Menu guide entry + describe text for the Nades mutator"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/nades/nades.qc:45-55 METHOD(MutatorNades, describe) (MENUQC)"
+      - "common/mutators/mutator/nades/nades.qh:79-87 CLASS(MutatorNades)+REGISTER_MUTATOR(nades, true, MutatorNades) (MENUQC)"
+    port_refs:
+      - "game/menu/dialogs/DialogMediaGuide.cs:136-150 (Mutators topic lists only mutators with a GuideDescription — NadesMutator provides none, so no Nades entry appears)"
+    constants: []
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "NadesMutator has no GuideDescription override (grep: only Electro/Devastator/Tuba/OffhandBlaster/Shotgun/Vaporizer/Walljump provide one), so the guide's Mutators list filters the Nades entry out (DialogMediaGuide.cs:142) — Base's three-paragraph describe (prime/throw controls incl. the hook/offhand_blaster interaction, type variety note, 'enabled by default in Overkill') is unported."
+      - "The guide's dedicated 'Nades' TOPIC exists in the port's topic list (DialogMediaGuide.cs:27) but its entry enumeration (the per-nade-type display()/describe from the Nades registry) is pending like most non-weapon topics."
+    verification:
+      - { kind: code, ref: "grep GuideDescription over src/: no override in NadesMutator.cs; DialogMediaGuide.cs:142 skips mutators without one", result: fail }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). Menu-only prose; low priority. The MENUQC REGISTER_MUTATOR(nades, true, ...) is guide-listing glue (the create-game mutators dialog has no Nades checkbox in Base either — verified: zero 'nades' hits in Base qcsrc/menu outside guide pages)."
+
+  - id: mutator-nades.bonus.cross_unit_awards
+    name: "Cross-gametype bonus-nade awards (g_nades_bonus_score_low / _high API consumers)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/nades/sv_nades.qh:37-38 autocvar_g_nades_bonus_score_low/high + :67 nades_GiveBonus declaration"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Nades/NadeBonus.cs:33 GiveBonus (the public API)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:628,:640 (revive -> GiveBonus(g_nades_bonus_score_low))"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/KeyHunt.cs:1221 (key capture -> GiveBonus(g_nades_bonus_score_high) per carrier)"
+    constants:
+      - { name: "g_nades_bonus_score_low", base: "20 (mutators.cfg:240; freezetag revive)", port: "fallback 20 (FreezeTag.cs:639)", match: true }
+      - { name: "g_nades_bonus_score_high", base: "60 (mutators.cfg:242; ctf capture / kh capture)", port: "KeyHunt bare fallback 15 (KeyHunt.cs:1212)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The CTF flag-capture bonus-nade award (Base sv_ctf.qc:628 nades_GiveBonus(player, g_nades_bonus_score_high)) has NO port counterpart — zero nade references in Ctf.cs. A CTF capture under g_nades+g_nades_bonus accrues no bonus score."
+      - "KeyHunt's bare default for g_nades_bonus_score_high is 15 vs Base 60 (KeyHunt.cs:1212; already flagged in CVAR-DIFF.md) — wrong award size when the cvar is unregistered."
+    verification:
+      - { kind: code, ref: "Base callers of nades_GiveBonus(score_low/high): sv_freezetag.qc:846 (low), sv_keyhunt.qc:535 (high), sv_ctf.qc:628 (high). Port grep GiveBonus: FreezeTag.cs:628/640 + KeyHunt.cs:1221 wired on their live revive/capture paths; Ctf.cs has none", result: pass }
+      - { kind: code, ref: "GiveBonus self-gates on g_nades + g_nades_bonus (NadeBonus.cs), so the cross-unit calls are safe no-ops when nades is off — matches Base", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). The intra-unit economy (accrual/award/wipe) is the bonus.economy row; this row tracks sv_nades.qh's low/high award API consumed by OTHER units. The CTF fix belongs in Ctf.cs (capture path) but the contract is owned here so it isn't lost between units."

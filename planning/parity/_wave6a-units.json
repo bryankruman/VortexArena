@@ -1,0 +1,221 @@
+[
+{
+"unit": "race",
+"notes": [
+"[logic/values/timing] race.mode.setup_limits: Unset g_race_laps_limit defaults to 7 in the port; Base (-1) consults the mapinfo laplimit.; Qualifying timelimit and the qualifying-then-race limit-stashing/restore are unwired (SaveRaceLimits has no caller).",
+"[logic] race.checkpoint.entities: Port assumes the finish is checkpoint index 0; Base's race_timed_checkpoint can be the highest CP (spawnflags & 8) on tracks where start != finish.; Defrag target_checkpoint / target_startTimer / target_stopTimer chain not modeled for Race (CTS-only no-ops).; ",
+"[logic] race.checkpoint.ordered_crossing: The spawnflag-4 wrong-order kill (CheckpointTouch -> Combat.Damage 10000, Race.cs:328-329) is DEAD: no caller passes punishWrongWay:true (WireObjectiveSpawns:1947 spawns every checkpoint with the flag off), so a wrong-order crossing is still merely ignored on ",
+"[timing] race.lap.timing_scoring: Lap time uses wall Api.Clock.Time, not the QC race_movetime per-frame fractional accumulator; lap times drift from Base under frame-time jitter or pause.",
+"[logic] race.penalty.zones: Freeze release restores MoveType.Walk unconditionally (Base just clears the freeze; a swimming/flying racer would be forced to Walk).; disableclientprediction = 2 (Base) is not set during the freeze; the client may mispredict through the freeze.; RACE_NET_PENA",
+"[logic/values/timing] race.qualifying.mode: Retract uses Clients.Spawn (a normal spawn), not the Base checkpoint/grid-aware respawn (race_RetractPlayer + spawn_evalfunc by race_place).; independent_players / MAKE_INDEPENDENT_PLAYER (solo scoring isolation) not modeled.; Qualifying checkpoint records + R",
+"[values/timing] race.qualifying.transition: Wave-5 wired SaveRaceLimits (at Race activation when g_race_qualifying==2) + a live caller for TransitionQualifyingToRace (GameWorld.RunCheckRulesWorld: the elapsed qualifying timelimit converts the session to a real race instead of ending). The qualifying-tim",
+"[logic/values] race.spawn.grid_respawn: race_place START-GRID ordering still missing: racers do not get ordered start positions in a multi-racer race (no race_place read / info_player_race grid).; trigger_race_checkpoint_verify map-load validation (missing-spawn error) not performed.",
+"[logic/values/timing] race.movement.quantization: Analog (joystick) move input is not snapped to keyboard octants -> an analog precision advantage Base removes for fairness.; race_movetime per-frame fractional accumulator absent (lap timing uses wall clock instead).; cl_movecliptokeyboard 2 is not stuffed to ",
+"[logic/values] race.bot.role: Bots have no race role; they do not navigate toward the next checkpoint, so a bot-filled race has idle/wandering bots.",
+"[logic/values] race.hud.mod_icon_rankings: The HUD_Mod_Race MOD-ICON (the floating personal-best + server-best icon + the new-record/new-rank/fail medal flash with rank ordinal, faded over 5 s) is still NOT ported \u2014 ModIconsPanel has no Race case. (Note: the split-timer panel #8 has its OWN internal me",
+"[logic/values/timing] race.speed_awards: race_SpeedAwardFrame (per-frame top-speed tracking, round + all-time speed awards broadcast to clients, RaceTimerPanel speed-at-CP readout baseline) is not ported. RaceTimerPanel has RaceCheckpointSpeed/BestSpeed fields but they are never fed."
+]
+},
+{
+"unit": "cts",
+"notes": [
+"[values] cts.mode.register_latch: MUTATOR_ONADD does not force g_race_qualifying=1 / independent_players=1; Qualifying merely reads the cvar (default 1) so the common path matches, but a server setting g_race_qualifying 0 diverges from QC's forced-on behavior.; gametype_init defaults (timelimi",
+"[timing] cts.timing.start_finish: Run time is still wall-clock (Api.Clock.Time, Cts.cs:245/259) not the QC frame-accumulated .race_movetime; at variable frame rate / with prediction the recorded time can drift from QC's deterministic value.",
+"[logic/values/timing] cts.checkpoints.intermediate: target_checkpoint and trigger_race_checkpoint are consumed as no-ops for CTS (GameWorld:2093-2094 documents them as Race-only); defrag-style maps lose ordered checkpoint enforcement.; No 'went backwards' detection, no spawnflag-4 backward-damage, no per-checkp",
+"[logic/values/timing] cts.physics.force_keyboard: Analog movement is not snapped to keyboard cardinals/45-degree diagonals, so analog-stick players keep an unfair record advantage.; The per-frame .race_movetime accumulator (frame-rate-independent run clock) is not modeled; run timing uses wall-clock.; cl_move",
+"[logic] cts.weapon.shotgun_only: DIVERGENCE: Base WantWeapon only governs the START loadout (want_weapon -> start_items); CTS players CAN still pick up map weapons mid-run. The port re-clears OwnedWeaponSet to shotgun-only EVERY prethink frame (OnPlayerPreThink -> ForceShotgunOnly, Cts.cs:484",
+"[logic] cts.items.loot_filter: The port has no item-class registry exposing ITEM_IS_LOOT / .monster_item, so OnFilterItemDefinition approximates the Base test by classname tag (id.StartsWith(\"dropped\") / contains \"monster\", Cts.cs:461-467). Items whose classname does not carry the 'dropped'",
+"[logic/values/timing] cts.speedaward: No per-round best-speed tracking/broadcast and no persisted all-time best speed; the HUD speed-award display has no data.",
+"[logic] cts.map_reset: No reset_map_global handler for CTS: the in-memory per-checkpoint records are not cleared on map reset, places are not event-logged, and the qualifying==2->race collapse is not handled (CTS pins qualifying=1 so the collapse is mostly moot). Wave-5 added _check",
+"[logic/values] cts.lifecycle.prepare_player: Cts registers a PlayerSpawn hook, but it ONLY forces the Shotgun loadout (Cts.cs:477-481) \u2014 it does NOT do the race_PreparePlayer bookkeeping (checkpoint reset to -1, race_SendAll, respawn-checkpoint/spotref recording, the spawn==qualifying re-prepare-vs-retra",
+"[logic/values] cts.bot.role: No CTS bot role: bots are not routed to their next-expected race-checkpoint waypoint (with the raw-touch redirect for unreachable checkpoints), so bots do not actually run the CTS course.",
+"[logic] cts.records.getrecords: No GetRecords/getrankings console reply: CommandReplies.GetRankings still returns the honest-empty 'No records are available for the map: <map>' (CommandReplies.cs:143-147) rather than reading the RaceRecords CTS table. The data exists (the scoreboard already "
+]
+},
+{
+"unit": "freezetag",
+"notes": [
+"[values] freezetag.mode.registration: Match limit semantics differ: Base reads mapinfo pointlimit (10) / leadlimit (6) via g_freezetag_point_limit=-1 passthrough; port keys off fraglimit/leadlimit. Live default round target (10) coincidentally matches, leadlimit 6 likely not honored.",
+"[values] freezetag.unfreeze: Does not set pauseregen_finished after revive (minor regen-timing divergence) \u2014 still open.; Does not delete an ice entity (not spawned in the first place); the waypoint sprite IS now cleared (it stops being collected once IsFrozen flips false).",
+"[values] freezetag.revive.score: No nade revival bonus (g_nades_bonus_score_low) on a completed revive \u2014 minor, requires the nades mutator.",
+"[logic/values/timing] freezetag.revive.auto_reducible: Shooting a frozen enemy still does nothing to their thaw timer; the core 'avoid damaging frozen enemies' tactic is absent. No FT DamageCalculate handler exists, and no revive_auto_reducible reference in src/game.",
+"[logic/values] freezetag.damage.frozen_invuln: Frozen players (HP=1) are STILL NOT made damage-immune; chip damage re-kills the frozen body. DamageSystem only special-cases frozen for teamplay-nullify bypass (IsFrozenStat ~177) and pain-sound suppression (~471) \u2014 the subtract path (~466) applies health dam",
+"[logic/values] freezetag.damage.softkill_void: No soft-kill relocate path (g_frozen_damage_trigger) \u2014 the NEEDKILL soft-kill (restore HP=1+armor, relocate, no weapon reset) in PlayerDies is absent.; No fall-damage revive (g_frozen_revive_falldamage).; Nade self-revive is only a damage-suppression stub: Nad",
+"[values] freezetag.round.flow: No round-timelimit-expiry tie path (Base CENTER/INFO_ROUND_OVER \u2192 thaw all + tie) \u2014 when the round timer elapses with both teams still alive, the FT CheckWinner does not resolve a tie/round-over; the live RoundHandler's own timeout handling drives reset but th",
+"[values] freezetag.win.roundlimit: Lead-limit default (Base 6 via mapinfo) likely not honored (port reads leadlimit cvar, default 0 = off).",
+"[logic/values] freezetag.presentation.ice_model: No distinct ice block entity (random 1-of-20 frame, team-colored, following the player at origin-16) \u2014 frozen players only get an icy-blue colormod on their normal model.",
+"[logic/values/timing] freezetag.bots: Bots have no FT-specific freeing/offense behavior; they won't deliberately revive frozen teammates, and frozen-target attack gating (Bot_ForbidAttack) is not modeled in FT."
+]
+},
+{
+"unit": "assault",
+"notes": [
+"[values] assault.win.defender_timelimit: STILL OPEN (values only): the default timelimit of 20 minutes (QC mapinfo default args 'timelimit=20') is not represented in the port's Assault mapinfo defaults; DriveFrame reads the live 'timelimit' cvar, so if timelimit=0 the defender-timelimit win can't fir",
+"[logic] assault.spawns.attacker_defender: STILL OPEN: spawns are stamped with a FIXED team (red=attacker/blue=defender) at map-load and retagged to info_player_deathmatch. The round-2 role swap is now live (StartSecondRound flips AttackerTeam), but the SPAWN POINTS themselves are never re-teamed (QC a",
+"[logic/values/timing] assault.objective.waypoint_sprite: STILL MISSING: attackers have no on-screen objective marker, no health/progress bar, and no radar icon for the active objective; QC drives all of this via the objective's waypoint sprite, updated on activation and on each decrease (WaypointSprite_UpdateHealth)",
+"[timing] assault.mapobject.assault_wall: Timing: QC re-evaluates each func_assault_wall on a 0.2s nextthink; the port re-evaluates every tick (DriveWalls is called from the live per-frame DriveFrame) but only re-stamps the edict on a state transition. Functionally equivalent (the visible/solid toggle",
+"[logic] assault.turret.roundstart_teamswap: STILL MISSING: turrets are never team-swapped/respawned at roundstart and unteamed turrets are not seeded to the attacker team. Now that the round-2 swap is LIVE, this is no longer moot \u2014 round-2 turrets keep their round-1 teams (so a turret that defended for ",
+"[logic/values/timing] assault.bot.objective_role: Port collapses offense+defense into one RoleAssault that heads for the NEAREST func_assault_destructible (attacker push / defender hold), without the QC active-objective filter, PVS-best-waypoint pick, 120s role timeout, or havocbot_attack_time commitment; rat",
+"[logic/values] assault.spawns.objective_evalfunc: STILL UNIMPLEMENTED: QC target_objective sets .spawn_evalfunc so a target_objective whose health is inactive (>=ASSAULT_VALUE_INACTIVE) or destroyed (<0) returns '-1 0 0', deprioritizing spawn spots that target it. SpawnSystem.cs:52 still documents the assault",
+"[logic/values] assault.objective.destructible_heal: STILL MISSING: QC func_assault_destructible installs event_heal = destructible_heal so a partially-shot wall can be healed back up to max_health and its waypoint sprite re-updated. The port's destructible has no heal path (the GtEventDamage callback only decre",
+"[logic/values] assault.config.warmup_incompatible: STILL MISSING: QC (as, ReadLevelCvars) forces warmup_stage = 0 and sv_ready_restart_after_countdown = 0 because Assault is incompatible with warmup. The port's Assault does not special-case the warmup flow. ReadyRestart_Deny (the round-2 gate; QC returns true "
+]
+},
+{
+"unit": "keyhunt",
+"notes": [
+"[values] keyhunt.controller.round_loop: delay_tracking (radar/waypoint reveal countdown) is still unimplemented; the KEYHUNT_SCAN 'Scanning frequency range...' center-print IS sent once at round start (CenterAll('KEYHUNT_SCAN')), but the timed tracking-device reveal it gates is moot (no waypoints).;",
+"[logic/values/timing] keyhunt.key.carried_orbit: STILL OPEN: a carried key sits at a fixed (0,0,20) offset on the carrier (all three call sites \u2014 AssignKey:322 / AssignKeyNoScore:606 / CollectKey:631 \u2014 pass new Vector3(0,0,20) to AttachToCarrier); it does NOT circle the carrier at radius 24 per kh_Key_Think.",
+"[logic] keyhunt.capture.scoring: STILL OPEN: Base kh_Scores_Event credits the SCORE via GameRules_scoring_add_team_float2int(player, SCORE, f, ..., team:1) which credits BOTH the key carrier's individual SP_SCORE (scoreboard rank) AND the team ST_SCORE; the port's WinnerTeam adds only the tea",
+"[logic/values] keyhunt.loss.loser_team_push_destroy: DESTROY DISTRIBUTION SIMPLIFIED: Base splits score_destroyed via DistributeEvenly across the other teams AND credits each non-loser key-holder a 'destroyed_holdingkey' chunk (score_destroyed_ownfactor); the port adds a flat (score_destroyed/otherTeams) integer",
+"[timing] keyhunt.drop.on_death: STILL OPEN (liveness): only the PlayerDies path (OnDeath -> DropAllKeys) is wired. The MakePlayerObserver / ClientDisconnect / DropSpecialItems hooks (all kh_Key_DropAll in Base) have no port analogue calling DropAllKeys -> a player who observes/disconnects/ha",
+"[logic/values] keyhunt.combat.carrier_damage_force: STILL OPEN: no carrier/noncarrier damage+force scaling hook (Base Damage_Calculate 9-way carrier/target matrix). Stock defaults are all '1 1 1' so observationally a no-op AT defaults, but any server tuning these has no effect. (Keepaway/TeamKeepaway have their",
+"[logic/values/timing] keyhunt.unreachable.damage_destroy: STILL OPEN: a dropped key in lava/slime/trigger_hurt is not destroyed/returned: no event_damage handler (kh_Key_Damage), no damagedbytriggers/damagedbycontents flags, no ITEM_DAMAGE_NEEDKILL fast-return path. SpawnKey sets TakeDamage=Yes but wires no damage th",
+"[logic/values] keyhunt.waypoints.sprites: STILL OPEN: no WP_KeyDropped sprite over loose keys and no WP_KeyCarrier{Red,Blue,Yellow,Pink}/Friend/Finish sprite over carriers; the radar/over-head waypoints and the 'Run here'(Finish) <-> 'Key Carrier'(Friend) flip on the all-owned transition are absent.; ",
+"[logic/values] keyhunt.bot.role: STILL PARTIAL (logic): the four QC roles (carrier/defense/offense/freelancer with role timeouts + kh_Key_AllOwnedByWhichTeam-driven ratingscale switching + HavocBot_ChooseRole random role pick) are collapsed into a single freelancer-style rating. The collapsed"
+]
+},
+{
+"unit": "ctf",
+"notes": [
+"[values] ctf.flag.pickup: Fallback dropped early/late + pickup_base constants are 0 (Base samual defaults 1/30/12) \u2014 wrong only if the cfg is not loaded; the interpolation math itself (floor(early*frac + late*(1-frac) + 0.5) over remaining auto-return time) is ported.; No nade pickup b",
+"[values] ctf.flag.capture: Capture-time record (ServerProgsDB) + g_ctf_leaderboard + fastest-cap broadcast notifications not ported.; No capture effect (flag.capeffect) spawned.; Per-flag score_capture override + cnt-group guard not modeled (own flag home requirement IS faithful).; Fall",
+"[logic/values] ctf.flag.return: Dropper penalty + dropper re-take shield (next_take_time on the dropper) not applied on return; no nade return bonus; monster-return notification (CTF_RETURN_MONSTER_<team>) not selected.; Damage/needkill/dropped-radius/speedrun return reasons not distinguishe",
+"[values] ctf.flag.drop_on_death: Drop penalty fallback 0 vs Base samual 1 (cfg overrides); takedamage-return arming (ctf_flagdamaged) not modeled.",
+"[logic/values] ctf.flag.fckill_score: Flagcarrier damage/force multipliers (Damage_Calculate hook) not ported \u2014 carriers take/deal default damage (all factors are 1 in Base so default damage parity is unaffected).; Auto-helpme ping on a low-health carrier not ported.",
+"[logic/values] ctf.flag.think_dropped: Dropped-flag auto-capture when it lands within g_ctf_dropped_capture_radius of a base is not implemented.; Float-in-water buoyancy and return-when-near-base-dropped radius not implemented.; Flag-damage / return-when-unreachable (lava/slime/needkill) health ble",
+"[logic/values] ctf.capture_shield: Default fallback ratio is 0.3 (Base default 0 = disabled) and force 7000 (Base 100) \u2014 wrong only if the cfg is not loaded; with the cfg, ratio 0 makes the shield inert exactly like Base.; Shield uses net SCORE (ScoreFrags) instead of QC's (CAPS-PICKUPS+RETURNS",
+"[logic/values] ctf.hud.waypoints: Only base/dropped/carrier-enemy sprites are emitted; no help-me sprite, no dedicated flag-return sprite, no enemy-FC-on-pickup reveal (g_ctf_flagcarrier_waypointforenemy_spotting), no stalemate enemy-FC reveal."
+]
+},
+{
+"unit": "lms",
+"notes": [
+"[logic/values] lms.win.last_standing: Reduced core only: no warmup/game_starttime guard (Base returns WINNING_NO during warmup), no top-two-equal tie-cancel (Base WinningConditionHelper \u21d2 WINNING_NEVER), no forfeit-win path (totalplayed + game_starttime + g_lms_forfeit_min_match_time, Base sv_lms.",
+"[logic/values] lms.respawn.continuous: LMS STILL calls EnableRounds() with the DEFAULT CA-style predicates (DefaultCanRoundStart/DefaultCanRoundEnd) at GameWorld.cs:1860, making it round-based: DeadPlayerThink early-returns when `Rounds is { IsRoundStarted: true }` (GameWorld.cs:2261) BEFORE reachi",
+"[logic/values] lms.lives.starting_count: Base derives lives from the per-map mapinfo string `lives=N` (default 5) with `m_legacydefaults \"9 20 0\"` selecting legacy=9; the port hard-codes DefaultLives=5 and reads a NON-EXISTENT cvar `g_lms_lives` as its 'primary' source. Net: the default still lands o",
+"[logic] lms.leader.glow: Leaders do not glow; no EF_ADDITIVE|EF_FULLBRIGHT (or equivalent) is applied to a leading player's model. Base keys this off the leader's attached waypoint sprite, which the port also lacks. UNCHANGED.",
+"[logic] lms.leader.waypoint: The periodic show-for-5s / hide-for-25s + random*10s jitter VISIBILITY-WINDOW TIMER is ported + live (DriveLeaderVisibility, LastManStanding.cs:629, driven from GameWorld.cs:2193) and the wp_time/interval/jitter constants all match Base (5/25/10, sv_lms.qc:17-",
+"[logic] lms.hud.mod_icon: ModIconsPanel still has no Lms mode (ModIconsMode enum / switch \u2014 grep -i lms returns nothing). Absent: the leader-count icon (player_neutral + count), the flag_stalemate overlay when visible, and the yellow/orange(diff==3)/red(diff>=4) '+N' lives-diff readout",
+"[logic] lms.rules.no_throw_and_spec_lockout: No ClientCommand_Spectate lockout: a ranked/out-of-game player can still `spectate` (Base returns MUT_SPECCMD_RETURN to forbid it, keyed on frags==FRAGS_SPECTATOR||FRAGS_PLAYER_OUT_OF_GAME). The port never sets a Player OUT_OF_GAME frags sentinel (verified: no",
+"[logic] lms.reset.map_players: Base reset_map_players (sv_lms.qc:224-243) restores FRAGS_PLAYER_OUT_OF_GAME->FRAGS_PLAYER, zeroes LMS_RANK+LMS_LIVES, clears lms_leader + waypoint, and re-PutClientInServer; reset_map_global resets lms_lowest_lives=999. The port has no LMS-specific map/round "
+]
+},
+{
+"unit": "nexball",
+"notes": [
+"[values] nexball.init.initialize: radar_showenemies (g_nexball_radar_showallplayers) is not wired.; Activate seeds exactly 2 teams unconditionally (SeedTeams 2) instead of deriving present teams from the goal entities (nb_spawnteams / teamplay_bitmask).; GoalLeadLimit honors the cvar when >0 b",
+"[values] nexball.goal.limit_win: Lead-limit honors the cvar (>0) but not the cvar=-1 -> mapinfo-leadlimit semantics; with the default it is effectively disabled, matching the common case.",
+"[values] nexball.ball.spawn: Model path + trail color are configured but scale 1.3, EF_LOWPRECISION, glow_trail rendering, and the playerclip content mask are not applied (glow/trail/model render are client-deferred).; relocate_nexball (tracebox + move_out_of_solid) is not performed; the ",
+"[logic] nexball.ball.giveball: No weapon-arena swap to WEPSET(NEXBALL) / W_SwitchWeapon(WEP_NEXBALL) on pickup (the BallStealer weapon does not exist \u2014 see nexball.weapon.ballstealer).; No carrier waypoint sprite; the carrier glow effect bit is cleared on the ball but not rendered on the ca",
+"[logic/values/timing] nexball.carry.perframe: No PlayerPreThink analogue: the carried ball just rides the carrier origin (AttachToCarrier), with no per-frame view-ball positioning in front of the carrier (view_ofs + viewmodel_offset).; No carrier speed multiplier (highspeed 0.8) \u2014 the ballcarrier is not s",
+"[logic/values/timing] nexball.weapon.ballstealer: WEP_NEXBALL / BallStealer weapon does not exist; there is no way to SHOOT or pass the carried ball.; No primary launch, no secondary tackle projectile, no ball-steal, no homing safe-pass.; No weapon-arena handler, so Nexball is not enforced as a weapon-arena m",
+"[logic/values/timing] nexball.weapon.power_meter: No NB_METERSTART charge state; launch power can't be modulated (no minpower..maxpower triangle wave) because there is no launch weapon.; No HUD power-meter progress bar.",
+"[logic/values/timing] nexball.hud.modicon: ModIconsPanel has no nexball drawer: no 'carrying' icon and no charge-meter progress bar.; No event-chase (third-person) cam when not carrying; accuracy/item-stats panels not hidden for nexball."
+]
+},
+{
+"unit": "keepaway",
+"notes": [
+"[logic] keepaway.ball.respawn: The relocate MOVES the ball \u2014 BallEntity.Relocate calls RandomMapLocation (a random spawnpoint, falling back to a jitter around home) + the '0 0 200' kick + re-arms NextThink; the loose-ball think (RespawnThink) is live via SpawnForGametype.; SND_KA_RESPAWN pl",
+"[values] keepaway.ball.pickup: Pickup is reachable \u2014 the live engine trigger-touch pass (TriggerTouch.cs:42-46 dispatches Solid.Trigger entities' Touch=BallTouchEntity) fires BallTouchEntity, which calls PickUp; AttachToCarrier makes the ball SOLID_NOT + MOVETYPE_NONE + sets GtCarrier.; SND",
+"[logic] keepaway.ball.drop: The drop velocity includes the crandom xy scatter (DropOffsetVelocity == Base '0 0 200' + '0 100 0'*crandom + '100 0 0'*crandom; Prandom.Signed == crandom); the 0.5s previous_owner/wait self-recapture lockout is armed (GtNextTakeTime + Owner=carrier).; SND_KA_",
+"[values] keepaway.win.pointlimit: STILL OPEN (values): the port reads g_keepaway_point_limit and returns it directly; Base cfg default is -1 (use mapinfo's 30 \u2014 gametypes-server.cfg:436). When the cfg is loaded the port reads -1 and (since the `limit > 0f` guard disables the check for limit<=0",
+"[logic/values/timing] keepaway.carrier.highspeed: STILL OPEN: no PlayerPhysics hook applies a carrier highspeed multiplier; the only 'ballcarrier_highspeed' references in the codebase are comment-only deferral notes in Keepaway.cs:51 and TeamKeepaway.cs. Explicitly deferred.; Default is 1 (no effect) so the v",
+"[logic/values] keepaway.waypoints.tracking: PARTIAL PROGRESS: the waypoint sprite TYPES are registered in the catalog (Waypoints.cs:137-138 KaBall, KaBallCarrier with radar icons), so the data definitions exist.; STILL OPEN: NOTHING spawns/attaches a KaBall waypoint on the loose ball (ka_RespawnBall Way",
+"[logic] keepaway.bot.role: FIXED (was the worst gap): RoleKeepaway is live (set on the brain at bot creation \u2014 BotPopulation.cs:414 / BotController.cs:101 via BotRoles.ChooseRole; 'ka'/'keepaway'/'tka' \u2192 RoleKeepaway, BotRoles.cs:99) and now ACTUALLY engages the ball. FindBall() queries"
+]
+},
+{
+"unit": "onslaught",
+"notes": [
+"[values] onslaught.cp.icon_think_regen: STILL OPEN (UNCHANGED by Wave-5): hardcoded cp_regen fallback DefCpRegen = 10f (OnslaughtControlPoint.cs:53) vs Base g_onslaught_cp_regen 20 (gametypes-server.cfg:581). Live-correct only because the shipped cfg sets the cvar to 20; a bare-default / missing-cfg",
+"[logic/values/timing] onslaught.captureshield: No physical capture-shield entity around shielded generators/control points: an enemy player can walk into a shielded node with no push-back, no GENERATOR/CONTROLPOINT_SHIELDED center notification on contact, and no spinning additive shield model. (The damage-",
+"[logic/values/timing] onslaught.spawn.teleport_choose: No control-point-to-control-point teleport (use key / click-radar), no respawn-at-chosen-CP, no spawn_at_controlpoints / spawn_at_generator placement near owned nodes. Players spawn only via the generic team spawn system. The ons_spawn client command + clickra",
+"[logic/values/timing] onslaught.cp.proximity_decap: Proximity-decap (friendly-minus-enemy player count within 512 qu changes icon HP at 100 HP/s, destroying it at 0) is not implemented. Default OFF in Base, so low player impact, but a hosted server enabling it gets no effect.",
+"[logic/values/timing] onslaught.presentation.csqc: No generator/control-point/icon world models on the client; no progressive damage-model swaps; no icon bob/spin/punch-on-hit animation; no generator damage `frame`; no radar link lines; no objective death-cam (ENT_ONSCAMERA/WantEventchase) on round loss; no ge",
+"[logic/values/timing] onslaught.bot.roles: Port has a SINGLE simplified offense role (rate every non-own onslaught_generator at RatingGenerator + every non-own onslaught_controlpoint at RatingControlPoint, by classname only) plus items + roam. Base has three roles (offense/defense/assistant) with a 120"
+]
+},
+{
+"unit": "survival",
+"notes": [
+"[values] survival.gametype.registration: The registered defaults (timelimit=20 pointlimit=12) and m_isForcedSupported (LMS-map inheritance) are not modeled in the gametype class; map-support inheritance is unverified.",
+"[logic] survival.round.handler: Two separate round handlers still exist for Survival: surv.Handler (Common RoundHandler, ticked by surv.Tick) and GameWorld.Rounds (Server RoundHandler, spawned by EnableRounds() with the generic Default predicates). Only the world handler resets the map / gat",
+"[timing] survival.win.side_wipe: No end-delay (g_survival_round_enddelay > 0) deferral modeling: QC can defer the resolution by round_handler_SetEndDelayTime and re-check; the port resolves immediately on the first frame both sides aren't alive. Harmless in stock cfg (enddelay=0) but divergen",
+"[timing] survival.death.eliminate: QC sets RESPAWN_FORCE/RESPAWN_SILENT + respawn_time=time+2 and clears the bot queue (bot_clearqueue) on death; the port relies on the generic round respawn gate (RespawnDuePlayers skips while a round is live, GameWorld.cs:2261 respawnAllowed gated on !(Rounds.",
+"[values] survival.presentation.player_colors_and_notifications: Player-model/scoreboard green-prey/red-hunter colormap override (SURV_COLOR_PREY 51 / SURV_COLOR_HUNTER 68) is STILL NOT applied \u2014 own role at round end is not visually reflected on player models. This is the remaining presentation gap; notifications themselve",
+"[timing] survival.notify.last_survivor_alone: Only the PlayerDies call site is ported: NotifyLastForTeam (Survival.cs:367-384) is called from OnDeath (cs:310-311). The QC ClientDisconnect and MakePlayerObserver call sites of surv_LastPlayerForTeam_Notify are not wired (host-side disconnect/forced-observe "
+]
+},
+{
+"unit": "tka",
+"notes": [
+"[values] tka.ball.pickup: GiveBall is LIVE: BallTouchEntity is the ball's touch handler (registered in the live SpawnBall), so a player touching the loose ball becomes the carrier, with SND_KA_PICKEDUP, INFO/CENTER_KEEPAWAY_PICKUP[_SELF] notifications, the 0.5s self-recapture lockout, ",
+"[logic/values/timing] tka.carrier.highspeed: No PlayerPhysics hook applies a carrier highspeed multiplier (explicitly deferred in the class comment as needing a PlayerPhysics_UpdateStats seam).; Default 1 (no effect by default); absent feature with low stock impact.",
+"[logic/values/timing] tka.hud.modicon: ModIconsPanel still has no Keepaway/TeamKeepaway mode or DrawTeamKeepaway (grep for tka/ballstatus in ModIconsPanel.cs -> no hits); NetGame mode-select never sets it.; Server never produces STAT(TKA_BALLSTATUS) (PlayerPreThink bit-packing of carrying/dropped/p",
+"[logic/values] tka.waypoints.tracking: No WP_KaBall / per-team WP_TkaBallCarrier{Red,Blue,Yellow,Pink} sprites; no SPRITERULE_TEAMPLAY carrier colormod (colormapPaletteColor by team); no RADARICON_FLAGCARRIER.; No tracking-mode handling (g_tkaball_tracking), no spectator/invisibility visibility rul",
+"[values] tka.bot.role: FIXED this pass (dead->live): the classname mismatch is resolved \u2014 FindBall (BotObjectiveRoles.cs:292) now queries 'keepawayball', matching the live ball (BallEntity.cs:105). RoleKeepaway is dispatched for 'tka' (BotRoles.cs:99, fed from GameType.NetName='tka'"
+]
+},
+{
+"unit": "domination",
+"notes": [
+"[values] domination.controlpoint.spawn: Points start neutral via map e.Team (matches QC), but the QC '+0 0 20 then DropToFloor' placement is not reproduced \u2014 point may sit at the raw spawn origin.; No control-point entity model (head.mdl dom_unclaimed/dom_<team>.md3), no scale(0.6)/EF_LOWPRECISION/E",
+"[timing] domination.scoring.tick: QC dompointthink early-returns on `game_stopped || time<game_starttime`. The port wires the game_starttime half live (StartItem.GameStartTimeProvider -> GameWorld.GameStartTime, set at GameWorld.cs:550), but the game_stopped half reads Scoring.GameScores.GameS",
+"[values] domination.roundbased.win: Per-round CENTER/INFO_ROUND_* win/over notifications are not sent from Domination.cs (the host round handler may emit generic round notifs \u2014 unverified).; round_timelimit (120) and warmup (5) pass through the host round handler; the numeric parity of those hos",
+"[values] domination.hud.modicons_pps: WriteDominationPps computes pps from the GLOBAL dom.PointAmount/PointRate (cvar fallbacks 1 and 2) for EVERY point, whereas Base set_dom_state sums each point's own amt/rate (cvar fallback to per-point .frags=1 / .wait=5). With default config the port uses rat"
+]
+},
+{
+"unit": "invasion",
+"notes": [
+"[logic] invasion.win.hunt: Base derives the HUNT win from the live g_monsters list (no non-respawned monster remaining); the port checks its own Wave.MaxSpawned/Killed counters + LiveMonsters (Invasion.cs:460-465), so map-placed (pre-existing) monsters are not the win source.",
+"[logic/values] invasion.win.stage: STAGE ends on the FIRST player touch; Base requires ceil(realplayers * min(1,count)) distinct REAL players (default count=0.7 \u2192 70%, bots excluded) to have set inv_endreached before winning. TriggerRoundEnd sets RoundEndReached unconditionally and the touch vo",
+"[logic] invasion.win.point_limit: Base's limit is a per-score-row total via GameRules_limit_score (the leading player's KILLS); the port latches MatchEnded on the cumulative MonstersKilled total (sum across ALL players), which approximates but is not the same as Base's leading-player limit.",
+"[logic] invasion.client.hide_item_stats: The scoreboard item-stats (weapon accuracy) panel is not suppressed in Invasion; Base hides it because monsters aren't valid accuracy targets. Pairs with the unported AccuracyTargetValid hook (WeaponAccuracyEvents.cs notes no such chain exists). No DrawScorebo"
+]
+},
+{
+"unit": "clanarena",
+"notes": [
+"[logic] clanarena.hud.eliminated_greyout: IsEliminatedPlayer == IsDead only; QC ca_isEliminated also greys INGAME_JOINING late joiners and FRAGS_PLAYER_OUT_OF_GAME, which the port still lacks, so a late joiner waiting out the round isn't greyed until they die.",
+"[logic] clanarena.notify.round_outcome: 'You are now alone!' (CENTER_ALONE) is still NOT sent: NotifyLastPlayerForTeam (ClanArena.cs:542) has ZERO live callers (grep src/ shows only the definition; ca_LastPlayerForTeam_Notify not wired into the port's PlayerDies/disconnect path \u2014 Base calls it from ",
+"[logic/values/timing] clanarena.join.late_join_observer: While !allowed_to_spawn, QC forces a joining player to Observer (TRANSMUTE), sets INGAME_STATUS_JOINING, and sends INFO_CA_JOIN_LATE so they play from the next round. The port still has no INGAME_JOINING state and no allowed_to_spawn spawn gate, so mid-round j"
+]
+},
+{
+"unit": "duel",
+"notes": [
+"[values] duel.identity.registration: timelimit=10 / leadlimit=0 gametype-init defaults are not seeded per-gametype (timelimit handling is generic); pointlimit=0 is matched. UNCHANGED.",
+"[timing] duel.rules.match_end_latch: DriveGametypeFrame (GameWorld.cs:2137) still does not call Duel.RecomputeLeader each frame \u2014 only Deathmatch (:2145), Mayhem (:2156), TeamMayhem (:2157) and Tdm (:2158) get a per-frame FFA/team recompute; Duel falls through the switch with no case. Duel relies",
+"[logic/values] duel.mapsupport.gating: STILL OPEN. No port logic gates duel auto-support by map size (diameter<3250) or force-lists duel on DM maps. grep 3250 / m_isAlwaysSupported / m_isForcedSupported / g_duel_not_dm -> only doc-comments (Duel.cs:37); no implementation. Map-pool/menu concern: a t"
+]
+},
+{
+"unit": "tdm",
+"notes": [
+"[logic] tdm.rules.lead_limit: autocvar_leadlimit_and_fraglimit (require BOTH limits to finish) is NOT modeled in the actual WIN check: UpdateLeaderAndCheckLimit sets MatchEnded on EITHER the frag limit OR the lead limit independently (world.qc:1628-1633 picks fraglimit_reached && leadlimit",
+"[logic/values] tdm.rules.map_support: The mapinfo/map-pool support gating that decides which maps auto-offer TDM is not ported: m_isAlwaysSupported (auto-offer on maps with >=8 spawnpoints AND diameter>3250) and m_isForcedSupported (g_tdm_on_dm_maps makes DM maps support TDM too) have no port equi",
+"[logic/values] tdm.rules.map_team_config: Custom per-map team declarations are not ported: spawnfunc_tdm_team (map-defined team netname + scoreboard color cnt, team=cnt+1) is ignored, and the mapinfo `teams=` override path (m_parse_mapinfo / m_setTeams writing g_tdm_teams) is not implemented. The port"
+]
+},
+{
+"unit": "deathmatch",
+"notes": [
+"[logic/values] deathmatch.scoring.teamkill_punishing: DM is FFA so this never fires in practice; the escalating teamkill penalty is unmodeled, but unreachable in deathmatch (relevant only to team modes)."
+]
+},
+{
+"unit": "mayhem",
+"notes": [
+"[values] mayhem.identity.registration: timelimit=15 gametype_init default is STILL not applied on select. Wave-2 added the const Mayhem.DefaultTimeLimitMinutes=15f and a comment saying the host applies it, but GameWorld's ActivateGameType case Mayhem only calls m.Activate() and never seeds the time"
+]
+},
+{
+"unit": "tmayhem",
+"notes": [
+"[values] tmayhem.identity.registration: timelimit=20 gametype_init default is NOT reset per-select for a non-20 leftover. NEW since baseline: Wave-2 added a live SeedTimeLimit(20) in TeamMayhem.OnInit (TeamMayhem.cs:93, called at GameWorld.cs:495 before ActivateGameType), so the scaffolding is no lo"
+]
+}
+]

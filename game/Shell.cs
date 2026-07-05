@@ -141,7 +141,7 @@ public partial class Shell : Node
         _menu.DisconnectRequested += ReturnToMainMenu;
         _menuLayer.AddChild(_menu); // MenuRoot._Ready shows the main menu
 
-        Input.MouseMode = Input.MouseModeEnum.Visible;
+        MouseCapture.SetWantCapture(false); // at the menu the cursor is free
 
         // Optional: boot straight into a match (smoke test / dev), bypassing the menu.
         if (!string.IsNullOrWhiteSpace(ConnectAddress))
@@ -284,6 +284,27 @@ public partial class Shell : Node
         MultiplayerScreen.Browser.ConnectRequested -= OnConnect;
     }
 
+    /// <summary>
+    /// Release the OS mouse grab whenever Xonotic isn't the focused application, and restore the gameplay grab
+    /// when it regains focus. Without this, a match started (or left running) while the window is unfocused —
+    /// a scripted/background <c>--host</c> launch, or a match that ends while alt-tabbed away — would still
+    /// confine the cursor to the window's screen rectangle: the Win32 <c>ClipCursor</c> that
+    /// <see cref="Input.MouseModeEnum.Captured"/> sets is system-wide and persists until focus next changes,
+    /// trapping the pointer in other apps. <see cref="MouseCapture"/> ANDs the game's desired capture with this
+    /// focus state. Godot propagates the application-focus notifications to every node, so the shell (always in
+    /// the tree) is a reliable single listener.
+    /// </summary>
+    public override void _Notification(int what)
+    {
+        // Handle both the window-level (WM_WINDOW_FOCUS) and whole-app (APPLICATION_FOCUS) edges: Godot
+        // delivers both to every node, and SetFocused → Apply is idempotent, so catching either keeps us
+        // correct regardless of which a given platform emits.
+        if (what == NotificationWMWindowFocusOut || what == NotificationApplicationFocusOut)
+            MouseCapture.SetFocused(false);
+        else if (what == NotificationWMWindowFocusIn || what == NotificationApplicationFocusIn)
+            MouseCapture.SetFocused(true);
+    }
+
     // -------------------------------------------------------------------------------------------------
     //  Escape — toggle the in-game menu (only while a match is running)
     // -------------------------------------------------------------------------------------------------
@@ -386,7 +407,7 @@ public partial class Shell : Node
         _menu.Visible = false;
         _paused = false;
         GetTree().Paused = false;
-        Input.MouseMode = Input.MouseModeEnum.Visible;
+        MouseCapture.SetWantCapture(false);
     }
 
     /// <summary>Open the in-game menu: show the pause screen over the frozen match and free the mouse.</summary>
@@ -396,7 +417,7 @@ public partial class Shell : Node
         _menu.Visible = true;
         _paused = true;
         GetTree().Paused = true;
-        Input.MouseMode = Input.MouseModeEnum.Visible;
+        MouseCapture.SetWantCapture(false);
     }
 
     /// <summary>Resume the match: hide the menu, recapture the mouse, unfreeze the tree.</summary>
@@ -407,7 +428,7 @@ public partial class Shell : Node
         _menu.Visible = false;
         _paused = false;
         GetTree().Paused = false;
-        Input.MouseMode = Input.MouseModeEnum.Captured;
+        MouseCapture.SetWantCapture(true);
     }
 
     /// <summary>True while a networked match (<see cref="XonoticGodot.Game.Net.NetGame"/> — listen server or
@@ -429,7 +450,7 @@ public partial class Shell : Node
         _menu.Visible = true;
         _paused = false;
         GetTree().Paused = false;
-        Input.MouseMode = Input.MouseModeEnum.Visible;
+        MouseCapture.SetWantCapture(false);
     }
 
     private void TeardownGame()
@@ -589,7 +610,7 @@ public partial class Shell : Node
         _menu.Visible = false;
         _paused = false;
         GetTree().Paused = false;
-        Input.MouseMode = Input.MouseModeEnum.Captured;
+        MouseCapture.SetWantCapture(true);
     }
 
     // -------------------------------------------------------------------------------------------------

@@ -68,6 +68,13 @@ public sealed class PlayerStats
     /// </summary>
     public Action<Player, Action<string, double>>? AnticheatReporter { get; set; }
 
+    /// <summary>
+    /// QC the damage-weighted handicap averages for the report (common/playerstats.qc:264-265): yields the
+    /// already-divided <c>handicapgiven</c> / <c>handicaptaken</c> values (<c>given&lt;=0 ? 1 : avg_given_sum/given</c>).
+    /// Host-wired to <see cref="Scores"/>; default null → events stay 0 (suppressed by the != 0 report filter).
+    /// </summary>
+    public Func<Player, (float given, float taken)>? HandicapReportProvider { get; set; }
+
     /// <summary>The per-player scoreboard rank/position + score columns at finalize. Host-wired to <see cref="Scores"/>.</summary>
     public Func<Player, int>? ScoreboardPosProvider { get; set; }
     public Func<Player, int>? RankProvider { get; set; }
@@ -112,6 +119,13 @@ public sealed class PlayerStats
         foreach (string a in new[] { "kill-spree-3", "kill-spree-5", "kill-spree-10", "kill-spree-15",
                      "kill-spree-20", "kill-spree-25", "kill-spree-30", "botlike", "firstblood", "firstvictim" })
             AddEvent("achievement-" + a);
+
+        // QC anticheat_register_to_playerstats() (playerstats.qc:339): pre-register the anticheat event slots
+        // (anticheat-_time + one per detector) so the per-player anticheat feed at FinalizePlayer lands in the
+        // game report. Base's PlayerStats_GameReport_Event DROPS unregistered events, so registration is the
+        // register-then-emit contract; the port's AddEvent already dedupes/orders, and ReportToPlayerStats emits
+        // these exact ids.
+        AntiCheat.RegisterPlayerStats(AddEvent);
     }
 
     /// <summary>QC <c>PlayerStats_GameReport_Reset_All</c>: close + re-init the DB (on match restart).</summary>
@@ -196,6 +210,21 @@ public sealed class PlayerStats
     /// <summary>QC the alivetime start stamp (PutPlayerInServer): begin counting this player's alive time.</summary>
     public void BeginAlivetime(Player p, float now) { if (Enabled) _alivetimeStart[p] = now; }
 
+    /// <summary>
+    /// QC <c>PlayerFrame</c> alivetime AFK-gate (server/client.qc:2858):
+    /// <code>if (this.alivetime_start &amp;&amp; time - CS(this).parm_idlesince &gt;= 30) this.alivetime_start += frametime;</code>
+    /// In QC <c>alivetime_start</c> is a running ACCUMULATOR (frametime is added when idle); the port tracks a
+    /// start TIMESTAMP instead. The same effect — idle time is excluded from the reported alivetime — is achieved by
+    /// advancing the start stamp forward by <paramref name="frameTime"/> whenever the player has been idle for at
+    /// least 30 seconds. Call once per server frame per live, spawned player.
+    /// </summary>
+    public void AdvanceAliveStart(Player p, float frameTime)
+    {
+        if (!Enabled) return;
+        if (_alivetimeStart.TryGetValue(p, out float start) && start > 0f)
+            _alivetimeStart[p] = start + frameTime;
+    }
+
     /// <summary>QC the alivetime flush (on observe/death/finalize): add elapsed alive time + clear the stamp.</summary>
     public void FlushAlivetime(Player p, float now)
     {
@@ -230,6 +259,15 @@ public sealed class PlayerStats
 
         if (GetPlayer(p, Alivetime) > 0f)
             EventPlayer(p, Joins, 1);
+
+        // QC common/playerstats.qc:264-265: the damage-weighted handicap averages (already divided by the
+        // total DMG/DMGTAKEN by the provider; 1 when no damage was dealt/taken).
+        if (HandicapReportProvider is not null)
+        {
+            var (hGiven, hTaken) = HandicapReportProvider(p);
+            EventPlayer(p, "handicapgiven", hGiven);
+            EventPlayer(p, "handicaptaken", hTaken);
+        }
 
         if (AccuracyProvider is not null)
             foreach (var (eventId, value) in AccuracyProvider(p))

@@ -14,6 +14,11 @@ public enum MoveType
     Bounce = 10,
     BounceMissile = 11,
     Follow = 12,
+    /// <summary>QC MOVETYPE_PHYSICS (dpextensions.qc:1707) — ODE-backed rigid-body physics. The port has no
+    /// physics-engine integrator, so the engine simulation falls through to its default (think-only) case, the
+    /// same as Base without ODE. Used by the sandbox "physics 2" object mode so the serialized movetype byte is
+    /// Base-identical (32).</summary>
+    Physics = 32,
     FlyWorldOnly = 33,
 }
 

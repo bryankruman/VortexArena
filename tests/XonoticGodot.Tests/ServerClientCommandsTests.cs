@@ -303,7 +303,7 @@ public class ServerClientCommandsTests
         Player p = NewCaller();
         CommandContext first = world.Commands.Execute("suggestmap dance", isServerConsole: false, caller: p);
         Assert.Contains("accepted", first.Output);
-        Assert.Contains("dance", world.Commands.MapSuggestions);
+        Assert.Contains(world.Commands.MapSuggestions, s => s.Map == "dance");
 
         CommandContext dup = world.Commands.Execute("suggestmap dance", isServerConsole: false, caller: p);
         Assert.Contains("already suggested", dup.Output);
@@ -344,7 +344,7 @@ public class ServerClientCommandsTests
         // a map that DOES exist is accepted (proving the gate is the existence check, not a blanket reject).
         CommandContext ok = world.Commands.Execute("suggestmap boil", isServerConsole: false, caller: NewCaller());
         Assert.Contains("Suggestion of boil accepted.", ok.Output);
-        Assert.Contains("boil", world.Commands.MapSuggestions);
+        Assert.Contains(world.Commands.MapSuggestions, s => s.Map == "boil");
     }
 
     // ============================================================================== reply commands

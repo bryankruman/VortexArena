@@ -73,7 +73,8 @@ public partial class ReticleOverlay : CanvasLayer
     /// <param name="spectating">Following another player (QC <c>spectatee_status</c>) — suppress.</param>
     /// <param name="chaseActive">A chase / third-person camera is active — suppress unless <c>cl_reticle_chase</c>.</param>
     public void UpdateReticle(Weapon? activeWeapon, bool buttonZoom, bool attack2Held,
-                              float zoomFraction, bool dead, bool spectating, bool chaseActive)
+                              float zoomFraction, bool dead, bool spectating, bool chaseActive,
+                              bool zoomScriptCaught = false)
     {
         if (_rect is null)
             return;
@@ -103,7 +104,7 @@ public partial class ReticleOverlay : CanvasLayer
             reticleType = 0; // no reticle while dead / spectating / chase-cam
         else if (wepZoomed && CvarF("cl_reticle_weapon", 1f) != 0f)
             reticleType = reticleImage is not null ? 2 : 0;
-        else if (buttonZoom)
+        else if (buttonZoom || zoomScriptCaught) // QC:681 — generic +zoom OR the low-fov zoomscript auto-zoom
             reticleType = 1;
         else
             reticleType = 0;
@@ -114,11 +115,11 @@ public partial class ReticleOverlay : CanvasLayer
             return;
         }
 
-        // QC:704 — f = max(0.25, current_zoomfraction) (zoomscript_caught isn't modelled, so always this branch):
-        // the reticle pops in at 25% the instant zoom begins and ramps to full as current_zoomfraction → 1. On
-        // release the live button flag (above) drops reticle_type to 0 immediately, so the scope snaps off while
-        // the fov eases out — exactly as in base.
-        float f = Mathf.Max(0.25f, zoomFraction);
+        // QC:704 — f = zoomscript_caught ? 1 : max(0.25, current_zoomfraction). With the low-fov zoomscript engaged
+        // the reticle is full-alpha; otherwise it pops in at 25% the instant zoom begins and ramps to full as
+        // current_zoomfraction → 1. On release the live button flag (above) drops reticle_type to 0 immediately, so
+        // the scope snaps off while the fov eases out — exactly as in base.
+        float f = zoomScriptCaught ? 1f : Mathf.Max(0.25f, zoomFraction);
         string image = reticleType == 2 ? reticleImage! : "gfx/reticle_normal";
         float alphaCvar = reticleType == 2
             ? CvarF("cl_reticle_weapon_alpha", 1f)

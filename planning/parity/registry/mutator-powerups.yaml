@@ -1,0 +1,465 @@
+unit: mutator-powerups
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 16
+  worst_gaps:
+    - "Strength/Shield glow renders primarily as a colored OmniLight3D rather than the exact EF_ADDITIVE|EF_FULLBRIGHT whole-body additive recolor (a documented CsqcModelEffects render gap) — the single largest residual gap in the unit."
+    - "Pickup/powerdown notifications fire the powerdown center-print on ANY falling edge (Base gates it on STATUSEFFECT_REMOVE_TIMEOUT only); stopsound(CH_TRIGGER_SINGLE) on removal still unported."
+    - "DRIFT 2026-06-28 (Wave 16/17 re-audit): the parity-port-waves Phase 1-4 commits did NOT touch the powerups port files (last touch was Wave 15, 5958904) — nothing newly closed, nothing regressed. Re-verified all 'live' claims against current code: LogDeath S/I chain (Scores.AppendItemcodes:634 -> MutatorActivation.LogDeathAppendItemCodes -> sink GameWorld.cs:924), m_botvalue consumer (BotRoles.cs:342), jetpack/fuelregen hookreplace dispatch (ItemSpawnFuncs.cs:299), WeaponRateFactor(actor)-only callers, strength-fire sound (WeaponFiring.cs:287/Shotgun.cs:356), stealth triple (MonsterAI.cs:824, BotBrain.cs:1100, ServerNet.WaypointVisible:1294) — all confirmed live. Two documented partials remain open: glow render fidelity + the notifications TIMEOUT-only gate/stopsound."
+    - "DRIFT 2026-06-27 (re-audit): the last big gap closed — the death-log item codes (LogDeath_AppendItemCodes, S/I) are now ported and LIVE (PowerupsMutator.LogDeathAppendItemCodes overrides MutatorBase, chained by MutatorActivation.LogDeathAppendItemCodes, folded into the :kill:...:items= line via Scores.AppendItemcodes/EmitLogDeath, sunk to GameLog.Echo gated on sv_eventlog at GameWorld.cs:852). obituary_mutator_strings logic+presentation partial->faithful, gap closed."
+    - "DRIFT 2026-06-27: two more gaps closed since 06-25 — m_botvalue is now set on the port pickups (11000 base / 3000 jetpack+fuelregen, PowerupItem.cs:37/196/250) and consumed live in BotRoles.cs:342 (defs_spawn_gate values:partial->faithful); and the jetpack/fuelregen m_spawnfunc_hookreplace -> ITEM_Fuel is now ported (PowerupItem.cs:221/263) and dispatched live (ItemSpawnFuncs.cs:299) (jetpack.start_item_hookreplace logic missing->faithful, liveness na->live)."
+    - "DRIFT 2026-06-25: Wave-8d closed three gaps wholesale — invisibility exterior-weapon alpha + vehicle guard (invisibility.alpha presentation faithful), radar CustomizeWaypoint stealth (invisibility.stealth logic+presentation faithful, via ServerNet.WaypointVisible), and the dropped-powerup WP_Item countdown waypoint + ItemTouched hook (drop.ondeath_onuse logic+presentation faithful). jetpack-fuel fallback also fixed to 8."
+features:
+  - id: powerups.strength.damage_force
+    name: "Strength: outgoing damage + force multiplier (self vs others)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/powerups/sv_powerups.qc:Damage_Calculate (30-48)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnDamageCalculate (191)"
+    constants:
+      - { name: "g_balance_powerup_strength_damage", base: "3", port: "3", match: true }
+      - { name: "g_balance_powerup_strength_force", base: "3", port: "3", match: true }
+      - { name: "g_balance_powerup_strength_selfdamage", base: "1.5", port: "1.5", match: true }
+      - { name: "g_balance_powerup_strength_selfforce", base: "1.5", port: "1.5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "DamageSystem fires MutatorHooks.DamageCalculate.Call on the live damage path; IsEnabled=Api.Services!=null (always-on, mirrors QC always-registered powerups mutator)", result: pass }
+      - { kind: value, ref: "balance-xonotic.cfg vs PowerupsMutator R() override at Hook(); re-verified 2026-06-25", result: pass }
+    confidence: high
+    notes: "Re-confirmed unchanged. Self-hit (target==attacker) uses the gentler self-multipliers; matches the QC branch exactly."
+
+  - id: powerups.shield.take_damage_force
+    name: "Shield (invincible): incoming damage + force reduction"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/powerups/sv_powerups.qc:Damage_Calculate (50-58)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnDamageCalculate (191)"
+    constants:
+      - { name: "g_balance_powerup_invincible_takedamage", base: "0.33", port: "0.33", match: true }
+      - { name: "g_balance_powerup_invincible_takeforce", base: "0.33", port: "0.33", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnDamageCalculate target-shield branch (line 212); force reduction skipped when target==attacker (matches QC targ != attacker)", result: pass }
+      - { kind: value, ref: "balance-xonotic.cfg; re-verified 2026-06-25", result: pass }
+    confidence: high
+    notes: "Re-confirmed unchanged. Checks the status effect on the TARGET (not attacker); force reduction skipped on self-hit, matching QC."
+
+  - id: powerups.speed.highspeed
+    name: "Speed: movement highspeed multiplier"
+    layer: [authority, shared]
+    base_refs:
+      - "common/mutators/mutator/powerups/sv_powerups.qc:PlayerPhysics_UpdateStats (179-186)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnPlayerPhysics (224)"
+    constants:
+      - { name: "g_balance_powerup_speed_highspeed", base: "1.5", port: "1.5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "PlayerPhysics hook fires; SpeedMultiplier composes (reset to 1 then ApplyHighSpeed)", result: pass }
+    confidence: high
+    notes: "Re-confirmed unchanged. Base v0.8.6 has NO regen consumer of STATUSEFFECT_Speed (only PlayerPhysics_UpdateStats + WeaponRateFactor consume it), so omitting a regen speed-up is faithful."
+
+  - id: powerups.speed.attack_rate
+    name: "Speed: weapon attack-rate (refire) multiplier"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/powerups/sv_powerups.qc:WeaponRateFactor (188-194)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnWeaponRateFactor (238)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:WeaponRateFactor(actor) (450-457)"
+    constants:
+      - { name: "g_balance_powerup_speed_attack_time_multiplier", base: "0.8", port: "0.8", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "FIXED since baseline: the 6 weapons that previously called the parameterless WeaponRateFactor() (Electro/Machinegun/OkHmg/OkMachinegun/Rifle/Shotgun) now ALL call the hooked WeaponRateFactor(actor) overload — re-grepped 2026-06-25 (Electro.cs:150,201; Machinegun.cs:155,179,275,326,334; OkHmg.cs:162; OkMachinegun.cs:148; Rifle.cs:220,270; Shotgun.cs:109). The only remaining parameterless WeaponRateFactor() caller is the internal base call inside the WeaponRateFactor(actor) overload itself (WeaponFireGate.cs:452). So every weapon now applies the Speed attack-rate hook.", result: pass }
+    confidence: high
+    notes: "FIXED since baseline (was timing:partial / liveness:partial). The per-weapon animtime/refire bypass — the unit's worst gap at baseline — is closed: all sped-up weapons now fire AND reload faster. The hooked path (WeaponFireGate.cs:118,296,452) is the single source of the rate factor everywhere. Affects the Speed buff symmetrically."
+
+  - id: powerups.invisibility.alpha
+    name: "Invisibility: player translucency while held"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/powerups/powerup/invisibility.qc:m_tick (33-43)"
+      - "common/mutators/mutator/powerups/powerup/invisibility.qc:m_remove (4-21)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnPlayerPreThink (380-386)"
+      - "game/net/ViewEntityRenderer.cs:ResolveExteriorWeaponAlpha (123-136), Update (101-110)"
+    constants:
+      - { name: "g_balance_powerup_invisibility_alpha", base: "0.15", port: "0.15", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "PlayerPreThink fires on the live client-move path; OnPlayerPreThink sets player.Alpha while active and restores to MutatorHooks.DefaultPlayerAlpha when Alpha==invisibilityAlpha", result: pass }
+      - { kind: code, ref: "DRIFT 2026-06-25 (Wave-8d): the if(!actor.vehicle) guard is now present on BOTH the apply and the restore (PowerupsMutator.cs:380 'if (player.Vehicle is null)'). The exterior weapon-entity alpha is now ported and LIVE — ViewEntityRenderer.ResolveExteriorWeaponAlpha (123-136) ports CL_ExteriorWeaponentity_Think's three-way rule (owner==default_player_alpha -> default_weapon_alpha; custom non-zero -> match owner; 0 -> opaque) and Update (101-110) applies it per-instance, so an invisibility-powerup fade routes through branch 2 and the held weapon fades with the body. Both prior gaps closed.", result: pass }
+    confidence: high
+    notes: "FIX since baseline (presentation partial->faithful): the two remaining presentation gaps (exterior weapon alpha + the vehicle guard) are both closed by Wave-8d. Restore-on-lapse is still guarded by Alpha==invisibilityAlpha (a player at 0.15 by other means would spuriously restore — benign edge case, not a Base divergence)."
+
+  - id: powerups.invisibility.stealth
+    name: "Invisibility: radar/monster/bot stealth"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/powerups/sv_powerups.qc:CustomizeWaypoint (61-72)"
+      - "common/mutators/mutator/powerups/sv_powerups.qc:MonsterValidTarget (74-78)"
+      - "common/mutators/mutator/powerups/sv_powerups.qc:Bot_ForbidAttack (204-210)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnBotForbidAttack (327), OnMonsterValidTarget (334)"
+      - "game/net/ServerNet.cs:WaypointVisible (1077-1096) — CustomizeWaypoint radar stealth"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnBotForbidAttack is subscribed (MutatorHooks.BotForbidAttack) and consulted live in BotBrain.ShouldAttack; OnMonsterValidTarget is subscribed (MutatorHooks.MonsterValidTarget) and consulted live in MonsterAI.ValidTarget. Both return StatusEffects_active(Invisibility,targ) — bit-faithful to QC.", result: pass }
+      - { kind: code, ref: "DRIFT 2026-06-25 (Wave-8d): CustomizeWaypoint radar stealth is now LIVE — ServerNet.WaypointVisible (ServerNet.cs:1077, called per-peer per-waypoint at the snapshot send at 1038-1039) hides an invisible carrier's waypoint from enemies: wp.Owner is a Player && isPlayer && carrier.Team != peer.Team && StatusEffectsCatalog.Has(carrier, invisibility) -> return false. Faithful to sv_powerups.qc:61-72 (IS_CLIENT(wp.owner) && e==player && DIFF_TEAM && Invisibility-active); the e==player guard maps to the isPlayer (non-spectator) gate. The stealth triple is now complete.", result: pass }
+    confidence: high
+    notes: "FIX since baseline (logic partial->faithful, presentation missing->faithful). All three stealth hooks are now LIVE+faithful: bots don't shoot, monsters don't acquire, and enemy radar no longer shows an invisible carrier (CustomizeWaypoint folded into ServerNet.WaypointVisible)."
+
+  - id: powerups.glow.effects
+    name: "Strength/Shield player glow (EF_BLUE / EF_RED + EF_ADDITIVE + EF_FULLBRIGHT)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/powerups/powerup/strength.qc:m_tick (28-33), m_remove (4-16)"
+      - "common/mutators/mutator/powerups/powerup/shield.qc:m_tick (28-33), m_remove (4-16)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnPlayerPreThink (350-351)"
+      - "game/net/ServerNet.cs (Effects networked) + game/net/ClientEntityView.cs (decode) + game/client/CsqcModelEffects.cs:119-120 (render)"
+    constants:
+      - { name: "EF_BLUE (strength)", base: "64", port: "64 (EfBlue, set on player.Effects)", match: true }
+      - { name: "EF_RED (shield)", base: "128", port: "128 (EfRed, set on player.Effects)", match: true }
+      - { name: "EF_ADDITIVE", base: "32", port: "32 (EffectFlags.Additive)", match: true }
+      - { name: "EF_FULLBRIGHT", base: "512", port: "512 (EffectFlags.FullBright)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Presentation fidelity: Base's EF_ADDITIVE|EF_FULLBRIGHT recolors the WHOLE model additively; the port renders the glow primarily as a blue/red OmniLight3D (EF_BLUE->blue light, EF_RED->red light, CsqcModelEffects.cs:119-120), and the EF_ADDITIVE/EF_FULLBRIGHT bits only affect per-instance-material meshes (shared/shader-material player models skip them — a documented CsqcModelEffects render gap)."
+    verification:
+      - { kind: code, ref: "OnPlayerPreThink ORs StrengthGlow=(EF_BLUE|Additive|FullBright)/ShieldGlow=(EF_RED|...) into player.Effects each frame (idempotent set/clear, lines 350-351); PlayerPreThink is live", result: pass }
+      - { kind: code, ref: "player.Effects networks via the Effects field -> CsqcModelEffects.Apply emits a blue light for EF_BLUE / red for EF_RED (CsqcModelEffects.cs:119-120)", result: pass }
+    confidence: high
+    notes: "Re-confirmed 2026-06-28 (Wave 16/17 re-audit) — UNCHANGED this wave. Strength glows BLUE (EF_BLUE), Shield glows RED (EF_RED) — matches Base; the live glow path is the networked Entity.Effects bits (set at PowerupsMutator.cs:407-408) decoded to a blue/red OmniLight3D in CsqcModelEffects.cs:119-120 (re-grepped: EF_BLUE->Color(.15,.15,1.5), EF_RED->Color(1.5,.15,.15), still light-only). Presentation remains partial: a light, NOT a whole-body EF_ADDITIVE|EF_FULLBRIGHT recolor — SetAdditive/SetFullbright (CsqcModelEffects.cs:118/122) only affect per-instance-material meshes; shared/shader-material player models skip them (a documented CsqcModelEffects render gap). NOT closed."
+
+  - id: powerups.strength.fire_sound
+    name: "Strength-fire sound (anti-spammed) on firing while Strength active"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/powerups/sv_powerups.qc:W_PlayStrengthSound (3-15)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnWPlayStrengthSound (270)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:275 (FireWPlayStrengthSound per bullet)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Shotgun.cs:277 (FireWPlayStrengthSound)"
+    constants:
+      - { name: "sv_strengthsound_antispam_time", base: "0.1", port: "0.1", match: true }
+      - { name: "sv_strengthsound_antispam_refire_threshold", base: "0.04", port: "0.04", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Per-player anti-spam stamps live in Dictionary<Entity,float> _prevStrengthSound/_prevStrengthSoundAttempt rather than entity fields; functionally equivalent but the maps are only cleared on Unhook (no per-entity eviction on disconnect — minor leak, not a behavior gap)."
+    verification:
+      - { kind: code, ref: "FIXED since baseline: W_PlayStrengthSound is now ported (OnWPlayStrengthSound) and subscribed via MutatorHooks.WPlayStrengthSound, fired per bullet from WeaponFiring.FireBullet (WeaponFiring.cs:244) — the port analog of QC fireBullet's W_PlayStrengthSound(ent) call. Anti-spam: plays if (now > prevSound+antispam_time) OR (now > prevAttempt+refire_threshold), then stamps both — bit-faithful to sv_powerups.qc:3-15. SND_STRENGTH_FIRE (weapons/strength_fire.wav) on CH_TRIGGER/TriggerAuto.", result: pass }
+    confidence: high
+    notes: "FIX since baseline (logic/values/timing/audio missing->faithful, liveness na->live). The strength-fire cue now plays, anti-spammed, on any weapon fired while Strength is held. The per-pellet shotgun calls collapse to one cue via the anti-spam, matching QC."
+
+  - id: powerups.notifications
+    name: "Pickup/powerdown notifications (center-print + broadcast)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/powerups/powerup/strength.qc:m_apply (17-27), m_remove (4-16)"
+      - "common/mutators/mutator/powerups/powerup/shield.qc:m_apply, m_remove"
+      - "common/mutators/mutator/powerups/powerup/speed.qc:m_apply, m_remove"
+      - "common/mutators/mutator/powerups/powerup/invisibility.qc:m_apply, m_remove"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnPlayerPreThink (353-367), NotifyEdge (438-450)"
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Powerdown center-print fires on ANY falling edge (timeout, death-drop, clear), but Base gates the m_remove CENTER on removal_type==STATUSEFFECT_REMOVE_TIMEOUT only (strength.qc:7) — so a powerup removed by other means would wrongly center-print POWERDOWN_X."
+      - "stopsound(actor, CH_TRIGGER_SINGLE) on any removal (kills the pickup sound, strength.qc:13) is still not ported."
+    verification:
+      - { kind: code, ref: "NotifyEdge: rising edge -> NotificationSystem.Info(POWERUP_X,netname) (when !g_cts) + Center(POWERUP_X); falling edge -> Center(POWERDOWN_X). PlayerPreThink live; Client+rising-edge gating mirrors QC !wasactive && IS_PLAYER && !g_cts.", result: pass }
+    confidence: high
+    notes: "Re-confirmed 2026-06-28 (Wave 16/17 re-audit) — UNCHANGED this wave. Edge tracked via _prevActive bitmap so re-pickup while still active does not re-notify (matches QC !wasactive). Two residual gaps still present (PowerupsMutator.cs:438-450 NotifyEdge): the powerdown center-print fires on ANY falling edge (Base gates the m_remove CENTER on removal_type==STATUSEFFECT_REMOVE_TIMEOUT only, strength.qc:7), and stopsound(actor, CH_TRIGGER_SINGLE) on removal (strength.qc:13) is not ported. logic stays partial; NOT closed."
+
+  - id: powerups.countdown_beep
+    name: "Powerdown countdown beep (play_countdown SND_POWEROFF)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/powerups/powerup/strength.qc:m_tick (30)"
+      - "common/mutators/mutator/powerups/powerup/shield.qc:m_tick (30)"
+      - "common/mutators/mutator/powerups/powerup/speed.qc:m_tick (29)"
+      - "common/mutators/mutator/powerups/powerup/invisibility.qc:m_tick (35)"
+      - "server/client.qc:play_countdown (1532-1538)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnPlayerPreThink (370-373), PlayCountdown (397)"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base gates play_countdown on IS_REAL_CLIENT (real humans); the port gates the PreThink on EntFlags.Client (incl. bots), so a bot near expiry triggers the server-side beep too. Negligible (sound to a bot is harmless)."
+    verification:
+      - { kind: code, ref: "PlayCountdown matches Base exactly: timeLeft<6 && floor(timeLeft-frametime)!=floor(timeLeft) -> Api.Sound.Play(player, Auto, misc/poweroff.wav). Called per active powerup each PreThink (live).", result: pass }
+    confidence: high
+    notes: "Re-confirmed unchanged. The last-6-seconds, once-per-second-crossed beep math is bit-faithful to server/client.qc:1532."
+
+  - id: powerups.item.apply_stack
+    name: "Powerup pickup -> status-effect apply + stacking (max vs add)"
+    layer: [authority]
+    base_refs:
+      - "server/items/items.qc:Item_GiveTo (powerup block 598-637)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ApplyPowerupTimers (254)"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ApplyTimer (268)"
+    constants:
+      - { name: "g_powerups_stack", base: "0", port: "0", match: true }
+      - { name: "g_balance_powerup_strength_time", base: "30", port: "30", match: true }
+      - { name: "g_balance_powerup_invincible_time", base: "30", port: "30", match: true }
+      - { name: "g_balance_powerup_speed_time", base: "30", port: "30", match: true }
+      - { name: "g_balance_powerup_invisibility_time", base: "30", port: "30", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "ItemGiveTo -> ApplyPowerupTimers; stack=add / nostack=max(existing,dur); equivalent to QC max(t, time+finished). ItemTouch expiring conversion subtracts time for continue-timer drops — faithful to items.qc:714-733.", result: pass }
+    confidence: high
+    notes: "Re-confirmed faithful. Superweapons always-add path also present (ApplySuperweaponTimer)."
+
+  - id: powerups.item.defs_spawn_gate
+    name: "Powerup item defs + spawn gating (MUTATORBLOCKED) + jetpack fuel"
+    layer: [authority, shared]
+    base_refs:
+      - "common/mutators/mutator/powerups/powerups.qh:CLASS(Powerup,Pickup)"
+      - "common/mutators/mutator/powerups/powerup/strength.qh:powerup_strength_init"
+      - "common/mutators/mutator/powerups/powerup/jetpack.qh:powerup_jetpack_init"
+      - "common/mutators/mutator/powerups/powerup/fuelregen.qh:powerup_fuelregen_init"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/PowerupItem.cs:PowerupPickup"
+      - "src/XonoticGodot.Common/Gameplay/Items/PowerupItem.cs:ApplyMutatorBlock"
+    constants:
+      - { name: "g_pickup_respawntime_powerup", base: "120", port: "120", match: true }
+      - { name: "g_pickup_fuel_jetpack", base: "100", port: "100", match: true }
+      - { name: "g_jetpack_fuel", base: "8", port: "CvarOr fallback 8", match: true }
+      - { name: "m_botvalue Powerup (strength/shield/speed/invis)", base: "11000", port: "11000 (ItemDef.BotValue, PowerupItem.cs:37)", match: true }
+      - { name: "m_botvalue jetpack/fuelregen", base: "3000", port: "3000 (PowerupItem.cs:196,250)", match: true }
+      - { name: "m_glow strength/shield/speed/invis", base: "true", port: "true", match: true }
+      - { name: "m_glow jetpack/fuelregen", base: "false", port: "false", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "ApplyMutatorBlock gates on g_powerups + g_powerups_<x>; RespawnTime 120; ItemDef.Glow per item.", result: pass }
+      - { kind: code, ref: "DRIFT 2026-06-25 (FIX): the g_jetpack_fuel CvarOr fallback is now 8 (PowerupItem.cs:205 'CvarOr(\"g_jetpack_fuel\", 8f)'), matching the Base default of 8 fuel/sec. Was 100 at baseline.", result: pass }
+      - { kind: code, ref: "DRIFT 2026-06-27 (FIX): m_botvalue is now SET on the port pickups — PowerupPickup base sets ItemDef.BotValue = 11000 (PowerupItem.cs:37, powerups.qh CLASS(Powerup) ATTRIB), JetpackItem/FuelRegenItem override to 3000 (PowerupItem.cs:196,250, jetpack.qh/fuelregen.qh). ItemDef.BotValue is a real field consumed LIVE in bot item-desirability — BotRoles.cs:342 reads item.Pickup.ItemDef.BotValue and normalizes against 11000 (re-verified 2026-06-27). Closes the last value gap.", result: pass }
+    confidence: high
+    notes: "FIX since baseline (values partial->faithful, gap closed): the m_botvalue gap is now closed — pickups carry 11000 (4 powerups) / 3000 (jetpack+fuelregen), consumed by the bot pickup evaluator. The g_jetpack_fuel fallback (8) was fixed at 06-25. Speed/Invisibility use buff.md3 placeholder skins (matches Base MDL_BUFF). ShieldItem netname 'invincible' matches QC. Row now fully faithful."
+
+  - id: powerups.drop.ondeath_onuse
+    name: "Drop powerup on death / on +use (with countdown waypoint)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/powerups/sv_powerups.qc:PlayerDies (149-161)"
+      - "common/mutators/mutator/powerups/sv_powerups.qc:PlayerUseKey (163-177)"
+      - "common/mutators/mutator/powerups/sv_powerups.qc:powerups_DropItem (93-140)"
+      - "common/mutators/mutator/powerups/sv_powerups.qc:ItemTouched (142-147)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:OnPlayerDies (459), OnPlayerUseKey (300), DropPowerup (481), OnItemTouched (341)"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:ItemTouch (349) expiring conversion + FireItemTouched (417)"
+    constants:
+      - { name: "g_powerups_drop_ondeath", base: "1", port: "1 (read at Hook())", match: true }
+      - { name: "g_powerups_drop", base: "0", port: "0 (read at Hook(); +use drop wired)", match: true }
+      - { name: "g_items_dropped_lifetime", base: "20", port: "20", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Frozen drop uses the freezeTimer closure flag as the timer-frozen marker rather than Base's RES_ARMOR=1 marker on the loose item (logically equivalent: the think skips the bar update for a frozen drop, matching QC's !GetResource(RES_ARMOR) gate)."
+      - "The dropped-powerup waypoint renders the generic 'Item' def (magenta) — it has no wp_extra-driven per-powerup icon (QC sets wp.wp_extra = itemdef.m_id). Minor cosmetic-only divergence."
+    verification:
+      - { kind: code, ref: "OnPlayerDies fires on the live death path (PlayerDies.Call); drops each of strength/shield/speed/invisibility via DropPowerup. OnPlayerUseKey is subscribed (MutatorHooks.PlayerUseKey) and the +use drop is live — fired at VehicleBoarding.cs:106; g_powerups_drop gates it, removing the first active powerup and consuming the press, matching sv_powerups.qc:163-177.", result: pass }
+      - { kind: code, ref: "DropPowerup matches sv_powerups.qc:93-140: timeleft<=1 skip, finished=freeze?timeLeft:absolute, lifetime=freeze?20:timeLeft, velocity=owner.vel+forward*750. Continue-timer drop: ItemIsExpiring=true + absolute finish; ItemTouch subtracts Now so ApplyTimer gets remaining duration — round-trip faithful.", result: pass }
+      - { kind: code, ref: "DRIFT 2026-06-25 (Wave-8d): the WP_Item countdown waypoint sprite is now ported and LIVE — DropPowerup (PowerupsMutator.cs:540-546) spawns a WaypointSprite on the dropped item with maxhealth=maxtime and a normalized timeleft bar, and the e.Think closure (554-584) ports powerups_DropItem_Think (updates the floored seconds-left bar each ~0.5s while the timer runs, kills it at 0, despawns at lifetime). The ItemTouched waypoint-kill-on-pickup hook is now ported (OnItemTouched :341) and LIVE — fired at ItemPickupRules.ItemTouch:417 (MutatorHooks.FireItemTouched), killing the sprite on pickup. Matches sv_powerups.qc:142-147.", result: pass }
+    confidence: high
+    notes: "FIX since baseline (logic partial->faithful, presentation missing->faithful). Both the dropped-powerup countdown waypoint sprite and the ItemTouched waypoint-kill hook are now ported+live; drop-on-death and the +use drop were already live. Residuals are cosmetic-only (generic waypoint icon, freeze-marker representation)."
+
+  - id: powerups.obituary_mutator_strings
+    name: "Death-log item codes (S/I) + server-browser mutator strings"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/powerups/sv_powerups.qc:LogDeath_AppendItemCodes (17-28)"
+      - "common/mutators/mutator/powerups/sv_powerups.qc:BuildMutatorsPrettyString (196-202)"
+      - "common/mutators/mutator/powerups/sv_powerups.qc:BuildMutatorsString (212-218)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:BuildMutatorsString (198), BuildMutatorsPrettyString (189), LogDeathAppendItemCodes (211)"
+      - "src/XonoticGodot.Server/Scores.cs:AppendItemcodes (619), EmitLogDeath (599)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:LogDeathAppendItemCodes (137)"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Server-browser strings (already fixed): PowerupsMutator overrides BuildMutatorsString (-> ':no_powerups'/':powerups') and BuildMutatorsPrettyString (-> ', No powerups'/', Powerups'), matching sv_powerups.qc:196-218; run live via the MutatorActivation.BuildMutatorsString/PrettyString chains. Re-verified 2026-06-27.", result: pass }
+      - { kind: code, ref: "DRIFT 2026-06-27 (FIX): LogDeath_AppendItemCodes is now ported and LIVE. PowerupsMutator.LogDeathAppendItemCodes (PowerupsMutator.cs:211) appends 'S' when Strength is active and 'I' when Shield is active — bit-faithful to sv_powerups.qc:17-28. Chained by MutatorActivation.LogDeathAppendItemCodes (MutatorActivation.cs:137-141), invoked from Scores.AppendItemcodes (Scores.cs:634) which builds the per-slot weapon codes + 'T'-on-chat then runs the mutator chain (port of server/damage.qc:81 AppendItemcodes). EmitLogDeath (Scores.cs:599-611) builds ':kill:<mode>:<killer>:<killed>:type=<dt>:items=<codes>' (+ ':victimitems=' when killer!=killed) and calls the Scores.LogDeath sink; EmitLogDeath is called live from the Obituary scoring path (Scores.cs:576). Sink wired at GameWorld.cs:852 (Scores.LogDeath = line => if(sv_eventlog) GameLog.Echo(line)). The S/I codes now ride the :items=/:victimitems= field on the kill event-log line.", result: pass }
+    confidence: high
+    notes: "FIX since baseline (logic partial->faithful, presentation partial->faithful, gap closed). Both halves are now ported+live: the server-browser/scoreboard mutator tokens AND the death-log S/I item codes. The LogDeath pipeline (EmitLogDeath -> AppendItemcodes -> MutatorActivation.LogDeathAppendItemCodes -> PowerupsMutator) is fully wired and fired on the real Obituary death path, sunk to GameLog.Echo gated on sv_eventlog."
+
+  - id: powerups.hud.timer_bars
+    name: "HUD active-powerups panel (timer bars + icons)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/powerups.qc:HUD_Powerups (HUD_Powerups_add)"
+      - "common/mutators/mutator/powerups/powerup/strength.qc:m_tick CSQC (42-49, addPowerupItem)"
+    port_refs:
+      - "game/hud/PowerupsPanel.cs"
+      - "game/hud/HudManager.cs:126 (Get<PowerupsPanel>)"
+    constants:
+      - { name: "hud_panel_powerups_progressbar", base: "1", port: "1", match: true }
+      - { name: "hud_panel_powerups_text", base: "1", port: "1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Strength/Shield m_active CSQC override (force-show in _hud_configure) is the editor-only path; not separately verified."
+    verification:
+      - { kind: code, ref: "PowerupsPanel.cs walks Player.StatusEffects each frame; HudManager registers it (line 126); hud_panel_powerups_* cvars registered.", result: pass }
+    confidence: medium
+    notes: "Unchanged. Reads live status effects + surfaces persistent item-flag powerups (jetpack/fuelregen/unlimited-superweapons) as infinity entries. Not runtime-verified visually."
+
+  - id: powerups.jetpack.start_item_hookreplace
+    name: "Jetpack/FuelRegen map-spawn replaced with plain Fuel when already a start item"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/powerups/powerup/jetpack.qc:m_spawnfunc_hookreplace (6-11)"
+      - "common/mutators/mutator/powerups/powerup/fuelregen.qc:m_spawnfunc_hookreplace (6-11)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/PowerupItem.cs:SpawnFuncHookReplace (JetpackItem :221, FuelRegenItem :263)"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemSpawnFuncs.cs:297 (PowerupItem.SpawnFuncHookReplace dispatch before StartItem.Spawn)"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "DRIFT 2026-06-27 (FIX): the jetpack/fuelregen m_spawnfunc_hookreplace is now ported and LIVE. JetpackItem.SpawnFuncHookReplace (PowerupItem.cs:221) returns Items.ByName(\"fuel\") when SpawnSystem.ComputeStartItems().ItemFlags.Contains(\"JETPACK\"); FuelRegenItem (PowerupItem.cs:263) does the same on \"FUEL_REGEN\". Both override the PickupItemDef.SpawnFuncHookReplace virtual (PickupItemDef.cs:101, default returns this). Dispatched on the real map-spawn path: ItemSpawnFuncs.cs:299 calls def.SpawnFuncHookReplace(e) before StartItem.Spawn (re-verified 2026-06-27). Faithful to jetpack.qc:6-11 / fuelregen.qc:6-11 (if(start_items & m_itemid) return ITEM_Fuel).", result: pass }
+    confidence: high
+    notes: "FIX since baseline (logic missing->faithful, liveness na->live, port_refs populated). The map item_jetpack / item_fuel_regen now substitute a plain item_fuel pickup when the bit is already a start item (Hook mutator / g_start_* loadouts). In a vanilla match the map pickups are not start items, so the hookreplace is inert and the powerup spawns as-is — matching Base."

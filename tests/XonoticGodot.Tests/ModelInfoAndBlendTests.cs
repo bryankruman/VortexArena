@@ -142,6 +142,55 @@ public class ModelInfoAndBlendTests
     public void SelectLegs_FromMovement(float speed, bool onGround, bool ducked, bool dead, LocomotionBlend.Locomotion expected)
         => Assert.Equal(expected, LocomotionBlend.SelectLegs(speed, onGround, ducked, dead));
 
+    // Faithful animdecide 8-direction locomotion (animdecide.qc setimplicitstate + getloweranim). Angles are
+    // yaw-only (pitch/roll 0) so makevectors gives forward=+x, right=-y in Quake convention (right.Y = -1 at
+    // yaw 0). Velocity directions below are chosen so the dot-products land cleanly in each octant.
+    [Theory]
+    // dead / in-air win regardless of velocity.
+    [InlineData(300f, 0f, false, false, true, LocomotionBlend.DirLocomotion.Dead)]
+    [InlineData(300f, 0f, false, false, false, LocomotionBlend.DirLocomotion.Jump)]
+    [InlineData(0f, 0f, false, true, false, LocomotionBlend.DirLocomotion.DuckJump)]
+    // standing 8-direction (yaw 0: +x = forward, -x = back; +y = LEFT-key (right vector is -y so vy<0), ...).
+    [InlineData(300f, 0f, true, false, false, LocomotionBlend.DirLocomotion.Run)]            // forward
+    [InlineData(-300f, 0f, true, false, false, LocomotionBlend.DirLocomotion.RunBackwards)]  // backwards
+    // slow (<=10 u/s 2D) => no direction bits => idle.
+    [InlineData(5f, 0f, true, false, false, LocomotionBlend.DirLocomotion.Idle)]
+    // ducked variants.
+    [InlineData(300f, 0f, true, true, false, LocomotionBlend.DirLocomotion.DuckWalk)]            // ducked forward
+    [InlineData(-300f, 0f, true, true, false, LocomotionBlend.DirLocomotion.DuckWalkBackwards)]  // ducked back
+    [InlineData(5f, 0f, true, true, false, LocomotionBlend.DirLocomotion.DuckIdle)]              // ducked still
+    public void SelectLegsDirectional_Forward_Back_Idle(float vx, float vy, bool onGround, bool ducked, bool dead,
+        LocomotionBlend.DirLocomotion expected)
+    {
+        var vel = new Vector3(vx, vy, 0f);
+        Assert.Equal(expected, LocomotionBlend.SelectLegsDirectional(vel, Vector3.Zero, onGround, ducked, dead));
+    }
+
+    [Fact]
+    public void SelectLegsDirectional_Strafe_And_Diagonals()
+    {
+        // yaw 0: makevectors right = (0,-1,0). A +y velocity dots NEGATIVE onto right => LEFT key; -y => RIGHT.
+        var left = new Vector3(0f, 300f, 0f);
+        var right = new Vector3(0f, -300f, 0f);
+        Assert.Equal(LocomotionBlend.DirLocomotion.StrafeLeft,
+            LocomotionBlend.SelectLegsDirectional(left, Vector3.Zero, true, false, false));
+        Assert.Equal(LocomotionBlend.DirLocomotion.StrafeRight,
+            LocomotionBlend.SelectLegsDirectional(right, Vector3.Zero, true, false, false));
+
+        // forward+left diagonal (equal magnitudes => both bits set via the 0.5 cot threshold).
+        var fwdLeft = new Vector3(300f, 300f, 0f);
+        Assert.Equal(LocomotionBlend.DirLocomotion.ForwardLeft,
+            LocomotionBlend.SelectLegsDirectional(fwdLeft, Vector3.Zero, true, false, false));
+        // back+right diagonal.
+        var backRight = new Vector3(-300f, -300f, 0f);
+        Assert.Equal(LocomotionBlend.DirLocomotion.BackRight,
+            LocomotionBlend.SelectLegsDirectional(backRight, Vector3.Zero, true, false, false));
+
+        // ducked diagonal.
+        Assert.Equal(LocomotionBlend.DirLocomotion.DuckWalkForwardLeft,
+            LocomotionBlend.SelectLegsDirectional(fwdLeft, Vector3.Zero, true, true, false));
+    }
+
     // root(0) -> spine(1) -> head(2); legs frame (index 0) shifts spine +x7, torso frame (index 1) shifts head +y9.
     private sealed class SplitModel : ISkeletalModel
     {

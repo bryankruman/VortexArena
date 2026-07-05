@@ -35,6 +35,14 @@ public static class DpmBuilder
     /// <summary>Godot caps skinning at four bone influences per vertex; we clamp DPM's variable set to this.</summary>
     private const int MaxBonesPerVertex = 4;
 
+    /// <summary>
+    /// Meta key under which <see cref="Build"/> stores the built model's frame-group clip names IN FRAME-GROUP
+    /// ORDER (a <see cref="Godot.Collections.Array"/> of strings). The client's <c>DpmFrameDriver</c> reads it to
+    /// map a networked frame-GROUP ordinal (DarkPlaces <c>Mod_FrameGroupify</c>: <c>self.frame = N</c> plays the
+    /// Nth group) to the corresponding <see cref="AnimationPlayer"/> clip. Absent on models with no clips.
+    /// </summary>
+    public const string FrameGroupClipsMeta = "xon_dpm_clips";
+
     // The Quake->Godot basis change M (= Coords.ToGodot applied to each axis, as Basis columns) and its
     // inverse, used to conjugate bone WORLD transforms into Godot space (W_godot = M * W_quake * M^-1).
     // A bone transform is expressed IN model space, so converting it to Godot model space is a similarity
@@ -134,7 +142,20 @@ public static class DpmBuilder
         // Bone-track paths are "Skeleton3D:bone" — relative to the MODEL ROOT (the skeleton is a child of it),
         // so RootNode must be the model root (= the player's parent), not the skeleton itself.
         player.RootNode = player.GetPathTo(root);
-        BuildAnimations(dpm, skeleton, player, framegroups);
+        // Bake the frame-group clips and capture their names IN FRAME-GROUP ORDER. DarkPlaces' Mod_FrameGroupify
+        // makes a skeletal model's networked `.frame = N` select the Nth frame GROUP (not a raw pose), so the
+        // server stamps Entity.Frame with the group ORDINAL (QC mr_anim: spider idle '5', walk '10', bite '0',
+        // shoot '3', pain1/2 '7'/'8', die1/2 '1'/'2'). Stash the ordered clip names on the root as metadata so a
+        // frame-driver (DpmFrameDriver, wired in ClientWorld for frame-driven monster entities) can map that
+        // ordinal back to the clip and play it — the DPM analog of ModelAnimator.FollowEntityFrame for MD3.
+        List<string> clipNames = BuildAnimations(dpm, skeleton, player, framegroups);
+        if (clipNames.Count > 0)
+        {
+            var meta = new Godot.Collections.Array();
+            foreach (string n in clipNames)
+                meta.Add(n);
+            root.SetMeta(FrameGroupClipsMeta, meta);
+        }
 
         return root;
     }
@@ -373,15 +394,18 @@ public static class DpmBuilder
     /// pose in Godot space (the bone-local TRS the AnimationPlayer applies on top of rest). Clips come from
     /// <paramref name="framegroups"/>, or one full-range clip when none are supplied.
     /// </summary>
-    private static void BuildAnimations(
+    private static List<string> BuildAnimations(
         DpmData dpm,
         Skeleton3D skeleton,
         AnimationPlayer player,
         IReadOnlyList<FrameGroup>? framegroups)
     {
+        // Clip names emitted IN FRAME-GROUP ORDER (index i = the i'th group), so a frame-driver can address the
+        // clip by the networked frame-group ordinal.
+        var emittedNames = new List<string>();
         int frameCount = dpm.Frames.Length;
         if (frameCount == 0 || dpm.Bones.Length == 0)
-            return;
+            return emittedNames;
 
         var library = new AnimationLibrary();
 
@@ -444,10 +468,12 @@ public static class DpmBuilder
 
             string name = ClipName(group, groupIndex, usedNames);
             library.AddAnimation(name, anim);
+            emittedNames.Add(name);
             groupIndex++;
         }
 
         player.AddAnimationLibrary("", library);
+        return emittedNames;
     }
 
     /// <summary>Resolve a unique, sensible clip name for a frame group (its name, or a synthesised one).</summary>

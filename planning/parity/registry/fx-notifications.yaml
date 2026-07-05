@@ -1,0 +1,509 @@
+unit: fx-notifications
+category: notification
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 16
+  worst_gaps:
+    - "FIXED this audit (Wave 12b, 2026-06-26): ServerNet.NotificationReaches now implements the QC spectator-follow clause `IS_SPEC(to) && to.enemy == other` for ALL four cases (One, AllExcept, Team, TeamExcept) via `p.IsObserver && p.Spectatee == d.Target`, including the TeamExcept `to.enemy != other` guard. Spectators following a player now receive that player's personal NOTIF_ONE/TEAM notifications. Residual: NOTIF_TEAM/TEAM_EXCEPT still require `d.Target is Player` (a null/non-Player target reaches nobody), a benign edge case."
+    - "Token expansion runs SERVER-side and reads the SERVER's notification_show_location / _show_sprees* cvars, so all clients get the server's preference (no per-client control) — the only residual is per-client preference, not a default-correctness defect. FIXED (Wave 15+17, re-audit 2026-06-27): EVERY NOTIF_ARGUMENT_LIST token now resolves — race tokens (f*race_time/race_diff/race_col, landed Wave 15 322fc26 but missed by the prior audit), key-bind tokens (pass_key/nade_key/join_key via a server sentinel + client SubstituteKeyBinds->BindTable.CommandKey, Wave 17 2f0bfdb), and the s3#s2/#s2 hash-replace tokens are all implemented; CvarBool default polarities correct and item_wepammo returns the real ammo type. fx-notifications.args.tokens presentation -> faithful."
+    - "Gentle-mode is LIVE but server-global: GameWorld mirrors sv_gentle onto NotificationSystem.GentleMode each tick, so per-CLIENT cl_gentle preference is lost (a deliberate consequence of server-side text formatting). Functionally correct for sv_gentle servers."
+features:
+  - id: fx-notifications.registry.types
+    name: "Notification registry + message types (MSG_ANNCE/INFO/CENTER/MULTI/CHOICE + MSG_CENTER_KILL + server-driven center variants)"
+    layer: [shared]
+    base_refs:
+      - "common/notifications/all.qh:16 (ENUMCLASS(MSG))"
+      - "common/notifications/all.qh:704 (REGISTRY(Notifications, BITS(11)))"
+      - "common/notifications/all.inc (MSG_*_NOTIF macro table)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/Notification.cs (MsgType enum: Annce/Info/Center/Multi/Choice + CenterKill/CenterTitle/CenterDuelTitle/CenterRaw)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:43 (RegisterAll)"
+      - "src/XonoticGodot.Common/GameInit.cs:23 (Notifications.RegisterAll)"
+    constants:
+      - { name: "Base all.inc macro invocations", base: "80 ANNCE + 237 INFO + 197 CENTER + 166 MULTI + 13 CHOICE + 82 TEAM/MULTITEAM", port: "n/a (different structuring)", match: false }
+      - { name: "port builder invocations (incl. loops/team expansion)", base: "~727 effective", port: "715 explicit builder calls + loop/team expansions (>= Base in INFO/CENTER/MULTI/CHOICE counts)", match: true }
+      - { name: "MSG types", base: "5 live + MSG_CENTER_KILL (deprecated kill marker)", port: "5 registry types + MSG_CENTER_KILL now a distinct wire type (CenterKill=5) + 3 server-driven center variants (Title/DuelTitle/Raw)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "A Send for an unregistered name is a no-op + LastError, and a missing MSG_MULTI sub is silently dropped — so any not-yet-registered cue is absent rather than erroring (vs QC's init-time fatal check)."
+    verification:
+      - { kind: code, ref: "grep counts: port has RACE/ONSLAUGHT/MONSTER/KEYHUNT families present; total port builder calls (715 + loop/team expansion) >= Base macro count", result: pass }
+      - { kind: code, ref: "MsgType adds CenterKill=5, CenterTitle=6, CenterDuelTitle=7, CenterRaw=8 (Notification.cs:35-59) — the prior 'MSG_CENTER_KILL absent' structural gap is closed", result: pass }
+      - { kind: code, ref: "RegisterAll wired at GameInit; content-hash dedup by typed name (Registry<Notification>.ContentHash)", result: pass }
+    confidence: high
+    notes: "The only previously-missing structural type (MSG_CENTER_KILL) is a distinct MsgType, and three further server-driven center variants (Title/DuelTitle/Raw) model the Base centerprint_SetTitle/_SetDuelTitle and the raw centerprint() builtin. Registry coverage at parity; exact runtime entry count not asserted by any test (IntegrationSmokeTests only checks Count>=50)."
+
+  - id: fx-notifications.send.dispatch
+    name: "Send_Notification (broadcast, arg-count validation, type switch)"
+    layer: [authority]
+    base_refs:
+      - "common/notifications/all.qc:1500 (Send_Notification)"
+      - "common/notifications/all.qc:1646 (Send_Notification_Core)"
+      - "common/notifications/all.qh:243 (ENUMCLASS(NOTIF))"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:130 (Send)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:365 (SplitArgs)"
+    constants:
+      - { name: "arg-count check", base: "stringcount+floatcount==count", port: "args.Length==StringCount+FloatCount", match: true }
+      - { name: "NOTIF broadcast modes", base: "6 (ONE/ONE_ONLY/TEAM/TEAM_EXCEPT/ALL/ALL_EXCEPT)", port: "6 (NotifBroadcast)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "44+ live NotificationSystem.Send/Info/Center/Announce call sites across Ctf/LMS/ItemPickupRules/Buffs/Campcheck/Instagib/KickTeamkiller/Nix/WeaponFiring/WeaponThrowing/Scores/GameWorld/AnnouncerController (+ DeathMessages obituary path)", result: pass }
+      - { kind: test, ref: "NotificationPolishTests, ObituaryEmissionTests (arg-count + dispatch)", result: pass }
+    confidence: high
+    notes: "OneOnly-to-non-client no-op preserved. Dedicated-server local-print branch (QC autocvar_sv_dedicated) not modelled but benign (the port's listen path renders locally via the HUD sink)."
+
+  - id: fx-notifications.net.protocol
+    name: "ENT_CLIENT_NOTIFICATION wire protocol (server encode -> client decode)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/notifications/all.qc:1449 (Net_Write_Notification)"
+      - "common/notifications/all.qc:1362 (REGISTER_NET_LINKED ENT_CLIENT_NOTIFICATION)"
+      - "common/notifications/all.qc:1365 (NET_HANDLE ENT_CLIENT_NOTIFICATION)"
+    port_refs:
+      - "game/net/ServerNet.cs:301 (NotificationSystem.Sink = NotificationNetSink)"
+      - "game/net/ServerNet.cs (FlushNotifications), :3268 (WriteNotification — writes RegistryId + WireType + text + args; line drifted from :2779 by the warpzone wave, logic unchanged)"
+      - "game/net/ClientNet.cs:1140 (HandleReliableBundle decode -> Notifications.ById(:1155) -> NotificationReceived)"
+      - "game/net/NetGame.cs (OnNotificationReceived -> HudNotifications.OnNotification)"
+    constants:
+      - { name: "wire payload", base: "byte type + short name + strings + longs (re-formatted CSQC-side)", port: "ushort RegistryId + byte type(=WireType) + server-FORMATTED text + str[] + float[]", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Port sends the server-FORMATTED text plus the raw args and the notification's RegistryId (vs Base sending only id+args and re-formatting on CSQC). The RegistryId lets the client recover the Notification to read icon/cpid/queuetime/durcnt. This is a deliberate consequence of the port doing token expansion server-side (FormatTokens). One real residual consequence: the location/spree display cvars and gentle mode are read SERVER-side, so per-client control of those is lost (see fx-notifications.args.tokens, .gentle). The durcnt-encoded duration is NO LONGER dropped — it is recovered client-side from the notification's Durcnt field via the RegistryId (see fx-notifications.center.durcnt)."
+    gaps:
+      - "Per-client display cvars (notification_show_location / _show_sprees*) and gentle mode cannot vary per recipient — the server's value applies to everyone (see fx-notifications.args.tokens, fx-notifications.gentle.variants)."
+    verification:
+      - { kind: code, ref: "WriteNotification (:2779) writes RegistryId (:2781) + (byte)d.WireType (:2782) so the server-driven CenterKill/Title/DuelTitle/Raw type overrides survive the wire and the client can recover icon/cpid/durcnt; client HandleReliableBundle (:1143-1156) reads RegistryId back, resolves Notifications.ById, forwards via NotificationEvent", result: pass }
+      - { kind: code, ref: "ServerNet.NotificationNetSink (:301) -> CaptureNotification (:2554) -> FlushNotifications (:2705) -> WriteNotification (:2779) -> ClientNet decode (:1140) -> NetGame.OnNotificationReceived -> HudNotifications.OnNotification (traced)", result: pass }
+      - { kind: test, ref: "ClientFeedbackTests, CountdownAnnouncerTests (end-to-end notify)", result: pass }
+    confidence: high
+    notes: "Reliable channel (matches QC linked-entity reliability). RegistryId resolves the Notification on the client to recover icon/cpid/queuetime AND durcnt; the four server-driven center variants round-trip via WireType. The common formatted-text divergence is intended."
+
+  - id: fx-notifications.net.shouldsend
+    name: "Per-recipient broadcast routing (Notification_ShouldSend)"
+    layer: [authority]
+    base_refs:
+      - "common/notifications/all.qc:62 (Notification_ShouldSend)"
+    port_refs:
+      - "game/net/ServerNet.cs:3227 (NotificationReaches)"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Minor residual: NOTIF_TEAM/TEAM_EXCEPT require `d.Target is Player` (NotificationReaches :2757/:2764); a null-team or non-Player target silently reaches nobody (QC NOTIF_TEAM dereferences other_client.team, so a non-player target is an edge case there too). Benign."
+    verification:
+      - { kind: code, ref: "ServerNet.NotificationReaches switch (:3229-3261, re-confirmed 2026-06-28) vs Notification_ShouldSend (all.qc:62-91): One reaches `p.IsObserver && p.Spectatee == d.Target` (= IS_SPEC && to.enemy == other); AllExcept excludes the same; Team adds `p.Spectatee?.Team == t.Team`; TeamExcept adds the spec-team branch WITH the `p.Spectatee != d.Target` guard. All four spec-aware cases now match QC.", result: pass }
+    confidence: high
+    notes: "FIXED (Wave 12b, 2026-06-26, commit 6da9e80 — added after the prior 2026-06-25 audit): the spectator-follow clauses for all four spec-aware broadcast modes were added, so a spectator following a player now receives that player's personal NOTIF_ONE/TEAM notifications. The only residual is the non-Player-target edge case in TEAM/TEAM_EXCEPT (benign). ALL/ALL_EXCEPT/ONE/ONE_ONLY direct-recipient routing already correct."
+
+  - id: fx-notifications.args.tokens
+    name: "Arg-token expansion (NOTIF_ARGUMENT_LIST / Local_Notification_sprintf)"
+    layer: [shared, authority]
+    base_refs:
+      - "common/notifications/all.qh:424 (NOTIF_ARGUMENT_LIST)"
+      - "common/notifications/all.qc:922 (Local_Notification_sprintf)"
+      - "common/notifications/all.qh:486 (KILL_SPREE_LIST)"
+      - "common/notifications/all.qh:294 (autocvar defaults: show_location=false, show_sprees=true, show_sprees_info=3)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationTokens.cs (ResolveOne case table; race/key-bind/hash tokens; ShowLocation/ShowSprees/CvarBool; KeyBindSentinel)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs (FormatTokens/Sprintf)"
+      - "game/hud/HudNotifications.cs:177 (SubstituteKeyBinds), :203 (ResolveKeyBind -> BindTable.CommandKey) — client-side key-bind sentinel resolution"
+    constants:
+      - { name: "KILL_SPREE_LIST milestones", base: "3/5/10/15/20/25/30", port: "3/5/10/15/20/25/30 (SpreeList)", match: true }
+      - { name: "notification_show_sprees", base: "1 (default true)", port: "CvarBool fallback true (NotificationTokens.cs:146)", match: true }
+      - { name: "notification_show_sprees_info", base: "3", port: "3 (CvarInt fallback :148)", match: true }
+      - { name: "notification_show_location default", base: "0 (false)", port: "CvarBool(..., false) (NotificationTokens.cs:145)", match: true }
+      - { name: "notification_show_sprees_info_specialonly default", base: "1 (true)", port: "CvarBool(..., true) (NotificationTokens.cs:239)", match: true }
+      - { name: "notification_show_sprees_center_specialonly default", base: "1 (true)", port: "CvarBool(..., true) (NotificationTokens.cs:215)", match: true }
+      - { name: "item_wepammo ammo name", base: "ammo_type.m_name (cells/rockets/shells/bullets/fuel)", port: "AmmoType -> shells/bullets/rockets/cells/fuel (NotificationTokens.WeaponAmmoName:287)", match: true }
+      - { name: "race time/diff/col tokens", base: "TIME_ENCODED_TOSTRING(n,true) / signed delta / ^F1|^F2", port: "RaceTime->GameScores.TimeEncodedToString(compact), RaceDiff, race_col (NotificationTokens.cs:99-106)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Tokens are resolved SERVER-side reading the SERVER's notification_show_location / _show_sprees* cvars; in Base these are CSQC-side per-client, so the port loses per-client control of location/spree display (direct consequence of server-side formatting — see fx-notifications.net.protocol intended divergence). This is the ONLY residual on the token path — every QC NOTIF_ARGUMENT_LIST token is now resolved (race/key-bind/hash included)."
+    verification:
+      - { kind: code, ref: "NotificationTokens.ResolveOne case table vs NOTIF_ARGUMENT_LIST: s1-4/s*loc/f*/spree/frag/location/ordinal/time/item_wepname/item_buffname/item_wepammo/death_team ALL present; race tokens f1/f2/f3race_time (:99-101 -> GameScores.TimeEncodedToString), race_col (:104), race_diff (:106 -> RaceDiff) now resolved; s3#s2/#s2 hash-replace (:125-126) resolved; pass_key/nade_key/join_key (:132-134) emit a recoverable sentinel", result: pass }
+      - { kind: code, ref: "key-bind sentinel round-trips: NotifTokens.KeyBindSentinel (server, ARG_CS) -> wire WriteString -> HudNotifications.SubstituteKeyBinds (:177) -> ResolveKeyBind (:203) -> BindTable.CommandKey('drop flag','+use')/('throw nade','weapon_drop')/('jump','+jump') (verified BindTable.CommandKey exists, src/XonoticGodot.Engine/Console/BindTable.cs:64)", result: pass }
+      - { kind: code, ref: "CvarBool defaults match Base — show_location fallback false (Base 0, :145), both specialonly fallback true (Base 1, :215/:239); item_wepammo returns the real ammo type via AmmoType switch (:287)", result: pass }
+      - { kind: code, ref: "RaceTime delegates to the shared, verified Scoring.GameScores.TimeEncodedToString (compact) — same clockedtime_tostring port used by CommandReplies; Common project builds clean", result: pass }
+      - { kind: test, ref: "NotificationPolishTests (token formatting), HeadshotTests", result: pass }
+    confidence: high
+    notes: "FIX (re-audit, Wave 15+17): the prior 2026-06-25 audit's 'race tokens / key-bind tokens / hash-replace NOT implemented (drop to '')' gaps were INACCURATE — the race tokens (f1/f2/f3race_time, race_col, race_diff) already landed in Wave 15 (322fc26) and the prior audit missed them; Wave 17 (2f0bfdb) then added the pass/nade/join key-bind sentinel tokens + the client-side SubstituteKeyBinds resolver and the s3#s2/#s2 hash-replace tokens. Every NOTIF_ARGUMENT_LIST token now resolves; presentation -> faithful. Sole residual is the intended per-client-cvar divergence (server-side formatting). Verified by reading the CURRENT NotificationTokens.cs (no '' drops for race/key/hash) + confirming the client key-bind path + a clean Common build."
+
+  - id: fx-notifications.multi.fanout
+    name: "MSG_MULTI fan-out to annce/info/center sub-notifications"
+    layer: [shared]
+    base_refs:
+      - "common/notifications/all.qc:1297 (Local_Notification MSG_MULTI)"
+      - "common/notifications/all.qc:594 (Create_Notification_Entity_Multi)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:287 (DispatchMulti/TryDispatchSub)"
+    constants:
+      - { name: "sub arg-count clamp", base: "max(info,center) stringcount/floatcount", port: "Slice to sub.StringCount/FloatCount", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "A missing sub-notification is silently dropped (LastError set, no throw), so a partially-registered MULTI loses the unregistered cue rather than erroring like QC's init-time check."
+    verification:
+      - { kind: code, ref: "DispatchMulti -> TryDispatchSub for annce/info/center; arg slicing per sub.StringCount/FloatCount", result: pass }
+      - { kind: test, ref: "ObituaryEmissionTests (death MULTI bundles)", result: pass }
+    confidence: high
+    notes: "Sub-notifs resolved lazily by bare name (MultiAnnce/MultiInfo/MultiCenter)."
+
+  - id: fx-notifications.choice.resolve
+    name: "MSG_CHOICE option selection + per-client replication"
+    layer: [authority, shared]
+    base_refs:
+      - "common/notifications/all.qc:1320 (Local_Notification MSG_CHOICE)"
+      - "common/notifications/all.qc:1577 (Send_Notification MSG_CHOICE recursion)"
+      - "common/notifications/all.qh:882 (ReplicateVars), all.qc:707 (Notification_GetCvars)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:325 (DispatchChoice)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationChoiceState.cs (replicate, ChoiceCvarName)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/Notification.cs (ChoiceIdx + NotificationChoiceIndexer)"
+      - "src/XonoticGodot.Server/Commands.cs:206 (RegisteredChoiceCvarNames gate); game/net/ClientNet.cs:681 (notification_<name> replicate list)"
+    constants:
+      - { name: "challow levels", base: "0 never / 1 warmup / 2 always", port: "NotifAllowed Never/Warmup/Always", match: true }
+      - { name: "choice value", base: "0 off / 1 optiona / 2 optionb", port: "0 suppress / 1 A / 2 B (ChoiceValues, DefaultChoiceValue=1)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "DispatchChoice gating (challow + WarmupStage + per-client ChoiceValues); ClientNet replicate list emits notification_<ChoiceCvarName>; server gates via Commands.RegisteredChoiceCvarNames", result: pass }
+      - { kind: test, ref: "CvarReplicationTests (notification_<name> replicate)", result: pass }
+    confidence: high
+    notes: "Team-choice families share a ChoiceIdx (AssignChoiceIndices), matching QC nent_choice_idx. Per-client replication live."
+
+  - id: fx-notifications.center.render
+    name: "MSG_CENTER -> centerprint (cpid replace/kill, ^COUNT countdown)"
+    layer: [presentation]
+    base_refs:
+      - "common/notifications/all.qc:1284 (MSG_CENTER -> centerprint_Add)"
+      - "common/notifications/all.qc:1069 (Local_Notification_centerprint_Add)"
+    port_refs:
+      - "game/hud/HudNotifications.cs:171 (ShowCenter)"
+      - "game/hud/CenterPrintPanel.cs:70 (Push), :131 (Kill), :331 (^COUNT substitution)"
+    constants:
+      - { name: "^COUNT token", base: "^COUNT live-decremented from durcnt arg_slot[1]", port: "CountToken \"^COUNT\" driven from the durcnt count token (else f1) — HudNotifications.cs:190", match: true }
+      - { name: "cpid replace-by-id", base: "same cpid replaces in place", port: "non-empty Id replaces (CenterPrintPanel.Push removes same-Id)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Duration is now durcnt-driven (see fx-notifications.center.durcnt); an absent/'0 0' durcnt still falls back to the panel DefaultDuration=3s, matching QC's 'no explicit duration -> default' behaviour."
+    verification:
+      - { kind: code, ref: "ShowCenter (:171) -> ResolveDurcnt (:183) -> CenterPrintPanel.Push(text, duration, cpid, count) with count from the durcnt count token first (:190) then f1; replace-by-id + sticky duration<0 + graceful Kill all present", result: pass }
+      - { kind: test, ref: "CountdownAnnouncerTests (countdown centerprints)", result: pass }
+    confidence: high
+    notes: "FIX: ^COUNT count now resolves from the durcnt count token (e.g. COUNTDOWN_ROUNDSTART '1 f2' -> f2) before falling back to f1, closing the prior 'would diverge for non-f1 count' caveat. Duration is now real (see center.durcnt)."
+
+  - id: fx-notifications.center.durcnt
+    name: "Centerprint durcnt (duration/count) + item_centerprinttime"
+    layer: [presentation]
+    base_refs:
+      - "common/notifications/all.qc:531 (durcnt processing), :1069 (centerprint_Add dur/cnt)"
+      - "common/notifications/all.qh:310 (notification_item_centerprinttime=1.5)"
+      - "common/notifications/all.qh:462 (item_centime token)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/Notification.cs:119 (Durcnt field), :259 (Center builder durcnt param)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:79 (CenterDurcnt table — 36 Base all.inc specs), :120 (ApplyCenterDurcnt called from RegisterAll:66)"
+      - "game/hud/HudNotifications.cs:183 (ResolveDurcnt), :208 (ResolveDurcnt impl), :225 (ResolveDurcntToken: item_centime/fN/literal)"
+      - "game/net/ClientNet.cs:1155 (Notifications.ById recovers notif so notif.Durcnt is readable client-side)"
+    constants:
+      - { name: "notification_item_centerprinttime", base: "1.5", port: "1.5 (HudNotifications.ItemCenterprintTime:199; reads cvar override) — item_centime durcnt token", match: true }
+      - { name: "durcnt token model", base: "token0=duration, token1=^COUNT count; literal | fN | item_centime", port: "same (ResolveDurcntToken handles item_centime/fN/literal)", match: true }
+      - { name: "Base durcnt specs ported", base: "~36 center notifs with non-default durcnt", port: "36 (CenterDurcnt table)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The durcnt is NOT serialized on the wire as a separate field; the client recovers it from the notification's Durcnt field via the RegistryId. Correct for every registered center notif; a raw/unregistered centerprint (CenterRaw) carries no durcnt and uses the panel default (matches the engine builtin's behaviour)."
+    verification:
+      - { kind: code, ref: "Notification.Durcnt field (:119) populated by ApplyCenterDurcnt (NotificationsList.cs:120, called from RegisterAll:66) from the 36-entry CenterDurcnt table; HudNotifications.ResolveDurcnt (:208) splits 'DURATION COUNT', resolving item_centime (1.5), fN refs, and literals; duration drives CenterPrintPanel.Push and count drives ^COUNT", result: pass }
+      - { kind: code, ref: "client recovers notif via Notifications.ById (ClientNet.cs:1155) so notif.Durcnt is available at ShowCenter time", result: pass }
+      - { kind: test, ref: "CountdownAnnouncerTests (countdown durations/counts)", result: pass }
+    confidence: high
+    notes: "FIX (this wave): the previously missing/dead durcnt is now fully modelled and live. The Notification.Durcnt field + the 36-entry CenterDurcnt table (from Base all.inc) + ApplyCenterDurcnt at registration + HudNotifications.ResolveDurcnt close the prior 'every centerprint shows for a fixed 3s' gap. item_centime resolves to notification_item_centerprinttime (1.5). Verified durcnt is NOT serialized separately but recovered client-side via RegistryId."
+
+  - id: fx-notifications.info.killfeed
+    name: "MSG_INFO -> console line + HUD kill-notify (icon, attacker/victim)"
+    layer: [presentation]
+    base_refs:
+      - "common/notifications/all.qc:1253 (MSG_INFO -> print + HUD_Notify_Push)"
+      - "common/notifications/all.qc:1022 (Local_Notification_HUD_Notify_Push)"
+    port_refs:
+      - "game/hud/HudNotifications.cs:250 (ShowInfo)"
+      - "game/hud/NotifyPanel.cs (Push)"
+    constants:
+      - { name: "hudargs ATTACKER->VICTIM order", base: "s2=attacker, s1=victim", port: "attacker=s2 (strs[1]), victim=s1 (strs[0])", match: true }
+      - { name: "MULTIICON_INFO (dynamic icon)", base: "1 entry (MINIGAME_INVITE, iconargs)", port: "not modelled", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "MULTIICON_INFO (icon derived from args via iconargs) has no port path; the only Base user is MINIGAME_INVITE (minigames not a port priority)."
+      - "notification_allow_chatboxprint (MSG_INFO -> chatbox routing) not modelled; benign — Base disables it in code (default 0)."
+    verification:
+      - { kind: code, ref: "ShowInfo (:250): icon present + s1 -> NotifyPanel.Push(attacker=s2 if murder, victim=s1, icon); else plain right-aligned line", result: pass }
+      - { kind: test, ref: "ObituaryEmissionTests, MonsterTurretVehicleObituaryTests (kill feed)", result: pass }
+    confidence: high
+    notes: "Murder detected by s2 (strs[1]) non-empty (matches QC DEATH_MURDER args). Obituary text built in DeathMessages.cs."
+
+  - id: fx-notifications.annce.queue
+    name: "MSG_ANNCE -> announcer voice queue + anti-spam"
+    layer: [presentation]
+    base_refs:
+      - "common/notifications/all.qc:1131 (Local_Notification_Queue_Add)"
+      - "common/notifications/all.qc:1158 (Local_Notification_Queue_Process)"
+      - "common/notifications/all.qc:985 (Local_Notification_sound antispam)"
+      - "client/announcer.qh (cl_announcer/_antispam/_maptime)"
+    port_refs:
+      - "game/hud/HudNotifications.cs:283 (PlayAnnouncer), :318 (ProcessAnnouncerQueue), :338 (QueueRun)"
+    constants:
+      - { name: "NOTIF_QUEUE_MAX", base: "10", port: "10 (MaxQueueSize)", match: true }
+      - { name: "cl_announcer_antispam", base: "2", port: "2 (AntiSpamInterval)", match: true }
+      - { name: "queuetime semantics", base: "0=guess length, -1=immediate, >0=spacing", port: "same (PlayAnnouncer)", match: true }
+      - { name: "cl_announcer", base: "\"default\"", port: "\"default\" (AnnouncerVoice)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "PlayAnnouncer/ProcessAnnouncerQueue/QueueRun mirror Local_Notification_Queue_Add/_Process/_sound; queue 0/-1 semantics + same-file anti-spam window present", result: pass }
+      - { kind: test, ref: "CountdownAnnouncerTests, ClientFeedbackTests (announcer)", result: pass }
+    confidence: high
+    notes: "Announcer audio resolved via VFS AudioLoader (sound/announcer/<voice>/<snd>.ogg) with a res:// fallback."
+
+  - id: fx-notifications.announcer.timecountdown
+    name: "Announcer time/countdown driver (REMAINING_MIN, 3-2-1-prepare, PickNumber)"
+    layer: [authority, presentation]
+    base_refs:
+      - "client/announcer.qc:188 (Announcer_Time + ANNOUNCER_CHECKMINUTE)"
+      - "client/announcer.qc:58 (Announcer_Countdown), :127 (Announcer_Gamestart)"
+      - "common/util.qc:1924 (Announcer_PickNumber)"
+    port_refs:
+      - "src/XonoticGodot.Server/AnnouncerController.cs:81 (Tick), :137 (CheckMinute), :192 (PickCountdownNumber)"
+      - "src/XonoticGodot.Server/{WarmupController,RoundHandler}.cs (OnCountdownTick)"
+      - "src/XonoticGodot.Server/GameWorld.cs (BroadcastGameStartCountdown, OnCountdownTick wiring)"
+    constants:
+      - { name: "cl_announcer_maptime", base: "3 (0/1/2/3 off/1min/5min/both)", port: "3 (AnnouncerMapTime, server config)", match: true }
+      - { name: "CHECKMINUTE window", base: "timeleft < m*60 && > m*60-1", port: "same (CheckMinute)", match: true }
+      - { name: "countdown rounding", base: "floor(0.5+countdown)", port: "floor(0.5+secondsLeft) (CountdownRounded)", match: true }
+      - { name: "PickNumber range", base: "1..10 -> ANNCE_NUM_*", port: "1..10 (PickCountdownNumber)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base runs Announcer_Time/Announcer_Countdown CSQC-locally per client; the port has no CSQC announcer timer, so AnnouncerController runs on the SERVER and broadcasts MSG_ANNCE/MSG_CENTER to all clients. cl_announcer_maptime is therefore treated as a server config value (global broadcast) rather than per-client. The hysteresis window, rounding and 1..10 PickNumber mapping are preserved exactly."
+    gaps:
+      - "Per-client cl_announcer_maptime preference is lost (one global value); a client wanting only the 1-minute warning gets the server's setting."
+    verification:
+      - { kind: code, ref: "AnnouncerController.Tick (REMAINING_MIN); GameWorld wires Warmup.OnCountdownTick=BroadcastGameStartCountdown and Rounds.OnCountdownTick=BroadcastRoundStartCountdown; RoundHandler emits NUM_ROUNDSTART_<f> + BEGIN at 0", result: pass }
+      - { kind: test, ref: "CountdownAnnouncerTests (countdown + maptime hysteresis)", result: pass }
+    confidence: high
+    notes: "PickCountdownNumber is a tested pure helper; the countdown broadcast is owned by the warmup/round controllers. Title/duel-title broadcasts ride this same countdown path (see fx-notifications.center.title)."
+
+  - id: fx-notifications.gentle.variants
+    name: "Gentle-mode message-variant selection (normal_or_gentle / cl_gentle)"
+    layer: [shared]
+    base_refs:
+      - "common/notifications/all.qc:567 (GENTLE selection in Create_Notification_Entity_InfoCenter)"
+      - "common/notifications/all.qh (GENTLE macro, gentle string per notif)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:116 (GentleMode), :358 (SelectTemplate)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs (gentle arg captured per Info/Center)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1849 (GentleMode = sv_gentle != 0, per-tick StartFrame)"
+    constants:
+      - { name: "cl_gentle / sv_gentle source", base: "GENTLE (cl_gentle/sv_gentle)", port: "GentleMode <- sv_gentle (GameWorld.cs:1716), per-tick", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Because the port formats notification text server-side, the gentle selector is driven by sv_gentle (the SVQC GENTLE source) rather than a per-client cl_gentle. GameWorld mirrors sv_gentle onto NotificationSystem.GentleMode each tick (StartFrame, alongside the WarmupStage mirror), so SelectTemplate prefers each notification's gentle variant for everyone when sv_gentle is set. Per-CLIENT cl_gentle preference is lost — a deliberate consequence of server-side text formatting (same class as fx-notifications.net.protocol)."
+    gaps:
+      - "Per-client cl_gentle preference is lost: gentle mode is a single server-global value (sv_gentle). A client wanting gentle text on a non-gentle server cannot get it."
+    verification:
+      - { kind: code, ref: "GameWorld.cs:1849 assigns NotificationSystem.GentleMode = Api.Cvars.GetFloat(\"sv_gentle\") != 0f in the per-tick StartFrame; SelectTemplate (:358) returns n.Gentle when GentleMode && Gentle present; gentle strings registered per Info/Center", result: pass }
+      - { kind: code, ref: "grep `GentleMode =` across src/game -> 1 assignment (GameWorld.cs:1849), still live (re-confirmed 2026-06-28)", result: pass }
+    confidence: high
+    notes: "The gentle toggle is LIVE — GameWorld drives GentleMode from sv_gentle every tick, so the gentle string variants (stored per notification) are actually selected. Intended divergence because the server-side formatting makes it global rather than per-client."
+
+  - id: fx-notifications.net.kill
+    name: "Kill_Notification / MSG_CENTER_KILL (server clears a centerprint group)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/notifications/all.qc:1464 (Kill_Notification)"
+      - "common/notifications/all.qc:1372 (MSG_CENTER_KILL handler -> centerprint_Kill / centerprint_KillAll)"
+      - "common/notifications/all.qh:273 (Kill_Notification decl)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:210 (SendCenterKill)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/Notification.cs:40 (MsgType.CenterKill)"
+      - "game/net/ServerNet.cs:2782 (WriteNotification writes WireType)"
+      - "game/hud/HudNotifications.cs:126 (CenterKill case -> CenterPrint.Kill / ClearAll)"
+      - "src/XonoticGodot.Server/GameWorld.cs:864 (warmup abort -> CPID_ROUND), :1914 (idle warning clear -> CPID_IDLING), :3810/:4491 (world reset -> KillAll)"
+      - "src/XonoticGodot.Server/Teamplay.cs:1080 (team change -> CPID_REMOVE)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs:200 (on death -> CPID_CAMPCHECK), InstagibMutator.cs:392 (find-ammo cleared -> CPID_INSTAGIB_FINDAMMO)"
+    constants:
+      - { name: "empty cpid -> KillAll", base: "CPID_Null -> centerprint_KillAll (all.qc:1389)", port: "empty/null text -> CenterPrint.ClearAll (HudNotifications.cs:129)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Call-site coverage NARROWED this audit (now 7 distinct sites): warmup abort (CPID_ROUND), idle warning (CPID_IDLING), world reset x2 (KillAll), team change (CPID_REMOVE), campcheck death (CPID_CAMPCHECK), instagib find-ammo (CPID_INSTAGIB_FINDAMMO). The prior 'idle/join-prevention and instagib find-ammo not wired' note is closed. Base's keyhunt, vehicles and nades kill sites remain unported (those features aren't ported). Coverage correct where wired."
+    verification:
+      - { kind: code, ref: "MsgType.CenterKill added (Notification.cs:40); SendCenterKill (NotificationSystem.cs:210) hangs the dispatch off a COUNTDOWN_BEGIN/GAMESTART carrier with WireType=CenterKill; WriteNotification writes WireType (:2782); client HudNotifications routes CenterKill -> CenterPrint.Kill(cpid) or ClearAll on empty (:126-133)", result: pass }
+      - { kind: code, ref: "7 live callers: GameWorld.cs:864/1914/3810/4491, Teamplay.cs:1080, CampcheckMutator.cs:200, InstagibMutator.cs:392; all on real paths", result: pass }
+    confidence: high
+    notes: "MSG_CENTER_KILL is a real wire type with a live server->client path. Wave 12b broadened the call sites (idle CPID_IDLING, team CPID_REMOVE, instagib CPID_INSTAGIB_FINDAMMO added). Remaining gap is breadth (unported gametypes), not the mechanism."
+
+  - id: fx-notifications.center.title
+    name: "Server-driven centerprint title / duel title (centerprint_SetTitle / _SetDuelTitle / _ClearTitle)"
+    layer: [authority, presentation]
+    base_refs:
+      - "client/announcer.qc:163 (centerprint_SetTitle gametype name in Announcer_Gamestart)"
+      - "client/announcer.qc:45 (centerprint_SetDuelTitle in Announcer_Duel)"
+      - "client/hud/panel/centerprint.qc:154 (centerprint_SetDuelTitle), :161 (centerprint_SetTitle)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:234 (SendCenterTitle), :250 (SendCenterDuelTitle)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/Notification.cs:46 (MsgType.CenterTitle), :52 (CenterDuelTitle)"
+      - "game/hud/HudNotifications.cs:134 (CenterTitle case), :142 (CenterDuelTitle case)"
+      - "game/hud/CenterPrintPanel.cs:162 (SetTitle), :174 (SetDuelTitle), :183 (ClearTitle)"
+      - "src/XonoticGodot.Server/GameWorld.cs:2581 (BroadcastCountdownTitle), :2607 (^BG title), :2599 (duel pair), :867/:2538/:2628 (title clear)"
+    constants:
+      - { name: "gametype title prefix", base: "strcat(\"^BG\", MapInfo_Type_ToText(gametype))", port: "\"^BG\" + name (GameWorld.cs:1659)", match: true }
+      - { name: "duel title source", base: "top two non-spectator players (Announcer_Duel)", port: "top two non-observer/non-spectator players (GameWorld.cs BroadcastCountdownTitle)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base sets the title CSQC-locally inside Announcer_Gamestart/Announcer_Duel; the port has no CSQC announcer timer, so GameWorld.BroadcastCountdownTitle runs server-side and broadcasts MSG_CenterTitle/CenterDuelTitle to all clients (same server-side announcer divergence as fx-notifications.announcer.timecountdown). On screen equivalent for a standard match; the title is global rather than per-client."
+    gaps:
+      - "The CenterPrintPanel must render the title/duel-title strings above the countdown in the same style as Base centerprint.qc; this audit verified the send/route/setter wiring (SetTitle/SetDuelTitle/ClearTitle exist and are called) but did not visually confirm the on-screen layout."
+    verification:
+      - { kind: code, ref: "BroadcastCountdownTitle (GameWorld.cs:2581) called from the live countdown path (:2559); sends ^BG<gametype> (non-duel) or the duel pair; title cleared on BEGIN (:2538), abort (:867) and round-stop (:2628)", result: pass }
+      - { kind: code, ref: "wire: SendCenterTitle/SendCenterDuelTitle set WireType=CenterTitle/CenterDuelTitle -> WriteNotification(:2782) -> client HudNotifications routes to CenterPrint.SetTitle/SetDuelTitle/ClearTitle (:134-145)", result: pass }
+    confidence: medium
+    notes: "Send/route/setter chain fully wired and live on the gamestart-countdown path; confidence medium pending a visual confirmation of the panel layout. Duel-title re-sent only when the pair changes (QC Announcer_Duel parity)."
+
+  - id: fx-notifications.center.raw
+    name: "Raw centerprint(client, text) builtin (private chat/tell, map .message, target_print, MOTD)"
+    layer: [authority, presentation]
+    base_refs:
+      - "client/hud/panel/centerprint.qc (centerprint_Add / centerprint_AddStandard for raw centerprint())"
+      - "server: chat private centerprint (cmsgstr), trigger/target .message, target_print, MOTD"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:267 (SendCenterRaw)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/Notification.cs:59 (MsgType.CenterRaw)"
+      - "game/hud/HudNotifications.cs:146 (CenterRaw case -> CenterPrint.Add)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:801 (.message text), src/XonoticGodot.Server/Mutators/SuperSpecMutator.cs:231"
+    constants:
+      - { name: "no cpid group", base: "raw centerprint has no cpid (centerprint_AddStandard)", port: "CenterPrint.Add (no Id) (HudNotifications.cs:150)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Routed through the notification reliable channel as MSG_CenterRaw rather than the engine centerprint() builtin; functionally equivalent (a no-cpid panel push) but not a literal builtin port."
+    verification:
+      - { kind: code, ref: "SendCenterRaw (NotificationSystem.cs:267) sets WireType=CenterRaw; HudNotifications routes to CenterPrint.Add (:146-151); live callers: MapObjectsCommon (.message, :801), SuperSpecMutator (:231)", result: pass }
+    confidence: medium
+    notes: "Live on the map-.message / superspec paths via NotifBroadcast.OneOnly. Confidence medium: not visually confirmed, and the precise set of Base centerprint() call sites covered is narrower than the engine builtin's full reach."

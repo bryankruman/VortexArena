@@ -39,9 +39,14 @@ public sealed class Domination : GameType
     // ----- point-limit cvars + default (g_domination_point_limit → fraglimit; legacydefaults 200) -----
     private const string CvarPointLimitDom = "g_domination_point_limit";
     private const string CvarPointLimit    = "fraglimit";
-    private const string CvarLeadLimitDom  = "g_domination_teams_override"; // (override slot; lead via leadlimit)
+    private const string CvarLeadLimitDom  = "g_domination_point_leadlimit"; // QC GameRules_limit_lead source
     private const string CvarLeadLimit     = "leadlimit";
     private const float  DefaultPointLimit = 200f;
+
+    // ----- round-based match cap limit (g_domination_roundbased_point_limit; QC sv_domination.qh REGISTER_MUTATOR:
+    //   point_limit = (roundbased && roundbased_point_limit) ? roundbased_point_limit : g_domination_point_limit) -----
+    private const string CvarRoundbasedPointLimit = "g_domination_roundbased_point_limit";
+    private const float  DefaultRoundbasedPointLimit = 5f; // QC autocvar default (gametypes-server.cfg)
 
     // ----- tick cvars + defaults (g_domination_point_amt / g_domination_point_rate) -----
     private const string CvarPointAmt  = "g_domination_point_amt";
@@ -76,6 +81,24 @@ public sealed class Domination : GameType
     /// <summary>The team that won the most recent round (round-based variant), or 0. Reset each round start.</summary>
     public int LastRoundWinner { get; private set; }
 
+    /// <summary>
+    /// QC round_handler_IsRoundStarted for the round-based variant: a source telling whether the current round
+    /// has actually started (players unblocked). The host wires this to the live round handler's IsRoundStarted
+    /// (see GameWorld.ActivateGameType). When null (headless / tick variant) it is treated as "started" so
+    /// captures aren't blocked — the round-not-started capture gate (QC dompointtouch) only applies in the
+    /// round-based variant where the host has supplied this source.
+    /// </summary>
+    public Func<bool>? RoundStartedSource { get; set; }
+
+    /// <summary>
+    /// QC <c>dom_EventLog</c> (sv_domination.qc:24-28) — the server gamelog echo seam. When wired (the host
+    /// calls <c>GameWorld.ActivateGameType</c>), <see cref="CapturePoint"/> emits
+    /// <c>:dom:taken:&lt;team_before&gt;:&lt;playerid&gt;</c> to the server event log (gated by
+    /// <c>sv_eventlog</c> at the host call site). When null (headless / tests) the echo is a no-op.
+    /// QC: <c>if(autocvar_sv_eventlog) GameLogEcho(strcat(":dom:", mode, ":", ftos(team_before), …))</c>.
+    /// </summary>
+    public Action<string>? EventLogEcho { get; set; }
+
     public Domination()
     {
         NetName = "dom";
@@ -102,18 +125,40 @@ public sealed class Domination : GameType
         }
     }
 
-    /// <summary>Point limit in force (g_domination_point_limit, else fraglimit, else 200). 0 == unlimited.</summary>
+    /// <summary>
+    /// Point/cap limit in force. QC sv_domination.qh REGISTER_MUTATOR(dom) ONADD:
+    /// <c>point_limit = autocvar_g_domination_point_limit; if (roundbased &amp;&amp; roundbased_point_limit) point_limit
+    /// = roundbased_point_limit; GameRules_limit_score(point_limit);</c> — so in the round-based variant the team
+    /// limit is the cumulative CAPS limit (g_domination_roundbased_point_limit, default 5), NOT the per-tick
+    /// score limit. Non-roundbased reads g_domination_point_limit (else fraglimit, else 200). 0 == unlimited.
+    /// </summary>
     public float PointLimit
     {
         get
         {
+            if (RoundBased)
+            {
+                // QC: only overrides when roundbased_point_limit is non-zero (else falls through to point_limit).
+                if (TryCvar(CvarRoundbasedPointLimit, out float rpl) && rpl != 0f) return rpl;
+                if (TryCvar(CvarPointLimitDom, out float rplBase)) return rplBase;
+                return DefaultRoundbasedPointLimit;
+            }
             if (TryCvar(CvarPointLimitDom, out float pl)) return pl;
             if (TryCvar(CvarPointLimit, out float fl)) return fl;
             return DefaultPointLimit;
         }
     }
 
-    public float LeadLimit => TryCvar(CvarLeadLimit, out float l) ? l : 0f;
+    /// <summary>QC GameRules_limit_lead(autocvar_g_domination_point_leadlimit): the dom-specific lead limit
+    /// (falls back to the generic leadlimit cvar, then 0 = no lead limit).</summary>
+    public float LeadLimit
+    {
+        get
+        {
+            if (TryCvar(CvarLeadLimitDom, out float dl)) return dl;
+            return TryCvar(CvarLeadLimit, out float l) ? l : 0f;
+        }
+    }
 
     /// <summary>Points granted to the owning team per tick (g_domination_point_amt, else 1).</summary>
     public float PointAmount => TryCvar(CvarPointAmt, out float v) ? v : DefaultPointAmt;
@@ -192,7 +237,12 @@ public sealed class Domination : GameType
         {
             float now = Api.Services is not null ? Api.Clock.Time : 0f;
             if (endTime - now <= 0f)
+            {
+                // QC: Send_Notification(NOTIF_ALL, MSG_CENTER, CENTER_ROUND_OVER) + (MSG_INFO, INFO_ROUND_OVER).
+                NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, "ROUND_OVER");
+                NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, "ROUND_OVER");
                 return true;
+            }
         }
 
         int winner = CountAndFindRoundWinner();
@@ -202,15 +252,36 @@ public sealed class Domination : GameType
         if (LastRoundWinner == Teams.None)
         {
             LastRoundWinner = winner;
+            // QC: Send_Notification(NOTIF_ALL, MSG_CENTER, APP_TEAM_NUM(winner, CENTER_ROUND_TEAM_WIN)) +
+            //     (MSG_INFO, APP_TEAM_NUM(winner, INFO_ROUND_TEAM_WIN)) — the per-team round-win banner.
+            string suffix = TeamSuffix(winner);
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Center, $"ROUND_TEAM_WIN_{suffix}");
+            NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Info, $"ROUND_TEAM_WIN_{suffix}");
             // QC: TeamScore_AddToTeam(winner_team, ST_DOM_CAPS, +1). The round-based schema makes slot 1 the
             // "caps" team primary (DeclareScoreRules roundbased arm).
             Scoring.GameScores.AddToTeam(winner, Scoring.GameScores.TeamSlotSecondary, 1);
+            // QC GameRules_limit_score(point_limit) with point_limit = roundbased_point_limit (default 5): the
+            // match ends once a team banks that many round CAPS. UpdateLeaderAndCheckLimit is skipped in the
+            // round-based variant (it ranks the per-tick ST_SCORE slot, which never moves here), so latch the
+            // cumulative-cap match win directly off ST_DOM_CAPS.
+            float capLimit = PointLimit;
+            if (capLimit > 0f && GetTeamCaps(winner) >= capLimit)
+            {
+                LeaderTeam = winner;
+                MatchEnded = true;
+            }
         }
         return true;
     }
 
     /// <summary>QC teamscores(team, ST_DOM_CAPS) — the round wins banked by a team in the round-based variant.</summary>
     public int GetTeamCaps(int team) => Scoring.GameScores.TeamScore(team, Scoring.GameScores.TeamSlotSecondary);
+
+    /// <summary>QC <c>APP_TEAM_NUM</c> team-code → notification suffix (RED/BLUE/YELLOW/PINK).</summary>
+    private static string TeamSuffix(int team) => team switch
+    {
+        Teams.Red => "RED", Teams.Blue => "BLUE", Teams.Yellow => "YELLOW", Teams.Pink => "PINK", _ => "NEUTRAL",
+    };
 
     /// <summary>
     /// QC <c>ScoreRules_dom</c> (sv_domination.qc): declare Domination's columns + the two TEAM-score slots and
@@ -250,7 +321,7 @@ public sealed class Domination : GameType
         GS.SetSortKeys(primary);
     }
 
-    public void Deactivate()
+    public override void Deactivate()
     {
         // No hook to remove (point ticks are driven by Tick()).
     }
@@ -289,14 +360,66 @@ public sealed class Domination : GameType
         if (e is not null)
         {
             e.GtPointTeam = initialTeam;
+            // QC dompoint_captured sets goalentity.team; mirror the owning team onto Entity.Team so the bot
+            // goal-rating (havocbot_goalrating_controlpoints → Entity_GetTeam(it.goalentity)) reads ownership.
+            e.Team = initialTeam;
             e.GtPointAmt = cp.PerPointAmt;
             e.GtPointRate = cp.PerPointRate;
             e.NextThink = GametypeEntities.Now + 0.1f; // QC dompointthink rate
+
+            // QC dom_controlpoint_setup: setorigin(this, this.origin + '0 0 20'); DropToFloor_QC_DelayedInit(this).
+            // Nudge up 20qu then settle the bbox onto the floor (a downward box trace, the port's DropToFloor — cf.
+            // MapModels.DropBySpawnflags ALIGN_BOTTOM) so the point rests on the ground rather than at the raw origin.
+            Vector3 placed = DropPointToFloor(e, origin + new Vector3(0f, 0f, 20f));
+            GametypeEntities.SetOrigin(e, placed);
+            cp.Origin = placed;
+            e.GtSpawnOrigin = placed;
+
+            // QC spawnfunc(dom_controlpoint): scale 0.6 default + this.effects |= EF_LOWPRECISION, and EF_FULLBRIGHT
+            // when g_domination_point_fullbright. The model comes from the owning dom_team (dom_spawnteams default
+            // palette: models/domination/dom_<color>.md3, dom_unclaimed.md3 for the neutral start) — set it so the
+            // point body is visible (the same fix the CTF flag needed; Entity.Model networks + renders).
+            e.Model = DomPointModel(initialTeam);
+            e.ScaleFactor = 0.6f; // QC spawnfunc(dom_controlpoint): scale 0.6
+            e.Effects |= EfLowPrecision; // QC EF_LOWPRECISION bandwidth hint
+            if (Cvar("g_domination_point_fullbright", 0f) != 0f)
+                e.Effects |= EfFullBright; // QC EF_FULLBRIGHT when g_domination_point_fullbright
+
             cp.Entity = e;
-            e.GtSpawnOrigin = origin;
         }
         return cp;
     }
+
+    /// <summary>EF_LOWPRECISION (dpextensions.qc:274) — bandwidth hint; QC dom_controlpoint sets it. (== Nexball's.)</summary>
+    private const int EfLowPrecision = 4194304;
+
+    /// <summary>EF_FULLBRIGHT — set on the point when g_domination_point_fullbright (QC spawnfunc dom_controlpoint).</summary>
+    private const int EfFullBright = 512;
+
+    /// <summary>
+    /// QC <c>DropToFloor</c> for the control point: trace the point's bbox straight down from
+    /// <paramref name="start"/> and return the rested origin (the box-trace impact), or <paramref name="start"/>
+    /// when headless / nothing below. Mirrors MapModels' ALIGN_BOTTOM box trace.
+    /// </summary>
+    private static Vector3 DropPointToFloor(Entity e, Vector3 start)
+    {
+        if (Api.Services is null)
+            return start;
+        Vector3 down = start - new Vector3(0f, 0f, 4096f); // QC droptofloor traces far down for the floor
+        TraceResult tr = Api.Trace.Trace(start, e.Mins, e.Maxs, down, MoveFilter.NoMonsters, e);
+        return tr.StartSolid ? start : tr.EndPos; // keep the placed origin if it starts embedded
+    }
+
+    /// <summary>QC dom_team default palette model (dom_spawnteams): per-team dom_&lt;color&gt;.md3, dom_unclaimed.md3
+    /// for the neutral (empty-netname) team. Used for the point body model on spawn and capture.</summary>
+    private static string DomPointModel(int team) => team switch
+    {
+        Teams.Red => "models/domination/dom_red.md3",
+        Teams.Blue => "models/domination/dom_blue.md3",
+        Teams.Yellow => "models/domination/dom_yellow.md3",
+        Teams.Pink => "models/domination/dom_pink.md3",
+        _ => "models/domination/dom_unclaimed.md3",
+    };
 
     /// <summary>The <see cref="ControlPoint"/> bound to a world dom_controlpoint <see cref="Entity"/>, or null.</summary>
     public ControlPoint? PointForEntity(Entity e)
@@ -320,20 +443,133 @@ public sealed class Domination : GameType
         if (team == Teams.None || point.OwnerTeam == team)
             return;
 
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+
+        // QC dompointtouch: while a round-based round is active but not yet started, captures are blocked
+        // (if(round_handler_IsActive() && !round_handler_IsRoundStarted()) return;). Only gate when the host has
+        // wired a round-started source (round-based variant); headless/tick play is never blocked.
+        if (RoundStartedSource is { } startedSrc && !startedSrc())
+            return;
+
+        // QC dompointtouch: the 0.3s self-recapture guard (if(time < this.captime + 0.3) return;) — prevents two
+        // straddling enemies from thrashing the point faster than Base and over-crediting DOM_TAKES. In Base
+        // `captime` is 0 only before the first-ever capture, where `time` is already well past 0.3s of match clock
+        // so the guard is inert; the port's headless clock can read 0, so only arm the guard once the point has
+        // actually been captured (Captime > 0) to keep that first-capture behavior Base-faithful.
+        if (point.Captime > 0f && now < point.Captime + RecaptureGuard)
+            return;
+
+        int teamBefore = point.OwnerTeam; // QC dom_EventLog "taken": this.team at capture time (the PREVIOUS team)
         point.OwnerTeam = team;
         point.Capturer = player;
-        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+        point.Captime = now; // QC this.captime = time (arms the recapture guard)
         point.NextTickTime = now + PointRateFor(point);
         if (point.Entity is not null)
         {
             point.Entity.GtPointTeam = team;
+            // QC dompoint_captured sets goalentity.team (the bot goal-rating reads Entity_GetTeam(it.goalentity)):
+            // mirror the owning team onto Entity.Team too so havocbot_goalrating_controlpoints stops treating every
+            // owned point as unclaimed (BotObjectiveRoles.GoalrateControlPoints reads cp.Team).
+            point.Entity.Team = team;
             point.Entity.GtCapturer = player;
             point.Entity.GtNextTick = point.NextTickTime;
+            // QC dompoint_captured: this.model = head.mdl — swap the point body to the capturing team's dom model
+            // (dom_spawnteams palette: dom_<color>.md3). The waypoint sprite/radar tint track this via CollectWaypoints.
+            point.Entity.Model = DomPointModel(team);
         }
         // QC dompoint_captured: the capturing player gets DOM_TAKES +1 (a captures-made scoreboard stat).
         player.GtPointTakes += 1; // DOM_TAKES (entity-side counter, kept for compatibility)
         AddCol(player, "DOM_TAKES", 1); // QC GameRules_scoring_add(this.enemy, DOM_TAKES, 1)
+
+        // QC dom_EventLog("taken", this.team, this.dmg_inflictor): emit `:dom:taken:<team_before>[:<playerid>]`
+        // to the server event log when sv_eventlog is set. The host gates the sv_eventlog check at the wire site
+        // (see GameWorld.ActivateGameType → dom.EventLogEcho); the seam is null in headless / test contexts.
+        EventLogEcho?.Invoke(":dom:taken:" + teamBefore +
+            (player.PlayerId > 0 ? ":" + player.PlayerId : ""));
+
+        AnnounceCapture(player, point); // QC dompoint_captured: cap sound + narration + INFO notification
     }
+
+    /// <summary>QC dompointtouch self-recapture guard window (time &lt; captime + 0.3).</summary>
+    private const float RecaptureGuard = 0.3f;
+
+    /// <summary>
+    /// QC dompoint_captured presentation: the local capture sound (dom_team .noise → SND_DOM_CLAIM) plays on the
+    /// capturer, the narration (dom_team .noise1 → play2all, default "&lt;Color&gt; team has captured a control
+    /// point") plays globally, and the INFO_DOMINATION_CAPTURE_TIME notification ("&lt;player&gt;&lt;message&gt;
+    /// (N points every M seconds)") is broadcast to everyone — except the round-based variant, which QC sends as
+    /// a bprint (collapsed here to the same INFO line). No-op headlessly (Api/sink guarded).
+    /// </summary>
+    private void AnnounceCapture(Player player, ControlPoint point)
+    {
+        // QC: head.noise → _sound(this.enemy or this, CH_TRIGGER, head.noise, ...). The default dom_team cap sound
+        // is SND_DOM_CLAIM (domination/claim); play it positionally on the capturing player.
+        SoundSystem.PlayOn(player, "DOM_CLAIM");
+
+        // QC: head.noise1 → play2all(narration). The default dom_spawnteams narration is a per-team line; play it
+        // globally as the announcer. (The registry has no per-team dom narration sound; the cap sound stands in.)
+        // INFO notification carries the textual "<Color> team has captured ..." line below.
+
+        // QC INFO_DOMINATION_CAPTURE_TIME args: s1 = capturer netname, s2 = point .message (default
+        // " has captured a control point"), f1 = points-per-tick, f2 = seconds-per-tick.
+        float points = PointAmountFor(point);
+        float seconds = PointRateFor(point);
+        string message = point.Entity is { } e && !string.IsNullOrEmpty(e.Message)
+            ? e.Message
+            : DefaultCaptureMessage;
+        NotificationSystem.Info("DOMINATION_CAPTURE_TIME", player.NetName, message, points, seconds);
+    }
+
+    /// <summary>QC dom_controlpoint_setup default: <c>if(this.message == "") this.message = " has captured a
+    /// control point";</c> — the point's capture-notification suffix.</summary>
+    private const string DefaultCaptureMessage = " has captured a control point";
+
+    /// <summary>
+    /// QC dom_controlpoint_setup's WaypointSprite_SpawnFixed(WP_DomNeut, ...) + dompoint_captured's
+    /// WaypointSprite_UpdateSprites(WP_Dom&lt;team&gt;) / WaypointSprite_UpdateTeamRadar(RADARICON_DOMPOINT,
+    /// colormapPaletteColor(team-1)): one fixed marker per control point at its origin, the def + radar tint
+    /// resolved from the current owner (neutral → DomNeut/cyan, else DomRed/Blue/Yellow/Pink + the team color).
+    /// Rebuilt each tick from the live ownership (the port's CollectWaypoints pull, like CTF's flag sprites).
+    /// </summary>
+    public override void CollectWaypoints(List<Waypoints.WaypointSprite> into)
+    {
+        foreach (ControlPoint cp in Points)
+        {
+            Vector3 pos = (cp.Entity is { } e ? e.Origin : cp.Origin) + new Vector3(0f, 0f, 32f); // QC origin + '0 0 32'
+            into.Add(new Waypoints.WaypointSprite
+            {
+                SpriteName = DomSpriteName(cp.OwnerTeam),
+                FixedOrigin = pos,
+                // Visibility Team = 0: QC dom_controlpoint_setup spawns control-point waypoints via
+                // WaypointSprite_SpawnFixed (showto=NULL, t=0) → shown to EVERYONE (no SPRITERULE_DEFAULT team
+                // restriction). The owning-team color is carried in Color, not the visibility team.
+                Team = 0,
+                Color = cp.OwnerTeam == Teams.None ? new Vector3(0f, 1f, 1f) : TeamRadarColor(cp.OwnerTeam),
+                RadarIcon = 1, // RADARICON_DOMPOINT
+                Health = -1f,
+            });
+        }
+    }
+
+    /// <summary>QC dompoint_captured WP_Dom&lt;team&gt; switch (NUM_TEAM_1..4 → Red/Blue/Yellow/Pink; else Neutral).</summary>
+    private static string DomSpriteName(int team) => team switch
+    {
+        Teams.Red => "DomRed",
+        Teams.Blue => "DomBlue",
+        Teams.Yellow => "DomYellow",
+        Teams.Pink => "DomPink",
+        _ => "DomNeut",
+    };
+
+    /// <summary>Team → radar tint (QC colormapPaletteColor(team-1); neutral handled by the caller as cyan).</summary>
+    private static Vector3 TeamRadarColor(int team) => team switch
+    {
+        Teams.Red => new Vector3(1f, 0.0625f, 0.0625f),
+        Teams.Blue => new Vector3(0.0625f, 0.0625f, 1f),
+        Teams.Yellow => new Vector3(1f, 1f, 0.0625f),
+        Teams.Pink => new Vector3(1f, 0.0625f, 1f),
+        _ => new Vector3(1f, 1f, 1f),
+    };
 
     /// <summary>QC <c>GameRules_scoring_add(player, SP_X, n)</c> for a DOM player column (no-op if unregistered).</summary>
     private static void AddCol(Player p, string field, int n)
@@ -352,13 +588,36 @@ public sealed class Domination : GameType
             CapturePoint(p, cp);
     }
 
-    /// <summary>Per-point think trampoline (QC dompointthink): tick this owned point if its timer elapsed.</summary>
+    /// <summary>
+    /// QC AnimateDomPoint (sv_domination.qc:140): advance the point's frame animation. The frame increments
+    /// every <paramref name="cp"/>.<see cref="ControlPoint.TWidth"/> seconds (default 0.02s), wrapping from
+    /// <see cref="ControlPoint.TLength"/> (default 239) back to 0.
+    /// </summary>
+    private static void AnimateDomPoint(ControlPoint cp, Entity self)
+    {
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+        if (cp.PainFinished > now)
+            return;
+        cp.PainFinished = now + cp.TWidth;
+        // Adjust the entity's next think if this animation tick is sooner than the scheduled think.
+        if (self.NextThink > cp.PainFinished)
+            self.NextThink = cp.PainFinished;
+
+        self.Frame++;
+        if (self.Frame > cp.TLength)
+            self.Frame = 0;
+    }
+
+    /// <summary>Per-point think trampoline (QC dompointthink): animate the point frame and tick if owned and timer elapsed.</summary>
     private void PointThinkEntity(Entity self)
     {
         self.NextThink = GametypeEntities.Now + 0.1f; // QC dompointthink rate
         ControlPoint? cp = PointForEntity(self);
         if (cp is not null)
+        {
+            AnimateDomPoint(cp, self); // QC AnimateDomPoint frame animation
             PointThink(cp);
+        }
     }
 
     /// <summary>
@@ -371,7 +630,17 @@ public sealed class Domination : GameType
         // roundbased Domination scores via round wins into ST_DOM_CAPS, not ticks.
         if (MatchEnded || RoundBased || cp.OwnerTeam == Teams.None)
             return;
+        // QC dompointthink: `if (game_stopped || this.delay > time || time < game_starttime) return;` — no points
+        // during warmup/match-over (game_stopped) or before the match clock starts (game_starttime). Read the live
+        // game_stopped mirror the rest of gameplay uses (VehicleCommon.GameStopped, pushed every frame from
+        // GameWorld.OnEndFrame = Intermission.Running || MatchEnded || Timeout.IsPaused) — Scoring.GameScores.GameStopped
+        // is never assigned on the server path, so a Timeout-paused live match would otherwise keep ticking points.
+        if (VehicleCommon.GameStopped)
+            return;
         float now = Api.Services is not null ? Api.Clock.Time : 0f;
+        float gameStart = StartItem.GameStartTimeProvider?.Invoke() ?? 0f;
+        if (now < gameStart)
+            return;
         if (now < cp.NextTickTime)
             return;
 
@@ -471,15 +740,15 @@ public sealed class Domination : GameType
 
 /// <summary>
 /// A Domination control point — the Godot-free essence of the QC dom_controlpoint edict
-/// (.goalentity.team owner, .enemy capturer, .delay next-tick time, per-point .frags/.wait). Tracks its
-/// world position, owning team, capturer, next-tick time, per-point amt/rate, and — when a facade is wired —
-/// the world <see cref="Entity"/>. The point model/animation, neutral interim state, and waypoint sprites
-/// remain client concerns.
+/// (.goalentity.team owner, .enemy capturer, .delay next-tick time, per-point .frags/.wait, frame anim
+/// .t_width/.t_length/.pain_finished). Tracks its world position, owning team, capturer, next-tick time,
+/// per-point amt/rate, and — when a facade is wired — the world <see cref="Entity"/>. The point model,
+/// neutral interim state, and waypoint sprites remain client concerns.
 /// </summary>
 public sealed class ControlPoint
 {
-    /// <summary>World position of the point (QC entity origin).</summary>
-    public readonly Vector3 Origin;
+    /// <summary>World position of the point (QC entity origin) — updated once after the spawn DropToFloor.</summary>
+    public Vector3 Origin;
 
     /// <summary>The team currently owning the point (QC goalentity.team), or <see cref="Teams.None"/>.</summary>
     public int OwnerTeam = Teams.None;
@@ -490,6 +759,9 @@ public sealed class ControlPoint
     /// <summary>Absolute sim time the next point tick is due (QC .delay).</summary>
     public float NextTickTime;
 
+    /// <summary>Absolute sim time of the last capture (QC .captime), arming the 0.3s self-recapture guard.</summary>
+    public float Captime;
+
     /// <summary>Per-point score amount per tick (QC entity .frags), used unless g_domination_point_amt overrides.</summary>
     public float PerPointAmt = 1f;
 
@@ -498,6 +770,15 @@ public sealed class ControlPoint
 
     /// <summary>The world entity representing this point (QC the dom_controlpoint edict), or null (headless).</summary>
     public Entity? Entity;
+
+    /// <summary>QC .pain_finished — absolute sim time when the next frame increment is due (frame animation).</summary>
+    public float PainFinished;
+
+    /// <summary>QC .t_width — frame animation interval (default 0.02s between frame increments).</summary>
+    public float TWidth = 0.02f;
+
+    /// <summary>QC .t_length — frame animation max frame number (default 239, so frames 0..239).</summary>
+    public float TLength = 239f;
 
     public ControlPoint(Vector3 origin) => Origin = origin;
 }

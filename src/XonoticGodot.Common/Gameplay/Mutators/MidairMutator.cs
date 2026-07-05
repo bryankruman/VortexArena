@@ -9,21 +9,25 @@ namespace XonoticGodot.Common.Gameplay;
 /// damage multiplier. Enabled by the <c>g_midair</c> cvar.
 ///
 /// Ported: the on-ground shield window (PlayerPowerups, gated on the match being live) with the
-/// fullbright/additive ground glow, and the airborne damage/force scaling (Damage_Calculate). QC also
-/// zeroes a bot's bot_moveskill on spawn to stop it bunnyhopping (so it stays huntable in the air); that
-/// is a bot-AI tuning field owned by the bot layer, not a gameplay-state field, so it is applied there.
+/// fullbright/additive ground glow, the airborne damage/force scaling (Damage_Calculate), and the
+/// PlayerSpawn bot tuning that zeroes a bot's move-skill so it stops bunnyhopping (staying huntable in
+/// the air). All three g_midair_* tunables are read LIVE each frame (matching QC autocvar reads), so a
+/// mid-match cvar change applies immediately and a configured 0 means 0 (no shield / zero airborne damage).
 /// </summary>
 [Mutator]
 public sealed class MidairMutator : MutatorBase
 {
-    /// <summary>QC autocvar_g_midair_shieldtime — seconds of post-landing damage immunity.</summary>
-    public float ShieldTime = 0.5f;
+    /// <summary>QC autocvar_g_midair_shieldtime — seconds of post-landing damage immunity. Base default 0.3.</summary>
+    private float ShieldTime =>
+        Api.Services is not null ? Api.Cvars.GetFloat("g_midair_shieldtime") : 0.3f;
 
-    /// <summary>QC autocvar_g_midair_damagemultiplier — multiplier for airborne hits (0 = unchanged in QC default cfg).</summary>
-    public float DamageMultiplier = 1f;
+    /// <summary>QC autocvar_g_midair_damagemultiplier — multiplier for airborne hits (Base default 1; 0 = zero damage).</summary>
+    private float DamageMultiplier =>
+        Api.Services is not null ? Api.Cvars.GetFloat("g_midair_damagemultiplier") : 1f;
 
-    /// <summary>QC autocvar_g_midair_damageforcescale — optional knockback multiplier (0 = leave force alone).</summary>
-    public float DamageForceScale;
+    /// <summary>QC autocvar_g_midair_damageforcescale — optional knockback multiplier (Base default 1.5; 0 = leave force alone).</summary>
+    private float DamageForceScale =>
+        Api.Services is not null ? Api.Cvars.GetFloat("g_midair_damageforcescale") : 0f;
 
     public MidairMutator() => NetName = "midair";
 
@@ -33,29 +37,24 @@ public sealed class MidairMutator : MutatorBase
 
     private HookHandler<MutatorHooks.DamageCalculateArgs>? _onDamageCalc;
     private HookHandler<MutatorHooks.PlayerPowerupsArgs>? _onPlayerPowerups;
+    private HookHandler<MutatorHooks.PlayerSpawnArgs>? _onPlayerSpawn;
 
     public override void Hook()
     {
         _onDamageCalc ??= OnDamageCalculate;
         _onPlayerPowerups ??= OnPlayerPowerups;
+        _onPlayerSpawn ??= OnPlayerSpawn;
 
         MutatorHooks.DamageCalculate.Add(_onDamageCalc);
         MutatorHooks.PlayerPowerups.Add(_onPlayerPowerups);
-
-        if (Api.Services is not null)
-        {
-            float st = Api.Cvars.GetFloat("g_midair_shieldtime");
-            if (st != 0f) ShieldTime = st;
-            float dm = Api.Cvars.GetFloat("g_midair_damagemultiplier");
-            if (dm != 0f) DamageMultiplier = dm;
-            DamageForceScale = Api.Cvars.GetFloat("g_midair_damageforcescale");
-        }
+        MutatorHooks.PlayerSpawn.Add(_onPlayerSpawn);
     }
 
     public override void Unhook()
     {
         if (_onDamageCalc is not null) MutatorHooks.DamageCalculate.Remove(_onDamageCalc);
         if (_onPlayerPowerups is not null) MutatorHooks.PlayerPowerups.Remove(_onPlayerPowerups);
+        if (_onPlayerSpawn is not null) MutatorHooks.PlayerSpawn.Remove(_onPlayerSpawn);
     }
 
     private static bool IsPlayer(Entity? e) => e is not null && (e.Flags & EntFlags.Client) != 0;
@@ -71,8 +70,10 @@ public sealed class MidairMutator : MutatorBase
             else
                 args.Damage *= DamageMultiplier;
 
-            if (DamageForceScale != 0f)
-                args.Force *= DamageForceScale;
+            // QC: if(autocvar_g_midair_damageforcescale) M_ARGV(6) *= ... — truthiness guard, 0 leaves force alone.
+            float forceScale = DamageForceScale;
+            if (forceScale != 0f)
+                args.Force *= forceScale;
         }
         return false;
     }
@@ -88,10 +89,29 @@ public sealed class MidairMutator : MutatorBase
             // QC: player.effects |= (EF_ADDITIVE | EF_FULLBRIGHT);
             player.Effects |= EffectFlags.Additive | EffectFlags.FullBright;
             float now = Api.Services is not null ? Api.Clock.Time : 0f;
-            float target = now + ShieldTime;
+            float target = now + ShieldTime;   // 0 shieldtime → deadline == now → no window (matches Base)
             if (target > player.MidairShieldTime)
                 player.MidairShieldTime = target;
         }
         return false;
     }
+
+    // MUTATOR_HOOKFUNCTION(midair, PlayerSpawn) — QC: if(IS_BOT_CLIENT(player)) player.bot_moveskill = 0.
+    // Disabling the bot's MOVE-skill keeps skill+moveskill below bot_ai_bunnyhop_skilloffset, so the bot
+    // stops bunnyhopping and stays airborne (huntable) instead of hugging the ground permanently shielded.
+    // Faithful to Base: we zero BotMoveSkill (the bunnyhop-gate term) and leave BotSkill intact, so the bot's
+    // aim/reaction/dodge/role tuning is unaffected — and a high-skill bot whose configured moveskill still keeps
+    // skill+moveskill >= offset would keep bunnyhopping, exactly as Base's `skill + bot_moveskill` gate allows.
+    private bool OnPlayerSpawn(ref MutatorHooks.PlayerSpawnArgs args)
+    {
+        if (args.Player is Player { IsBot: true } bot)
+            bot.BotMoveSkill = 0f;
+        return false;
+    }
+
+    // MUTATOR_HOOKFUNCTION(midair, BuildMutatorsString) — sv_midair.qc:48-51
+    public override string BuildMutatorsString(string s) => s + ":midair";
+
+    // MUTATOR_HOOKFUNCTION(midair, BuildMutatorsPrettyString) — sv_midair.qc:53-56
+    public override string BuildMutatorsPrettyString(string s) => s + ", Midair";
 }

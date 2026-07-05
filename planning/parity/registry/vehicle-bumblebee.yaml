@@ -1,0 +1,499 @@
+unit: vehicle-bumblebee
+category: vehicle
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 15
+  worst_gaps:
+    - "Signature networked BRG_* healray/damage beam (the visible green/red ray + bumble_raygun_draw multi-segment cylinder, the ENT_CLIENT_BUMBLE_RAYGUN net entity) STILL DEAD — placeholder EffectEmitter.TeHealBeam/TeBeam stub server-side (colour-faithful) + a client BuildHealBeam scaffold whose HealTarget endpoint is never fed (re-verified 2026-06-28). Raygun LOGIC fully faithful + live; only the networked beam visual remains. THE LARGEST REMAINING GAP for this unit."
+    - "Phase-3b cockpit-camera/view-state networking wave (re-audited 2026-06-28): Bumblebee.cs UNCHANGED since Wave 15 — this wave built the NET/VIEW framework, not the descriptor. NEW (uncommitted working tree): a cross-client EntityField.VehicleView 11-byte delta (VehicleViewCodec/VehicleViewResolver/VehicleViewState) now networks the bumblebee HUD bars + LockStrength + VehKind(4 pilot/5 gunner) to REMOTE clients (server resolve ServerNet.cs:2150 -> wire NetEntity.cs:471/557), superseding the prior 'host-path only / VEHICLESTAT a follow-up' caveat for the HUD-bar half. Code-verified only (not runtime-confirmed); does NOT carry the BRG beam endpoint or the no-gunner prompts. NO open dimension fully CLOSED this wave — the headline gaps (BRG beam, cockpit models/offsets/scale 1.5, describe) all persist."
+    - "Wave-15 FIX of death gib toss + live cosmetic gun models: the gun1/gun2/gun3 wreckage gibs are now tossed via the ported VehicleCommon.TossGib (vehicle_tossgib, with EF_FLAME/explode-on-contact/fade), AND the three cosmetic cannon models (CANNON_RIGHT/LEFT/CENTER) are now created + tag-attached at SPAWN (not just at death). Both via real engine Spawn/SetModel/SetAttachment ops; RENDER fidelity code-verified only (not runtime-confirmed). NOTE: Waves 16/17 did NOT touch Bumblebee.cs — these closures landed in Wave 15 (5958904/719d377); the registry simply had not been re-audited since 2026-06-25."
+    - "Wave-8e FIX of death presentation/audio (still live): tumble + blowup explosion FX (EFFECT_EXPLOSION_SMALL/MEDIUM/BIG) + SND_ROCKET_IMPACT on diethink+blowup + the bumblebee_dead_touch 50% early-blowup + the side-cannon EFFECT_BIGPLASMA_MUZZLEFLASH per shot. Residual presentation: the PROJECTILE_BUMBLE_GUN bolt-trail visual + the gib RENDER appearance (unverified)."
+    - "Wave-17 FIX of presentation (re-audited 2026-06-28): the PILOT 'No right/left gunner!' blinking prompts AND the centered vCROSS_HEAL pilot pointer (gfx/vehicles/crosshair_heal) are now LIVE on the host path — both set in NetGame.UpdateVehicleHud (ShowNoRightGunner/ShowNoLeftGunner at NetGame.cs:3576-3577; MainReticle=crosshair_heal in FeedRaptorReticle:3629) and DRAWN in VehicleHud (DrawNoGunnerPrompts:366, DrawMainReticle:409). UpdateVehicleHud runs live at NetGame.cs:2725. Wave 17 (2f0bfdb) touched NetGame.cs only — Bumblebee.cs itself was last changed in Wave 15. STILL missing: the networked BRG_* green/red beam entity (placeholder only), cosmetic gun cockpit models + cockpit/viewport offsets + scale 1.5, MENUQC describe text."
+    - "Wave-7 FIX of presentation: the GUNNER cockpit HUD (BumblebeeGun art kind selected by NetGame.UpdateVehicleHud) + BOTH gunner aux crosshairs (magenta '1 0 1' lead + reload-color READY, both gunner-side AND pilot-mirrored via FeedPilotGunnerAux) are now LIVE. The PILOT in-vehicle HUD + heal-lock aux crosshair were already live (Wave-5)."
+    - "Wave-7 FIX of FROZEN lock guards: the freezetag STAT(FROZEN, ...) skip+drop is now ported on BOTH the pilot heal-lock (Bumblebee.cs:367/371) and the gunner cannon-lock (585/589) via the shared IsFrozen() helper — closing the prior freezetag-only logic gap on pilot.raygun and gunner.frame."
+    - "FIXED Wave-4 (impact.bouncepain): proper `override Impact(Entity)` -> VehicleCommon.Impact(1,100,200); Think snapshots OldVelocity; Bumblebee's own .Touch chains VehicleCommon.Touch (QC lines 391/404) so the vr_impact dispatch is reached. Live, faithful to Base's touch-board bounce-pain."
+features:
+  - id: vehicle-bumblebee.spawn.spawnfunc
+    name: "Map spawnfunc + registration (vehicle_bumblebee)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/bumblebee.qc:740 (spawnfunc(vehicle_bumblebee))"
+      - "common/vehicles/vehicle/bumblebee.qh:27 (REGISTER_VEHICLE BUMBLEBEE)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleSpawnFuncs.cs:60 (Bumblebee)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:236 (SpawnFuncs.Register vehicle_bumblebee)"
+    constants:
+      - { name: "g_vehicle_bumblebee", base: "true (1)", port: "MasterSwitchEnabled: unset/!=0 -> on", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "MapObjectsRegistry registers vehicle_bumblebee -> VehicleSpawnFuncs.Bumblebee -> Spawn(netName) MasterSwitchEnabled gate + descriptor.Spawn; the QC !autocvar boolean semantics (absent=on, explicit-0=off) are reproduced", result: pass }
+    confidence: high
+    notes: "Unchanged by Wave-2. Wired to the BSP entity loader; a hand-placed vehicle_bumblebee on a vehicle map instantiates."
+
+  - id: vehicle-bumblebee.spawn.vr_spawn
+    name: "vr_spawn: sub-entities (gun1/gun2/gun3), flags, health/shield/movetype"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/vehicles/vehicle/bumblebee.qc:853 (METHOD Bumblebee vr_spawn)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:95 (Spawn)"
+    constants:
+      - { name: "health", base: "1000", port: "1000 (StartHealth)", match: true }
+      - { name: "shield", base: "400", port: "400 (MaxShield)", match: true }
+      - { name: "damageforcescale", base: "0.025", port: "0.025", match: true }
+      - { name: "origin_offset", base: "origin + '0 0 25'", port: "origin + '0 0 25' (Bumblebee.cs:148 SetOrigin)", match: true }
+      - { name: "scale", base: "1.5", port: "none", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Wave-15 FIX: the three cosmetic cannon models are NOW created + tag-attached at spawn (Bumblebee.cs:115-117 SetGunModel: gun1=bumblebee_plasma_right.dpm @cannon_right, gun2=bumblebee_plasma_left.dpm @cannon_left, gun3=bumblebee_ray.dpm @raygun) via the real Api.Entities.SetModel + Api.Models.SetAttachment engine ops (previously the model strings were only assigned at death). The attached-model RENDER is code-verified only, not runtime-confirmed."
+      - "STILL NOT CREATED: the shield hit-flash entity (vehicle_shieldent, MDL_VEH_BUMBLEBEE_SHIELD, scale=512/vlen(maxs-mins)), the cockpit/viewport model offsets (body hudmodel '50 0 -5'/viewport '5 0 2'; gun1 '90 -27 -23'/'-85 0 50'; gun2 '90 27 -23'/'-85 0 50'), scale 1.5, and the networked BRG_* raygun entity (Net_LinkEntity + bumble_raygun_send)."
+    verification:
+      - { kind: code, ref: "Bumblebee.Spawn creates gun1/gun2/gun3 slots + sets MultiSlot/HasShield/regen flags + health/shield/movetype/damageforcescale; matches vr_spawn server state. The '0 0 25' spawn lift IS now applied (Bumblebee.cs:156-157). Shield/BRG sub-entities + scale 1.5 + cockpit offsets still absent", result: pass }
+      - { kind: code, ref: "Wave-15 FIX (presentation): the cosmetic CANNON_RIGHT/LEFT/CENTER models are now set + attached at spawn (Bumblebee.cs:115-117 SetGunModel -> Api.Entities.SetModel + SetAttachment at the cannon_right/cannon_left/raygun tags; both delegate to the real ServerEntities/EngineServices ops). Live at spawn. Render fidelity not runtime-verified (code-kind only).", result: pass }
+    confidence: high
+    notes: "Wave-2 FIX: the +25 z spawn lift applied. Wave-15 FIX (re-audited 2026-06-27): the three cosmetic cannon models (CANNON_RIGHT/LEFT/CENTER) are now created + tag-attached at spawn via real engine ops (prior 'cosmetic gun models NOT created' sub-gap closed; render unverified so presentation stays partial). Server state fully faithful. Remaining presentation TODO: shield entity, scale 1.5, cockpit/viewport offsets, BRG net entity. NOT touched by Waves 16/17 — landed in Wave 15 (719d377)."
+
+  - id: vehicle-bumblebee.spawn.swim_liquidmask
+    name: "swim flag -> dphitcontentsmask liquid behavior"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/bumblebee.qc:920 (vr_spawn: if (!swim) dphitcontentsmask |= DPCONTENTS_LIQUIDSMASK)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:139 (g_vehicle_bumblebee_swim==0 -> DpHitContentsMask |= SuperContentsLiquidsMask)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:154 (SuperContentsLiquidsMask = WATER|SLIME|LAVA bits)"
+    constants:
+      - { name: "swim", base: "true (default)", port: "Cvar g_vehicle_bumblebee_swim default 1", match: true }
+      - { name: "DPCONTENTS_LIQUIDSMASK", base: "WATER|SLIME|LAVA (0x10|0x20|0x40)", port: "0x10|0x20|0x40 (SuperContentsLiquidsMask)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Bumblebee.Spawn now sets vehicle.DpHitContentsMask |= SuperContentsLiquidsMask when g_vehicle_bumblebee_swim==0, exactly mirroring vr_spawn's !swim branch; the WATER|SLIME|LAVA bit constant matches DPCONTENTS_LIQUIDSMASK", result: pass }
+    confidence: high
+    notes: "Wave-2 FIX: previously the mask was never touched (missing). Now implemented and live (runs at Spawn). Default swim=1 leaves the mask alone (matching Base); swim 0 config now collides with liquids as in Base."
+
+  - id: vehicle-bumblebee.setup.vr_setup
+    name: "vr_setup: capability-flag derivation + respawntime"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/bumblebee.qc:933 (METHOD Bumblebee vr_setup SVQC)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:128 (Spawn flag block)"
+    constants:
+      - { name: "respawntime", base: "60", port: "60 (RespawnTime)", match: true }
+      - { name: "max_health", base: "1000 (= health)", port: "1000 (MaxHealth)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Spawn now gates VHF_ENERGYREGEN on the PAIR (MaxEnergy!=0 && EnergyRegen!=0), VHF_HASSHIELD on MaxShield!=0, VHF_SHIELDREGEN on ShieldRegen!=0, VHF_HEALTHREGEN on HealthRegen!=0 — matching vr_setup's exact cvar-pair gates (Bumblebee.cs:132-135). MoveFly|DmgShake hardcoded as in QC. RespawnTime/MaxHealth set", result: pass }
+    confidence: high
+    notes: "Wave-2 FIX: was partial (>0 single-field checks); now the flag derivation matches QC's pair gates, so a retuned energy/shield config diverges no more. Folded into Spawn; live."
+
+  - id: vehicle-bumblebee.pilot.flight
+    name: "Pilot flight controller (avelocity yaw/pitch, thrust, roll, climb)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/bumblebee.qc:427 (bumblebee_pilot_frame)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:281 (Frame)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:205 (Think dispatcher)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1097 (seated-drive gate feeds VehInput)"
+      - "game/net/ServerNet.cs:1256 / :1362 (+use rising edge -> VehicleBoarding.UseKey)"
+    constants:
+      - { name: "speed_forward/strafe/up/down", base: "350", port: "350", match: true }
+      - { name: "turnspeed", base: "120", port: "120", match: true }
+      - { name: "pitchspeed", base: "60", port: "60", match: true }
+      - { name: "pitchlimit", base: "60", port: "60", match: true }
+      - { name: "friction", base: "0.5", port: "0.5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Frame mirrors bumblebee_pilot_frame avelocity/thrust/roll math (yaw bound to turnspeed, pitch bias +4/-8, roll bound +/-15, yaw-relative thrust); constants diffed equal", result: pass }
+      - { kind: code, ref: "Boarding is now LIVE: a +use rising edge in ServerNet.ProvideInput/ProvideInputPerFrame calls VehicleBoarding.UseKey -> Enter sets player.Vehicle; GameWorld.cs:1097 seated-drive gate then feeds VehInput each tick and the body Think runs Frame", result: pass }
+    confidence: high
+    notes: "Wave-2 (re)classified LIVE: the prior 'dead boarding' verdict was an AUDIT ERROR — the +use->UseKey dispatch lives in game/net/ServerNet.cs (already on main), which the baseline grep (scoped to src/) missed. A human can now pilot the bumblebee on the live match path."
+
+  - id: vehicle-bumblebee.pilot.raygun
+    name: "Center raygun: heal-beam (default) + damage-beam, target lock, energy gate"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/bumblebee.qc:518 (heal lock + raygun fire block)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:620 (FireRay)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:362 (heal lock in Frame)"
+    constants:
+      - { name: "raygun", base: "false (heal mode)", port: "false (RaygunDamage)", match: true }
+      - { name: "raygun_range", base: "2048", port: "2048", match: true }
+      - { name: "raygun_dps", base: "250", port: "250", match: true }
+      - { name: "raygun_aps", base: "100", port: "100", match: true }
+      - { name: "raygun_fps", base: "100", port: "100", match: true }
+      - { name: "raygun_turnspeed/pitchlimit_down/up/turnlimit_sides", base: "180/20/5/35", port: "180/20/5/35", match: true }
+      - { name: "healgun_hps", base: "150", port: "150", match: true }
+      - { name: "healgun_hmax", base: "100", port: "100", match: true }
+      - { name: "healgun_aps", base: "75", port: "75", match: true }
+      - { name: "healgun_amax", base: "100", port: "100", match: true }
+      - { name: "healgun_sps", base: "100", port: "100", match: true }
+      - { name: "healgun_locktime", base: "2.5", port: "2.5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The visible BRG_* beam is a placeholder EffectEmitter.TeHealBeam/TeBeam stub (Bumblebee.cs:698-700), not the networked CSQC bumble_raygun beam; the per-tick BRG_START/BRG_END send + `wait = time + 1` beam-hold + the bumble_raygun_draw multi-segment cylinder are not modeled. Beam COLOUR is bit-faithful (pure green heal / pure red damage)."
+    verification:
+      - { kind: code, ref: "FireRay implements both modes (Damage at dps*frametime DEATH_GENERIC + energy drain by aps in damage mode; Heal + armor/shield top-up teamplay-gated in heal mode) + instagib extralives armor cap; constants diffed equal", result: pass }
+      - { kind: code, ref: "Heal hp-limit: Bumblebee.cs:722 uses Resources.LimitNone (-1, uncapped) for a non-client heal target — matching QC's `IS_PLAYER ? healgun_hmax : RES_LIMIT_NONE` exactly.", result: pass }
+      - { kind: code, ref: "Wave-7 FIX: the heal-lock FROZEN guards (QC bumblebee.qc:520/526) are now ported — Bumblebee.cs:367 drops the lock when the locked teammate IsFrozen, and :371 skips a frozen candidate when acquiring (via the shared IsFrozen() helper, Bumblebee.cs:654). The prior freezetag-only logic gap is closed.", result: pass }
+      - { kind: code, ref: "Wave-5 presentation gain: Frame publishes the heal-lock target via vehicle.VehLockTarget/VehLockStrength (Bumblebee.cs:381-382); NetGame.UpdateVehicleHud (NetGame.cs:2981, live each frame) projects it as ONE auxiliary lock crosshair (vCROSS_LOCK aux xhair). The multi-segment networked beam visual still absent.", result: pass }
+    confidence: high
+    notes: "Wave-7 FIX: the FROZEN heal-lock guards are now ported (logic stays faithful, gap closed). The networked beam visual stays missing but the heal-lock crosshair is LIVE (Wave-5) so presentation is partial. Both raygun modes + heal lock run live once boarded."
+
+  - id: vehicle-bumblebee.gunner.frame
+    name: "Side-gunner turret: per-gun lock + lead + aim + plasma fire"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/bumblebee.qc:77 (bumblebee_gunner_frame)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:495 (GunnerFrame)"
+    constants:
+      - { name: "cannon_lock", base: "1", port: "1", match: true }
+      - { name: "cannon_turnspeed", base: "260", port: "260", match: true }
+      - { name: "cannon_pitchlimit_down/up", base: "60", port: "60", match: true }
+      - { name: "cannon_turnlimit_in", base: "20", port: "20", match: true }
+      - { name: "cannon_turnlimit_out", base: "80", port: "80", match: true }
+      - { name: "cannon_cost", base: "2", port: "2", match: true }
+      - { name: "cannon_refire", base: "0.2", port: "0.2", match: true }
+      - { name: "lock_time_teamplay/ffa", base: "2.5 / 0.5", port: "2.5 / 0.5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Gunner aux crosshairs + cockpit HUD are now LIVE (Wave-7): GunnerFrame writes VehGunnerLeadPoint/Valid + VehGunnerHitPoint/Valid (Bumblebee.cs:605/648) and mirrors gunner.VehicleHealth/Shield/Ammo1/Energy (632-636); NetGame.UpdateVehicleHud selects the BumblebeeGun art for a seated gunner and projects the magenta '1 0 1' LEAD (aux slot 1) + reload-color READY (aux slot 0) crosshairs, AND mirrors the gunner READY markers onto the PILOT (slots 1/2 via FeedPilotGunnerAux). RESIDUAL presentation: cosmetic gun cockpit models + viewport offsets are still not built (HUD bars/crosshairs render, but the 3D gun cockpit art does not)."
+    verification:
+      - { kind: code, ref: "GunnerFrame (Bumblebee.cs:567-650) mirrors bumblebee_gunner_frame lock/lead/aim/fire; the QC z-velocity*0.1 lead damping for a MOVETYPE_WALK target IS ported (Bumblebee.cs:601: if MoveType.Walk lead.Z*=0.1f). lock_time/team gates (2.5 teamplay / 0.5 ffa) match QC.", result: pass }
+      - { kind: code, ref: "Wave-7 FIX (FROZEN guards): Bumblebee.cs:585 drops the cannon lock when the locked enemy IsFrozen and :589 skips a frozen candidate when acquiring (QC bumblebee.qc:113/119) — the prior freezetag-only logic gap is closed.", result: pass }
+      - { kind: code, ref: "Wave-7 FIX (presentation): GunnerFrame publishes the aux-crosshair feed (VehGunnerLeadPoint/HitPoint at :605/648) + mirrors the body 0..100 stats onto the gunner (:632-636); NetGame.UpdateVehicleHud (NetGame.cs:2998 isGunner branch) selects VehicleHudKind.BumblebeeGun and draws the lead+ready aux crosshairs, plus FeedPilotGunnerAux (NetGame.cs:3056) mirrors them onto the pilot.", result: pass }
+      - { kind: test, ref: "VehicleRuntimeTests.Bumblebee_GunnerFire_SpawnsAProjectile drives UseKey+Tick and asserts a projectile spawns", result: pass }
+    confidence: high
+    notes: "Wave-2 LIVE (was dead) + walk-target z-lead damping fixed. Wave-7 (re-audited 2026-06-25): TWO fixes vs the Wave-5 baseline — (1) the GUNNER aux crosshairs + gunner cockpit HUD are now live (presentation missing->partial), and (2) the FROZEN cannon-lock guard is now ported (logic gap closed). Residual presentation: cosmetic gun cockpit models. The shared notification 'No right/left gunner!' prompt lives on the client.presentation row."
+
+  - id: vehicle-bumblebee.gunner.cannon
+    name: "Side-gunner plasma cannon projectile (bumblebee_fire_cannon)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/bumblebee_weapons.qc:9 (bumblebee_fire_cannon)"
+      - "common/vehicles/vehicle/bumblebee_weapons.qh:6 (cannon cvars)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:591 (FireCannon)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:509 (SpawnProjectile)"
+    constants:
+      - { name: "cannon_damage", base: "60", port: "60", match: true }
+      - { name: "cannon_radius", base: "225", port: "225", match: true }
+      - { name: "cannon_speed", base: "20000", port: "20000", match: true }
+      - { name: "cannon_spread", base: "0", port: "0", match: true }
+      - { name: "cannon_force", base: "-35", port: "-35", match: true }
+      - { name: "deathtype", base: "DEATH_VH_BUMB_GUN", port: "DeathTypes.VhBumbGun", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Wave-8e FIX: EFFECT_BIGPLASMA_MUZZLEFLASH is now emitted at the muzzle (FireCannon: EffectEmitter.Emit('BIGPLASMA_MUZZLEFLASH', org, vel, 1); BIGPLASMA_MUZZLEFLASH registered EffectsList.cs:163). RESIDUAL: the networked CSQCProjectile (PROJECTILE_BUMBLE_GUN) bolt trail/model visual is still NOT IMPLEMENTED."
+    verification:
+      - { kind: code, ref: "FireCannon -> SpawnProjectile with DEATH_VH_BUMB_GUN, force -35, speed 20000; obituary string tested in MonsterTurretVehicleObituaryTests", result: pass }
+      - { kind: code, ref: "Wave-4 FIX: FireCannon now passes fireSound 'weapons/flacexp3.wav' — Base SND_VEH_BUMBLEBEE_FIRE = W_Sound('flacexp3'). The prior 'vehicles/bumblebee_fire.wav' literal is a NON-EXISTENT asset (silent cannon in Base and the port); weapons/flacexp3 ships (flacexp3.ogg). The VEH_BUMBLEBEE_FIRE -> flacexp3 SoundsList map (SoundsList.cs:151) is itself correct/faithful to all.inc:160.", result: pass }
+      - { kind: code, ref: "Wave-8e FIX (presentation): FireCannon (Bumblebee.cs:700) now emits EFFECT_BIGPLASMA_MUZZLEFLASH at the muzzle each shot (QC vehicles_projectile's muzzleflash arg); live from the live GunnerFrame fire branch. Only the PROJECTILE_BUMBLE_GUN bolt-trail visual remains.", result: pass }
+    confidence: high
+    notes: "Wave-2 LIVE (was dead) — reached from the now-live GunnerFrame. Wave-4 FIX: cannon fire-sound corrected to weapons/flacexp3. Wave-8e FIX (re-audited 2026-06-25): the BIGPLASMA muzzleflash is now emitted (presentation missing->partial); only the networked projectile bolt-trail visual remains."
+
+  - id: vehicle-bumblebee.regen
+    name: "Regen: per-gun cannon ammo + body shield/energy/health"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/bumblebee.qc:407 (bumblebee_regen)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:259 (Regen)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:358 (Regen/RegenResource)"
+    constants:
+      - { name: "cannon_ammo", base: "100", port: "100", match: true }
+      - { name: "cannon_ammo_regen", base: "100", port: "100", match: true }
+      - { name: "cannon_ammo_regen_pause", base: "1", port: "1", match: true }
+      - { name: "energy_regen", base: "50", port: "50", match: true }
+      - { name: "energy_regen_pause", base: "1", port: "1", match: true }
+      - { name: "shield_regen", base: "150", port: "150", match: true }
+      - { name: "shield_regen_pause", base: "0.75", port: "0.75", match: true }
+      - { name: "health_regen", base: "65", port: "65", match: true }
+      - { name: "health_regen_pause", base: "10", port: "10", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Regen mirrors bumblebee_regen per-gun ammo (gun.delay + pause < time) + shared vehicles_regen for shield(healthScale)/energy/health keyed off VHF flags; constants diffed equal", result: pass }
+    confidence: high
+    notes: "Wave-2 LIVE (was dead) — invoked every Think tick; now observable because the vehicle is boardable + takes damage (GtEventDamage live). Faithful."
+
+  - id: vehicle-bumblebee.multiseat.enter
+    name: "Multi-seat boarding: gunner-slot assignment + role ordering"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/bumblebee.qc:283 (bumblebee_gunner_enter)"
+      - "common/vehicles/vehicle/bumblebee.qc:384 (bumblebee_touch)"
+      - "common/vehicles/vehicle/bumblebee.qc:761 (vr_gunner_enter)"
+      - "common/vehicles/vehicle/bumblebee.qc:775 (vr_think gunner promote)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:423 (GunnerEnter)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:151 (Touch)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:157 (Enter MULTISLOT branch)"
+      - "game/net/ServerNet.cs:1256 / :1362 (+use rising edge -> UseKey)"
+    constants:
+      - { name: "gunner_reentry_phase_s", base: "5", port: "5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "CSQCVehicleSetup viewport/HUD networking, the temp_wepent weapon swap, and the gunner SVC_SETVIEWPORT/SETVIEWANGLES are cross-boundary / not ported (the player binding fields - takedamage/solid/movetype/alpha/vehicle - ARE set)."
+      - "Touch-board (g_vehicles_enter 0) path: vehic.Touch = Touch is now installed in SpawnVehicle, but it still requires the host collision to dispatch .Touch onto solids; the DEFAULT g_vehicles_enter 1 uses the +use path, so touch-board remains a flagged partial under the non-default config."
+    verification:
+      - { kind: test, ref: "VehicleRuntimeTests.Bumblebee_SecondSameTeamBoarder_TakesAGunnerSeat (drives UseKey directly)", result: pass }
+      - { kind: code, ref: "UseKey is now called live by the +use rising edge in game/net/ServerNet.cs; Enter MULTISLOT branch -> GunnerEnter seats a same-team boarder; vr_think promotes a gunner to pilot when the seat frees", result: pass }
+    confidence: high
+    notes: "Wave-2 LIVE (was dead) — the +use->UseKey seam (in game/net, missed by the baseline grep) drives the MULTISLOT gunner branch. Slot-assignment + role-promotion logic faithful and unit-tested."
+
+  - id: vehicle-bumblebee.multiseat.exit
+    name: "Multi-seat exit: gunner eject + pilot exit + auto-land"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/bumblebee.qc:216 (bumblebee_gunner_exit)"
+      - "common/vehicles/vehicle/bumblebee.qc:656 (bumblebee_exit)"
+      - "common/vehicles/vehicle/bumblebee.qc:641 (bumblebee_land)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:457 (GunnerExit)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:172 (Exit)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:357 (Land)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:242 (Exit dispatcher)"
+    constants:
+      - { name: "pilot_reentry_delay_s", base: "2", port: "2", match: true }
+      - { name: "exit_speed", base: "200", port: "200", match: true }
+      - { name: "land_descent", base: "'0 0 -1800' * (hgt/256)", port: "same", match: true }
+      - { name: "gunner_eject_offset", base: "up*128 + forward*300 +/- right*150", port: "same", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Pilot exit uses VehicleCommon.FindGoodExit; QC's bumblebee_gunner_findgoodexit (100 random-ring tries) is approximated by the shared FindGoodExit helper."
+    verification:
+      - { kind: code, ref: "GunnerExit/Exit/Land mirror the QC eject vectors (0.75*vehic.velocity + normalize(spot-origin)*200 + z10) + auto-land descent; reached live from UseKey (seated -> Exit) via the +use edge in game/net/ServerNet.cs", result: pass }
+    confidence: high
+    notes: "Wave-2 LIVE (was dead) — exit fires from the now-live UseKey while seated. Faithful; only the find-good-exit approximation differs."
+
+  - id: vehicle-bumblebee.board.usekey
+    name: "+use board/exit dispatch (PlayerUseKey)"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc (PlayerUseKey ~2620)"
+      - "common/vehicles/sv_vehicles.qc (vehicles_enter/vehicles_exit guards)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleBoarding.cs:74 (UseKey)"
+      - "game/net/ServerNet.cs:1256 (ProvideInput +use rising edge -> UseKey)"
+      - "game/net/ServerNet.cs:1362 (ProvideInputPerFrame +use rising edge -> UseKey)"
+      - "src/XonoticGodot.Server/Commands.cs:1381 (impulse 21 -> WeaponImpulses.Handle -> UseHandle -> UseKey)"
+    constants:
+      - { name: "g_vehicles_enter", base: "1", port: "1 (default)", match: true }
+      - { name: "g_vehicles_enter_radius", base: "250", port: "250", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Bots have no vehicle path (g_vehicles_allow_bots default 0; VehicleBoarding.Enter refuses bots), so vehicles are human-only — matching Base's default (the allow-bots gameplay is a flagged out-of-scope config)."
+    verification:
+      - { kind: code, ref: "game/net/ServerNet.cs ProvideInput/ProvideInputPerFrame detect the +use button RELEASED->PRESSED edge once per sim tick (st.UsePrevDown) and call VehicleBoarding.UseKey(p) — the live PlayerUseKey entry. ALSO reachable via the console `impulse 21` path (Commands.DispatchImpulse -> WeaponImpulses.UseHandle)", result: pass }
+      - { kind: code, ref: "git show main:game/net/ServerNet.cs already contains the UseKey wiring -> the prior baseline 'no live caller' verdict was an AUDIT ERROR (grep scoped to src/, missing game/net/)", result: pass }
+    confidence: high
+    notes: "CORRECTED: this is NOT a defect. The +use rising edge -> UseKey dispatch lives in game/net/ServerNet.cs (on main already), which the baseline's src/-only grep missed. Shared across all four vehicles; the entire bumblebee (pilot + both gunners + exit) is reachable in a normal match."
+
+  - id: vehicle-bumblebee.death
+    name: "Death: eject, gib toss, blowup, respawn"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/vehicles/vehicle/bumblebee.qc:801 (vr_death)"
+      - "common/vehicles/vehicle/bumblebee.qc:698 (bumblebee_blowup)"
+      - "common/vehicles/vehicle/bumblebee.qc:726 (bumblebee_diethink)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:410 (Death)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:472 (DamageVehicle)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs:367 (SpawnVehicle: vehic.GtEventDamage = EventDamage)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:331 (EventDamage routes non-player edict to GtEventDamage)"
+    constants:
+      - { name: "blowup_coredamage", base: "500", port: "500", match: true }
+      - { name: "blowup_edgedamage", base: "100", port: "100", match: true }
+      - { name: "blowup_radius", base: "500", port: "500", match: true }
+      - { name: "blowup_forceintensity", base: "600", port: "600", match: true }
+      - { name: "diethink_delay", base: "2 + random*8", port: "2 + random*8", match: true }
+      - { name: "deathtype", base: "DEATH_VH_BUMB_DEATH", port: "DeathTypes.VhBumbDeath", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Wave-15 FIX: the gun1/gun2/gun3 wreckage gibs ARE now tossed (Bumblebee.cs:469-488 -> VehicleCommon.TossGib, the now-ported vehicle_tossgib physics-entity subsystem) — each cannon flung along the body axes (+/-300*right, +300*fwd) with jitter, 50/50 burn (EF_FLAME) + 50/50 explode-on-contact, carrying its real plasma/ray model string, over a 6s fade window. RESIDUAL (minor, intended): Base also replaces the BODY with a separate tossgib that runs diethink; the port keeps the diethink/blowup+respawn on the original body in place (functionally equivalent, one fewer throwaway entity). The tossed-gib RENDER appearance is not runtime-verified (code-kind only)."
+    verification:
+      - { kind: code, ref: "Death now LIVE: SpawnVehicle wires vehic.GtEventDamage = VehicleCommon.EventDamage (Wave-2 add); DamageSystem.EventDamage routes any shot non-player edict to its GtEventDamage -> DamageVehicle -> (on lethal) Bumblebee.Death. vehic.TakeDamage=DAMAGE_AIM + Solid=SLIDEBOX make it shootable", result: pass }
+      - { kind: code, ref: "Death body: zeroes health, ejects both gunners, blowup RadiusDamage 500/100/500 force 600 DEATH_VH_BUMB_DEATH after 2+random*8s, respawn at RespawnTime; constants diffed equal", result: pass }
+      - { kind: code, ref: "Wave-8e FIX (presentation+audio): Death (Bumblebee.cs:463-530) now emits EFFECT_EXPLOSION_MEDIUM at death (:463), per-tick 10% EFFECT_EXPLOSION_SMALL during the diethink tumble (:530), and EFFECT_EXPLOSION_BIG at Blowup (:504) — all three registered (EffectsList.cs:29-31). SND_ROCKET_IMPACT is played as weapons/rocket_impact.wav on both the diethink tick (:529) and Blowup (:503); the asset ships (sound/weapons/rocket_impact.ogg). bumblebee_dead_touch's 50% early-blowup is modeled on the body .Touch (:493/514: Prandom.Float()>0.5 -> Touch=Blowup).", result: pass }
+      - { kind: code, ref: "Wave-15 FIX (presentation/physics): Death (Bumblebee.cs:469-488) now tosses the gun1/gun2/gun3 gibs via VehicleCommon.TossGib (VehicleCommon.cs:1012, the ported vehicle_tossgib) — each gun set to its CANNON_RIGHT/LEFT/CENTER model, flung outward+spinning, 50/50 burn + 50/50 explode-on-contact, 6s fade. TossGib delegates to the real Api.Entities.Spawn/SetModel/SetOrigin engine ops. Gib physics-entity subsystem is now ported; the gib RENDER itself is code-verified only.", result: pass }
+      - { kind: test, ref: "VehicleRuntimeTests.Death_EjectsPilot_ThenRespawnsAtSpawnPoint exercises the descriptor death+respawn (23 vehicle runtime tests pass)", result: pass }
+    confidence: high
+    notes: "Wave-2 FIX (headline): the GtEventDamage seam makes DamageVehicle/Death LIVE on the real combat path. Wave-8e FIX: tumble/death/blowup EXPLOSION FX + SND_ROCKET_IMPACT audio + 50% dead_touch early blowup all live. Wave-15 FIX (re-audited 2026-06-27): the gun1/gun2/gun3 gib toss is now ported (VehicleCommon.TossGib) — the prior sole death gap is closed (presentation partial->faithful for the gun gibs; the body-gib substitution is an intended equivalence, not a defect). Note Bumblebee.cs was NOT touched by Waves 16/17 — these closures landed in Wave 15 (5958904) and the registry simply hadn't been re-audited since."
+
+  - id: vehicle-bumblebee.impact.bouncepain
+    name: "vr_impact bounce pain (vehicles_impact)"
+    layer: [authority]
+    base_refs:
+      - "common/vehicles/vehicle/bumblebee.qc:750 (METHOD Bumblebee vr_impact)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs (Impact(Entity) override -> VehicleCommon.Impact(vehicle, 1, 100, 200))"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs (Touch chains VehicleCommon.Touch -> vr_impact dispatch)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs (Think snapshots vehicle.OldVelocity = Velocity)"
+    constants:
+      - { name: "bouncepain", base: "'1 100 200'", port: "1/100/200 (VehicleCommon.Impact minspeed/speedfac/maxpain)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Wave-4 FIX: Impact is now `public override void Impact(Entity)` calling VehicleCommon.Impact(vehicle, 1f, 100f, 200f) (the shared vehicles_impact, OldVelocity-delta + PlayTime 0.25s gate). Think snapshots vehicle.OldVelocity = Velocity each tick (matches racer_think). Crucially, Bumblebee installs its own .Touch in Enter (overriding SpawnVehicle's shared dispatcher); that Touch now chains VehicleCommon.Touch in both bumblebee_touch tail positions (QC lines 391/404) so the vr_impact dispatch at VehicleCommon.cs:767 is reached. Faithful to Base: bounce-pain fires in touch-board mode (g_vehicles_enter==0), matching QC's `if (autocvar_g_vehicles_enter) return;` early-out.", result: pass }
+    confidence: high
+    notes: "Wave-4 FIX: was implemented-but-DEAD (wrong 2-arg signature + Bumblebee's own .Touch never chained the shared dispatcher). Now a proper override + the Touch chain + OldVelocity snapshot make it live, exactly as Racer/Raptor. Matches Base's touch-board-only bounce-pain semantics."
+
+  - id: vehicle-bumblebee.client.presentation
+    name: "Client presentation: BRG beam, HUD, crosshairs, models, describe"
+    layer: [presentation]
+    base_refs:
+      - "common/vehicles/vehicle/bumblebee.qc:958 (CSQC_BUMBLE_GUN_HUD)"
+      - "common/vehicles/vehicle/bumblebee.qc:965 (vr_hud)"
+      - "common/vehicles/vehicle/bumblebee.qc:989 (vr_crosshair)"
+      - "common/vehicles/vehicle/bumblebee.qc:993 (vr_setup CSQC aux xhairs)"
+      - "common/vehicles/vehicle/bumblebee_weapons.qc:18/45/79 (bumble_raygun_send + NET_HANDLE + bumble_raygun_draw)"
+      - "common/vehicles/vehicle/bumblebee.qc:1005 (describe MENUQC)"
+    port_refs:
+      - "game/net/NetGame.cs:2949 (UpdateVehicleHud — pilot in-vehicle HUD % bars + aux lock crosshair; called live at NetGame.cs:2323)"
+      - "game/hud/VehicleHud.cs:62 (ConfigureForVehicle: Bumblebee art set) + :133 (SetAuxiliaryXhairLock)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:395 (pilot stat-mirror) + :377 (VehLockTarget/VehLockStrength feed)"
+      - "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs:649 (EffectEmitter beam placeholder)"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:158 (BUMBLEBEE_HEAL_MUZZLEFLASH/IMPACT registered)"
+    constants: []
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "STILL DEAD (largest remaining gap): the networked BRG_* healray/damage beam (the signature green/red ray; ENT_CLIENT_BUMBLE_RAYGUN, bumble_raygun_send/NET_HANDLE) + bumble_raygun_draw multi-segment Draw_CylindricLine cylinder. EffectEmitter.TeHealBeam/TeBeam server-side stub (colour bit-faithful) + a client VehicleVisuals.BuildHealBeam scaffold exist, but the client beam endpoint (State.HealTarget) is STILL never fed in ClientWorld.cs (verified 2026-06-28) so the client beam stays hidden — the heal-beam visual remains DEAD. The new VehicleView delta does NOT carry the beam endpoint either."
+      - "Wave-15: the cosmetic gun models (CANNON_RIGHT/LEFT/CENTER) are created + tag-attached at spawn (render code-verified only). STILL NOT IMPLEMENTED: the gun COCKPIT models (GUNCOCKPIT wakizashi_cockpit.dpm) + cockpit/viewport offsets + scale 1.5."
+      - "MENUQC describe text (the three-passenger role explanation) NOT IMPLEMENTED."
+      - "Phase-3b (uncommitted) PARTIAL GAIN: the HUD-bar/lock-crosshair state is now networked cross-client (VehicleView 11-byte delta) instead of host-path-only — but render not runtime-verified and the BRG beam + no-gunner prompts are not in the wire."
+    verification:
+      - { kind: code, ref: "Wave-5 FIX (pilot): NetGame.UpdateVehicleHud (called live at NetGame.cs:2725) configures the VehicleHud Bumblebee art set, mirrors p.VehicleHealth/Shield/Energy/Ammo1/Ammo2 -> [0,1] bars, and projects veh.VehLockTarget at strength VehLockStrength as one SetAuxiliaryXhairLock. Pilot stat source is Bumblebee.Frame (mirror + lock feed).", result: pass }
+      - { kind: code, ref: "Wave-7 FIX (gunner): UpdateVehicleHud's isGunner branch (NetGame.cs:3516-3554) selects VehicleHudKind.BumblebeeGun, mirrors the gunner's 0..100 bars, and draws the magenta '1 0 1' LEAD (slot 1) + reload-color READY (slot 0) aux crosshairs from veh.VehGunnerLeadPoint/HitPoint; FeedPilotGunnerAux mirrors the two gunner READY markers onto the PILOT (slots 1/2). Live each frame.", result: pass }
+      - { kind: code, ref: "Wave-17 FIX (re-audited 2026-06-28): the PILOT 'No right/left gunner!' blinking prompts are now LIVE — ShowNoRightGunner/ShowNoLeftGunner set in UpdateVehicleHud (NetGame.cs:3576-3577, gated `veh.VehicleDef is Bumblebee && VehGunN.VehSlotPlayer is null`) and drawn in VehicleHud.DrawNoGunnerPrompts (VehicleHud.cs:366-373, the QC blink pulse 0.55+sin(time*7)*0.45 at x=520/768). The centered vCROSS_HEAL pilot pointer is also LIVE — MainReticle=gfx/vehicles/crosshair_heal set in FeedRaptorReticle (NetGame.cs:3629) and drawn in DrawMainReticle (VehicleHud.cs:409). Host-path only.", result: pass }
+      - { kind: code, ref: "Phase-3b FRAMEWORK gain (re-audited 2026-06-28, uncommitted working tree): the per-vehicle HUD state (health/shield/energy/ammo1/ammo2/reload1/reload2 bars + LockStrength + LockTargetValid + VehKind 4=bumble-pilot/5=bumble-gunner + W2Mode) is NOW networked cross-client via a new 11-byte EntityField.VehicleView delta block — VehicleViewResolver.Resolve(p) (server, ServerNet.cs:2150) -> VehicleViewCodec.Write (NetEntity.cs:471) -> VehicleViewCodec.Read (NetEntity.cs:557). This supersedes the prior 'cross-client VEHICLESTAT_* networking is a follow-up' caveat for the HUD-bar/lock-crosshair half. NOT runtime-verified (code-kind, uncommitted) and does NOT carry the BRG heal-beam endpoint nor the no-gunner prompts (still host-derived).", result: pass }
+      - { kind: code, ref: "STILL DEAD/missing on the live path: the networked BRG green/red beam entity (EffectEmitter.TeHealBeam/TeBeam stub server-side; client VehicleVisuals.BuildHealBeam scaffold present but State.HealTarget is STILL never fed in ClientWorld.cs -> beam hidden), MENUQC describe text, and the gun COCKPIT models (GUNCOCKPIT) + cockpit/viewport offsets + scale 1.5.", result: fail }
+    confidence: high
+    notes: "Re-audited 2026-06-28 (Phase 3a/3b, vehicle cockpit-camera + view-state networking wave). Bumblebee.cs UNCHANGED since Wave 15; this wave touched the NET/VIEW framework not the descriptor. NEW: a cross-client VehicleView delta (VehicleViewCodec/VehicleViewResolver/VehicleViewState, uncommitted working tree) now networks the HUD bars + lock-strength + vehkind to remote clients (server resolve at ServerNet.cs:2150, wire at NetEntity.cs:471/557) — closing the prior 'host-path only / VEHICLESTAT a follow-up' caveat for that half (code-verified, not runtime-confirmed). UNCHANGED/STILL OPEN: the signature networked BRG heal/damage beam stays DEAD (HealTarget endpoint never fed), cosmetic cockpit models + offsets + scale 1.5 absent, describe text absent. liveness stays partial (BRG beam dead + render unverified). audio=na. Carries the Wave-17 no-gunner prompts + vCROSS_HEAL reticle (now at NetGame.cs:3665/3768, drawn in VehicleHud)."

@@ -11,6 +11,7 @@
 // (the NetName set — dual-rep).
 
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay.Damage;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
@@ -35,6 +36,10 @@ public static class ItemPickupRules
 
     /// <summary>QC DPCONTENTS_NODROP (the SUPERCONTENTS bit). Loot in a NODROP brush (lava) is deleted at spawn.</summary>
     public const int NoDropContents = unchecked((int)0x80000000);
+
+    /// <summary>QC Q3SURFACEFLAG_SKY (q3 surface flag bit). Loot resting on a sky brush is killed on touch
+    /// (ITEM_TOUCH_NEEDKILL's sky half — items.qh:122).</summary>
+    public const int Q3SurfaceFlagSky = 0x4;
 
     private static float Now => Api.Services != null ? Api.Clock.Time : 0f;
 
@@ -65,6 +70,24 @@ public static class ItemPickupRules
         int pickupAnyway = System.Math.Max(worldItem.PickupAnyway, worldItem.Pickup?.ItemDef.PickupAnyway ?? 0);
         bool pickedUp = false;
 
+        // QC Item_GiveTo head (items.qc:525-545): if the player has cl_autoswitch on (and CTS-autoswitch is not
+        // overriding it), remember whether they're currently on their best weapon so we can re-pick a better one
+        // AFTER the give. Captured before any weapon is granted. CTS uses a separate forced-switch policy handled
+        // in the tail. The port is single-slot (no MAX_WEAPONSLOTS loop) — slot 0 is the whole decision.
+        bool useCtsAutoswitch = IsCtsActive() && worldItem.Pickup?.IsWeaponPickup == true && CtsAutoswitchCvar(player) != -1;
+        bool wantSwitch = false;
+        if (AutoswitchEnabled(player) && !useCtsAutoswitch)
+        {
+            int switchId = player.SwitchWeaponId >= 0 ? player.SwitchWeaponId : player.ActiveWeaponId;
+            Weapon? best = Inventory.GetBestWeapon(player);
+            // QC: switch if their switchweapon already IS the best (a better one may now exist), OR they somehow
+            // don't even own their switchweapon.
+            if (best is not null && switchId == best.RegistryId)
+                wantSwitch = true;
+            if (switchId < 0 || !player.OwnedWeaponSet.Has(switchId))
+                wantSwitch = true;
+        }
+
         // QC: the seven Item_GiveAmmoTo calls (resource limits from the per-item caps + the pickup-max cvars).
         pickedUp |= GiveAmmoTo(worldItem, player, ResourceType.Health, worldItem.GetResource(ResourceType.Health),
             worldItem.MaxHealth, pickupAnyway);
@@ -85,6 +108,19 @@ public static class ItemPickupRules
         if (worldItem.Pickup?.IsWeaponPickup == true)
             pickedUp |= InventoryPickupItem(player, worldItem, worldItem.OwnedWeaponSet, pickupAnyway);
 
+        // QC powerup-item center-prints (items.qc:581-587): a FuelRegen / Jetpack powerup the player doesn't yet
+        // hold announces itself. QC keys these off the itemdef AND !(player.items & flag); the held-flag check is
+        // exactly "this flag is newly granted", so we fold it into the IT_PICKUPMASK transfer below (its carries
+        // only the not-yet-held flags). Done before the transfer so player.Items still lacks the flag here.
+        if (worldItem.Pickup?.IsPowerup == true)
+        {
+            int newFlags = worldItem.Items & ~player.Items;
+            if ((newFlags & (int)ItemFlag.FuelRegen) != 0)
+                NotificationSystem.Center(player, "ITEM_FUELREGEN_GOT");
+            else if ((newFlags & (int)ItemFlag.Jetpack) != 0)
+                NotificationSystem.Center(player, "ITEM_JETPACK_GOT");
+        }
+
         // QC IT_PICKUPMASK transfer: the held-item flags this item grants that the player lacks (jetpack /
         // fuelregen / unlimited*). strength/invincible are NOT in the mask — they go through the timers below.
         int its = worldItem.Items & ~player.Items & (int)ItemFlag.PickupMask;
@@ -100,8 +136,62 @@ public static class ItemPickupRules
         // QC: always eat teamed entities (if(item.team) pickedup = true).
         if (worldItem.Team != 0f) pickedUp = true;
 
-        return pickedUp;
+        if (!pickedUp)
+            return false;
+
+        // QC Item_GiveTo tail (items.qc:652-681): now that the give happened, perform the autoswitch.
+        if (useCtsAutoswitch)
+        {
+            // CTS handling: cl_autoswitch_cts 1 = always switch to the picked-up weapon (if usable), -1/0 handled
+            // above (use_cts_autoswitch false / never switch). Crude force-switch like QC.
+            if (CtsAutoswitchCvar(player) == 1)
+            {
+                foreach (var w in worldItem.OwnedWeaponSet.Weapons())
+                {
+                    if (Inventory.ClientHasWeapon(player, w, andAmmo: true, complain: false))
+                        Inventory.SwitchWeapon(player, w); // W_SwitchWeapon_Force
+                }
+            }
+        }
+        else if (wantSwitch)
+        {
+            // non-CTS: weaponpriority-based autoswitch to the (possibly new) best weapon.
+            Weapon? best = Inventory.GetBestWeapon(player);
+            int curSwitch = player.SwitchWeaponId >= 0 ? player.SwitchWeaponId : player.ActiveWeaponId;
+            if (best is not null && curSwitch != best.RegistryId)
+                Inventory.SwitchWeapon(player, best); // W_SwitchWeapon_Force
+        }
+
+        return true;
     }
+
+    // =====================================================================================
+    //  Autoswitch seams (QC CS_CVAR(player).cvar_cl_autoswitch / cvar_cl_autoswitch_cts + g_cts). These are
+    //  per-client replicated cvars + a gametype query the host owns; mirror the Inventory.PriorityProvider
+    //  pattern so the listen/local path works headless (no autoswitch) and the server wires the real source.
+    // =====================================================================================
+
+    /// <summary>
+    /// QC <c>CS_CVAR(player).cvar_cl_autoswitch</c> — the per-client auto-weapon-switch flag. Set by the server's
+    /// Commands (it owns the replicated per-client cvar table); null = no provider wired (headless/local), in
+    /// which case autoswitch is off (matching a player who never replicated the cvar). Takes the entity so a
+    /// future multi-actor host can disambiguate.
+    /// </summary>
+    public static Func<Entity, bool>? AutoswitchProvider;
+
+    /// <summary>
+    /// QC <c>CS_CVAR(player).cvar_cl_autoswitch_cts</c> — the per-client CTS autoswitch override (-1 = unset/use
+    /// the normal autoswitch, 0 = never switch, 1 = always switch to the picked-up weapon). Null provider yields
+    /// -1 (no override). Wired by the server alongside <see cref="AutoswitchProvider"/>.
+    /// </summary>
+    public static Func<Entity, int>? CtsAutoswitchProvider;
+
+    /// <summary>QC <c>g_cts</c> — is the CTS gametype active? Null provider = false (the common DM/other case).</summary>
+    public static Func<bool>? CtsActiveProvider;
+
+    private static bool AutoswitchEnabled(Entity player) => AutoswitchProvider?.Invoke(player) ?? false;
+    private static int CtsAutoswitchCvar(Entity player) => CtsAutoswitchProvider?.Invoke(player) ?? -1;
+    private static bool IsCtsActive() => CtsActiveProvider?.Invoke() ?? false;
 
     /// <summary>
     /// Legacy entry retained for callers that pass an explicit pickup def (target_give host seam): give the
@@ -154,7 +244,11 @@ public static class ItemPickupRules
         }
 
         if (amount < 0f)
-            player.TakeResource(res, -amount); // (no with-limit take in the port; clamp handled by SetResource)
+            // QC Item_GiveAmmoTo (items.qc:507): TakeResourceWithLimit(player, res, -amount, ammomax) — the drain
+            // is floored at -ammomax, matching the give branch's ceiling. `cap` is the (possibly stay-adjusted)
+            // ammomax computed above, passed verbatim exactly like QC (no stock item carries a negative amount, so
+            // this is a faithful-but-latent path; cap is never LimitNone here — only the give branch reaches that).
+            player.TakeResourceWithLimit(res, -amount, cap);
         else
             player.GiveResourceWithLimit(res, amount, cap);
         return true;
@@ -276,7 +370,13 @@ public static class ItemPickupRules
             return;
         }
 
-        // (3) MUTATOR_CALLHOOK(ItemTouch) — the port has no ItemTouch hook chain yet; the common path proceeds.
+        // (3) MUTATOR_CALLHOOK(ItemTouch, this, toucher) (items.qc:706) — fired here, after the gate and BEFORE
+        //     the expiring-timer adjust + give, so a subscriber sees the item's raw powerup timers. QC
+        //     Item_Touch does `if (MUTATOR_CALLHOOK(ItemTouch, this, toucher)) return;` — a handler returning
+        //     MUT_ITEMTOUCH_RETURN (true) ABORTS the pickup (Freeze Tag blocks a frozen toucher; the stock
+        //     superspec hook always returns CONTINUE so the common path proceeds).
+        if (MutatorHooks.FireItemTouch(item, toucher))
+            return;
 
         // (4) an expiring loot item's powerup timers are stored absolute-from-now; subtract `time` so the give's
         //     max(t, time + finished) treats them as remaining (QC items.qc:714-721). Restored if nothing taken.
@@ -318,6 +418,13 @@ public static class ItemPickupRules
         // Both funnel through here, so a single emit before the loot/respawn split covers both.
         EmitItemEffect("ITEM_PICKUP", item);
 
+        // QC (items.qc:746): MUTATOR_CALLHOOK(ItemTouched, this, toucher); if (wasfreed(this)) return; — fired
+        // AFTER the give + pickup sound. random_items re-randomizes the picked-up MAP item here: it spawns a fresh
+        // replacement, schedules the replacement's respawn, and deletes THIS item — so the re-check below bails.
+        MutatorHooks.FireItemTouched(item, toucher);
+        if (item.IsFreed)
+            return;
+
         // QC: loot is removed (no respawn).
         if (item.ItemIsLoot)
         {
@@ -329,9 +436,45 @@ public static class ItemPickupRules
         if (item.SpawnShieldExpire == 0f)
             return;
 
-        // QC team-item: pick a random sibling of the same team to respawn (the others hide). The port's
-        // gametype team-item handling isn't wired here; for an untemmed item just respawn this one.
-        ScheduleRespawn(item);
+        // QC items.qc:762-780: if(this.team) pick a random sibling of the same team to respawn (hide all,
+        // then show and schedule the one that was randomly chosen — re-rolled each pickup so successive picks
+        // can land on different members). For an un-teamed item just respawn this one.
+        if (item.Team != 0f)
+        {
+            // QC: RandomSelection_Init(); IL_EACH(g_items, it.team == this.team, …hide + add to selection…);
+            // e = RandomSelection_chosen_ent; Item_Show(e, 1); Item_ScheduleRespawn(e);
+            var sel = new MapMover.RandomSelection();
+            sel.Reset();
+            if (Api.Services is not null && Api.Entities.All is { } all)
+            {
+                for (int i = 0; i < all.Count; i++)
+                {
+                    Entity it = all[i];
+                    if (!it.IsFreed && it.Team == item.Team && it.ItemDefRef is not null)
+                    {
+                        // QC: Item_Show(it, -1); scheduledrespawntime = 0; then add to random selection.
+                        Show(it, -1);
+                        it.ScheduledRespawnTime = 0f;
+                        sel.Add(it, it.Cnt != 0 ? it.Cnt : 1, 0f);
+                    }
+                }
+            }
+            else
+            {
+                // headless / no All list: fall back to just this item (safe stub — QC behaviour requires
+                // iterating g_items; the live path is always covered by the Api.Entities.All branch).
+                sel.Add(item, item.Cnt != 0 ? item.Cnt : 1, 0f);
+            }
+
+            Entity? e = sel.Chosen ?? item;
+            // QC: Item_Show(e, 1) — reset the chosen item's state so it is visible (extra sendflags ok).
+            Show(e, 1);
+            ScheduleRespawn(e);
+        }
+        else
+        {
+            ScheduleRespawn(item);
+        }
     }
 
     // =====================================================================================
@@ -347,9 +490,10 @@ public static class ItemPickupRules
     /// </summary>
     public static void Show(Entity e, int mode)
     {
-        // QC clears EF_ADDITIVE|STARDUST|FULLBRIGHT|NODEPTHTEST + ITS_STAYWEP each call. (EF_NODEPTHTEST is a
-        // pure render bit not mirrored in the port's EffectFlags; the gameplay-relevant clears are these three.)
-        e.Effects &= ~(EffectFlags.Additive | EffectFlags.Stardust | EffectFlags.FullBright);
+        // QC items.qc:131 clears EF_ADDITIVE|EF_STARDUST|EF_FULLBRIGHT|EF_NODEPTHTEST + ITS_STAYWEP each call,
+        // then re-derives the status bits below. All four EF_* bits are mirrored in the port's EffectFlags and
+        // honoured by the client (CsqcModelEffects.Apply: additive/fullbright/nodepthtest render the item model).
+        e.Effects &= ~(EffectFlags.Additive | EffectFlags.Stardust | EffectFlags.FullBright | EffectFlags.NoDepthTest);
         e.ItemStayWeapon = false;
 
         if (mode > 0)
@@ -396,6 +540,35 @@ public static class ItemPickupRules
                 e.ItemAvailable = false;
             }
         }
+
+        // QC Item_Show tail (items.qc:176-189): re-derive the status/effect bits each call.
+        //
+        // The port has no networked ItemStatus byte (ITS_GLOW/ITS_ALLOWFB/ITS_ALLOWSI) — those CSQC status bits
+        // exist in Base only to be translated into render EF_* flags client-side (client/items/items.qc:242-269:
+        // ITS_ALLOWFB->EF_FULLBRIGHT, ITS_GLOW&AVAILABLE->EF_ADDITIVE|EF_FULLBRIGHT). The port emits the equivalent
+        // EF_* directly on the world item, which the client already honours (CsqcModelEffects), so the rendered
+        // result matches without the intermediate status byte.
+        bool available = e.ItemAvailable;
+
+        // ITS_GLOW (def.m_glow — powerups): CSQC adds EF_ADDITIVE|EF_FULLBRIGHT only while the item is AVAILABLE
+        // (client/items/items.qc:255). Apply the same additive glow here when available.
+        if (e.Pickup?.ItemDef.Glow == true && available)
+            e.Effects |= EffectFlags.Additive | EffectFlags.FullBright;
+
+        // EF_NODEPTHTEST (autocvar_g_nodepthtestitems): draw the item through walls. Set directly on .effects in
+        // QC's Item_Show (items.qc:181) — a pure render bit honoured by CsqcModelEffects.SetNoDepthTest.
+        if (CvarOr("g_nodepthtestitems", 0f) != 0f)
+            e.Effects |= EffectFlags.NoDepthTest;
+
+        // ITS_ALLOWFB (autocvar_g_fullbrightitems): the server-permits-fullbright bit. CSQC turns it into
+        // EF_FULLBRIGHT unconditionally (client/items/items.qc:242). Apply EF_FULLBRIGHT here when enabled.
+        if (CvarOr("g_fullbrightitems", 0f) != 0f)
+            e.Effects |= EffectFlags.FullBright;
+
+        // ITS_ALLOWSI (autocvar_sv_simple_items, Base default 1): permits the client to swap to the flat _simple
+        // sprite (client/items/items.qc:78). The port has no _simple model-swap pipeline (no client model
+        // resolver for the *_simple variants, no bob suppression), so this bit has no render effect yet; left
+        // unset rather than faked. See the items-pickups simple-items gap.
 
         // QC: relink (solid may have changed) — setorigin(e, e.origin) updates the area grid link.
         if (Api.Services is not null)
@@ -485,6 +658,13 @@ public static class ItemPickupRules
     /// </summary>
     public static void ScheduleRespawnIn(Entity item, float t)
     {
+        // QC items.qc:329 — the visible-countdown gate is (set_itemstime || MUTATOR_CALLHOOK(Item_ScheduleRespawn,
+        // e, t)) && (t - ITEM_RESPAWN_TICKS) > 0. The port already routes EVERY long respawn (> ITEM_RESPAWN_TICKS)
+        // through the countdown-waypoint path (it doesn't gate on the itemstime set), so the mutator hook can only
+        // KEEP an item on the countdown path, never pull one off it — firing it here makes the Overkill
+        // Item_ScheduleRespawn hook live (it forces its surviving Mega/Big health+armor onto the waypoint path,
+        // which they already take) without altering the existing non-mutator behavior.
+        _ = MutatorHooks.FireItemScheduleRespawn(item, t);
         if (t - RespawnTicks > 0f)
         {
             item.NextThink = Now + System.MathF.Max(0f, t - RespawnTicks);
@@ -575,6 +755,13 @@ public static class ItemPickupRules
         // respawns (and a powerup's first scheduled appearance) reach Respawn; a normal item's initial spawn
         // shows via Show(item, 1) directly in StartItem, so this never double-fires on map load.
         EmitItemEffect("ITEM_RESPAWN", item);
+        // Drop any respawn-countdown waypoint sprite (QC kills it in Item_RespawnCountdown before Respawn; this
+        // also covers the rare paths that reach Respawn without finishing the countdown tick).
+        if (item.WaypointAttached is Waypoints.WaypointSprite wp)
+        {
+            Waypoints.WaypointSprites.Kill(wp);
+            item.WaypointAttached = null;
+        }
         item.ScheduledRespawnTime = 0f;
         // a short spawn-shield so it can't be insta-grabbed the same frame it appears.
         item.ItemSpawnShieldExpire = Now;
@@ -589,17 +776,72 @@ public static class ItemPickupRules
         if (Now >= item.ItemWait) Respawn(item);
     }
 
-    // QC Item_RespawnCountdown: tick the countdown, then respawn when the scheduled time arrives. (The
-    // per-second waypoint ping + ITEMRESPAWNCOUNTDOWN sound are client/networking-side.)
+    // QC Item_RespawnCountdown (items.qc:264-308): tick the per-second respawn countdown, then respawn when the
+    // tick budget (ITEM_RESPAWN_TICKS) is spent. On the FIRST tick spawn a respawn-countdown waypoint sprite
+    // attached to the item — WP_Weapon for weapon pickups, WP_Item for everything else — and, for the itemstime
+    // SpectatorOnly items (Mega/Big Health+Armor), restrict it to SPRITERULE_SPECTATOR. Then EVERY tick: for each
+    // client the waypoint is visible to, play the ITEMRESPAWNCOUNTDOWN sound, and ping the waypoint (radar pulse).
     private static void RespawnCountdown(Entity item)
     {
         if (item.ItemRespawnCounter >= (int)RespawnTicks)
         {
+            // QC: WaypointSprite_Kill(this.waypointsprite_attached) before Item_Respawn.
+            if (item.WaypointAttached is Waypoints.WaypointSprite kw)
+                Waypoints.WaypointSprites.Kill(kw);
+            item.WaypointAttached = null;
             Respawn(item);
             return;
         }
         item.NextThink = Now + 1f;
         item.ItemRespawnCounter++;
+        if (item.ItemRespawnCounter == 1)
+        {
+            // QC items.qc:275-289: spawn the countdown waypoint. WP_Weapon (radar icon RADARICON_Weapon) for a
+            // weapon pickup, WP_Item (RADARICON_Item) otherwise — matching the engine's per-item radar glyph.
+            // Both attach to the item at the '0 0 64' head offset and never fade (lifetime 0; killed on respawn).
+            bool isWeapon = item.Pickup?.IsWeaponPickup == true;
+            string spriteName = isWeapon ? "Weapon" : "Item";
+            System.Numerics.Vector3 color = isWeapon
+                ? System.Numerics.Vector3.Zero               // WP_Weapon: black, weapon color resolved client-side
+                : new System.Numerics.Vector3(1f, 0f, 1f);   // WP_Item: magenta
+            // QC items.qc:289 — MUTATOR_CALLHOOK(Item_RespawnCountdown, this) on the first tick (after the
+            // waypoint is spawned). The return value gates the SPRITERULE_SPECTATOR restriction below:
+            // Item_ItemsTime_SpectatorOnly(def) && !mutator_returnvalue. Overkill returns true for its surviving
+            // Mega/Big health+armor so those countdown waypoints show for EVERYONE, not just spectators.
+            bool mutatorOverride = MutatorHooks.FireItemRespawnCountdown(item);
+            Waypoints.WaypointSprite wp = Waypoints.WaypointSprites.Spawn(
+                spriteName, 0f, 0f, item, new System.Numerics.Vector3(0f, 0f, 64f), item.Origin,
+                0, color, radarIcon: 1,
+                // QC: only the SpectatorOnly set (Mega/Big Health+Armor) gets SPRITERULE_SPECTATOR (the server
+                // per-peer gate, ServerNet.WaypointVisible, reproduces the sv_itemstime 1/2 mode); every other
+                // item's countdown waypoint is SPRITERULE_DEFAULT (visible to everyone, like a flag base). A
+                // mutator (Overkill) returning true from Item_RespawnCountdown lifts the spectator restriction.
+                rule: ItemstimeMutator.IsSpectatorOnlyItem(item.ClassName) && !mutatorOverride
+                    ? Waypoints.SpriteRule.Spectator
+                    : Waypoints.SpriteRule.Default,
+                hideable: true);
+            // QC: a WP_Weapon carries wp_extra = the weapon id so the client resolves the per-weapon icon/color
+            // (waypointsprites.qc spritelookuptext/color). Stamp it for weapon respawns (parity with Weapon_whereis).
+            if (isWeapon && item.OwnedWeaponSet is { IsEmpty: false } ws)
+                foreach (int wid in ws.Ids()) { wp.WpExtra = wid; break; }
+            // WaypointSprite_UpdateBuildFinished drives the build-progress bar to full at the scheduled respawn.
+            Waypoints.WaypointSprites.UpdateBuildFinished(wp, item.ScheduledRespawnTime);
+            item.WaypointAttached = wp;
+        }
+
+        // QC items.qc:291-307: every countdown tick, for each client that can see the waypoint, play the
+        // per-second ITEMRESPAWNCOUNTDOWN cue, then ping the waypoint (radar ring pulse).
+        if (item.WaypointAttached is Waypoints.WaypointSprite tickWp)
+        {
+            // QC soundto(MSG_ONE, this, CH_TRIGGER, SND(ITEMRESPAWNCOUNTDOWN)) per visible client. The port's
+            // Common layer has no per-client soundto seam, so emit a single positional cue on the item entity
+            // on CH_TRIGGER — every client near the item hears the countdown tick (the per-visible-client
+            // gating is approximated by ATTEN_NORM falloff; SpectatorOnly items over-broadcast slightly to
+            // nearby live players, the only divergence from QC's waypoint-visibility gate).
+            if (Api.Services is not null)
+                Api.Sound.Play(item, SoundChannel.TriggerAuto, "ITEMRESPAWNCOUNTDOWN");
+            Waypoints.WaypointSprites.Ping(tickWp);
+        }
     }
 
     // The give+respawn tail of Item_Touch for the legacy GiveTo entry: schedule the respawn for the taken item.
@@ -623,7 +865,10 @@ public static class ItemPickupRules
     /// </summary>
     public static void PlayPickupSound(Entity worldItem, Entity player)
     {
-        string snd = worldItem.Pickup?.PickupSoundName ?? "ITEMPICKUP";
+        // QC .item_pickupsound_ent override (a FilterItem hook may stamp a per-item pickup sound, e.g. New Toys'
+        // SND_WEAPONPICKUP_NEW_TOYS roflsound) wins over the def's default sound.
+        string snd = worldItem.ItemPickupSoundOverride
+            ?? worldItem.Pickup?.PickupSoundName ?? "ITEMPICKUP";
         if (Api.Services is not null && !string.IsNullOrEmpty(snd))
             // CH_TRIGGER (auto) so two quick pickups (e.g. armor + health in one pass) stack instead of the
             // second one cutting off the first — DP plays item_pickupsound on the auto trigger channel.
@@ -649,14 +894,85 @@ public static class ItemPickupRules
         MapMover.RemoveEntity(item);
     }
 
+    // =====================================================================================
+    //  Item_Damage (items.qc:981) — loot destroyed by NEEDKILL damage (lava/slime/swamp).
+    // =====================================================================================
+
+    /// <summary>
+    /// QC <c>Item_Damage</c> (items.qc:981-985): the <c>event_damage</c> handler wired on loot items
+    /// (<see cref="StartItem.SpawnInternal"/> sets this on <see cref="Entity.GtEventDamage"/> when loot is
+    /// created with <c>TakeDamage = DamageMode.Yes</c>). If the deathtype is a NEEDKILL environmental kill
+    /// (DEATH_HURTTRIGGER/SLIME/LAVA/SWAMP — loot falling into lava after the initial NODROP-brush check),
+    /// the item is removed immediately. Any other damage type is ignored: items aren't intended to be shot down.
+    /// </summary>
+    public static void ItemDamage(Entity item, Entity? inflictor, Entity? attacker,
+        string deathType, float damage, System.Numerics.Vector3 hitLoc, System.Numerics.Vector3 force)
+    {
+        // QC: if(ITEM_DAMAGE_NEEDKILL(deathtype)) RemoveItem(this);
+        if (DeathTypes.ItemDamageNeedKill(deathType))
+            RemoveItem(item);
+    }
+
+    // =====================================================================================
+    //  item_use (items.qc:987) — trigger-to-spawn (a relay/trigger fires a targetname'd item).
+    //  item_setactive (items.qc:995) — show/hide via ACTIVE_* (relay_activate/_deactivate/_toggle).
+    // =====================================================================================
+
+    /// <summary>
+    /// QC <c>item_use(this, actor, trigger)</c> (items.qc:987-993): wired on permanent items that have a
+    /// <c>targetname</c> so a relay/trigger firing the item's targetname can spawn it into play.
+    /// <list type="bullet">
+    ///   <item>spawnflags &amp; 16 — q3compat immediate-touch: call the item's own touch handler with
+    ///     <paramref name="actor"/> as the toucher (as if the actor walked over the item).</item>
+    ///   <item>else (normal path) — call <see cref="Respawn"/> to make the item visible and start its
+    ///     respawn cycle, exactly as if its respawn timer had fired.</item>
+    /// </list>
+    /// </summary>
+    public static void ItemUse(Entity item, Entity actor)
+    {
+        if ((item.SpawnFlags & 16) != 0)
+        {
+            // QC: gettouch(this)(this, actor) — fire the touch handler directly (q3compat).
+            item.Touch?.Invoke(item, actor);
+        }
+        else
+        {
+            // QC: Item_Respawn(this) — make the item available and start its respawn cycle.
+            Respawn(item);
+        }
+    }
+
+    /// <summary>
+    /// QC <c>item_setactive(this, act)</c> (items.qc:995-1005): the per-item <c>.setactive</c> handler wired
+    /// by <see cref="StartItem.SpawnInternal"/> on every permanent item. Receives an <c>ACTIVE_*</c> state from
+    /// relay_activate / relay_deactivate / relay_activatetoggle (or any other <c>.setactive</c> dispatch) and
+    /// calls <see cref="Show"/> on the item to match — <c>ACTIVE_ACTIVE</c> shows it (<c>mode 1</c>),
+    /// <c>ACTIVE_NOT</c> hides it (<c>mode -1</c>). <c>ACTIVE_TOGGLE</c> flips the current state.
+    /// </summary>
+    public static void ItemSetActive(Entity item, int act)
+    {
+        // QC: old_status = this.active; toggle or set; if changed, Item_Show(1 or -1).
+        int oldStatus = item.Active;
+        if (act == MapMover.ActiveToggle)
+            item.Active = (item.Active == MapMover.ActiveActive) ? MapMover.ActiveNot : MapMover.ActiveActive;
+        else
+            item.Active = act;
+
+        if (item.Active != oldStatus)
+            Show(item, item.Active == MapMover.ActiveActive ? 1 : -1);
+    }
+
     // QC ITEM_TOUCH_NEEDKILL(): the loot's spot is a NODROP brush (lava) or a sky surface. We trace a zero-length
-    // line at the item and test the hit contents (the port has no separate dpstartcontents global).
+    // line at the item and test the hit contents + the q3 surface flags (the port has no separate dpstartcontents
+    // global, so we fold the QC `(trace_dpstartcontents | trace_dphitcontents) & DPCONTENTS_NODROP` into the
+    // single hit-contents test). The sky-surface half (Q3SURFACEFLAG_SKY) kills loot that lands on a sky brush.
     private static bool LootInNoDrop(Entity item)
     {
         if (Api.Services is null) return false;
         TraceResult tr = Api.Trace.Trace(item.Origin, System.Numerics.Vector3.Zero, System.Numerics.Vector3.Zero,
             item.Origin, MoveFilter.Normal, item);
-        return (tr.DpHitContents & NoDropContents) != 0;
+        return (tr.DpHitContents & NoDropContents) != 0
+            || (tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagSky) != 0;
     }
 
     // QC: a superweapon weapon pickup never weapon-stays. The port has no per-item weapon link here; approximate

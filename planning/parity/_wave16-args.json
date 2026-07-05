@@ -1,0 +1,400 @@
+{
+"units": [
+{
+"unit": "bot-ai",
+"stream": "bot",
+"tier": "opus",
+"gaps": 11
+},
+{
+"unit": "bot-waypoints",
+"stream": "bot",
+"tier": "opus",
+"gaps": 10
+},
+{
+"unit": "cl-csqcmodel",
+"stream": "foundation",
+"tier": "opus",
+"gaps": 5
+},
+{
+"unit": "clanarena",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 9
+},
+{
+"unit": "ctf",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 13
+},
+{
+"unit": "cts",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 7
+},
+{
+"unit": "deathmatch",
+"stream": "gameplay",
+"tier": "sonnet",
+"gaps": 2
+},
+{
+"unit": "domination",
+"stream": "gameplay",
+"tier": "sonnet",
+"gaps": 1
+},
+{
+"unit": "duel",
+"stream": "gameplay",
+"tier": "sonnet",
+"gaps": 1
+},
+{
+"unit": "freezetag",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 13
+},
+{
+"unit": "items-pickups",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 2
+},
+{
+"unit": "keepaway",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 7
+},
+{
+"unit": "keyhunt",
+"stream": "gameplay",
+"tier": "sonnet",
+"gaps": 2
+},
+{
+"unit": "lms",
+"stream": "gameplay",
+"tier": "sonnet",
+"gaps": 3
+},
+{
+"unit": "mapobject-misc",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 2
+},
+{
+"unit": "mapobject-movers-platforms",
+"stream": "gameplay",
+"tier": "haiku",
+"gaps": 2
+},
+{
+"unit": "mapobject-target",
+"stream": "gameplay",
+"tier": "sonnet",
+"gaps": 2
+},
+{
+"unit": "mapobject-teleporters-portals",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 5
+},
+{
+"unit": "mapobject-triggers",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 3
+},
+{
+"unit": "monster-framework",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 2
+},
+{
+"unit": "monster-spider",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 7
+},
+{
+"unit": "monster-zombie",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 2
+},
+{
+"unit": "mutator-bloodloss",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 2
+},
+{
+"unit": "mutator-buffs",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 13
+},
+{
+"unit": "mutator-dodging",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 1
+},
+{
+"unit": "mutator-invincibleproj",
+"stream": "gameplay",
+"tier": "sonnet",
+"gaps": 1
+},
+{
+"unit": "mutator-nix",
+"stream": "gameplay",
+"tier": "sonnet",
+"gaps": 1
+},
+{
+"unit": "mutator-overkill",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 5
+},
+{
+"unit": "mutator-physical_items",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 3
+},
+{
+"unit": "mutator-random_gravity",
+"stream": "gameplay",
+"tier": "haiku",
+"gaps": 1
+},
+{
+"unit": "mutator-touchexplode",
+"stream": "gameplay",
+"tier": "sonnet",
+"gaps": 1
+},
+{
+"unit": "mutator-waypoints",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 10
+},
+{
+"unit": "net-entity-state",
+"stream": "foundation",
+"tier": "opus",
+"gaps": 2
+},
+{
+"unit": "overkill-weapons",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 6
+},
+{
+"unit": "physics-movetypes",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 1
+},
+{
+"unit": "race",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 4
+},
+{
+"unit": "scoring",
+"stream": "gameplay",
+"tier": "haiku",
+"gaps": 1
+},
+{
+"unit": "sv-antilag",
+"stream": "server-admin",
+"tier": "opus",
+"gaps": 2
+},
+{
+"unit": "sv-chat",
+"stream": "server-admin",
+"tier": "sonnet",
+"gaps": 4
+},
+{
+"unit": "sv-cheats",
+"stream": "server-admin",
+"tier": "opus",
+"gaps": 6
+},
+{
+"unit": "sv-client-lifecycle",
+"stream": "foundation",
+"tier": "opus",
+"gaps": 13
+},
+{
+"unit": "sv-clientkill",
+"stream": "server-admin",
+"tier": "opus",
+"gaps": 1
+},
+{
+"unit": "sv-commands-votes",
+"stream": "server-admin",
+"tier": "opus",
+"gaps": 2
+},
+{
+"unit": "sv-impulse",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 3
+},
+{
+"unit": "sv-intermission",
+"stream": "server-admin",
+"tier": "opus",
+"gaps": 2
+},
+{
+"unit": "sv-ipban",
+"stream": "server-admin",
+"tier": "sonnet",
+"gaps": 3
+},
+{
+"unit": "sv-mapvoting",
+"stream": "server-admin",
+"tier": "opus",
+"gaps": 3
+},
+{
+"unit": "sv-spawnpoints",
+"stream": "server-admin",
+"tier": "opus",
+"gaps": 3
+},
+{
+"unit": "sv-teamplay",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 6
+},
+{
+"unit": "sv-world-rules",
+"stream": "foundation",
+"tier": "opus",
+"gaps": 9
+},
+{
+"unit": "tdm",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 2
+},
+{
+"unit": "turret-framework",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 5
+},
+{
+"unit": "turret-hk",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 4
+},
+{
+"unit": "turret-phaser",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 2
+},
+{
+"unit": "turret-walker",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 3
+},
+{
+"unit": "warpzones",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 7
+},
+{
+"unit": "weapon-arc",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 6
+},
+{
+"unit": "weapon-crylink",
+"stream": "gameplay",
+"tier": "haiku",
+"gaps": 2
+},
+{
+"unit": "weapon-electro",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 3
+},
+{
+"unit": "weapon-hook",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 3
+},
+{
+"unit": "weapon-machinegun",
+"stream": "gameplay",
+"tier": "sonnet",
+"gaps": 3
+},
+{
+"unit": "weapon-minelayer",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 11
+},
+{
+"unit": "weapon-porto",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 3
+},
+{
+"unit": "weapon-shotgun",
+"stream": "gameplay",
+"tier": "sonnet",
+"gaps": 3
+},
+{
+"unit": "weapon-vaporizer",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 4
+},
+{
+"unit": "weapon-vortex",
+"stream": "gameplay",
+"tier": "opus",
+"gaps": 4
+}
+]
+}

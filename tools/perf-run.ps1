@@ -1,0 +1,87 @@
+# perf-run - one-command perf capture + report (the committed successor of _scratch/perf-run.sh).
+#
+#   tools\perf-run.ps1 -Label baseline                        # 35s catharsis + 6 bots on the RELEASE export
+#   tools\perf-run.ps1 -Label pvs_off -Cvar "r_pvs_cull 0"    # A/B variant
+#   tools\perf-run.ps1 -Label after -Baseline _scratch\perf_baseline.json   # capture + diff
+#   tools\perf-run.ps1 -Label dbg -DebugBuild                 # run the project via the Godot console binary
+#
+# Launches the game with the frame profiler forced on, waits for the self-quit, finds the new
+# ~/XonData/logs/session-*.{log,csv} pair, and runs tools/perf-report.py on it (writing
+# _scratch/perf_<label>.json for later -Baseline use). Release export is the DEFAULT because debug
+# censuses are not representative (the profiler watermarks them too).
+#
+# NOTE: keep this file pure ASCII - Windows PowerShell 5.1 parses BOM-less scripts as ANSI.
+param(
+    [string]$Label = "run",
+    [int]$Secs = 35,
+    [string]$Map = "catharsis",
+    [string]$Gametype = "dm",
+    [int]$Bots = 6,
+    [switch]$DebugBuild,
+    [string]$Baseline = "",
+    [string[]]$Cvar = @()   # extra cvars, each "name value"
+)
+
+$ErrorActionPreference = "Stop"
+$root = Split-Path -Parent $PSScriptRoot   # repo root (this script lives in tools/)
+$outDir = Join-Path $root "_scratch"
+if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }
+$stdout = Join-Path $outDir "perf_$Label.out"
+$logDir = Join-Path $env:USERPROFILE "XonData\logs"
+
+# --- pick the binary -------------------------------------------------------------------------
+if ($DebugBuild) {
+    $exe = "C:\Program Files\Godot\Godot_v4.6.3-stable_mono_win64_console.exe"
+    $exeArgs = @("--path", $root)
+    if (-not (Test-Path $exe)) { throw "Godot console binary not found at $exe (see RUNNING.md)" }
+} else {
+    $exe = Join-Path $root "dist\windows-client\XonoticGodot.exe"
+    $exeArgs = @()
+    if (-not (Test-Path $exe)) {
+        throw "release export missing at $exe - export the windows-client preset first (or use -DebugBuild for a non-representative debug run)"
+    }
+}
+
+# --- clean strays (an orphaned host keeps UDP 26000 bound) -----------------------------------
+Get-Process Godot*, XonoticGodot* -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
+$before = Get-ChildItem $logDir -Filter "session-*.log" -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+
+# --- launch ----------------------------------------------------------------------------------
+$exeArgs += @("--host", $Map, "--gametype", $Gametype, "--bots", "$Bots",
+              "--cvar", "cl_frameprofiler", "2",
+              "--cvar", "cl_frameprofiler_hitchms", "8",
+              "--quit-after-seconds", "$Secs")
+foreach ($c in $Cvar) {
+    $parts = $c -split "\s+", 2
+    if ($parts.Count -eq 2) { $exeArgs += @("--cvar", $parts[0], $parts[1]) }
+}
+Write-Host ">>> [$Label] $exe $($exeArgs -join ' ')"
+$proc = Start-Process -FilePath $exe -ArgumentList $exeArgs -RedirectStandardOutput $stdout -PassThru
+$null = $proc | Wait-Process -Timeout ($Secs + 90) -ErrorAction SilentlyContinue
+if (-not $proc.HasExited) {
+    Write-Warning "self-quit did not fire - killing the process"
+    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+}
+Start-Sleep -Seconds 2   # let the session-log writer thread flush + close
+
+# --- locate the new session ------------------------------------------------------------------
+$new = Get-ChildItem $logDir -Filter "session-*.log" -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1
+if ($null -eq $new -or ($null -ne $before -and $new.FullName -eq $before.FullName)) {
+    Write-Warning "no new session log produced (boot failed?) - tail of $stdout :"
+    Get-Content $stdout -Tail 25
+    exit 1
+}
+Write-Host ">>> [$Label] session: $($new.Name)"
+
+# --- report (+ json for later -Baseline use, + optional diff) --------------------------------
+$py = Get-Command python -ErrorAction SilentlyContinue
+if ($null -eq $py) { $py = Get-Command py -ErrorAction SilentlyContinue }
+if ($null -eq $py) { Write-Warning "python not found - session files: $($new.FullName)"; exit 0 }
+
+$reportArgs = @((Join-Path $root "tools\perf-report.py"), $new.FullName,
+                "--json", (Join-Path $outDir "perf_$Label.json"))
+if ($Baseline -ne "") { $reportArgs += @("--diff", $Baseline) }
+& $py.Source @reportArgs

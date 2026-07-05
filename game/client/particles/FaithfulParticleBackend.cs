@@ -172,7 +172,7 @@ public sealed partial class FaithfulParticleBackend : Node3D
     /// velmins==velmaxs). <paramref name="count"/> is DP's <c>pcount</c> (quality/countmultiplier applied
     /// inside the sim). Coordinates are Quake space (the sim's space).
     /// </summary>
-    public void Spawn(IReadOnlyList<EffectInfoEmitter> blocks, NVec3 origin, NVec3 velocity, int count,
+    public void Spawn(IReadOnlyList<EffectInfoEmitter> blocks, NVec3 origin, NVec3 velocity, float count,
         uint tintRgba = 0xFFFFFFFFu)
     {
         if (blocks is null || blocks.Count == 0)
@@ -187,7 +187,7 @@ public sealed partial class FaithfulParticleBackend : Node3D
     /// supplied <paramref name="velocity"/> is the emit velocity passed through velmins==velmaxs.
     /// <paramref name="count"/> is DP's <c>pcount</c>.
     /// </summary>
-    public void Trail(IReadOnlyList<EffectInfoEmitter> blocks, NVec3 start, NVec3 end, NVec3 velocity, int count,
+    public void Trail(IReadOnlyList<EffectInfoEmitter> blocks, NVec3 start, NVec3 end, NVec3 velocity, float count,
         uint tintRgba = 0xFFFFFFFFu)
     {
         if (blocks is null || blocks.Count == 0)

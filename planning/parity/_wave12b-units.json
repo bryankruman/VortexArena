@@ -1,0 +1,262 @@
+[
+ {
+  "unit": "fx-deathtypes",
+  "tier": "sonnet",
+  "notes": [
+   "[liveness] fx-deathtypes.message.special_nade_misc: DEATH_SHOOTING_STAR has a selector (SelectSpecial maps DeathTypes.ShootingStar -> SHOOTING_STAR) but NO live emitter in the port: no jumppad/launch volume tags a kill with it, so the path is dead. Latent-only (Base registers it but it is a niche death). All other rows in this family are now live.",
+   "[liveness] fx-deathtypes.message.teamchange: DEATH_TEAMCHANGE (manual team change) has no live emitter in the port: every force-kill team change routes through DeathTypes.AutoTeamChange (Teamplay.cs:698). The AUTOTEAMCHANGE branch IS live; the manual TEAMCHANGE self-line is selectable but dead. Minor — the rendered text differs only by the auto/manual wording.",
+   "[liveness] fx-deathtypes.message.mapper_custom: DEATH_CUSTOM emitter is DEAD: the selector + emit path are now fully wired (DeathTypes.Custom const, Scores.EmitObituary CUSTOM branch with the 'You were %s' formatting matching damage.qc:457), but nothing in the port tags a death with DeathTypes.Custom (grep finds only the consumer at Scores.cs:610) — no mapper trigger_hurt/deathmessage emitter, so the path never fires."
+  ]
+ },
+ {
+  "unit": "fx-notifications",
+  "tier": "haiku",
+  "notes": [
+   "[logic] fx-notifications.net.shouldsend: STILL OPEN (unchanged this wave): NotificationReaches (:2399-2417) omits the QC spectator-follow clause: NOTIF_ONE should also reach `IS_SPEC(to) && to.enemy == other`; NOTIF_TEAM the spec whose `enemy.team == other.team`; NOTIF_ALL_EXCEPT must also exclude `IS_SPEC(to) && to.enemy == other`; NOTIF_TEAM_EXCEPT has a parallel spec nuance. The port covers only the direct player match for each, so a spectator following a player will not receive that player's personal NOTIF_ONE/TEAM notifications. ;"
+  ]
+ },
+ {
+  "unit": "fx-sounds",
+  "tier": "sonnet",
+  "notes": [
+   "[liveness] fx-sounds.emit.sound_allowed: SoundAllowedGate.WalkOwner (owner-walk re-home) is implemented but DEAD: no caller uses it to re-home corpse/projectile sounds to the originating player before the gate check. ; IsAllowed (bot_sound_monopoly gate) is live only on the vehicle hit/shield emit paths (VehicleCommon.cs:502/511/522); it is NOT applied on the general one-shot emit path (SoundService.Play / PlayOn), so most SVQC emits bypass the gate. ; QC MSG_ONE 'sounds to self always pass' branch omitted (no per-recipient msg_entity ",
+   "[liveness] fx-sounds.emit.play2_family: play2team (Play2Team) is ported but DEAD — zero live callers. Base calls play2team for ONS_CONTROLPOINT_UNDERATTACK / ONS_GENERATOR_UNDERATTACK (sv_onslaught.qc:386/943); the port emits those via PlayGlobal instead (OnslaughtControlPoint.cs:249), a per-team -> global broadcast divergence. ; play2all port (PlayGlobal) omits QC play2all's `if(autocvar_bot_sound_monopoly) return;` gate, so global cues still play when bot_sound_monopoly=1. ; Many Base play2 call sites remain unwired in the port: wea",
+   "[logic] fx-sounds.voice.globalsound_dispatch: AUTOTAUNT per-recipient probability roll (tauntrand < CS_CVAR(it).cl_autotaunt) still omitted: per-client cl_autotaunt is not networked, so autotaunts that clear sv_autotaunt always play for all recipients (documented deferral; a single global cl_autotaunt default 0 would wrongly silence ALL autotaunts). ; TAUNT does not trigger animdecide_setaction(ANIMACTION_TAUNT) on the living speaker (no anim-action seam yet).",
+   "[values] fx-sounds.presentation.hitsound_sample: Pitch curve simplified: the port uses a linear damage->pitch ramp (mode 2/3) instead of QC's asymptotic gradient function (a=cl_hitsound_max_pitch, b=cl_hitsound_min_pitch, c=cl_hitsound_nom_damage); audible only as a slightly different pitch shape, and only for cl_hitsound 2/3 (default 1 = fixed pitch, identical)."
+  ]
+ },
+ {
+  "unit": "items-pickups",
+  "tier": "sonnet",
+  "notes": [
+   "[logic] items-pickups.loot.item_damage: StartItem sets loot TakeDamage=DamageMode.Yes (SetupLoot l.202, with a 'event_damage = Item_Damage' comment) but NO Item_Damage event handler is wired — so a loot item pushed into a lava/sky-kill volume by damage is never removed. The only NODROP kill is the at-spawn origin trace (SetupLoot l.214-223); loot that drifts into NODROP after spawn, or is struck by a NEEDKILL deathtype, survives.",
+   "[logic] items-pickups.target.use_setactive: A targetname'd item starts hidden (Item_Reset handles that — ported), but there is no use/trigger path to make it appear: QC sets item.use = item_use so a trigger firing the item's targetname spawns it (spawnflags&16 -> touch immediately, else respawn). The port wires no .use handler on items, so trigger_-activated map items never appear. item_setactive (the active/toggle relay used by relays/triggers) is likewise unported.",
+   "[logic] items-pickups.team.finditem: Maps that group several items under one .team key (so only ONE of the group is present at a time, randomly chosen, re-rolled on each respawn) are not supported: StartItem calls Item_Reset for every item unconditionally (the `if(team) Item_FindTeam else Item_Reset` branch collapses to the else). All grouped items spawn and respawn independently."
+  ]
+ },
+ {
+  "unit": "mutator-bloodloss",
+  "tier": "opus",
+  "notes": [
+   "[logic/liveness] mutator-bloodloss.presentation.active_mutator_signalling: The util.qc:309 X(\"Blood loss\", MUT_BLOODLOSS, g_bloodloss>0) GameType active-mutator row and the CSQC mut_set_active(MUT_BLOODLOSS) HUD active-mutator icon are STILL entirely unported — the port has no MUT_BLOODLOSS / mut_set_active / active_mutators flag surface at all, so the menu/server-browser HUD active-mutator ICON can never light up (the textual 'modifications' string IS now surfaced, but not the bitmask/icon). ; BuildMutatorsString (':bloodloss') is LIVE but only via the gamelog/eventlo"
+  ]
+ },
+ {
+  "unit": "mutator-buffs",
+  "tier": "opus",
+  "notes": [
+   "[logic/timing/liveness] buffs.item.auto_spawn: Default count is 0 so this never runs unless explicitly configured (matches Base default) — this stays liveness:partial. (The map item_buff_* spawnfuncs are now the primary obtain path; see buffs.item.spawnfunc.) ; QC defers via InitializeEntity(buffs_DelayedInit, INITPRIO_FINDTARGET) and sets spawnflags|=64 (always randomize/relocate) on each seed; port sets BuffAlwaysRelocate=true on each auto-seed (SpawnInitialBuffs), then routes through ConfigureBuffEntity (which now sets the relic model + b",
+   "[logic/timing] buffs.item.respawn_cooldown: Port respawn is still a single Think after cooldown_respawn (clears Owner and runs MaybeRandomize/MaybeRelocate); no buff_activetime countdown, no activate-cooldown arming on round start (Base buff_Reset uses g_buffs_cooldown_activate; port only models cooldown_respawn), no buff_active/buff_activetime state machine, no buff_Customize light pulse. ; SND_STRENGTH_RESPAWN + EFFECT_ITEM_RESPAWN ARE now emitted on (re)activation (ActivateBuff:336-337, ScheduleRespawn:462-463). Still missing: the wayp",
+   "[logic/values/timing] buffs.item.random_location: MoveToRandomMapLocation relocation IS done (BallEntity.RandomMapLocation, which folds in the SelectSpawnPoint fallback), with the '0 0 200' launch + a mins*1.5/maxs*1.5 tracebox unstick + g_buffs_random_lifetime arming + SND_KA_RESPAWN on relocation. The g_buffs_randomize teamplay gate (& (teamplay?2:1)) and g_buffs_random_location/spawnflag-64 relocate gate are honored. ; Still missing: g_buffs_random_location_attempts is not read (RandomMapLocation uses its own fixed sampling rather than the a",
+   "[logic/values/timing] buffs.medic.regen: QC PlayerRegen scales the existing regen/limit(max)/rot factors (rot_mod=0.2, limit_mod=max_mod=1.5, regen_mod=1.7); port no-ops PlayerRegen (returns false) and runs a separate ad-hoc per-frame heal toward a recomputed medic max in MedicTick. ; Health-rot multiplier (0.2 = slower rot above stable) is still not applied — above-max health rots at the normal rate. ; Regen pacing/ceiling differs from QC's folded multipliers.",
+   "[logic/values/liveness] buffs.disability: Movement-speed slow (Stunned x0.7 via SpeedMultiplier, OnPlayerPhysics:678-680) is LIVE. ; Weapon fire-time slow (WeaponRateFactor x1.5) is LIVE: OnWeaponRateFactor (691-697) multiplies args.Factor by 1.5 for a stunned player; WeaponRateFactor.Call has a live site (WeaponFireGate). ; STILL MISSING: weapon projectile-speed slow (WeaponSpeedFactor x0.7) and monster run/walk slow (MonsterMove x0.7) — BuffsMutator subscribes neither hook (no WeaponSpeedFactor mutator-hook chain exists; MonsterMove i",
+   "[logic] buffs.swapper: Core swap is implemented and LIVE: nearest enemy within range (DIFF_TEAM/dead/frozen/vehicle filtered), origin/velocity/angles + oldorigin exchanged, SND_KA_RESPAWN at both ends, buff_RemoveAll consumes the buff. The ForbidThrowCurrentWeapon hook has live Call sites (WeaponThrowing.cs:149/185). ; Divergences from QC: uses center-distance + Api.Entities.FindInRadius instead of WarpZone_FindRadius (no warpzone traversal); omits Drop_Special_Items(closest) (flag/key carriers keep their objective on",
+   "[logic/values/timing] buffs.carrier_model: A player holding a buff still has no colored MDL_BUFF glow model attached: no buffs_BuffModel_Spawn/Update/Think/Customize, no removal on observer/disconnect. EF_NOSHADOW IS set on the player while held (ApplyBuff:461), but the glow model itself is absent.",
+   "[logic/values/timing] buffs.buff_effect: No per-carrier Send_Effect particle emission throttled by buff_effect_delay; g_buffs_effects (default ON) is never read. EntityMutatorState declares a buff_effect_delay field but nothing emits the effect.",
+   "[logic/values/timing] buffs.waypoint: No WP_Buff radar/HUD waypoint on buff items (no buff_Waypoint_Spawn, no RADARICON_Buff, no build-finished timer); the colored buff icon never appears on radar/screen edge, and there is no per-viewer hide-if-already-held logic.",
+   "[logic/values] buffs.replace_powerups: Still no FilterItem hook in BuffsMutator: with g_buffs>=0 and g_buffs_replace_powerups, QC replaces every powerup item with a random buff (buff_SpawnReplacement). The g_buffs>0 'replace' mode is entirely non-functional, removing the second obtain path. (A FilterItemDefinition hook chain exists in MutatorHooks.cs but BuffsMutator does not subscribe it.)",
+   "[logic] buffs.observer_cleanup: Still no MakePlayerObserver / ClientDisconnect handler to run buffs_RemovePlayer (delete the carrier buff_model). Moot only because the buff_model glow itself is unimplemented (buffs.carrier_model)."
+  ]
+ },
+ {
+  "unit": "mutator-bugrigs",
+  "tier": "opus",
+  "notes": [
+   "[logic/values] mutator-bugrigs.player_physics.prevangles: player.disableclientprediction = 2 is not set (Base force-disables prediction every tick for a bugrigs player). The port treats bugrigs as server-authoritative so this is LIKELY inert, but that is unverified under the port's net smoothing / cl_movement_errorcompensation layer — could surface as camera/position drift for a bugrigs client.",
+   "[liveness] mutator-bugrigs.serverinfo.mutator_strings: BuildMutatorsPrettyString chain (MutatorActivation.BuildMutatorsPrettyString) has NO live consumer in the port — no scoreboard/votescreen/endmatch reader calls it — so the ', Bug rigs' pretty token, though implemented and correct, is never displayed. The machine ':bugrigs' token IS live (consumed at gamelog init, GameWorld.cs:876)."
+  ]
+ },
+ {
+  "unit": "mutator-campcheck",
+  "tier": "haiku",
+  "notes": [
+   "[liveness] campcheck.realclient.gate: Chat-typing exemption is inert on the live net path: the gate term `(TypeCheck || !ButtonChat)` exists and g_campcheck_typecheck is now consulted, and ButtonChat is bridged from input.Typing — but the wire never carries the typing flag (no InputButtons.Chat bit; ServerNet.ToMovementInput omits Typing), so ButtonChat is always false for real network clients and a typing player is still not actually exempted. Gate logic is faithful; the carrier signal is partially-live (only the interface default "
+  ]
+ },
+ {
+  "unit": "mutator-dodging",
+  "tier": "opus",
+  "notes": [
+   "[logic] mutator-dodging.anim.jump_action: The explicit server-side animdecide_setaction(ANIMACTION_JUMP) write is not ported (logic: missing) — the port has NO animdecide/anim-action server->client one-shot channel. HOWEVER this seam has no distinct rendered effect even in Base: animdecide.qc:283 states verbatim 'currently, in CSQC this is the only jump detection, as the explicit jump action is never called!' — Base's client renderer drives the jump clip off the IMPLICIT ground->air (ANIMIMPLICITSTATE_INAIR) transition, identical to the"
+  ]
+ },
+ {
+  "unit": "mutator-globalforces",
+  "tier": "sonnet",
+  "notes": [
+   "[liveness] mutator-globalforces.advertise.mutatorstring: BuildMutatorsPrettyString chain (MutatorActivation.cs:121) has NO live caller in src/XonoticGodot.Server (grep 'BuildMutatorsPrettyString(' returns no Server callsite), so the ', Global forces' pretty token is never emitted — the QC consumer is server/client.qc:1107 (scoreboard/votescreen mutator line). The machine token ':GlobalForces' IS live (GameWorld.cs:876 GameLogInit). Cosmetic only; no gameplay effect."
+  ]
+ },
+ {
+  "unit": "mutator-instagib",
+  "tier": "sonnet",
+  "notes": [
+   "[logic/liveness] mutator-instagib.misc.strings_monsters: MonsterDropItem (drop 'vaporizer_cells', sv_instagib.qc:109-112) not ported — no instagib MonsterDropItem hook. ; MonsterSpawn (MON_MAGE skin=1, sv_instagib.qc:114-121) not ported — no instagib MonsterSpawn hook. ; RandomItems_GetRandomItemClassName -> RandomItems_GetRandomInstagibItemClassName (weighted instagib-item pick over g_instagib_items, sv_instagib.qc:24-39,102-107) not ported."
+  ]
+ },
+ {
+  "unit": "mutator-invincibleproj",
+  "tier": "haiku",
+  "notes": [
+   "[logic/values] mutator-invincibleproj.client.active_mut_flag: The Base GetActiveMutators-style scan (util.qc:280-330) walks the active_mutators cvar (or, when empty, the live cvars) and calls mut_set_active(MUT_INVINCIBLE_PROJECTILES) + appends the translated name when g_invincible_projectiles is set, so the menu / server-browser 'active mutators' list and any MUT_ bitmask consumer can light up this mutator. The port still has NO active_mutators / mut_set_active / MUT_ flag surface (grep across src+game = 0 hits)."
+  ]
+ },
+ {
+  "unit": "mutator-itemstime",
+  "tier": "haiku",
+  "notes": [
+   "[logic/values/timing] mutator-itemstime.waypoints.spectator_sprites: No waypointsprite_itemstime / SPRITERULE_SPECTATOR support in the port: timed (SpectatorOnly) items (mega health/armor) get no spectator/warmup respawn-countdown waypoint sprite (Item_RespawnCountdown sets SPRITERULE_SPECTATOR + WaypointSprite_UpdateBuildFinished at time+ITEM_RESPAWN_TICKS), and the g_waypointsprite_itemstime cvar (default 2) is unregistered. STILL OPEN (grep waypointsprite_itemstime / SPRITERULE_SPECTATOR / g_waypointsprite_itemstime across src + game -> no matches, 2026-06-25 "
+  ]
+ },
+ {
+  "unit": "mutator-midair",
+  "tier": "haiku",
+  "notes": [
+   "[logic/values/liveness] mutator-midair.meta.mutator_strings: Machine string is LIVE+faithful: MidairMutator.BuildMutatorsString returns `:midair`, MutatorActivation.BuildMutatorsString aggregates all Added mutators, and GameWorld.cs:871-878 feeds the tokens into GameLog.Init's `:gameinfo:mutators:LIST` line. This mirrors Base server/gamelog.qc:50 exactly, including the sv_eventlog gate (default 0 in both — so the line is only emitted when event logging is enabled, faithful). ; STILL OPEN — pretty/display string: BuildMutatorsPrettyString override (`, Mida"
+  ]
+ },
+ {
+  "unit": "mutator-multijump",
+  "tier": "sonnet",
+  "notes": [
+   "[liveness] mutator-multijump.presentation.mutator_list_string: BuildMutatorsPrettyString (', Multi jump') override and MutatorActivation.BuildMutatorsPrettyString aggregator both exist, but the aggregator has NO live consumer in the Server project -- nothing calls BuildMutatorsPrettyString() to feed a scoreboard/votescreen line (grep over src/XonoticGodot.Server: zero callers). So the human-readable label never reaches a UI. The machine ':multijump' tag IS live (consumed by gamelog init, GameWorld.cs:876, gated by sv_eventlog)."
+  ]
+ },
+ {
+  "unit": "mutator-nades",
+  "tier": "opus",
+  "notes": [
+   "[values] mutator-nades.toss.projectile: Newton-style 0 is implemented as pure absolute _velocity rather than W_CalculateProjectileVelocity(e, e.velocity, _velocity, true); for non-default g_projectiles_newton_style this diverges from Base's velocity blending (style 0 is the shipped default, so identical at defaults).",
+   "[logic/values] mutator-nades.boom.napalm: g_nades_napalm_ball_damageforcescale (4) is not applied: napalm is modeled as the Burning status effect with no knockback, so the fireball/fountain damage-force push (QC proj.damageforcescale) is missing. ; Water-contents velocity damping (pointcontents CONTENT_WATER -> velocity*0.5 / z=200) and the round-not-started fountain/ball delete guard are omitted; EFFECT_FIREBALL_LASER trail + EF_FLAME ball effect omitted (render).",
+   "[logic] mutator-nades.boom.ice: The recently-revived skip (revival_time, time-revival_time < 1.5s) is omitted, so a just-unfrozen player can be immediately re-frozen (confirmed ice.qc:59). ; The round-not-started delete guard is omitted (relevant only in CA/round modes). The muzzleflash/icefield particle gate omitted (render).",
+   "[logic] mutator-nades.boom.translocate: move_out_of_solid is a minimal upward-nudge approximation (no builtin), so embedded-in-solid recovery is less robust than Base's full search. ; MUTATOR_CALLHOOK(PortalTeleport) is not fired (no subscribers in port).",
+   "[logic] mutator-nades.boom.entrap_veil_darkness: Entrap MonsterMove run/walk slow is omitted (no MonsterMove hook chain in the port). ; Veil tint of enemies (render colormod) omitted; only the teammate alpha-hide is ported. Veil monster-alpha lapse omitted. ; Darkness blind overlay (HUD_DarkBlinking full-screen fill) + SND_BLIND are CSQC-only and missing; only the NadeDarknessTime deadline is set server-side.",
+   "[logic/values] mutator-nades.bonus.economy: GameRules_scoring_is_vip / flagcarrier multiplier: the VIP-kill medium bonus + flagcarrier time-score multiplier (g_nades_bonus_score_time_flagcarrier=2, scaled by KH key count) ARE now wired in OnPlayerDies / OnPlayerPreThink (GametypeEntities.ScoringIsVip + KeyHuntKeyCount). Whether those two helpers return Base-faithful values for every gametype (CTF/KA/TKA VIP, KH key carrier) is the residual values:partial risk — the per-second accrual path now reads CvarRaw(g_nades_bonus_score_time_flagcar",
+   "[logic/liveness] mutator-nades.lifecycle.cleanup: FIXED Wave-6b (commit f86d947): MakePlayerObserver + ClientDisconnect are now subscribed and wired to RemovePlayer (port of nades_RemovePlayer = nades_Clear + RemoveBonus + delete nade_spawnloc, sv_nades.qc:914), and BOTH hook chains have live callers (ClientManager.cs:480/707). A held nade / banked bonus / spawn marker no longer leaks across observer or disconnect. ; STILL MISSING: reset_map_global (round-reset FOREACH_CLIENT nades_RemovePlayer, sv_nades.qc:932) + PutClientInServer (RemoveBonus",
+   "[logic] mutator-nades.damage.freezetag_revive: The port suppresses the self-nade damage+force but does NOT call freezetag_Unfreeze / set freezetag_revive_nade_health / send EFFECT_ICEORGLASS + INFO_FREEZETAG_REVIVED_NADE/CENTER_FREEZETAG_REVIVE_SELF notifications (documented cross-task seam — FreezeTag owns the unfreeze). So the revive-nade does not actually revive.",
+   "[logic/values/timing/liveness] mutator-nades.presentation.client: No nade projectile model/trail (nade_customize / nade_spawn CSQCProjectile + Nade_TrailEffect), no orb 3D model (orb_draw), no orb 2D full-screen color flash (orb_draw2d / hud_colorflash_alpha), no darkness blind overlay (HUD_DarkBlinking) + SND_BLIND, no spawn-loc EF_STARDUST render. ; No DrawAmmoNades (cl_nades.qc:86): the ammo-panel bonus-nade count + progress bar + (rainbow) type icon is not drawn. ; The held-nade charge ring (CrosshairPanel.NadeTimer) is wired + networked AND now functional"
+  ]
+ },
+ {
+  "unit": "mutator-new_toys",
+  "tier": "sonnet",
+  "notes": [
+   "[logic] mutator-new_toys.menu.describe_page: STILL OPEN — the MENUQC mutator describe() page (a help/info blurb in the mutator picker naming the current new-toy weapons and noting mutual exclusivity with InstaGib/Overkill) is not ported. This is a general port-wide menu-describe gap shared across all mutators, not specific to New Toys. Cosmetic."
+  ]
+ },
+ {
+  "unit": "mutator-nix",
+  "tier": "sonnet",
+  "notes": [
+   "[logic] mutator-nix.add.wrinit: Port resets the rotation globals (_nixWeapon/_nixNextWeapon/_nixNextChange = 0) and reads cvars (Hook lines 81-94), but does NOT run the `FOREACH(Weapons, choosable, it.wr_init(it))` warm-init pass. QC itself comments the per-rotation re-init as 'too slow' and skips it; the ONADD warm is cosmetic/perf and has no observable gameplay effect.",
+   "[logic] mutator-nix.rotation.engine: wpn.wr_resetplayer (weapon think-state reset) is still not called on the per-round resync (QC sv_nix.qc:166). The full-clip prefill for reloadable weapons (QC weapon_load[nix_weapon] = wpn.reloading_ammo across slots) IS now ported (NixMutator.cs:275-289 seeds slot-0 weapon_load + tops the live clip), closing that half of the prior gap. Observable outcome largely preserved but not bit-identical (wr_resetplayer omitted).",
+   "[logic/liveness] mutator-nix.modname.strings: BuildMutatorsString (':NIX', NixMutator.cs:382) is overridden AND live (consumed at GameWorld.cs:876, sv_eventlog-gated, via MutatorActivation.BuildMutatorsString). BuildMutatorsPrettyString (', NIX', NixMutator.cs:385) is overridden but has NO live consumer — MutatorActivation.BuildMutatorsPrettyString (MutatorActivation.cs:121) has zero server/client caller. SetModname ('NIX', sv_nix.qc:285) is wholly absent: no MutatorBase virtual/hook and no override. Cosmetic/reporting; no gameplay effect."
+  ]
+ },
+ {
+  "unit": "mutator-offhand_blaster",
+  "tier": "haiku",
+  "notes": [
+   "[logic/values] offhand_blaster.menu.describe: STILL MISSING: dedicated menu mutator-info describe text not ported. The multi-paragraph MutatorOffhandBlaster.describe() (gives all players a Blaster offhand used with hook, can fire any time but ordinary secondary can't be used, laser-jumping, overrides the hook mutator) has no port equivalent. The name 'Offhand Blaster' appears in the port only as a *reference* inside the Grappling Hook checkbox tooltip (DialogMutators.cs:197 'overridden by the Offhand Blaster mutator'), not as its own descri"
+  ]
+ },
+ {
+  "unit": "mutator-overkill",
+  "tier": "opus",
+  "notes": [
+   "[logic] overkill.onadd.precache_and_itemblock: ok_player models are never precached / forced as the default player model (precache_all_playermodels equivalent absent). ; g_overkill_items list (the random-items injection source) is never built. ; Mechanism differs: Base ONADD sets ITEM_FLAG_MUTATORBLOCKED on the four items at add-time; the port instead reads the four filter cvars in Hook() and enforces the block per-spawn in the FilterItem hook (overkill.filter row). End behavior (which items are blocked, with which defaults) now matches — bu",
+   "[logic] overkill.weapons.unblock: No ok_weapons sub-mutator gating the OK weapons behind (g_overkill_weapons || ok). Whether the OK weapons are WEP_FLAG_MUTATORBLOCKED outside Overkill — and unblocked under it — is not enforced via this hook; the OK weapons exist as direct registrations. UNCHANGED by Wave-2.",
+   "[logic/values/timing] overkill.loot.drop_monster: Monsters drop no Overkill loot and their normal drop is not suppressed. No MonsterDropItem hook chain exists in the port (grep MonsterDropItem.Call → zero hits), so there is nothing to subscribe. UNCHANGED by Wave-2.",
+   "[logic] overkill.respawn.remember_restore_weapon: Port records/restores only slot 0: OnPlayerDies stores Inventory.CurrentWeapon(target) into OkLastWeapon[0] and nulls slots 1..MAX_WEAPONSLOTS; Base captures every slot's m_switchweapon (ok_lastwep[MAX_WEAPONSLOTS]). Low practical impact — Overkill loadouts occupy slot 0 only — but the per-slot capture is not faithfully reproduced. UNCHANGED by Wave-2.",
+   "[logic/timing] overkill.countdown.blaster: During an active-but-not-started round, pressing ATCK2 does not fire the secondary Blaster: Overkill does not subscribe the PlayerPreThink chain (which IS live — PlayerPreThink.Call at GameWorld.cs:1294). Players cannot blaster-jump during the countdown, and the button is not consumed. UNCHANGED; re-verified 2026-06-22 post-impl.",
+   "[logic/liveness] overkill.randomitems.inject_ok_items: Minor: the OK item pool is a hard-coded NetName list (OverkillItemNetNames = health_mega/armor_small/armor_medium/armor_big/armor_mega + weapon_okhmg/okrpc), NOT the Base g_overkill_items IntrusiveList built in MUTATOR_ONADD (which the port never builds — see overkill.onadd row). The set/weights match Base, but it is not driven by the real ITEM_FLAG_MUTATORBLOCKED-filtered list; Item_IsDefinitionAllowed is approximated by def.ItemDef.IsAllowed. ; liveness=partial: only fires when the random_item",
+   "[logic/values/timing] overkill.itemwaypoints.respawn: No respawn-timer waypoints are shown for HealthMega/ArmorMedium/ArmorBig/ArmorMega under Overkill. No Item_RespawnCountdown / Item_ScheduleRespawn mutator hook chains exist in the port. UNCHANGED by Wave-2."
+  ]
+ },
+ {
+  "unit": "mutator-physical_items",
+  "tier": "haiku",
+  "notes": [
+   "[liveness] mutator-physical_items.registration.cvars: g_physical_items* cvar load + defaults"
+  ]
+ },
+ {
+  "unit": "mutator-powerups",
+  "tier": "sonnet",
+  "notes": [
+   "[values] powerups.item.defs_spawn_gate: m_botvalue not set on the port pickups (Base 11000 for strength/shield/speed/invisibility, 3000 for jetpack/fuelregen) — bot item desirability may be miscalibrated.",
+   "[logic] powerups.obituary_mutator_strings: Death log does not append 'S' (Strength) / 'I' (Shield) item codes for a victim who held the powerup (LogDeath_AppendItemCodes unported — the port's kill log carries no :items= field).",
+   "[logic] powerups.jetpack.start_item_hookreplace: QC Jetpack/FuelRegen m_spawnfunc_hookreplace returns ITEM_Fuel when (start_items & m_itemid) — i.e. when the player already gets the jetpack/fuel-regen as a START item (e.g. the Hook mutator forces ITEM_FuelRegen), a map's item_jetpack / item_fuel_regen spawn is replaced with a plain item_fuel pickup so the map still drops useful ammo instead of a redundant held-bit pickup. The port's PowerupItem (JetpackItem/FuelRegen) has no spawnfunc-hookreplace path: the map item spawns as-is even when the b"
+  ]
+ },
+ {
+  "unit": "mutator-random_gravity",
+  "tier": "sonnet",
+  "notes": [
+   "[liveness] random_gravity.roll.round_gate: Liveness is partial-by-design: RoundNotStartedProvider is wired only inside GameWorld.EnableRounds (GameWorld.cs:1134), i.e. only for round-based gametypes (CA/Freezetag/round Domination/…). In non-round modes the provider is null and RoundGateBlocks() returns false — which exactly matches QC where round_handler_IsActive() is false outside round modes. So the gate is correctly inert where Base is inert, and active where Base is active. Not a defect, just mode-scoped reachability.",
+   "[liveness] random_gravity.advertise.mutator_string: BuildMutatorsPrettyString chain has NO live caller: MutatorActivation.BuildMutatorsPrettyString (MutatorActivation.cs:121) and the per-mutator override (RandomGravityMutator.cs:113) both exist, but grep finds no invocation of the chain anywhere in the port. So the human-readable active-mutator list (scoreboard / votescreen / server-browser pretty field) never includes \", Random gravity\". The machine-readable \":RandomGravity\" token IS live (BuildMutatorsString chain called at GameWorld.cs:876 dur"
+  ]
+ },
+ {
+  "unit": "mutator-random_items",
+  "tier": "sonnet",
+  "notes": [
+   "[liveness] random_items.engine.mod_injection_hook: The Instagib override (sv_instagib.qc:102, substituting vaporizer_cells/extralife) is NOT wired: InstagibMutator has no RandomItemsGetClassName subscriber. Deferred until those Instagib items are ported (their classnames cannot resolve to a Pickup yet). Under instagib the random pool falls through to vanilla."
+  ]
+ },
+ {
+  "unit": "mutator-sandbox",
+  "tier": "haiku",
+  "notes": [
+   "[liveness] mutator-sandbox.object.duplicate: WIRED: copy/paste reachable via CmdSandbox → HandleCommand; PASTE is fully live (flood/cap/ObjectPortLoad). ; COPY clipboard STILL inert: SandboxObjectStore.SetClipboard is an empty body (NetGame.cs:985) — the port has no svc_stufftext channel to set a remote client's cvar. Paste from a manually-set cl_sandbox_clipboard works. ; Paste shares the flood + maxobjects gates with object_spawn (faithful).",
+   "[logic/values/timing] mutator-sandbox.drag.grab: STILL MISSING: no Drag/Drag_Begin/Drag_Finish system. ObjectThink computes .Grab (e.Grab, written at SandboxMutator.cs:343-347) but nothing consumes it; +button8 does nothing; objects cannot be physically carried. (grep: no Drag_Begin/Drag_Finish/button8 grab consumer anywhere; e.Grab is written but never read.)"
+  ]
+ },
+ {
+  "unit": "mutator-spawn_near_teammate",
+  "tier": "sonnet",
+  "notes": [
+   "[logic] mutator-spawn_near_teammate.relocate.eligibility: weaponLocked(teammate) gate is always false in the port (WeaponLocked returns false, line 462; no per-player weapon-lock reachable): may relocate beside a mate Base would skip. (Unchanged from baseline — still open, minor.) ; PHYS_INPUT_BUTTON_CHAT (teammate typing) gate is always false in the port (IsChatting returns false, line 466; no chat-button input plumbed): may relocate beside a typing mate Base would skip. (Unchanged from baseline — still open, minor.)"
+  ]
+ },
+ {
+  "unit": "mutator-stale_move_negation",
+  "tier": "sonnet",
+  "notes": [
+   "[liveness] smneg.mutator_string: BuildMutatorsPrettyString chain is DEAD: MutatorActivation.BuildMutatorsPrettyString exists and the smneg override returns ', Stale-move negation', but no server code invokes the pretty-string chain (QC server/client.qc:1107 votescreen/scoreboard consumer not ported). So the pretty label never reaches any UI."
+  ]
+ },
+ {
+  "unit": "mutator-status_effects",
+  "tier": "haiku",
+  "notes": [
+   "[values] status_effects.framework.registry: StatusEffectDef still drops m_color/m_icon/m_name (HUD reconstructs label/icon/color from a separate PowerupMeta table in PowerupsPanel). The behavioral methods (RemovalSound/PersistentCheck/OnTick/OnRemove) are all carried, and burning now also carries OnRemove (BurningRemove clears EF_FLAME) — only the cosmetic m_color/m_icon/m_name remain dropped."
+  ]
+ },
+ {
+  "unit": "mutator-touchexplode",
+  "tier": "sonnet",
+  "notes": [
+   "[logic] touchexplode.list.activemutators: Base appends 'Touch explode' to the active_mutators() X-table string (util.qc:315, MUT_TOUCHEXPLODE bitfield) used for the server-browser mutator field and the scoreboard/info mutator list. The port has no active_mutators()/MUT_-bitfield string builder. NOTE: the port's newer BuildMutatorsString/BuildMutatorsPrettyString hook infra (MutatorActivation.cs:108/121) is a DIFFERENT mechanism (the per-mutator server-info/scoreboard token chain), and Base touchexplode registers NO BuildMutatorsString h"
+  ]
+ },
+ {
+  "unit": "mutator-waypoints",
+  "tier": "opus",
+  "notes": [
+   "[liveness] waypoints.registry.defs: Residual: the wp_extra-DRIVEN spritelookupblinkvalue overrides (superweapon Weapon=2, Item=item.m_waypointblink) are not modeled — Weapon's def blink is a flat 1 and there is no per-instance wp_extra blink lookup. Harmless while those producers (superweapon pickups) are absent. The Seeker/Item/Weapon DEFS are now exercised by live producers; only the wp_extra per-instance blink override is unmodeled. ; liveness: partial — defs are reachable only once their gametype emits waypoints; CTF + Dominat",
+   "[liveness] waypoints.server.manager_api: DEPLOY + CLEAR + HELPME slice is live (DeployFixed/DeployPersonal/Attach/ClearPersonal/ClearOwned/HelpMePing from Commands.cs; Reset() + Think() in GameWorld; SendWaypoints merges WaypointSprites.Active per peer). ; OBJECTIVE/UPDATE slice is BROADLY live now: SpawnFixed/Spawn/UpdateMaxHealth/UpdateHealth/Disown/Kill via Assault (SpawnObjectiveSprite); Spawn/UpdateBuildFinished/Ping/Kill via itemstime (ItemPickupRules.RespawnCountdown, ItemPickupRules.cs:757/768/783); Spawn/UpdateRule/Kill via Se",
+   "[logic/liveness] waypoints.gametype.collect: Seven live CollectWaypoints producers now: CTF (flag base/dropped/carrier), Domination (control-point markers), FreezeTag (Frozen/Reviving + thaw-progress health bar), Keepaway (KaBall/KaBallCarrier, tracking-gated), TeamKeepaway (team-colored TkaBallCarrier<team>/KaBall, tracking-gated), Key Hunt (KeyDropped + KeyCarrier<team>/KeyCarrierFinish, tracking-gated per-viewer predicates), LMS (LmsLeader on each leader, show-window gated). Plus Assault via the manager API, and itemstime/Seeker/powerup",
+   "[logic] waypoints.visibility.three_image_rule: Port still networks a single SpriteName; the own-team/enemy-team/spectator image triple (model1/2/3) and the client-side SPRITERULE_TEAMPLAY image selection are not modeled.",
+   "[logic] waypoints.weapon.whereis: Weapon_whereis is not ported: when a player presses a weapon key for a weapon they don't own (and g_showweaponspawns != 0), Base spawns a short-lived WP_Weapon sprite over every matching weapon-spawn item (wp_extra = the weapon id for client icon resolution), RADARICON_NONE so in-world only. The port has no equivalent — no g_showweaponspawns cvar wiring and no whereis producer. WP_Weapon is otherwise live only via the itemstime respawn countdown."
+  ]
+ },
+ {
+  "unit": "resources",
+  "tier": "sonnet",
+  "notes": [
+   "[logic] resources.api.setresource: Base's SetResource hook reads back BOTH res_type (M_ARGV(8) entity) and amount (M_ARGV(9)) after the forbid check, so a mutator may rewrite the RESOURCE TYPE as well as the amount. The port's CallSetResource (ResourceHooks.cs:57-64) only rewrites the amount (ref float); res_type is fixed. No shipped mutator rewrites res_type, so latent.",
+   "[logic] resources.api.take: TakeResourceWithLimit STILL does NOT fire its own QC mutator hook (sv_resources.qc:211 MUTATOR_CALLHOOK(TakeResourceWithLimit)) — Resources.cs:172-182 clamps the drain and delegates to TakeResource but never calls a ResourceHooks chain (comment only; ResourceHooks has no TakeResourceWithLimit chain). It does delegate to TakeResource (which now DOES fire the TakeResource hook), so the inner hook still runs; only the WithLimit-specific hook is absent. No shipped mutator subscribes, so latent."
+  ]
+ }
+]

@@ -56,6 +56,15 @@ public static class MenuState
     public static bool Booted => _booted;
 
     /// <summary>
+    /// The command-line flag that disabled config saving for this run, or null when saving is allowed.
+    /// DP's <c>Host_SaveConfig</c> refuses to write config.cfg for automation runs (<c>-benchmark</c> /
+    /// <c>-capturedemo</c>); the port's automation runs are <c>--quit-after-seconds</c> (perf harness, CI
+    /// smoke, scripted A/B — which pin cvars via <c>--cvar</c> that must NOT end up in the player's real
+    /// config) plus the explicit <c>--no-save-config</c> opt-out.
+    /// </summary>
+    public static string? ConfigSaveSuppressedBy { get; private set; }
+
+    /// <summary>
     /// One-time client bootstrap. Idempotent. Mounts <paramref name="dataPath"/> as the asset VFS, loads the
     /// stock config chain (client + server + notifications) into the shared cvar store with authentic
     /// defaults, applies the user's saved preferences, and publishes the ambient <see cref="Api.Services"/>
@@ -68,6 +77,21 @@ public static class MenuState
         if (_booted)
             return;
         _booted = true;
+
+        // DP Host_SaveConfig guard: an automation run must never rewrite the player's real config.cfg with
+        // harness state (--cvar pins, --bots fills). Detect it once here; SaveUserConfig checks the flag.
+        // --quit-after-seconds = perf/CI smoke, --camera-trace/--screenshot = scripted capture runs (they
+        // self-quit through the normal Shell teardown), --no-save-config = the explicit opt-out.
+        foreach (string a in OS.GetCmdlineArgs())
+        {
+            if (a is "--no-save-config" or "--quit-after-seconds" or "--camera-trace" or "--screenshot")
+            {
+                ConfigSaveSuppressedBy = a;
+                XonoticGodot.Common.Diagnostics.Log.Info(
+                    $"[MenuState] {a} present — config.cfg will NOT be saved this run (DP -benchmark rule).");
+                break;
+            }
+        }
 
         // One-time relocation of the user's data out of Godot's hidden user:// dir into ~/XonData (no-op after
         // the first run). Must run before LoadUserConfig below, or the migrated config.cfg wouldn't be seen.
@@ -103,7 +127,10 @@ public static class MenuState
         {
             try
             {
-                _interp = ConfigLoader.Load(_cvars, reader,
+                // The archive hook carries DP's CF_ARCHIVE provenance: a stock-tree `seta` marks the cvar
+                // archiveable (persist WHEN the user later changes it), a plain `set` does not — the shipped
+                // cfgs, not the C# registration tables, are the authority on what belongs in config.cfg.
+                _interp = ConfigLoader.Load(_cvars, reader, name => _cvars.MarkArchived(name),
                     "xonotic-client.cfg", "xonotic-server.cfg", "notifications.cfg");
                 XonoticGodot.Common.Diagnostics.Log.Info($"[MenuState] config: {_interp.CvarsAssigned} cvars from {_interp.FilesExecuted} cfg files " +
                          $"({_interp.AliasesDefined} aliases, {_interp.FilesMissing} missing).");
@@ -239,6 +266,11 @@ public static class MenuState
     public static void SaveUserConfig()
     {
         if (_cvars is null)
+            return;
+        // DP Host_SaveConfig's guards: no config write on automation runs (-benchmark/-capturedemo ⇔ our
+        // --quit-after-seconds/--no-save-config) and none from a session that never booted the config chain
+        // (host_framecount < 3 ⇔ !_booted) — either would overwrite the player's real prefs with junk.
+        if (!_booted || ConfigSaveSuppressedBy is not null)
             return;
         var sb = new StringBuilder();
         sb.Append("// XonoticGodot — saved menu preferences (archived cvars + keybinds). Auto-generated; edits may be overwritten.\n");

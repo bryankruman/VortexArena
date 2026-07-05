@@ -1,0 +1,81 @@
+unit: mutator-running_guns
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-25"
+summary:
+  feature_count: 2
+  worst_gaps:
+    - "Map-restart re-fire: Base calls SetDefaultAlpha() at both worldspawn (world.qc:954) and map restart (world.qc:1730); the port fires FireSetDefaultAlpha only once at worldspawn (GameWorld.cs:618). Functionally inert (the seed is recomputed deterministically from the same mutator set + cvars on every map (re)load), so no observable divergence."
+features:
+  - id: running_guns.registration.enable
+    name: "Mutator registration + g_running_guns enable cvar"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/running_guns/sv_running_guns.qc:REGISTER_MUTATOR(running_guns, autocvar_g_running_guns)"
+      - "common/mutators/mutator/running_guns/_mod.inc"
+      - "mutators.cfg:522 (set g_running_guns 0)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RunningGunsMutator.cs:RunningGunsMutator"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RunningGunsMutator.cs:IsEnabled"
+      - "assets/data/xonotic-data.pk3dir/mutators.cfg:522"
+    constants:
+      - { name: "g_running_guns", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "RunningGunsMutator.cs:16-23 [Mutator]+IsEnabled (Cvars.GetFloat(\"g_running_guns\")!=0); mutators.cfg:522 default 0 present (Base + port byte-identical line, both 'set g_running_guns 0 \"... or wonder, till it drives you mad...\"')", result: pass }
+      - { kind: code, ref: "MutatorActivation.Apply() Add/Remove loop subscribes enabled mutators; live caller GameWorld.cs:602 on the map-load/server-boot path (verified, real match path)", result: pass }
+    confidence: high
+    notes: "Registration + cvar gate are faithful and the activation loop has a live caller, so when g_running_guns!=0 the mutator IS added (MutatorActivation.Apply -> Hook -> SetDefaultAlpha.Add) and its handler subscribed. running_guns has no menu mutual-exclusion concern (purely cosmetic, orthogonal). Unchanged this audit."
+  - id: running_guns.alpha.set_default_alpha
+    name: "SetDefaultAlpha override — player invisible (alpha -1), weapon visible (alpha +1)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/running_guns/sv_running_guns.qc:MUTATOR_HOOKFUNCTION(running_guns, SetDefaultAlpha)"
+      - "server/world.qc:105-114 (void SetDefaultAlpha; MUTATOR_CALLHOOK(SetDefaultAlpha); default branch g_player_alpha, 0->1 fallback, weapon=player)"
+      - "server/world.qc:954,1730 (SetDefaultAlpha() called at world spawn + map restart)"
+      - "server/client.qc:788,790 (this.alpha=default_player_alpha; exteriorweaponentity.alpha=default_weapon_alpha)"
+      - "server/player.qc:540 (this.alpha = default_player_alpha on respawn/corpse)"
+      - "server/weapons/weaponsystem.qc:170-175 (CL_ExteriorWeaponentity_Think: owner at default_player_alpha => default_weapon_alpha; custom fade => match; 0 => opaque)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/RunningGunsMutator.cs:OnSetDefaultAlpha (sets PlayerAlpha=-1, WeaponAlpha=+1, returns true)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:854 (FireSetDefaultAlpha — fires chain, seeds g_player_alpha default w/ 0->1 fallback, caches DefaultPlayerAlpha/DefaultWeaponAlpha)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:841,844 (DefaultPlayerAlpha/DefaultWeaponAlpha public statics — read by spawn/death/render)"
+      - "src/XonoticGodot.Server/GameWorld.cs:618 (FireSetDefaultAlpha live call at worldspawn)"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:640 (p.Alpha = MutatorHooks.DefaultPlayerAlpha on (re)spawn)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:687 (victim.Alpha = MutatorHooks.DefaultPlayerAlpha on corpse setup)"
+      - "game/net/ServerNet.cs:1830,2264 (QuantizeAlpha: -1 -> 255 hidden sentinel; networks player alpha)"
+      - "game/net/ClientEntityView.cs:134-135 (decode: 255 -> -1f hidden, 0 -> opaque)"
+      - "game/client/PlayerModel.cs:160,217 (ApplyAlpha: clamps -1 -> transparency 1.0 = player invisible; called live from ClientWorld.cs:969 Pose)"
+      - "game/net/ViewEntityRenderer.cs:123-135 (ResolveExteriorWeaponAlpha: owner at default => DefaultWeaponAlpha +1 => gun stays visible)"
+    constants:
+      - { name: "default_player_alpha", base: "-1", port: "-1 (OnSetDefaultAlpha sets args.PlayerAlpha=-1f; seeded into DefaultPlayerAlpha; consumed by SpawnSystem.cs:640 + DamageSystem.cs:687)", match: true }
+      - { name: "default_weapon_alpha", base: "+1", port: "+1 (OnSetDefaultAlpha sets args.WeaponAlpha=1f; seeded into DefaultWeaponAlpha; consumed by ViewEntityRenderer.ResolveExteriorWeaponAlpha)", match: true }
+      - { name: "default-branch fallback (no hook)", base: "g_player_alpha; 0->1; weapon=player (world.qc:109-112)", port: "MutatorHooks.cs:856-868 seeds playerAlpha=g_player_alpha, 0->1 fallback, weaponAlpha=playerAlpha", match: true }
+      - { name: "hidden render convention", base: "alpha -1 = do-not-render", port: "QuantizeAlpha -1 -> 255 sentinel; ClientEntityView 255 -> -1f; PlayerModel.ApplyAlpha clamps <0 -> transparency 1.0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Map-restart re-fire: Base SetDefaultAlpha() runs at worldspawn AND map restart (world.qc:954,1730); the port fires FireSetDefaultAlpha once at worldspawn (GameWorld.cs:618). Inert because the seed is recomputed deterministically per map (re)load from the same mutator set + cvars."
+    verification:
+      - { kind: code, ref: "RunningGunsMutator.cs:41-47 OnSetDefaultAlpha sets args.PlayerAlpha=-1f, args.WeaponAlpha=1f, returns true — values+logic faithful to QC (-1/+1, return true)", result: pass }
+      - { kind: code, ref: "MutatorHooks.cs:854-880 FireSetDefaultAlpha: seeds playerAlpha from g_player_alpha w/ 0->1 fallback (world.qc:109-112 port), weaponAlpha=playerAlpha, runs SetDefaultAlpha.Call, caches DefaultPlayerAlpha/DefaultWeaponAlpha. Invoked LIVE at GameWorld.cs:618 at worldspawn.", result: pass }
+      - { kind: code, ref: "CONSUME SIDE NOW WIRED (was the baseline-blocking defect): SpawnSystem.cs:640 p.Alpha=MutatorHooks.DefaultPlayerAlpha and DamageSystem.cs:687 victim.Alpha=MutatorHooks.DefaultPlayerAlpha read the seed (no longer hardcoded 1f). Net: ServerNet.QuantizeAlpha -1->255, ClientEntityView 255->-1f, PlayerModel.ApplyAlpha (live per-frame via ClientWorld.cs:969 Pose) clamps -1 -> transparency 1.0 -> player invisible.", result: pass }
+      - { kind: code, ref: "WEAPON VISIBLE: ViewEntityRenderer.ResolveExteriorWeaponAlpha (weaponsystem.qc:170-175 port) returns DefaultWeaponAlpha(+1) when owner is at default_player_alpha (or decoded -1 hidden) -> gun renders opaque while player is hidden. End-to-end Running Guns look achieved.", result: pass }
+    confidence: high
+    notes: "MAJOR FIX vs baseline (2026-06-22). The baseline recorded presentation=missing, liveness=partial, 3 of 4 constants match=false, and the headline gap 'g_running_guns 1 has no in-game effect' because the seeded DefaultPlayerAlpha was never consumed (SpawnSystem/DamageSystem hardcoded Alpha=1f, grep for reads = ZERO hits). That whole consume side is now wired: SpawnSystem.cs:640 and DamageSystem.cs:687 read MutatorHooks.DefaultPlayerAlpha; the alpha is networked through QuantizeAlpha's -1->255 hidden sentinel, decoded in ClientEntityView, and rendered by PlayerModel.ApplyAlpha (live per-frame). The exterior weapon stays visible via ViewEntityRenderer.ResolveExteriorWeaponAlpha (faithful port of weaponsystem.qc:170-175). The no-hook default branch now seeds g_player_alpha with the 0->1 fallback (MutatorHooks.cs:856-868), matching world.qc:109-112. All four constants now match. Only residual: the map-restart re-fire (world.qc:1730) has no port equivalent call site, but it is functionally inert (deterministic recompute on each map load). The same FireSetDefaultAlpha/DefaultPlayerAlpha seam also serves CloakedMutator (0.25) and PowerupsMutator (Invisibility), which read the same statics. Feature is now faithful + live end-to-end."

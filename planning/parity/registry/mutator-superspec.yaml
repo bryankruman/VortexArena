@@ -1,0 +1,330 @@
+unit: mutator-superspec
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-25"
+summary:
+  feature_count: 11
+  worst_gaps:
+    - "[FIXED Wave-5] The superspec ItemTouch hook is now ported AND live: a new MutatorHooks.ItemTouch chain is fired from ItemPickupRules.ItemTouch (after the pickup gate, before the give), so spectators get the filtered pickup-announcement messages and the ASF_SSIM/Strength/Shield/Mega-Armor/Mega-Health/flag-grab auto-follow with observer_only suppression. This was the single largest remaining gap."
+    - "[FIXED Wave-5] Per-client options persistence is now live: OnClientConnect/OnClientDisconnect are called from GameWorld.InfraClientConnect/Disconnect (gated on the mutator being Added), seed the SSF_VERBOSE/\"\" connect defaults, and load/save the crypto_idfp-keyed options file via the host-wired Store (magic SUPERSPEC_OPTIONSFILE_V1, ~/XonData/superspec/). Caveat: IsLocalProvider is left unwired, so the listen-host local-file fast path is not taken (everyone is crypto_idfp-keyed; an unauthenticated remote client is not persisted) — a documented intended divergence."
+    - "[FIXED Wave-5] The SUPERSPEC_MISSING_UID notification now fires: a delayed superspec_hello is scheduled at time+5 on connect and drained by the live MutatorHooks.SvStartFrame pump, sending INFO_SUPERSPEC_MISSING_UID to a UID-less client only."
+    - "[FIXED Wave-5] The centered (centerprint) form of superspec_msg is now wired: Msg routes the gated centerprint through NotificationSystem.SendCenterRaw (MsgType.CenterRaw), consumed live on the client HUD (HudNotifications.cs:146). The console sprint form remains wired via PrintTo. So spectators now see both the console line and the centered overlay."
+    - "[FIXED] The BuildMutatorsString/BuildMutatorsPrettyString overrides exist (SuperSpecMutator.cs:676/679, exact Base tokens ':SS' / ', Super Spectators') and BOTH are now LIVE. The machine token ':SS' via MutatorActivation.BuildMutatorsString -> GameWorld.cs:1068 (sv_eventlog-gated gamelog init, faithful to Base GameLogInit). The pretty label ', Super Spectators' is now ALSO live: MutatorActivation.BuildMutatorsPrettyString has two live callers writing the 'modifications' serverinfo — GameWorld.cs:1079 (match-start, faithful to Base PutClientInServer server/client.qc:1107) and ServerNet.cs:607 (BuildServerInfo, the server-browser infostring response). DRIFT-FIX vs prior audit which recorded the pretty label as DEAD."
+features:
+  - id: superspec.enable.predicate
+    name: "Enable predicate + registration (expr_evaluate(g_superspectate))"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:3-4 (REGISTER_MUTATOR(superspec, expr_evaluate(autocvar_g_superspectate)))"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:54 ([Mutator] SuperSpecMutator)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:132-133 (IsEnabled = ExprEvaluate(g_superspectate))"
+      - "src/XonoticGodot.Server/GameWorld.cs:535 (MutatorActivation.Apply)"
+    constants:
+      - { name: "g_superspectate (default)", base: "0", port: "0 (declared assets/data/.../mutators.cfg:172)", match: true }
+      - { name: "registration", base: "REGISTER_MUTATOR via expr_evaluate", port: "[Mutator] source-gen -> Registry<MutatorBase>.All; expr_evaluate ported (ExprEvaluate)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "SuperSpecMutator carries [Mutator] (source-gen -> Mutators.All); IsEnabled reads g_superspectate via Api.Cvars.GetString + ExprEvaluate; declared mutators.cfg:172 default 0; MutatorActivation.Apply() called live GameWorld.cs:535", result: pass }
+    confidence: high
+    notes: "Unchanged from baseline: registered + added on the live boot path when g_superspectate is truthy. expr_evaluate ported as ExprEvaluate (false for \"\"/\"0\"/\"false\")."
+  - id: superspec.state.flag_bitfields
+    name: "Per-client option state (.autospec_flags, .superspec_flags, .superspec_itemfilter)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:8-25 (ASF_*/SSF_* consts + .autospec_flags/.superspec_flags/.superspec_itemfilter)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:57-72 (ASF_*/SSF_* consts + ASF_ALL)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:138-160 (Options side-table keyed by Player)"
+    constants:
+      - { name: "ASF_STRENGTH..ASF_FOLLOWKILLER", base: "BIT(0)..BIT(8)", port: "1<<0..1<<8", match: true }
+      - { name: "ASF_ALL", base: "0xFFFFFF", port: "0xFFFFFF", match: true }
+      - { name: "SSF_SILENT/SSF_VERBOSE/SSF_ITEMMSG", base: "BIT(0)/BIT(1)/BIT(2)", port: "1<<0/1<<1/1<<2", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Option state is held in a static Dictionary<Player,Options> side-table rather than as .fields on Player, because this port file may not edit Player.cs (documented in the class summary; promoting to real Player fields for networking is a todo)."
+    confidence: high
+    gaps:
+      - "Constants are bit-identical. The store is now WRITTEN on every live path: the superspec/autospec/itemfilter commands (HandleCommand), the ClientConnect options-file load (OnClientConnect), and read by ItemTouch/PlayerDies/follow* — and persisted across reconnect via OnClientDisconnect (see persistence row). Residual: state is server-side only (not networked to the client as real .fields)."
+    verification:
+      - { kind: code, ref: "ASF_*/SSF_*/ASF_ALL match Base 8-25; Options side-table written by HandleCommand + OnClientConnect load; SuperspecFlags defaults SSF_VERBOSE (Base ClientConnect default), itemfilter \"\" (match-all)", result: pass }
+    notes: "FIX (Wave-5): the store is now both writable on the live command path AND persisted across reconnect via the options file (OnClientConnect/Disconnect). SSF_VERBOSE/\"\" connect defaults match Base sv_superspec.qc:387-388."
+  - id: superspec.spectate.transfer
+    name: "Spectate transfer helper (superspec_Spectate wrapping Spectate)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:27-31 (superspec_Spectate -> Spectate(this, targ))"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:188-193 (SpectateTransfer)"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The port has no engine Spectate() target-switch primitive, so SpectateTransfer sets the follow-cam state directly (Player.Spectatee = target, Player.SpectateeStatus = target.PlayerId) — the faithful observable result of Spectate(this, targ)."
+    confidence: high
+    gaps:
+      - "Now reached on EVERY live caller: the followkiller PlayerDies body, the ItemTouch auto-follow triggers (ASF_SSIM/powerup/mega/flag), and the followpowerup/followstrength/followshield commands. No remaining un-wired caller."
+    verification:
+      - { kind: code, ref: "SpectateTransfer sets Spectatee/SpectateeStatus (Player.cs:216/223); called by OnPlayerDies, OnItemTouch, and the follow* commands (all live)", result: pass }
+    notes: "FIX (Wave-5): the last absent caller (ItemTouch auto-spectate on pickup) is now ported + live, so the transfer primitive is exercised on all Base paths."
+  - id: superspec.persistence.options_file
+    name: "Per-client options persistence (load on connect / save on disconnect, crypto_idfp-keyed)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:33-61 (superspec_save_client_conf)"
+      - "common/mutators/mutator/superspec/sv_superspec.qc:378-419 (ClientConnect load)"
+      - "common/mutators/mutator/superspec/sv_superspec.qc:437-442 (ClientDisconnect save)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:355-392 (OnClientConnect — defaults + load)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:397-427 (OnClientDisconnect -> SaveClientConf)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:99-121 (IOptionsStore seam)"
+      - "src/XonoticGodot.Server/GameWorld.cs:910-911 (InfraClientConnect -> OnClientConnect, gated on Added)"
+      - "src/XonoticGodot.Server/GameWorld.cs:960-961 (InfraClientDisconnect -> OnClientDisconnect, gated on Added)"
+      - "game/net/NetGame.cs:912 + 918-936 (Store = SuperspecOptionsStore over ~/XonData/superspec/, CryptoIdfpProvider = PersistentId)"
+    constants:
+      - { name: "options file magic", base: "\"SUPERSPEC_OPTIONSFILE_V1\"", port: "\"SUPERSPEC_OPTIONSFILE_V1\" (checked on read, written on save)", match: true }
+      - { name: "local filename", base: "superspec-local.options", port: "superspec-local.options (LocalOptionsFile; reached only when IsLocalProvider returns true)", match: true }
+      - { name: "remote filename", base: "superspec-<uri_escape(crypto_idfp)>.options", port: "superspec-<UriEscape(PersistentId)>.options", match: true }
+      - { name: "connect default superspec_flags", base: "SSF_VERBOSE", port: "SSF_VERBOSE (seeded in OnClientConnect)", match: true }
+      - { name: "connect default itemfilter", base: "\"\"", port: "\"\" (seeded in OnClientConnect)", match: true }
+      - { name: "file line layout", base: "magic / itos(autospec_flags) / itos(superspec_flags) / itemfilter", port: "same 4 lines (magic / af / sf / itemfilter)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "IsLocalProvider is left unwired by the host, so the listen-host local-file fast path (IS_LOCAL -> superspec-local.options regardless of UID) is never taken; the port keys EVERYONE by crypto_idfp (dedicated-server behaviour). Net effect: an authenticated client persists; an unauthenticated remote client and a listen host's local fast-path do not. The bit-faithful load/save logic is in place behind the seam if IsLocalProvider is later wired."
+    confidence: high
+    gaps:
+      - "Load on connect (magic-checked, crypto_idfp-keyed) + save on disconnect are now LIVE via the host Store. Residual divergence: the IS_LOCAL listen-host fast path is not wired (see intended_divergence), so a listen host's local options aren't saved/restored under a fixed filename — they persist only if the host carries a PersistentId."
+    verification:
+      - { kind: code, ref: "OnClientConnect seeds defaults + schedules hello + Store.Read(magic-checked); OnClientDisconnect -> SaveClientConf -> Store.Write; both called live from GameWorld.Infra* gated on Added; Store wired to ~/XonData/superspec/ in NetGame.WireSuperspec; IsLocal() returns false (IsLocalProvider null)", result: pass }
+    notes: "FIX (Wave-5): logic missing->faithful, liveness dead->live. The 4-line file format, magic check, uri_escape filename, and connect defaults all match Base. Only the IS_LOCAL listen-host branch is an intended (documented) divergence."
+  - id: superspec.notify.missing_uid
+    name: "Missing-UID notification (delayed-hello think at time+5 -> INFO_SUPERSPEC_MISSING_UID)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:370-376 (superspec_hello)"
+      - "common/mutators/mutator/superspec/sv_superspec.qc:390-393 (ClientConnect schedules delayed_hello)"
+      - "common/notifications/all.inc:271 (MSG_INFO SUPERSPEC_MISSING_UID)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:367 (schedule time+5 in OnClientConnect)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:431-447 (OnStartFrame drains _pendingHello -> Send INFO_SUPERSPEC_MISSING_UID)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:636 (registered string)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1128-1130 (MutatorHooks.FireStartFrame pump — live)"
+    constants:
+      - { name: "think delay", base: "time + 5 (s)", port: "Api.Clock.Time + 5f (scheduled in OnClientConnect, drained by SvStartFrame)", match: true }
+      - { name: "notification text", base: "\"^F2You lack a UID, superspec options will not be saved/restored\"", port: "same text (NotificationsList.cs:636)", match: true }
+      - { name: "fire condition", base: "this.enemy.crypto_idfp == \"\"", port: "string.IsNullOrEmpty(CryptoIdfp(p)) at fire time", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The port has no per-entity think scheduler reachable from a Common-layer mutator, so the new_pure(...).nextthink delayed-hello entity is stood in for by a (Player, When) pending-list drained off the per-frame MutatorHooks.SvStartFrame chain. Observable timing (fire ~5s after connect if still UID-less) is faithful."
+    confidence: high
+    gaps:
+      - "Fires on the live path: scheduled at time+5 in OnClientConnect, drained by OnStartFrame on the pumped MutatorHooks.SvStartFrame chain, sent NOTIF_ONE_ONLY to the UID-less client. Cleared on disconnect before firing if the client leaves early."
+    verification:
+      - { kind: code, ref: "OnClientConnect adds (player, now+5) to _pendingHello; OnStartFrame removes + Send(OneOnly, p, Info, SUPERSPEC_MISSING_UID) when CryptoIdfp empty; SvStartFrame pumped at GameWorld.cs:1129", result: pass }
+    notes: "FIX (Wave-5): logic/timing missing->faithful, liveness dead->live. Text matches Base; the delayed-think is modelled faithfully via the per-frame pump rather than a think entity (intended divergence)."
+  - id: superspec.msg.helper
+    name: "Spectator message helper (superspec_msg: sprint + conditional centerprint by silent/verbose/spamlevel)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:63-74 (superspec_msg)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:214-232 (Msg)"
+      - "game/net/NetGame.cs:896 (PrintTo = SendChatToPlayer — sprint seam)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:267 (SendCenterRaw); game/hud/HudNotifications.cs:146 (CenterRaw consumed)"
+    constants:
+      - { name: "centerprint gate", base: "skip if SSF_SILENT, or (spamlevel>1 and !SSF_VERBOSE)", port: "same gate (SSF_SILENT early-return; spamLevel>1 && !SSF_VERBOSE return)", match: true }
+      - { name: "sprint (console) form", base: "sprint(_to, strcat(con_title, msg)) — always", port: "PrintTo?.Invoke(to, conTitle+msg) — always", match: true }
+      - { name: "centerprint form", base: "centerprint(_to, strcat(center_title, msg))", port: "SendCenterRaw(OneOnly, to, centerTitle+msg) -> CenterRaw HUD channel", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    confidence: high
+    gaps:
+      - "Both output forms are now wired and reach the spectator: the console line via PrintTo (host SendChatToPlayer) and the centered overlay via SendCenterRaw -> MsgType.CenterRaw, consumed live at HudNotifications.cs:146 (the same raw-centerprint channel Chat.cs and map triggers use). The silent/verbose/spamlevel gating is bit-faithful."
+    verification:
+      - { kind: code, ref: "Msg gate matches Base sv_superspec.qc:67-73; sprint -> PrintTo (live); centerprint -> SendCenterRaw -> CenterRaw consumed HudNotifications.cs:146; called live from HandleCommand + OnPlayerDies + OnItemTouch", result: pass }
+    notes: "FIX (Wave-5): the centered centerprint form is now wired (SendCenterRaw/CenterRaw) and reaches the client HUD — presentation partial->faithful. Console form was already wired."
+  - id: superspec.itemfilter.match
+    name: "Item-message classname filter (superspec_filteritem; empty = all)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:76-89 (superspec_filteritem)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:196-208 (FilterItem)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:283 (live caller: OnItemTouch)"
+    constants:
+      - { name: "empty filter behavior", base: "match all items", port: "filter.Length==0 -> return true", match: true }
+      - { name: "match field", base: "item.classname token equality (tokenize_console)", port: "whitespace-split tokens vs item.ClassName equality", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    confidence: high
+    gaps:
+      - "FilterItem is a faithful port (empty filter = match all; else tokenized classname allowlist against item.ClassName) AND now has a LIVE caller: OnItemTouch invokes it for each spectator with SSF_ITEMMSG set when an item is touched. The filter string is settable via the wired superspec_itemfilter command."
+    verification:
+      - { kind: code, ref: "FilterItem matches Base sv_superspec.qc:76-89; called from OnItemTouch (SuperSpecMutator.cs:283) on the live ItemTouch hook; ItemFilter written by HandleCommand; tokenization via whitespace split (faithful to tokenize_console for classnames)", result: pass }
+    notes: "FIX (Wave-5): liveness dead->live — the ItemTouch consumer hook now exists, so the filter actually runs in a match. (Note: FilterItemHookTests.cs covers the UNRELATED StartItem FilterItem chain, not this helper.)"
+  - id: superspec.itemtouch.autospec_and_msg
+    name: "ItemTouch hook: pickup messages + auto-spectate on powerup/mega/flag/item-msg"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:91-139 (MUTATOR_HOOKFUNCTION superspec ItemTouch)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:264-328 (OnItemTouch)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:421-438 (ItemTouch chain + FireItemTouch)"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:372 (FireItemTouch — after gate, before give; live)"
+    constants:
+      - { name: "spectator gate", base: "IS_SPEC(it) || IS_OBSERVER(it)", port: "if(!it.IsObserver) continue — covers both following spectators and pure observers", match: true }
+      - { name: "STRENGTH trigger", base: "item.strength_finished", port: "item.StrengthFinished != 0f (EntityItemState)", match: true }
+      - { name: "SHIELD trigger", base: "item.invincible_finished", port: "item.InvincibleFinished != 0f (EntityItemState)", match: true }
+      - { name: "MEGA_AR trigger", base: "item.itemdef == ITEM_ArmorMega", port: "item.Pickup is ArmorMega", match: true }
+      - { name: "MEGA_HP trigger", base: "item.itemdef == ITEM_HealthMega", port: "item.Pickup is HealthMega", match: true }
+      - { name: "FLAG_GRAB trigger", base: "item.classname == \"item_flag_team\"", port: "item.ClassName == \"item_flag_team\"", match: true }
+      - { name: "observer_only suppression", base: "ASF_OBSERVER_ONLY suppresses switch unless true observer (!IS_OBSERVER)", port: "suppress when ASF_OBSERVER_ONLY && Spectatee != null (a following spectator); verbose ignore-msg", match: true }
+      - { name: "item message verbose/short", base: "verbose -> name only; else name + (classname)", port: "same (SSF_VERBOSE branches the message body)", match: true }
+      - { name: "return", base: "MUT_ITEMTOUCH_CONTINUE (never blocks pickup)", port: "returns false; FireItemTouch return ignored by item path (never blocks)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    confidence: high
+    gaps:
+      - "Fully ported and live: the new MutatorHooks.ItemTouch chain is fired from ItemPickupRules.ItemTouch (after the QC pickup gate, before the give, so the item still carries its raw powerup timers — faithful to items.qc:706). For each spectator/observer: the filtered SSF_ITEMMSG pickup message + the ASF_SSIM auto-follow, then the Strength/Shield/Mega-Armor/Mega-Health/flag-grab auto-follow with observer_only suppression. Minor faithful mapping: QC item.netname (m_name) -> item.Pickup.DisplayName (fallback NetName)."
+    verification:
+      - { kind: code, ref: "OnItemTouch subscribed via Hook() -> MutatorHooks.ItemTouch; fired from ItemPickupRules.ItemTouch:372 on the live touch path; trigger fields read from EntityItemState (StrengthFinished/InvincibleFinished/Pickup); Mega via Pickup is ArmorMega/HealthMega; all branches map to Base sv_superspec.qc:96-138", result: pass }
+    notes: "FIX (Wave-5): the largest baseline gap (missing->faithful, na->live). Core auto-spectate-on-pickup behavior. The IS_SPEC||IS_OBSERVER gate is covered by the broad IsObserver flag; observer_only suppression is mapped via Spectatee-null discriminator."
+  - id: superspec.playerdies.followkiller
+    name: "PlayerDies hook: followkiller auto-spectate the attacker"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:421-435 (MUTATOR_HOOKFUNCTION superspec PlayerDies)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:166-174 (Hook subscribes MutatorHooks.PlayerDies)"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:236-257 (OnPlayerDies)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:588-589 (MutatorHooks.PlayerDies.Call — live fire)"
+    constants:
+      - { name: "condition", base: "ASF_FOLLOWKILLER && IS_PLAYER(attacker) && it.enemy == victim", port: "IsSpectator(it) && ASF_FOLLOWKILLER && IsLivePlayer(attacker) && it.Spectatee == victim", match: true }
+      - { name: "show_what message", base: "ASF_SHOWWHAT -> superspec_msg(...followkiller, spamlevel 2)", port: "ASF_SHOWWHAT -> Msg(...followkiller, 2); both sprint + centerprint forms now wired", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    confidence: high
+    gaps:
+      - "Subscribed to the live PlayerDies chain (fired at DamageSystem.cs:589) and the body is reachable: ASF_FOLLOWKILLER is settable via the wired autospec command, so a spectator following the victim auto-switches to the killer. The show_what announcement now reaches the spectator on BOTH the console (PrintTo) and centered (SendCenterRaw) channels."
+    verification:
+      - { kind: code, ref: "OnPlayerDies subscribed live (Hook); condition matches Base sv_superspec.qc:427; iterates Roster() (FOREACH_CLIENT); SpectateTransfer + Msg (both forms) reachable", result: pass }
+    notes: "FIX (Wave-5): the show_what centerprint form is now wired (presentation stub->faithful). Followkiller flag settable + body live since Wave-4."
+  - id: superspec.commands.parse
+    name: "Spectator console commands (superspec / autospec / superspec_itemfilter / followpowerup / followstrength / followshield)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:141-358 (MUTATOR_HOOKFUNCTION superspec SV_ParseClientCommand)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:473-674 (HandleCommand — the 6 verbs)"
+      - "src/XonoticGodot.Server/Commands.cs:664-669 (Register the 6 verbs) + 1797-1808 (CmdSuperspec routing, gated on Added + IsLivePlayer)"
+      - "game/net/NetGame.cs:889-913 (WireSuperspec: PrintTo + RosterProvider + CryptoIdfp + Store)"
+    constants:
+      - { name: "player guard", base: "IS_PLAYER(player) -> return (spectator-only cmds)", port: "IsLivePlayer(player) -> return false (spectator/observer-only)", match: true }
+      - { name: "superspec flags", base: "silent/si, verbose/ve, item_message/im (+ clear, on/off, help, OPTIONINFO)", port: "same tokens + clear + on/off bit accumulation + OptionInfo state print + help", match: true }
+      - { name: "autospec flags", base: "strength/st, shield/sh, mega_health/mh, mega_armor/ma, flag_grab/fg, observer_only/oo, show_what/sw, item_msg/im, followkiller/fk, all/aa (+ clear)", port: "same tokens + clear + on/off accumulation + OptionInfo state print + help", match: true }
+      - { name: "follow* cmds", base: "followpowerup (Strength|Shield), followstrength, followshield", port: "same; Roster() FOREACH_CLIENT(IsLivePlayer && HasStrength/HasShield via StatusEffectsCatalog) -> SpectateTransfer", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    confidence: high
+    gaps:
+      - "All 6 verbs ported faithfully (bit accumulation, clear, on/off, help, OPTIONINFO state lines) and routed live via the server command bus (Commands.CmdSuperspec, gated on Added + spectator-only). Both message forms now reach the client (console via PrintTo, centered via SendCenterRaw). followfc [red|blue] lives in the CTF gametype (sv_ctf.qc:2658), out of scope."
+    verification:
+      - { kind: code, ref: "HandleCommand ports all 6 verbs incl. bit accumulation / clear / on/off / help / OptionInfo; routed live via Commands.CmdSuperspec; PrintTo/RosterProvider/CryptoIdfp/Store wired in NetGame.WireSuperspec; Msg both forms wired", result: pass }
+    notes: "FIX (Wave-5): the centerprint form of the command messages is now wired (presentation stub->faithful). autospec 'item_msg'/'im' -> ASF_SSIM (BIT 7) vs superspec 'item_message'/'im' -> SSF_ITEMMSG (BIT 2): same short form, different flag word — preserved."
+  - id: superspec.ui.mutator_strings
+    name: "Mutator string tags (:SS machine tag + ', Super Spectators' pretty label)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/superspec/sv_superspec.qc:360-368 (BuildMutatorsString / BuildMutatorsPrettyString)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:676 (BuildMutatorsString override -> s + \":SS\")"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs:679 (BuildMutatorsPrettyString override -> s + \", Super Spectators\")"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:108-114 (BuildMutatorsString chain — live) / 117-128 (BuildMutatorsPrettyString chain — now live)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1068 (MutatorActivation.BuildMutatorsString — live, sv_eventlog gamelog init)"
+      - "src/XonoticGodot.Server/GameWorld.cs:1079 (MutatorActivation.BuildMutatorsPrettyString -> 'modifications' serverinfo, match-start; faithful to Base PutClientInServer server/client.qc:1107)"
+      - "game/net/ServerNet.cs:607 (MutatorActivation.BuildMutatorsPrettyString -> BuildServerInfo 'modifications' key, server-browser infostring; live via _master.GetInfoRequested ServerNet.cs:561/576)"
+    constants:
+      - { name: "machine tag", base: "\":SS\"", port: "\":SS\" (SuperSpecMutator.cs:676)", match: true }
+      - { name: "pretty label", base: "\", Super Spectators\"", port: "\", Super Spectators\" (SuperSpecMutator.cs:679)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    confidence: high
+    gaps:
+      - "Both overrides exist with the exact Base tokens and BOTH are LIVE. MACHINE token ':SS' — MutatorActivation.BuildMutatorsString (gated on mut.Added) called from GameWorld.cs:1068 at gamelog init (sv_eventlog-gated, faithful to Base server/gamelog.qc:50 GameLogInit). PRETTY label ', Super Spectators' — MutatorActivation.BuildMutatorsPrettyString now has two live callers that write the result into the 'modifications' serverinfo: GameWorld.cs:1079 (match-start, faithful to Base PutClientInServer server/client.qc:1107) and ServerNet.cs:607 (BuildServerInfo, the DP server-browser infoResponse). Residual nuance: the port computes the pretty string at match-start / on info request and stuffs it into the 'modifications' cvar/infostring rather than recomputing it per client-join, but the content is identical (mutators don't change mid-match) and the leading ', ' is stripped exactly as Base substring(s,2,...)."
+    verification:
+      - { kind: code, ref: "SuperSpecMutator.cs:676/679 override BuildMutatorsString/PrettyString with exact Base tokens; MutatorActivation.BuildMutatorsString consumed live at GameWorld.cs:1068 (sv_eventlog gamelog init, gated on mut.Added) -> machine token ':SS' live; MutatorActivation.BuildMutatorsPrettyString consumed live at GameWorld.cs:1079 ('modifications' set at match-start) AND ServerNet.cs:607 (BuildServerInfo, wired to _master.GetInfoRequested) -> pretty label ', Super Spectators' now produced on the live path; both chains gate on mut.Added", result: pass }
+    notes: "DRIFT-FIX (2026-06-25): the pretty-label dimension went presentation partial->faithful + liveness partial->live. Prior audit (Wave-6b) recorded the BuildMutatorsPrettyString chain as having 'no live caller'; that is now false — GameWorld.cs:1079 and ServerNet.cs:607 both consume it into the 'modifications' serverinfo. The machine token ':SS' was already live. Stale class-summary comment at SuperSpecMutator.cs:48-52 still lists some hooks as 'DO NOT EXIST YET' — out of date (doc-only)."

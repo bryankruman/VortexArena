@@ -36,6 +36,13 @@ public sealed class GoalRater
     private GoalRating _best;
     private bool _has;
 
+    // Route context (QC navigation_markroutes' cached cost field): when set, Rate uses the waypoint-graph path
+    // cost instead of straight-line distance. Seeded by the brain each strategy frame via SeedRoute, BEFORE the
+    // role runs (and so before the role's own Start()); Start() must NOT clear these.
+    private WaypointNetwork? _routeNet;
+    private Vector3 _routeFrom;
+    private bool _routeSeeded;
+
     public bool HasGoal => _has;
     public GoalRating Best => _best;
 
@@ -51,15 +58,59 @@ public sealed class GoalRater
         _has = false;
     }
 
+    /// <summary>
+    /// Seed the waypoint route-cost field for this strategy frame (QC navigation_markroutes from the bot). After
+    /// this, <see cref="Rate"/> discounts a candidate by its real path cost from <paramref name="from"/> along the
+    /// graph, falling back to straight-line when the graph can't reach the candidate. Pass net = null to keep the
+    /// prior straight-line behaviour (graphless roaming / tests).
+    /// </summary>
+    /// <returns>The entry-seed set the flood used (null when net is null) — hand it to
+    /// <see cref="BotNavigation.SetGoal"/> so the route build skips a second identical tracewalk search
+    /// (aliases the network's scratch; copy before the next seed search — see ComputeRouteCosts).</returns>
+    public IReadOnlyList<(Waypoint Wp, float Cost)>? SeedRoute(WaypointNetwork? net, Vector3 from, bool onGround = true)
+    {
+        _routeNet = net;
+        _routeFrom = from;
+        _routeSeeded = net is not null;
+        return net?.ComputeRouteCosts(from, onGround);
+    }
+
     /// <summary>Rate a candidate goal (QC navigation_routerating): value <paramref name="f"/> discounted by distance.</summary>
     public void Rate(Vector3 from, Entity? target, Vector3 goalPos, float f, float rangeBias)
     {
         if (f <= 0f) return;
-        float dist = (goalPos - from).Length();
-        float rating = f * (rangeBias / (rangeBias + dist));
+        // QC navigation_routerating distance term: the Dijkstra path cost over the waypoint graph (.wpcost). When
+        // the route field is seeded and the goal is graph-reachable, use it; else fall back to a straight-line
+        // cost in the same unit (distance/MaxSpeed) so the rangebias scale matches the graph path.
+        float cost = float.PositiveInfinity;
+        if (_routeSeeded && _routeNet is not null)
+            cost = _routeNet.RouteCostTo(target, goalPos); // entity goals ride the QC nearest-waypoint cache
+        if (float.IsPositiveInfinity(cost))
+            cost = (goalPos - from).Length() / System.MathF.Max(1f, Cvars.MaxSpeed);
+        float rating = f * (rangeBias / (rangeBias + cost));
         if (!_has || rating > _best.Rating)
         {
             _best = new GoalRating(goalPos, target, rating);
+            _has = true;
+        }
+    }
+
+    /// <summary>Rate a WAYPOINT goal (perf 2026-07-03): the candidate already IS a graph node, so its route cost
+    /// reads its own flood slot directly (<see cref="WaypointNetwork.RouteCostToWaypoint"/>) — the generic
+    /// <see cref="Rate"/> path would tracewalk-Nearest its way back to the node it was handed, once per shell
+    /// candidate in the roam rating. Same cost semantics (the nearest waypoint to a waypoint is itself).</summary>
+    public void RateWaypoint(Vector3 from, Waypoint wp, float f, float rangeBias)
+    {
+        if (f <= 0f) return;
+        float cost = float.PositiveInfinity;
+        if (_routeSeeded && _routeNet is not null)
+            cost = _routeNet.RouteCostToWaypoint(wp);
+        if (float.IsPositiveInfinity(cost))
+            cost = (wp.Center - from).Length() / System.MathF.Max(1f, Cvars.MaxSpeed);
+        float rating = f * (rangeBias / (rangeBias + cost));
+        if (!_has || rating > _best.Rating)
+        {
+            _best = new GoalRating(wp.Center, null, rating);
             _has = true;
         }
     }
@@ -97,8 +148,11 @@ public static class BotRoles
             "dom" or "domination" => BotObjectiveRoles.RoleDomination, // havocbot_role_dom
             "ons" or "onslaught" => BotObjectiveRoles.RoleOnslaught,   // havocbot_role_ons_*
             "ka" or "keepaway" or "tka" => BotObjectiveRoles.RoleKeepaway, // havocbot_role_ka_*
+            "freezetag" or "ft" => BotObjectiveRoles.RoleFreezeTag, // havocbot_role_ft_freeing/offense
             "nexball" or "nb" => BotObjectiveRoles.RoleNexball,         // havocbot_role_nexball
             "assault" or "as" => BotObjectiveRoles.RoleAssault,        // havocbot_role_ass_*
+            "cts" => BotObjectiveRoles.RoleCts,                        // havocbot_role_cts (run the course)
+            "rc" or "race" => BotObjectiveRoles.RoleRace,              // havocbot_role_race (run the track)
             _ => RoleGeneric,
         };
     }
@@ -153,10 +207,16 @@ public static class BotRoles
                 if (!timeItems) continue;
                 if (it.ScheduledRespawnTime <= 0f) continue;
                 if (it.RespawnTime < minRespawnDelay) continue;
-                if (it.RespawnTimeJitter != 0f) continue; // jittered respawns aren't reliably predictable
+                bool isPowerup = IsPowerup(it);
+                // Jittered respawns aren't reliably predictable — but QC exempts powerups (it.respawntimejitter
+                // && !it.itemdef.instanceOfPowerup), since a leading bot still wants to camp the mega/strength.
+                if (it.RespawnTimeJitter != 0f && !isPowerup) continue;
 
-                // lead time the bot will pre-position by (QC: skill 9+ leads 4s; powerups scale with skill).
-                float lead = brain.Skill >= 9f ? 4f : 0f;
+                // Lead time the bot will pre-position by (QC havocbot_goalrating_items): powerups scale
+                // skill/10 up to 6 s; ordinary items only get a 4 s lead from skill 9+.
+                float lead = isPowerup
+                    ? System.Math.Clamp(brain.Skill / 10f, 0f, 1f) * 6f
+                    : (brain.Skill >= 9f ? 4f : 0f);
                 if (now < it.ScheduledRespawnTime - lead) continue; // not soon enough to head there yet
             }
 
@@ -172,44 +232,85 @@ public static class BotRoles
     /// Rate visible enemy players (QC havocbot_goalrating_enemyplayers). Distance-gated, LOS not required
     /// here (the QC version also rates non-visible to encourage pursuit). Skill nudges aggression.
     /// </summary>
-    public static void GoalrateEnemyPlayers(BotBrain brain, GoalRater rater, Vector3 org, float radius)
+    public static void GoalrateEnemyPlayers(BotBrain brain, GoalRater rater, Vector3 org, float radius, float scale = 10000f)
     {
         var bot = brain.Bot;
-        float ratingScale = 10000f * 0.0001f;
+        // QC havocbot_goalrating_enemyplayers: bot_nofire suppresses chasing players entirely, and a
+        // submerged bot won't pursue (it can't fight well underwater).
+        if (Cvars.Bool("bot_nofire")) return;
+        if (bot.WaterLevel > WaterLevelWetFeet) return;
+
+        // QC the role passes a ratingscale (CTF/KA = 10000, Onslaught offense = 20000); QC multiplies by 0.0001.
+        float ratingScale = scale * 0.0001f;
         float radius2 = radius * radius;
+        float maxSpeed2 = Cvars.MaxSpeed * 2f;
+        maxSpeed2 *= maxSpeed2;
         foreach (var e in brain.Players())
         {
             if (!BotBrain.ShouldAttack(bot, e)) continue;
             float d2 = (e.Origin - org).LengthSquared();
             if (d2 < 100f * 100f || d2 > radius2) continue;
+            // QC: ignore enemies moving faster than 2x maxspeed (teleporting / launched) — horizontal only.
+            var hv = new Vector3(e.Velocity.X, e.Velocity.Y, 0f);
+            if (hv.LengthSquared() > maxSpeed2) continue;
 
             // health/armor advantage and low skill both increase aggression (QC t factor)
             float advantage = (bot.Health - e.Health) / 150f;
             float t = System.Math.Clamp(1f + advantage, 0f, 3f);
             t += System.Math.Max(0f, 8f - brain.Skill) * 0.05f;
+            // NOTE: QC skill>3 also nudges t by the bot's/enemy's Strength/Shield powerup timers
+            // (StatusEffects_gettime); the port has no entity-side status-effect expiry accessor yet, so that
+            // refinement is deferred (see todos) — the base advantage+skill aggression is preserved here.
             rater.Rate(org, e, e.Origin, ratingScale * t * RatingEnemy, 2000f);
         }
     }
 
+    /// <summary>QC WATERLEVEL_WETFEET: above this the bot is meaningfully submerged.</summary>
+    private const int WaterLevelWetFeet = 1;
+
     /// <summary>
-    /// Rate roam waypoints when nothing better exists (QC havocbot_goalrating_waypoints). Picks waypoints in
-    /// a shell around the bot with mild randomness so idle bots wander instead of freezing. Only contributes
-    /// if no stronger goal was rated (checked by the caller via <see cref="GoalRater.HasGoal"/>).
+    /// Rate roam waypoints when nothing better exists (QC havocbot_goalrating_waypoints). Walks an outward-
+    /// shrinking shell of waypoints around the bot with mild randomness, stopping at the first shell that
+    /// rates a candidate, so idle bots wander toward a near-ish waypoint instead of freezing or teleporting
+    /// across the map. Only contributes if no stronger goal was rated (checked via <see cref="GoalRater.HasGoal"/>).
     /// </summary>
     public static void GoalrateRoamWaypoints(BotBrain brain, GoalRater rater, Vector3 org, float radius)
     {
-        if (rater.HasGoal) return; // only roam when there's no item/enemy goal
+        if (rater.HasGoal) return; // only roam when there's no item/enemy goal (QC: navigation_bestgoal guard)
         var net = brain.Network;
         if (net is null || net.Count == 0) return;
 
-        float radius2 = radius * radius;
-        foreach (var wp in net.Nodes)
+        // QC: range=500; sradius = max(range, (0.5+rand*0.5)*sradius); then peel 500-qu shells off the top,
+        // stopping at the first shell that contributes a goal (navigation_bestgoal break).
+        const float range = 500f;
+        float sradius = System.Math.Max(range, (0.5f + (float)Rng.NextDouble() * 0.5f) * radius);
+
+        // Penalize waypoints near the bot's current/most-recent goal so it doesn't immediately re-pick where
+        // it's already headed (QC wp_goal_prev0/prev1 history). The port only has the current routed goal,
+        // so this approximates wp_goal_prev0; the older prev1 slot has no analogue yet (see todos).
+        Vector3? recentGoal = brain.Nav.Current;
+        float recentRange2 = (range * 1.5f) * (range * 1.5f);
+
+        while (sradius > 100f)
         {
-            if (wp.HasFlag(WaypointFlags.Teleport)) continue;
-            float d2 = (wp.Origin - org).LengthSquared();
-            if (d2 > radius2 || d2 < 100f * 100f) continue;
-            float f = 0.5f + (float)Rng.NextDouble() * 0.5f;
-            rater.Rate(org, null, wp.Center, f, 2000f);
+            float inner = System.Math.Max(100f, sradius - range);
+            float outer2 = sradius * sradius;
+            float inner2 = inner * inner;
+            foreach (var wp in net.Nodes)
+            {
+                if (wp.HasFlag(WaypointFlags.Teleport)) continue;
+                float d2 = (wp.Origin - org).LengthSquared();
+                if (d2 >= outer2 || d2 <= inner2) continue;
+
+                float f;
+                if (recentGoal is Vector3 g && (wp.Origin - g).LengthSquared() < recentRange2)
+                    f = 0.1f; // recently-targeted area — strongly deprioritized (QC f = 0.1)
+                else
+                    f = 0.5f + (float)Rng.NextDouble() * 0.5f;
+                rater.RateWaypoint(org, wp, f, 2000f); // direct node-cost path — no per-candidate Nearest
+            }
+            if (rater.HasGoal) break; // QC: stop at the first shell that produced navigation_bestgoal
+            sradius -= range;
         }
     }
 
@@ -257,7 +358,16 @@ public static class BotRoles
             return System.Math.Max(0.1f, missing * 0.6f);
         }
 
-        // Powerup / unknown pickup: a steady pull (QC powerups rate high; scaled by the caller's bias).
+        // Powerup / unknown pickup: use the item def's m_botvalue when available (QC generic_pickupevalfunc
+        // returns bot_pickupbasevalue directly; see powerups.qh CLASS(Powerup) m_botvalue = 11000, and the
+        // jetpack/fuelregen.qh overrides m_botvalue = 3000). Normalized against 11000 (the powerup ceiling)
+        // so the result lives in the same 0..1 range as the other branches above.
+        int botValue = item.Pickup?.ItemDef.BotValue ?? 0;
+        if (botValue > 0)
+            return System.Math.Clamp(botValue / 11000f, 0f, 1f);
+
+        // Legacy name-match fallback for items not yet carrying a Pickup ref (pre-existing behavior):
+        // the four glowing powerups rate at 1.0 (highest); everything else at 0.3.
         if (Mentions(name, "powerup") || Mentions(name, "strength") || Mentions(name, "shield")
             || Mentions(name, "invincible") || Mentions(name, "buff"))
             return 1.0f;
@@ -271,7 +381,35 @@ public static class BotRoles
 
     private static bool Mentions(string s, string token)
         => s.Contains(token, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// QC item.itemdef.instanceOfPowerup — whether a world item is a powerup (Strength/Shield/etc.). The port
+    /// has no structured itemdef on the world entity, so this matches on the classname/NetName the same way
+    /// <see cref="ItemValue"/> does. Used by item-respawn timing: skilled bots camp powerup respawns earlier
+    /// (skill-scaled lead) and a powerup is rated even when its respawn is jittered.
+    /// </summary>
+    private static bool IsPowerup(Entity item)
+    {
+        string name = string.IsNullOrEmpty(item.NetName) ? item.ClassName : item.NetName;
+        return Mentions(name, "powerup") || Mentions(name, "strength") || Mentions(name, "shield")
+            || Mentions(name, "invincible") || Mentions(name, "buff");
+    }
 }
 
 /// <summary>A bot role: fills the rater with goal candidates for this frame (QC <c>.havocbot_role</c>).</summary>
 public delegate void BotRole(BotBrain brain, GoalRater rater);
+
+/// <summary>
+/// QC <c>havocbot_role</c> values for Key Hunt (sv_keyhunt.qc): the four possible KH bot sub-roles that
+/// <see cref="BotObjectiveRoles.RoleKeyHunt"/> cycles through.  <see cref="None"/> is the unassigned
+/// initial state that triggers the random-role-pick on the first invocation (mirrors Base's
+/// <c>HavocBot_ChooseRole</c> random pick of offense/defense/freelancer at bot-spawn time).
+/// </summary>
+public enum KhBotRole
+{
+    None      = 0, // unassigned → first call picks a random starting role (QC HavocBot_ChooseRole)
+    Freelancer,    // QC havocbot_role_kh_freelancer  (timeout 10-20 s, then random → offense|defense)
+    Defense,       // QC havocbot_role_kh_defense     (timeout 20-30 s, then → freelancer)
+    Offense,       // QC havocbot_role_kh_offense     (timeout 20-30 s, then → freelancer)
+    Carrier,       // QC havocbot_role_kh_carrier     (no timeout — stays carrier until key is dropped)
+}

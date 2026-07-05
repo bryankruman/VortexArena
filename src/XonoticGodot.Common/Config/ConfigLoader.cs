@@ -36,8 +36,20 @@ public static class ConfigLoader
     /// override earlier ones (DP <c>set</c> semantics) — pass a balance variant after the server entry to mod it.
     /// </summary>
     public static ConfigInterpreter Load(ICvarService cvars, Func<string, string?> readFile, params string[] entryFiles)
+        => Load(cvars, readFile, archiveHook: null, entryFiles);
+
+    /// <summary>
+    /// <see cref="Load(ICvarService, Func{string, string?}, string[])"/> with a <c>seta</c> archive callback.
+    /// In DP the shipped cfg tree itself decides which cvars are archiveable: <c>seta name value</c> sets
+    /// CVAR_SAVE on the cvar (<c>Cvar_SetA_f</c> → <c>Cvar_Get(…, CVAR_SAVE, …)</c>) while plain <c>set</c> does
+    /// not, and <c>Cvar_WriteVariables</c> later persists only the archived-and-changed ones. Pass the store's
+    /// mark-archived here (the client does: <c>MenuState.Boot</c> → <c>CvarService.MarkArchived</c>) so that
+    /// provenance survives the port; a store that is never saved (a private world store) can pass null.
+    /// </summary>
+    public static ConfigInterpreter Load(ICvarService cvars, Func<string, string?> readFile,
+        Action<string>? archiveHook, params string[] entryFiles)
     {
-        var interp = new ConfigInterpreter(cvars, readFile);
+        var interp = new ConfigInterpreter(cvars, readFile) { CvarArchiveHook = archiveHook };
         // `${* asis}` = "run my arguments as-is" — the passthrough form used by stock configs when these aren't
         // redefined to a no-op by the dedicated-server detection (which lives in the client/common tree we skip).
         interp.DefineAlias("if_client", "${* asis}");

@@ -1,0 +1,228 @@
+[
+ {
+  "unit": "monster-framework",
+  "tier": "opus",
+  "notes": [
+   "[logic/values] monster-framework.target.validtarget: PVS line-of-sight uses a traceline only; QC also does checkpvs(eye, targ) before the trace. Traceline is stricter so behavior is close, but a different-PVS-leaf but traceline-visible target would be acquired where QC would not. (UNCHANGED.) ; Alpha-fade gate (QC alpha<0.5 && alpha!=0 rejects) is a no-op: the headless Entity has no alpha field, so a faded/cloaked target stays targetable. (UNCHANGED.) ; Typefrag/chat gate not ported: QC rejects a chatting target when !g_monsters_typefrag (matches default-1; diverges only when g_monsters_typefrag ",
+   "[values] monster-framework.target.find_enemycheck: Crouch 75% range scaling is dead: IsCrouching always returns false (no crouch flag on the headless Entity), so crouching gives no stealth/range benefit vs QC. (UNCHANGED.) ; QC scans the g_monster_targets intrusive list (anything with .monster_attack); the port scans FindInRadius for players (+ other monsters only in teamplay). Behaviorally equivalent for the stock target set. (UNCHANGED.) ; Alpha<0.5 enemy drop (QC) remains a no-op (headless Entity has no render-alpha field) — same documented deferral as ValidTarget. The LOS-retrace + frozen d",
+   "[logic/timing] monster-framework.move.brain: movelib_move_simple / movelib_brake_simple are approximated with a fixed 0.4 lerp / (1 - stopspeed*0.01) decay 'so behavior is stable regardless of frametime' rather than the QC frametime-scaled accel — timing/feel diverges slightly. (UNCHANGED.) ; steerlib_attract2 (the QC steering blend toward moveto with leadahead 500/0.95) is replaced by a direct (moveto-origin) yaw turn; the steer-prediction smoothing is not modeled. (UNCHANGED.) ; SECOND-PASS FIX (closes the Wave-2 dead-wire): the MatchHalted brake-and-idle halt is LIVE (RunThink->Move on",
+   "[logic] monster-framework.move.danger: The hurt-trigger danger code (4) — tracebox_hits_trigger_hurt against the path ahead — is not ported (both fly/swim and ground branches), so monsters won't proactively avoid trigger_hurt brushes. (UNCHANGED.)",
+   "[logic/values] monster-framework.presentation.team_colors: monster_setupcolors (called from Monster_Spawn:1526 for a natural monster) sets .colormap + .glowmod by team / owner / skill tier so monsters are tinted by difficulty; the port never sets colormap/glowmod, so all monsters share the base skin tint. (UNCHANGED — STILL MISSING.) ; monster_changeteam (team radar icon update + IL_PUSH g_monster_targets + colormap) is not ported; teamplay monster team-recoloring and the danger radar icon are absent. (UNCHANGED — STILL MISSING.)"
+  ]
+ },
+ {
+  "unit": "monster-golem",
+  "tier": "opus",
+  "notes": [
+   "[timing] monster-golem.spawn.setup: Spawn-anim gate hardcoded 0.2s vs QC anim_spawn '12 1 5' derived animstate_endtime (approximation).",
+   "[timing] monster-golem.attack.melee_combo: Per-swing melee animtime still 0.5s in the port (MonsterAI.cs:1099) vs 0.8s in QC M_Golem_Attack_Swing (golem.qc:51); combo cadence 0.5s*N matches (QueueCombo NextComboSwing :1095). ; Random anim_melee2/anim_melee3 swing animation not selected/played (no frame table). ; monstersound_melee fires (MonsterAI.cs:1165) but per-connecting-swing inside MeleeAttack, whereas QC plays it once per attack DISPATCH on attack_success==1 (Monster_Attack_Check:468); the sample path is also broken — see monster-golem.audio.voice_cues.",
+   "[values/timing] monster-golem.pain: Golem mr_pain not overridden: pain window hardcoded 0.34s (MarkPain MonsterAI.cs:1398) vs QC golem 0.5s (golem.qc:240). ; Random anim_pain1/anim_pain2 selection not done (no frame table; generic Pain phase).",
+   "[logic/values/timing] monster-golem.audio.voice_cues: Sample PATHS are broken: MonsterSound (MonsterAI.cs:666) resolves `monsters/golem_<cue>.wav`, but the shipped assets are at `sound/monsters/golem/<cue><N>.wav` (subdir + group-count, per golem.dpm_0.sounds: death 3 / pain 2 / idle 2 / sight 0 / melee 0). VERIFIED no `golem_*.wav` flat file exists -> every golem voice cue points at a non-existent file and no audio reaches the mixer. (Affects sight/pain/death AND the newly-wired melee/idle/spawn.) ; monstersound_melee placement wrong: QC plays it once per attack DISPATCH on attack_success==1 (Mon",
+   "[values/timing] monster-golem.anim_frames: mr_anim frame-group table still not ported: no .dpm frame playback; port maintains only a logical MonsterAnim phase enum (Idle/Walk/Run/Attack/Pain/Death). Shared monster-framework deferral, flagged per-unit here."
+  ]
+ },
+ {
+  "unit": "monster-mage",
+  "tier": "haiku",
+  "notes": [
+   "[logic/values] monster-mage.defend.shield: STILL OPEN (the #1 worst gap): shield reduces damage ~80% in the port (MarkPain:1389-1393 does take*=(1-blockpercent) when STATUSEFFECT_Shield active) vs ~0.8% in Base (Monster_Damage:1091 healtharmor_applydamage(100, RES_ARMOR/100) => save=damage*(0.8/100)). The QC shield is near-cosmetic; the port makes the shielded mage ~100x more durable. Worse: the port ALSO applies the faithful ~0.8% armor split (MonsterEventDamage:1539 ArmorValue/100, where RaiseShield set ArmorValue=0.8), so the ~80% MarkPain cut is ON TOP of the correct armor block — t",
+   "[values] monster-mage.anim.frames: Port tracks only logical anim PHASES (MonsterAnim enum) in st.Anim for timing/gating; the concrete nanomage.dpm frame-group playback (idle/walk/run/shoot/duckjump/melee/pain/die frame ranges from mr_anim) is not wired to a real animation driver."
+  ]
+ },
+ {
+  "unit": "monster-spider",
+  "tier": "opus",
+  "notes": [
+   "[values] monster-spider.identity.registration: Spider.qh spawnflags (MON_FLAG_MELEE|RANGED|RIDE) are not represented on the port descriptor; RIDE is moot (no monster-riding mode), MELEE/RANGED are advisory (the Attack picks by distance regardless). Unchanged by Wave-1/2.",
+   "[logic/values] monster-spider.web.player_slow: STILL OPEN after Wave-1/2. Nothing in PlayerPhysics (UpdateStats) checks STATUSEFFECT_Webbed to halve MOVEVARS_HIGHSPEED. Re-verified post-wave: grep 'Webbed' across src matches only Spider.cs/MonsterAI.cs/StatusEffects.cs/MonsterFramework.cs — NONE in PlayerPhysics.cs. The Wave-2 PlayerPhysics.cs diff (git diff main...HEAD) only reworked footstep cadence (jitter RNG + g_footsteps gate + ladder bail) — entirely unrelated to the web slow. A webbed player runs at full speed; only the monster-vs-monster slow (web.monster_slow) is ported.",
+   "[logic/values] monster-spider.attack.player_wielded: STILL OPEN. The SpiderAttack weapon's IS_PLAYER(actor) path (a player wielding the hidden spider attack via impulse 9 / monster-riding or dev tooling) is not ported: no SpiderAttack weapon in the port (the port's Spider re-derives melee/ranged inside Monster.Attack and never goes through a Weapon). The player path uses weapon_prepareattack timing, attack_range=60, and Monster_FindTarget self-targeting — all absent. Not addressed by Wave-1/2.",
+   "[values/timing] monster-spider.anim.mr_anim: STILL OPEN. The spider's DPM frame-group mapping is not driven anywhere: monsters do not run a client animation decider (Monster_Anim / animdecide). The server tracks a logical MonsterAnim phase (Idle/Walk/Run/Attack/Pain/Death — set in MonsterAI.Move/MeleeAttack/MarkPain/MarkDead) but no client frame playback consumes it for monsters, so the rendered spider does not visibly walk/bite/web/die-animate. The Wave-2 CsqcModelAppearance / CsqcModelEffectFlags are PLAYER-model appearance (force-model/colors/glow/death-fade); they do not touch monster",
+   "[values/timing] monster-spider.pain.mr_pain: STILL OPEN: Spider mr_pain (random pain1/pain2 + pain_finished = animstate_endtime) is not specialised; the generic MarkPain sets a fixed 0.34s pain window and a generic Pain phase. The pain-window duration is decoupled from the (unported) anim length. ; Pain sound source still divergent: the port plays monsters/spider_pain.wav (via the Wave-2 throttled MonsterSound, 1.2s delaytoo gate matching QC Monster_Sound structure). QC's Monster_Sound(monstersound_pain,...) resolves the sample from the spider's .sounds file — but the Base spider has NO .",
+   "[timing] monster-spider.think.brain: Spider.mr_think in QC is a trivial return-true (no per-type logic); the port Think -> RunThink matches. The shared move steering uses a FIXED 0.4 velocity blend (movelib_move_simple approximation) rather than QC's frametime-scaled blend — a documented determinism choice, shared by all monsters; flagged timing:partial.",
+   "[values] monster-spider.menu.describe: STILL OPEN (refined from 'unknown' to 'missing'). Confirmed: the spider's MENUQC describe() prose (\"The Spider is a large mechanically-enhanced arachnoid adept at hunting speedy enemies.\", spider.qc:256) is NOT surfaced in the port. DialogMonsterTools.cs is the spawn/edit tool (a radio group of monster netnames + Spawn/Remove/movetarget/recolor buttons, faithful to dialog_monstertools.qc) — it does NOT display any per-monster describe() tooltip text. No other port path surfaces the describe prose. Not touched by Wave-1/2."
+  ]
+ },
+ {
+  "unit": "monster-wyvern",
+  "tier": "opus",
+  "notes": [
+   "[logic] wyvern.fireball.firemine_visual: In-flight fireball renders as the GENERIC CSQC projectile, not PROJECTILE_FIREMINE. The monster_projectile is networked (FlyMissile + FL_PROJECTILE marker + Owner => ServerNet.Classify NetEntityKind.Projectile) and the client DOES draw a projectile, but ProjectileCatalog.Classify keys on classname/model/netname = 'monster_projectile  wyvern', which matches no Firemine/Fireball rule and falls through to Generic — so there is no fire-mine FireSprite body, FireOrange glow, light, or FIREMINE trail.",
+   "[logic] wyvern.menu.describe: The wyvern's MENUQC describe() prose is not surfaced: DialogMonsterTools only lists the monster name in a toggle, with no description text. (Note: even Base shows describe() only in the monster-book page, not the monster-tools dialog; the port has no monster-book equivalent.)"
+  ]
+ },
+ {
+  "unit": "monster-zombie",
+  "tier": "opus",
+  "notes": [
+   "[timing] monster-zombie.setup.mr_setup: Spawn-anim/no-think window hardcoded to 1/3s instead of being derived from anim_spawn '30 1 3' via animfixfps/animstate_endtime (close approximation, not model-exact). ; The spawn anim frame group (30) itself is never played: Zombie.Spawn sets st.Anim=Idle for the spawn-shield window, so DriveAnimFrame shows frame 19 (idle) rather than the Base spawn pose (presentation).",
+   "[values/timing] monster-zombie.presentation.animation: Core phases NOW LIVE + faithful: idle (19), walk/run (27), melee (4), pain1 (20), die1 (9) are stamped onto the networked Entity.Frame by DriveAnimFrame and played by the client ModelAnimator (FollowEntityFrame). The monster networks as Generic and ClientEntityView feeds it frameDriven:true. The 6-value MonsterAnim phase enum is now consumed for playback, not just timing. ; Residual: the phase enum has no Spawn/Block/Shoot slots, so anim_spawn (30) folds into Idle (19), anim_blockstart/end (8/7) and anim_shoot (0) both map to the Attack/melee f"
+  ]
+ },
+ {
+  "unit": "turret-ewheel",
+  "tier": "opus",
+  "notes": [
+   "[logic/values/timing] turret-ewheel.drive.path: No turret_checkpoint waypoint graph / path roaming: an idle ewheel with a target set brakes in place instead of following its path chain (Base ewheel_move_path / ewheel_findtarget).",
+   "[logic/values/timing] turret-ewheel.client.draw: No CSQC ewheel_draw: model does not visibly roll (origin += velocity*dt, head angles += avelocity*dt) and damaged ewheels (<127 hp) do not emit te_spark.",
+   "[logic/values/timing] turret-ewheel.anim.driveframes: No locomotion frame selection (turrets_setframe) and no TNSF_ANIM net sync; the wheel never shows the correct drive animation for its motion state."
+  ]
+ },
+ {
+  "unit": "turret-flac",
+  "tier": "sonnet",
+  "notes": [
+   "[timing] turret-flac.fire.flak_shell: Fuse time uses DistAimPos/shotSpeed (muzzle->aim distance) instead of Base tur_impacttime, which comes from a forward tracebox (sv_turrets.qc:510-523) to trace_endpos; diverges when geometry would stop the shot short of the aim point. ; Presentation missing: PROJECTILE_HAGAR shell trail (turret_projectile spawns with className 'turret_projectile', so the client classifier never maps it to a Flac/FLAC_TRAIL projectile type), EFFECT_BLASTER_MUZZLEFLASH, head-frame cycle (++frame wrap 4).",
+   "[logic/values/timing] turret-flac.weapon.player_form: The hidden/dev player-fired FLAC weapon (impulse 5, WEP_FLAG_HIDDEN, fixed 10s fuse, base class PortoLaunch) is not implemented. Low impact: not used in normal play or default arenas."
+  ]
+ },
+ {
+  "unit": "turret-framework",
+  "tier": "opus",
+  "notes": [
+   "[logic] turret-framework.registry.descriptor: Per-unit cvar table unported (load_unit_settings / TR_PROPS_COMMON / turret_scale_* / turret_initparams clamping / dumpturrets) — per-unit balance is hardcoded C# const, mappers can't retune. (Framework-level g_turrets_* delays/nofire ARE now cvar-backed; per-unit fields are not.)",
+   "[values] turret-framework.spawn.init: Per-unit cvar table unported (load_unit_settings / TR_PROPS_COMMON / turret_scale_* / turret_initparams clamping / dumpturrets) — per-unit balance is hardcoded C# const. ; No tur_head child entity / tag_head attachment (head bone is a TurretState.HeadAngles vector, not an edict). ; turret_initparams clamping/derivation absent: per-turret consts are used raw with no bound/default fill.",
+   "[logic] turret-framework.fire.gate: No tur_impactent trace: the AFF (avoid friendly fire on the predicted impact entity) and target-of-opportunity firecheck branches are not modeled — port gates on the geometric OnTarget tolerance only. ; Default firecheck_flags TEAMCHECK + LOS firecheck branches not modeled (port relies on the target-select-time LOS/team gate, not a separate per-shot firecheck LOS/team test).",
+   "[values/timing] turret-framework.lifecycle.death_respawn: Port respawns directly after RespawnTime (no turret_hide 0.2s + respawntime-0.2 two-step). ; Port applies a real death RadiusDamage(min(ammo,50), DeathTypes.Turret) blast, whereas QC's turret_die blast is COMMENTED OUT on the live (respawning) path — port death is more lethal. Now genuinely reachable since the damage path went live (was dead before Wave-2). ; NORESPAWN death has no rocket-explode FX/sound (SND_ROCKET_IMPACT + EFFECT_ROCKET_EXPLODE).",
+   "[logic/values/timing] turret-framework.net.sync: No turret networking: none of the TNSF_* send/parse / CSQC turret edict exists.",
+   "[logic/values/timing] turret-framework.client.presentation: No client presentation at all: cl_turrets.qc unported (no head model/rotation, team recolor, low-HP sparks, death rocket+gib FX, waypoint sprite/healthbar).",
+   "[logic/values/timing] turret-framework.mapents.path_trigger: Waypoint path entities unported: turret_checkpoint/walker_checkpoint chains + turret_targettrigger (RECIEVETARGETS) + reloadcvars manager."
+  ]
+ },
+ {
+  "unit": "turret-fusionreactor",
+  "tier": "opus",
+  "notes": [
+   "[logic/timing] turret-fusionreactor.recharge.sweep: Recharge cadence diverges: the port refills ALL eligible allies on each shot_refire tick; Base advances attack_finished_single inside turret_fire after the FIRST recipient, and turret_fusionreactor_firecheck's attack_finished_single[0]>time gate then rejects the rest that same think — so Base tops up only ONE ally per 0.2s. The port powers a multi-turret cluster ~N× faster than Base AND drains its own ammo ~N× faster per tick (N*20 vs 20).",
+   "[logic] turret-fusionreactor.firecheck: Missing TFL_AMMO_ENERGY recipient check: IsRechargeableAlly accepts any same-team alive turret_* without verifying the recipient uses energy ammo (harmless today, not faithful).",
+   "[logic/values/timing] turret-fusionreactor.fx.attack: No client presentation at all: turrets have no networked ENT_CLIENT_TURRET entity in the port, so the reactor renders nothing — no model, no ammo-scaled head spin (Base '0 250 0'*ammo/ammo_max, up to 250 deg/s), no waypoint sprite/healthbar, no death/gib FX. ; te_smallflash at each recipient is not emitted (EffectEmitter.TeSmallflash exists but is only mentioned in a Think comment, never called).",
+   "[values] turret-fusionreactor.spawn.lifecycle: respawntime is 60 (Init default) instead of cfg 90: FusionReactorTurret.Spawn omits the respawnTime argument.",
+   "[logic] turret-fusionreactor.mutator.validtarget_hook: The FusionReactor_ValidTarget mutator hook (lets a mutator force-accept/reject a recharge target) is not implemented; no stock Xonotic mutator registers it, so it is presently inert in Base too."
+  ]
+ },
+ {
+  "unit": "turret-hellion",
+  "tier": "opus",
+  "notes": [
+   "[logic] turret-hellion.setup.tr_setup: Fire gate includes an OnTarget muzzle-alignment check (~AIMDIST) and runs an LOS trace at target selection; Base hellion firecheck has neither AIMDIST nor LOS. Base TFL_FIRECHECK_AFF not modeled (tracked as turret-hellion.weapon.aff).",
+   "[logic/values/timing] turret-hellion.anim.headspin: No tur_head.frame handling: the launcher never spins (Base cycles frames 1..6->0, kicked on each shot via ++actor.tur_head.frame) — the head model is static. Base ALSO uses the frame to pick the firing muzzle tag (tag_fire vs tag_fire2), so its absence couples to the missing two-cannon alternation. There is still no per-frame tr_think dispatch in the port turret loop.",
+   "[logic] turret-hellion.damage.lifecycle: Death blast STILL present in port (TurretAI.Die: RadiusDamage min(ammo,50), edge min(ammo,50)*0.25, radius min(ammo,50)*5, force 250) but Base turret_die has its RadiusDamage line COMMENTED OUT (sv_turrets.qc:181) — Base does NO death explosion. The port adds damage/knockback on every turret death Base never delivers (affects all turrets, surfaced here). NOT closed by Wave-2.",
+   "[logic] turret-hellion.weapon.aff: Base hellion firecheck_flags include TFL_FIRECHECK_AFF (avoid-friendly-fire): turret_firecheck withholds the shot when a friendly would be hit. The port RunCombat fire gate has no AFF check, so a port hellion can fire through/at a teammate on a path Base would block."
+  ]
+ },
+ {
+  "unit": "turret-hk",
+  "tier": "opus",
+  "notes": [
+   "[values] turret-hk.setup.tr_setup: Select flags differ: Base has VEHICLES + TRIGGERTARGET (no discrete ANGLELIMITS); port has Players + AngleLimits and NO SelectVehicles/SelectTriggerTarget flag (those flags do not exist in TurretAI) — vehicle acquirability unverified, trigger-target acquisition absent. ; AFF (avoid-friendly-fire trace) firecheck flag not modeled as a discrete gate.",
+   "[logic/values] turret-hk.weapon.guidance: accel/decel constants STILL hardcoded & wrong in GuidedProjectile.HkThink (1.05/1.1/0.85 vs cfg 1.025/1.05/0.9) — accelerates and brakes faster than Base; whole speed envelope off. (GuidedProjectile.cs was NOT touched by Wave-2.) ; Fuel-out: Base makes the rocket inert (MOVETYPE_BOUNCE, nextthink=0) so it drops as a dud at cnt<time; port still collapses the 30s fuel window into the 30s TTL and DETONATES at expiry instead. ; No re-seek of the nearest valid target when the enemy is lost (Base scans g_damagedbycontents within 5000u via hk_is_valid",
+   "[logic/values] turret-hk.target.recieve: turret_hk_addtarget not implemented: the HK cannot receive a designated target from relays / other turrets (TUR_FLAG_RECIEVETARGETS); it can only self-acquire.",
+   "[logic/values/timing] turret-hk.weapon.player: The hidden player weapon WEP_HK (HunterKillerAttack) — the player branch of wr_think (weapon_prepareattack / turret_initparams / W_SetupShot_Dir / weapon_thinkf WFRAME_FIRE1) that lets a given-the-weapon player fire the same guided rocket — is not ported at all (no WEP_HK / HunterKillerAttack symbol exists in the port).",
+   "[logic/values/timing] turret-hk.anim.head: No tr_think head-frame cycler (0..5) and no fire-time kick (++tur_head.frame); the launcher head never plays its load/cycle animation."
+  ]
+ },
+ {
+  "unit": "turret-machinegun",
+  "tier": "opus",
+  "notes": [
+   "[logic] turret-machinegun.target.validate: No checkpvs gate (Base validate_target:688 rejects targets not in the turret's PVS — return -1, independent of the LOS flag). Still open.",
+   "[logic] turret-machinegun.fire.gate_volley: Fire-time on-target test still does NO trace: Base computes tur_dist_impact_to_aimpos from a tracebox in turret_do_updates (sv_turrets.qc:519-521; the live `else` branch, the verified shortcut above it is commented out), so a wall between muzzle and aimpos stops the trace short and the AIMDIST firecheck (firecheck:933-935) refuses to fire (de-facto fire-time LOS). The port's OnTarget (TurretAI.cs:800) is still a pure geometric barrel-line distance, so it fires THROUGH obstructions. Still open. ; Firecheck is still simplified: no 'target of oppo",
+   "[logic] turret-machinegun.lifecycle.damage: Headshake (TFL_DMG_HEADSHAKE: tur_head jitter on hit) still not applied — Damage() has no jitter code and there is no tur_head sub-entity to jitter. Still open (cosmetic)."
+  ]
+ },
+ {
+  "unit": "turret-mlrs",
+  "tier": "sonnet",
+  "notes": [
+   "[logic] turret-mlrs.setup.tr_setup: TFL_DMG_HEADSHAKE still not implemented: Base sets it in tr_setup and turret_damage jolts tur_head.angles.x and .y by (random-0.5)*damage; the port's Wave-2 damage path (TurretAI.EventDamage -> Damage) never jolts the head angles (verified: no st.HeadAngles mutation on damage).",
+   "[logic] turret-mlrs.combat.brain: VOLLYALWAYS residual: MlrsTurret.Think now has a mid-burst branch (st.Active && Enemy is null && VollyCounter != shot_volly) that aims at the last solution + fires to finish the burst after the target is lost — this closes the enemy-NULL case (turret_think:1059). BUT when the enemy is still PRESENT mid-burst, Think falls through to RunCombat, which unconditionally re-applies `DistAimPos < RangeMin` and `OnTarget(... FireToleranceDist)` before firing. Base turret_firecheck:889 early-returns TRUE mid-burst (only the refire + ammo gate remain), so",
+   "[logic/values/timing] turret-mlrs.anim.ammogauge: No head ammo-gauge: Base tr_think maps remaining ammo to head model frame 0 (full) .. 6 (empty) every think and nets it; port has neither the head entity nor any frame handling (explicitly deferred as cosmetic in MlrsTurret.cs). Unchanged by Wave-2.",
+   "[logic] turret-mlrs.damage.lifecycle: Head-shake on damage STILL not implemented: Base turret_damage adds (random-0.5)*damage to tur_head.angles.x AND .y (a server-side aim disturbance that throws off the next shots when the turret is under fire). Wave-2 added the proper damage routing (TurretSpawn.Init wires e.GtEventDamage = TurretAI.EventDamage; DamageSystem.EventDamage:331-334 dispatches non-player edicts to it on the live damage path), and EventDamage runs the pre-damage gate (TurretAI.Damage: dead/inactive immunity, friendly-fire scaling, MOVE shove, retaliation) + health sub"
+  ]
+ },
+ {
+  "unit": "turret-phaser",
+  "tier": "opus",
+  "notes": [
+   "[logic/values] turret-phaser.setup.flags: Port enables shotTimeCompensate + zPredict in the aim params (PhaserTurret.Think:65), but Base phaser's aim_flags is TFL_AIM_LEAD only (no shot-time compensation, no z-prediction). Port leads differently, especially vs airborne targets.",
+   "[logic] turret-phaser.firecheck.fireflag_guard: Port holds AttackFinished = endTime to block re-fire during the beam (functional analogue), but does not model the fireflag==2 DISCHARGE window during which Base also forbids fire (~5 frames after the beam ends, until the head animation returns to idle).",
+   "[logic] turret-phaser.fire.imobeam_multihit: Base FireImoBeam is railgun-style PENETRATING: it makes each hit entity unsolid and re-traces until it hits a wall (SOLID_BSP), then damages AND slows EVERY entity along the beam. The port does a single Api.Trace.Trace and damages/slows only the first hit (tr.Ent, PhaserTurret.BeamThink:127-136). Players lined up behind one another are all hit in Base, only the front one in the port.",
+   "[logic/values] turret-phaser.fire.bot_dodge: Base wr_think sets beam.bot_dodge=true, beam.bot_dodgerating=shot_dmg and IL_PUSHes the beam onto g_bot_dodge so havocbots actively strafe out of the phaser beam. The port spawns the beam without any dodge registration and has no g_bot_dodge avoidance system: BotBrain only does the generic havocbot_dodge strafe-on-clock (BotBrain.cs:346/425/430), not threat-list avoidance. Bots will not specifically dodge the beam.",
+   "[logic/values/timing] turret-phaser.presentation.beam_visual_and_head_anim: No PhaserTurret_beam model spawned/scaled to the impact distance (acknowledged TODO comment in Attack:97). ; No tr_think head-frame state machine: the head never plays the charge (1..10) or discharge (->15->0) animation. The fireflag concept is absent in the port.",
+   "[values/timing] turret-phaser.lifecycle.respawn_time: PhaserTurret.Spawn calls TurretSpawn.Init without a respawnTime argument, so it inherits the shared default 60s (TurretSpawn.Init:45) instead of the phaser cfg's 90s. The turret respawns 30s too early. STILL OPEN — the Wave edits touched TurretSpawn.Init but did not change the 60s default nor make PhaserTurret pass 90."
+  ]
+ },
+ {
+  "unit": "turret-plasma",
+  "tier": "opus",
+  "notes": [
+   "[values] turret-plasma.setup.flags: TFL_FIRECHECK_AFF (don't fire when the predicted impact would hit a teammate) is still not modeled in the fire gate. ; TFL_DMG_HEADSHAKE jitter is not applied (TurretAI.EventDamage omits the head-angle shake; the port has no rendered head bone to perturb).",
+   "[logic/values/timing] turret-plasma.headspin.frame_anim: No turret head/spin presentation: there is no server head bone (tur_head.frame) and no CSQC turret net layer — the head never visibly aims or spins; renders as a static base.md3 block."
+  ]
+ },
+ {
+  "unit": "turret-plasma_dual",
+  "tier": "opus",
+  "notes": [
+   "[logic/values] turret-plasma_dual.damage.headshake: TFL_DMG_HEADSHAKE is set by plasma tr_setup but STILL NEVER honored: TurretAI.EventDamage/Damage do friendly-fire-scale + MOVE-shove + health subtract only — no tur_head.angles jolt (Base sv_turrets.qc:226-234: tur_head.angles.x/y += (random()-0.5)*damage + SendFlags TNSF_ANG). The damage path is live but the headshake branch was not ported. grep confirms zero headshake code in src/.../Turrets/ (only NOTE comments).",
+   "[logic/values/timing] turret-plasma_dual.presentation.head_frame_anim: tur_head.frame wheel (0..6, idles at 0 and 3) STILL never implemented — the dual cannon head does not spin/cycle when firing; left as a client-render NOTE in PlasmaDualTurret.Attack. Wave-2 left an explicit NOTE that the server-side head bone (tur_head.frame) is not modeled (cross-file work). ; Two-barrel tag alternation (tag_fire on plasmad.md3) not modeled — single muzzle origin."
+  ]
+ },
+ {
+  "unit": "turret-tesla",
+  "tier": "haiku",
+  "notes": [
+   "[values/timing] turret-tesla.firecheck.custom: No scan throttle: Base turret_tesla_firecheck rate-limits the radius rescan via target_select_time + mindelay(0.1)/maxdelay(1) and only rescans when the held target went invalid or the maxdelay elapsed. The port models the 0.5s held-enemy re-validate window but runs a full SelectTarget on EVERY think (TeslaTurret.Think:82, unconditional) — more CPU, behaviourally near-identical given the 1.5s refire. STILL OPEN."
+  ]
+ },
+ {
+  "unit": "turret-walker",
+  "tier": "opus",
+  "notes": [
+   "[values] turret-walker.setup.tr_setup: No ground-snap home pose: Base tracebox-drops the spawn to the floor (and stores pos1/pos2) on the first non-STEP setup before switching to STEP; the port treats the map origin as the home pose.",
+   "[logic] turret-walker.drive.idle_roam: No waypoint path-following (walker_move_path / walker_findtarget / turret_checkpoint graph) — a walker with a `target` set does not patrol its path chain (map-graph concern, not ported). ; TSL_ROAM (TSF_NO_PATHBREAK) roam-walk branch not plumbed: the port has no roam spawnflag, so it always takes the stop-and-idle branch (Base also defaults to stop when the flag is unset, so behavior matches a plain walker).",
+   "[logic] turret-walker.drive.gaits_extra: No standalone STRAFE_L/R or PAIN gaits (Base never drives these from the SVQC brain either — they are leftover model anim states — so this is parity-by-omission, not a behavioral gap). ; JUMP/LAND/TURN gait cases exist in ApplyGait but are never assigned (same as Base — the brain never sets them).",
+   "[logic] turret-walker.weapon.rocket: No walker_rocket_loop up-and-over maneuver (Base: 1% chance on LAUNCH and 1% per in-flight think to enter loop->loop2->loop3); WalkerRocketThink only models the straight steer-pull. ; No te_explosion launch flash at the rocket muzzle (client-render). ; No tag_rocket01/tag_rocket02 alternation (port has no head tags; fires from a single muzzle org).",
+   "[logic/values/timing] turret-walker.client.draw: No walk/run/melee animation frames (turrets_setframe(animflag) + TNSF_MOVE net): the walker model never plays its gait animations. ; No CSQC walker_draw: no 4-point ground-align over terrain, no head avelocity spin, and damaged walkers (<127 hp) do not emit te_spark."
+  ]
+ },
+ {
+  "unit": "vehicle-bumblebee",
+  "tier": "opus",
+  "notes": [
+   "[logic/values/timing] vehicle-bumblebee.client.presentation: The networked BRG_* healray/damage beam (the signature green/red ray; ENT_CLIENT_BUMBLE_RAYGUN, bumble_raygun_send/NET_HANDLE) + bumble_raygun_draw multi-segment Draw_CylindricLine cylinder NOT IMPLEMENTED (placeholder EffectEmitter.TeHealBeam/TeBeam stub only; colour now bit-faithful). ; Wave-5 LIVE NOW: the PILOT in-vehicle HUD (vr_hud-equivalent 0..100% health/shield/energy/ammo1/ammo2 bars) + ONE auxiliary heal-lock crosshair render via NetGame.UpdateVehicleHud each frame. STILL missing: the GUNNER cockpit HUD (BumblebeeGun art kind never s"
+  ]
+ },
+ {
+  "unit": "vehicle-framework",
+  "tier": "opus",
+  "notes": [
+   "[logic/values/timing] vehicle-framework.init.initialize: No drop-to-floor downward tracebox (QC vehicle_initialize: tracebox origin+'0 0 100' down 10000, MOVE_WORLDONLY): a vehicle keeps its mapper origin instead of settling on the ground. STILL OPEN (VehicleSpawnFuncs has no tracebox). ; delayspawn + random jitter scheduling not ported (vehicles spawn at game_starttime only). STILL OPEN. ; targetname controller / ACTIVE_NOT gating / vehicle_use not ported (map-scripted activation absent). STILL OPEN.",
+   "[logic/values] vehicle-framework.enter.steal: Enemy-team board (shield=0, old_vehicle_flags backup, ~VHF_SHIELDREGEN, WP_VehicleIntruder waypoint, CENTER_VEHICLE_STEAL / _SELF notifications) STILL not ported — a different-team player simply cannot board. ; Base default is g_vehicles_steal=1 (stealing allowed); the port treats the missing feature as steal-off, so stock teamplay vehicle-steal is absent (default-config behavior gap).",
+   "[logic] vehicle-framework.aim.locktarget: Target validity gate is STILL INCOMPLETE: the port (VehiclePhysicsHelpers.cs:285) checks only SameTeam + IsDead; QC ALSO rejects non-(IS_VEHICLE||IS_TURRET) and near-invisible (alpha<=0.5 && alpha!=0) targets. The comment at :284 acknowledges the omission but the code does not implement it — a vehicle can still lock a player/any live entity. ; The aux-crosshair lock-color update is now LIVE for the building/locked target (UpdateVehicleHud -> SetAuxiliaryXhairLock projects VehLockTarget tinted by VehLockStrength); only the per-target-class lock ",
+   "[logic/values/timing] vehicle-framework.respawn.return_waypoint: The destroyed-vehicle return SCHEDULE is set on the LIVE damage path (SetReturn called from the DamageVehicle death tail, VehicleCommon.cs:540) — re-arms Think -> descriptor Spawn after respawntime. ; No WP_Vehicle return waypoint / radar icon is shown while a destroyed vehicle returns (still deferred, CSQC). ; An abandoned LIVING vehicle is STILL never returned: SetReturn is only called from the death path, not from vehicles_exit (grep: no SetReturn in VehicleBoarding), so the living-vehicle return is missing. ; Return delay constant: QC dead-",
+   "[logic] vehicle-framework.presentation.hud_camera_xhair: Cockpit/chase camera STILL dead: no client reads p.Vehicle to apply SVC_SETVIEWPORT (vehicle_viewport) — the pilot keeps the normal player view. ; Low-health alarm (SND_VEH_ALARM) never plays (no audio cue). ; Raptor/Spiderbot HUD shows only correct HEALTH (their descriptor Think mirrors only health onto the pilot, not shield/energy/ammo); Racer + Bumblebee mirror all five stats. ; Host-only feeder: UpdateVehicleHud reads LocalServerPlayer (host path). The cross-client VEHICLESTAT_* networking for a pure remote pilot is still unwired."
+  ]
+ },
+ {
+  "unit": "vehicle-racer",
+  "tier": "opus",
+  "notes": [
+   "[values] vehicle-racer.spawn.lifecycle: bouncefactor 0.25 / bouncestop 0 still never set, so the MOVETYPE_BOUNCE restitution uses the engine default instead of 0.25 (affects how the craft bounces, live on enter + corpse). Wave-2 did not add them. ; mass 900 + scale 0.5 still not set (mass affects push interactions; scale is cosmetic).",
+   "[logic] vehicle-racer.board.usekey: vr_enter STILL does NOT reposition a boarding flag-carrier's flag (QC `setorigin(instance.owner.flagcarried, '-190 0 96')`); Wave-2 added only a TODO comment (no player.FlagCarried seam yet), so a CTF flag carrier who boards the racer leaves the flag where it was. ; Exit does not seed owner.oldorigin = origin (QC fall-damage negation on dismount); OldOrigin not modeled in Exit (Think glue does set player.OldOrigin while seated).",
+   "[logic] vehicle-racer.drive.hover4point: The crouch-dive up-push 200->30 in water is gated by `PHYS_INPUT_BUTTON_CROUCH && time < racer_air_finished` in Base; the port still keys it on ButtonCrouch alone (no air-meter), so the dive force differs once the 5s air timer would have expired. Wave-2 added only a TODO marker (needs a per-entity air timer field).",
+   "[logic/values] vehicle-racer.drive.controller: racer_watertime: Base sets racer_watertime=time while in a liquid and uses water_downforce (0.03) for the 3s AFTER leaving water; the port still picks water-vs-normal downforce purely from the current liquid test, so the post-water heavy-downforce ramp is missing. Wave-2 added only a TODO marker. ; racer_air_finished (5s submerged air meter, time + water_time) not modeled — only affects the align4point crouch up-push (see drive.hover4point).",
+   "[timing] vehicle-racer.drive.afterburn: Boost sound is still replayed every afterburn tick rather than gated to the ~10.92s loop length (Base reuses .strength_finished as the delay) and plays on the vehicle, not tur_head; the not-boosting branch's SND_Null stop is not issued. ; No EFFECT_RACER_BOOSTER puff (every 0.2s, gated on .wait) and no under-craft smoke trail. ; Engine-sound state machine still not ported: racer_frame loops SND_VEH_RACER_MOVE (sounds=1, 10.92s) while moving and SND_VEH_RACER_IDLE (sounds=0, 11.89s) while idle, gated on vehic.sound_nexttime; the port plays only ",
+   "[logic] vehicle-racer.weapon.cannon: Cannon muzzle tag alternation: Base only swaps tag_fire1/tag_fire2 (via veh.cnt) on the BOT/non-player path; the piloted path uses W_SetupShot_Dir from the player. The port still alternates tags unconditionally, so a piloted racer's bolt origin alternates left/right where Base would not. Cosmetic/origin only (ballistics/damage/spread unchanged). ; No EFFECT_RACER_MUZZLEFLASH muzzle effect and no CSQCProjectile (PROJECTILE_WAKICANNON) bolt trail.",
+   "[logic] vehicle-racer.weapon.rocket: racer_rocket_tracker: Base traces a line ahead (origin -> origin + v_forward*64 - '0 0 32') and, if it hits something that is not the locked target, lifts the steering vector (`newdir.z += 16 * sys_frametime`) to climb over obstacles. GuideRocket RacerHoming STILL omits this trace + lift entirely (VehiclePhysicsHelpers untouched by Wave-2), so the homing rocket does not climb over terrain between it and the target. ; No EFFECT_RACER_ROCKETLAUNCH launch effect and no CSQCProjectile (PROJECTILE_WAKIROCKET) rocket trail.",
+   "[logic/values/timing] vehicle-racer.weapon.rockethud: The rocket reload/ammo HUD percentages (vehicle_ammo2 100/50/0 and the vehicle_reload2 progress bar from .lip/.delay) are still never written (Wave-2 added a TODO noting new VehAmmo2/VehReload2 fields are needed). VehReloadStart (.lip) IS stamped on the pair-complete shot but never read."
+  ]
+ },
+ {
+  "unit": "vehicle-spiderbot",
+  "tier": "haiku",
+  "notes": [
+   "[values] vehicle-spiderbot.spawn.setup: pushable (jumppad launches the spiderbot) is set in QC vr_setup but has no port concept; the spiderbot can ride jumppads in Base. ; mass=5000 is not modeled (no mass field on the entity); affects push/knockback interactions QC scales by mass. ; Port adds a MoveGround vehicle flag not present in QC vr_setup; harmless shared-helper flag, not a Base value.",
+   "[logic] vehicle-spiderbot.impact.bouncepain: QC vr_impact calls vehicles_impact(minspeed, factor, max_damage) from the bouncepain cvar; not ported. Default bouncepain='0 0 0' makes it a no-op, so zero live effect with stock cvars — flagged for completeness only. (Note: sibling vehicles Bumblebee.vr_impact and Racer.vr_impact ARE ported, so the vehicles_impact helper exists to reuse.)"
+  ]
+ }
+]
