@@ -146,6 +146,12 @@ public partial class Main : Node
             int b = Array.IndexOf(args, "--bots");
             if (b >= 0 && b + 1 < args.Length && int.TryParse(args[b + 1], out int bots))
                 shell.BootBots = bots;
+            // `--port <n>` (DP `-port`): bind the hosted listen server off the stock 26000 — scripted/agent
+            // runs must not collide with a live instance (a busy port makes the host's self-client attach to
+            // the WRONG server behind a plausible-looking handshake; see RUNNING.md).
+            int pt = Array.IndexOf(args, "--port");
+            if (pt >= 0 && pt + 1 < args.Length && int.TryParse(args[pt + 1], out int port) && port > 0)
+                shell.BootPort = port;
             AddChild(shell);
         }
 

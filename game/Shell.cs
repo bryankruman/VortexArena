@@ -57,6 +57,11 @@ public partial class Shell : Node
     /// <summary>Bot count for the <c>--host</c> listen server (CLI <c>--bots N</c>); 0 = no bots.</summary>
     public int BootBots { get; set; }
 
+    /// <summary>UDP port every listen server this process hosts binds (CLI <c>--port N</c>, DP <c>-port</c>).
+    /// Defaults to the stock game port; override it so scripted/agent runs don't collide with a live instance
+    /// already holding 26000 (a second host on a busy port otherwise self-connects to the WRONG server).</summary>
+    public int BootPort { get; set; } = XonoticGodot.Game.Net.NetGame.DefaultPort;
+
     private CanvasLayer _menuLayer = null!;
     private MenuRoot _menu = null!;
     private ModelViewer? _viewer;
@@ -609,7 +614,7 @@ public partial class Shell : Node
             gametype: string.IsNullOrWhiteSpace(config.Gametype) ? "dm" : config.Gametype,
             botCount: config.BotCount,
             botSkill: config.BotSkill,
-            port: XonoticGodot.Game.Net.NetGame.DefaultPort,
+            port: BootPort,
             playerName: ResolvePlayerName(),
             serverName: MenuState.Cvars.GetString("hostname") is { Length: > 0 } hn ? hn : "XonoticGodot Listen Server",
             vfs: MenuState.Vfs,

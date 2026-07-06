@@ -94,6 +94,18 @@ clean up strays with `powershell "Get-Process Godot* | Stop-Process -Force"`). A
 (or explicit `--no-save-config`) run also **never writes `~/XonData/config.cfg`** — DP's `-benchmark`
 rule — so scripted runs and their `--cvar`/`--bots` pins can't pollute the player's saved settings.
 
+**Port collisions (agents, take note):** `--port <n>` (DP `-port`) binds the hosted listen server off the
+stock 26000. When 26000 is already held by ANOTHER live instance, the new host's `CreateServer` fails but
+its self-client then connects to the *squatter* and prints a plausible-looking `handshake accepted` — with
+a wrong world and an inflated netId (the real success signal is `netId 1` on a fresh host). Scripted runs
+should always pass a private `--port` instead of fighting over 26000.
+
+**Auto-pause vs background windows (agents, take note):** a solo local game **pauses when its window loses
+focus** (#19, `Shell.SyncAutoPause`) — and a `Start-Process` capture run usually never HAS focus, so the
+whole sim + every client animation freezes (e.g. the weapon raise stops mid-slide and the gun sits below
+the frame — screenshots then look like the viewmodel is missing). Scripted windowed runs should pass
+`--cvar cl_autopause 0`.
+
 For a packaged install, `tools/run-dedicated.sh` (shipped beside the exported `linux-dedicated`
 binary by `tools/package.sh`) `cd`s to its own directory first, matching upstream's
 `xonotic-linux-dedicated.sh`. The exported build resolves `assets/data` relative to the **executable**
