@@ -116,6 +116,8 @@ public sealed partial class NetGame : Node3D
     private XonoticGodot.Game.Client.DamageTextLayer? _damageText; // [T51] floating damage numbers (cl_damagetext)
     private XonoticGodot.Game.Client.WaypointSpriteLayer? _waypointLayer; // 3D in-world waypoint/objective markers
     private Node3D? _mapRoot;                                              // the built map scene (holds the "Portals" child)
+    private Godot.Environment? _worldEnv;                                  // the WorldEnvironment's env — kept so a pure client can swap in the real map sky/fog/tint once its BSP loads
+    private bool _clientMapLoaded;                                         // a pure --connect client has loaded the server's map (render + prediction collision) — one-shot
     private XonoticGodot.Game.Client.PortalRenderer? _portalRenderer;      // see-through warpzone portal render (listen host)
     private XonoticGodot.Game.Client.PortalDiscRenderer? _portalDiscRenderer; // warpzone portal DISC (skinned model) — listen host, reads the same AmbientManager zones
     private XonoticGodot.Game.Client.NadeOrbRenderer? _orbRenderer;        // 3D nade orb effect models (heal/ammo/entrap/veil/darkness) — fed by the entity stream, read for the in-orb color flash
@@ -1297,47 +1299,10 @@ public sealed partial class NetGame : Node3D
         // stamped on this clock, so the client derives the action play phase as LatestServerTime − start.
         _render.ServerTimeProvider = () => _client?.LatestServerTime ?? 0f;
 
-        // Render the world geometry on the listen server: the client draws the worldmodel it loaded locally
-        // (DP VF_DRAWWORLD=1 + renderscene(); the server ships no geometry). Reuses the SAME BSP + gametype filter
-        // the collision was built from in StartListenServer — identical to GameDemo.cs:181's MapLoader.BuildMap.
-        // A pure --connect client has no BSP yet (see the map-name handshake follow-up), so this is gated on _bsp.
-        if (_bsp is not null && _assets?.Assets is not null)
-        {
-            // Pass the loaded map name so external lm_NNNN lightmaps resolve (stock maps have no internal lump).
-            _mapRoot = MapLoader.BuildMap(_bsp, _assets.Assets, _map, _droppedSubmodels);
-            AddChild(_mapRoot);
-        }
-
-        // (§12.8) Hand the render world the map's PVS so it can DP-faithfully cull remote entities behind walls
-        // (r_pvs_cull_entities). Cheap — BspPvs just wraps the parsed lumps. Null map keeps entity culling inert.
-        if (_bsp is not null)
-            _render.Pvs = new XonoticGodot.Formats.Bsp.BspPvs(_bsp);
-
-        // Client-side collision world for the particle systems: decal splats conform to the real brush faces
-        // (DP R_DecalSystem — without it marks fall back to flat quads), and the chunked-SDF service builds
-        // from the same world. One build per map load (~100 ms, hidden by the load screen; the server world's
-        // collision is a separate instance inside GameWorld with no accessor — rebuilding keeps the seam clean).
-        if (_bsp is not null && _assets?.Assets is not null)
-        {
-            CollisionWorld clientCollision = MapLoader.BuildCollision(_bsp, _assets.Assets);
-            _render.Effects.SetCollisionWorld(clientCollision);
-            // Splats clip against the RENDER triangles (DP's actual target) — marks roll over visible
-            // trim/patch edges the collision brushes don't model.
-            _render.Effects.SetDecalGeometry(_bsp);
-
-            // Chunked-SDF collision field for modern particles (planning/particles-dual-system.md §A). Built
-            // only in a modern-collision mode (cl_particles_modern 1/2) — mode 0 (the faithful default) needs
-            // no SDF, so the default load pays nothing beyond the shared collision build above. Generation is
-            // further gated/async inside the service (cl_particles_sdf_generate).
-            if (_vfs is not null &&
-                XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat(XonoticGodot.Engine.Particles.ParticleCvars.Modern) != 0f)
-            {
-                string bspVpath = $"maps/{_map}.bsp";
-                byte[]? bspBytes = _vfs.Exists(bspVpath) ? _vfs.ReadBytes(bspVpath) : null;
-                if (bspBytes is not null)
-                    _render.Effects.BuildSdfForMap(_map, bspBytes, clientCollision, _vfs);
-            }
-        }
+        // Render the world geometry + PVS entity-cull + client particle/decal collision from the loaded BSP.
+        // On a listen server _bsp is already set (StartListenServer); a pure --connect client has no BSP here and
+        // attaches this later — once the server's map name arrives — via LoadClientMapFromServer. No-op until then.
+        AttachWorldRender();
 
         if (_client is not null)
         {
@@ -1359,6 +1324,46 @@ public sealed partial class NetGame : Node3D
         }
 
         AddLight();
+    }
+
+    /// <summary>
+    /// Build + attach the map's render geometry (worldmodel), the PVS entity-cull, and the client-side
+    /// particle/decal collision from the loaded <see cref="_bsp"/>. Shared by <see cref="SetupRender"/> (listen
+    /// server — <see cref="_bsp"/> is loaded in <see cref="StartListenServer"/>) and
+    /// <see cref="LoadClientMapFromServer"/> (a pure <c>--connect</c> client, once the server's map name arrives).
+    /// No-op without a BSP / render world / assets, so it is safe to call before the map is known.
+    /// </summary>
+    private void AttachWorldRender()
+    {
+        if (_bsp is null || _render is null || _assets?.Assets is null)
+            return;
+
+        // The client draws the worldmodel it loaded locally (DP VF_DRAWWORLD=1 + renderscene(); the server ships
+        // no geometry). Reuses the SAME BSP + gametype submodel filter the collision was built from — render and
+        // collision MUST agree (GameDemo.cs:134/181). The map name resolves external lm_NNNN lightmaps.
+        _mapRoot = MapLoader.BuildMap(_bsp, _assets.Assets, _map, _droppedSubmodels);
+        AddChild(_mapRoot);
+
+        // (§12.8) The render world's PVS so it DP-faithfully culls remote entities behind walls (r_pvs_cull_entities).
+        _render.Pvs = new XonoticGodot.Formats.Bsp.BspPvs(_bsp);
+
+        // Client-side collision for the particle systems: decal splats conform to the real brush faces (DP
+        // R_DecalSystem — else marks fall back to flat quads), and the chunked-SDF service builds from the same world.
+        CollisionWorld clientCollision = MapLoader.BuildCollision(_bsp, _assets.Assets);
+        _render.Effects.SetCollisionWorld(clientCollision);
+        // Splats clip against the RENDER triangles (DP's actual target) — marks roll over visible trim/patch edges.
+        _render.Effects.SetDecalGeometry(_bsp);
+
+        // Chunked-SDF collision field for modern particles (planning/particles-dual-system.md §A). Built only in a
+        // modern-collision mode (cl_particles_modern 1/2) — mode 0 (the faithful default) needs no SDF.
+        if (_vfs is not null &&
+            XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat(XonoticGodot.Engine.Particles.ParticleCvars.Modern) != 0f)
+        {
+            string bspVpath = $"maps/{_map}.bsp";
+            byte[]? bspBytes = _vfs.Exists(bspVpath) ? _vfs.ReadBytes(bspVpath) : null;
+            if (bspBytes is not null)
+                _render.Effects.BuildSdfForMap(_map, bspBytes, clientCollision, _vfs);
+        }
     }
 
     /// <summary>
@@ -2931,6 +2936,10 @@ public sealed partial class NetGame : Node3D
             {
                 _loggedAccept = true;
                 GD.Print($"[NetGame] handshake accepted by '{_client.ServerName}': netId {_client.LocalNetId}.");
+                // A pure --connect client now knows the server's map — load its BSP so the remote player renders
+                // and collides with the REAL world instead of the flat prediction floor (no-op on a listen server).
+                if (!_isListenServer)
+                    LoadClientMapFromServer(_client.ServerMapName, _client.ServerGametype);
             }
 
             // LISTEN-SERVER prediction parity: the predicted carrier and the authoritative host Player are TWO
@@ -3236,8 +3245,9 @@ public sealed partial class NetGame : Node3D
             _view.ZoomScriptCaught);
 
         // Feed the full HUD's player-bound panels (health/ammo/weapons/crosshair) the local server Player on a
-        // listen server, so they reflect live local state as the spawn lands (QC the view player). A pure client
-        // has no local Player actor — the NetHud crosshair/health covers it. Cheap: SetPlayer no-ops when same.
+        // listen server, or the networked-stats mirror on a pure client (refreshed just before, so the panels
+        // read this frame's snapshot values) — the SAME skinned panel set either way. SetPlayer no-ops when same.
+        UpdateHudMirror();
         UpdateFullHudPlayer();
         UpdateCrosshairGate();
         UpdateInfoMessages();
@@ -4497,11 +4507,60 @@ public sealed partial class NetGame : Node3D
     /// there is no local Player so it stays null (the player-agnostic panels — centerprint/killfeed — still draw,
     /// and the NetHud crosshair/health covers the rest). Only re-applies on a change so the per-frame call is cheap.
     /// </summary>
+    /// <summary>
+    /// The pure-client HUD stats mirror: a bare <see cref="Player"/> (never spawned into any world/entity table)
+    /// whose fields are refreshed each frame from the NETWORKED owner stats, so the full skinned HUD panel set
+    /// (health/armor, ammo, weapons, powerups, crosshair) renders on a pure <c>--connect</c> client exactly like
+    /// the listen host — the CSQC model, where the HUD draws from replicated STATs, not server objects. Null on
+    /// a listen server (the real <see cref="LocalServerPlayer"/> feeds the panels there).
+    /// </summary>
+    private Player? _hudMirror;
+
+    /// <summary>
+    /// Refresh <see cref="_hudMirror"/> from the networked owner stats (pure client only): health/armor + the
+    /// ammo pools + the owned-weapon bitset + active weapon from the owner block; position/velocity/angles from
+    /// prediction (the physics/strafe panels); status effects decoded from the owner's own entity slice
+    /// (<see cref="ClientNet.LocalState"/> — the powerups panel timers). Raw field writes
+    /// (<see cref="Resources.SetResourceExplicit"/> semantics), NEVER the hooked SetResource — the mirror is a
+    /// render-side stats holder, not a sim actor, and must not fire mutator resource hooks.
+    /// </summary>
+    private void UpdateHudMirror()
+    {
+        if (_isListenServer || _client is not { Accepted: true })
+            return;
+        _hudMirror ??= new Player { NetName = _playerName };
+        Player m = _hudMirror;
+
+        m.Health = _client.Health;
+        m.ArmorValue = _client.Armor;
+        m.AmmoShells = _client.LocalAmmoShells;
+        m.AmmoBullets = _client.LocalAmmoBullets;
+        m.AmmoRockets = _client.LocalAmmoRockets;
+        m.AmmoCells = _client.LocalAmmoCells;
+        m.AmmoFuel = _client.LocalAmmoFuel;
+        m.OwnedWeaponSet = new WepSet { Bits = _client.LocalOwnedWeaponBits };
+        m.UnlimitedAmmo = _client.LocalUnlimitedAmmo;
+        m.ActiveWeaponId = _client.ActiveWeaponId;
+        m.SwitchWeaponId = _client.ActiveWeaponId;
+
+        // Predicted pose for the physics/strafe panels + the crosshair's Player.Origin/Angles reads.
+        m.Origin = _client.PredictedOrigin;
+        m.Velocity = _client.PredictedVelocity;
+        m.Angles = _viewAngles;
+        m.DeadState = _client.Health <= 0 && _everAlive ? DeadFlag.Dead : DeadFlag.No;
+
+        // Powerup timers (strength/shield/…): the server networks every player's status-effect bitmap in the
+        // entity stream — including our own entity, whose decoded slice ClientNet keeps as LocalState.
+        ClientEntityView.ApplyStatusEffects(m, _client.LocalState?.StatusEffects);
+    }
+
     private void UpdateFullHudPlayer()
     {
         if (_fullHud is null)
             return;
-        Player? p = LocalServerPlayer; // null on a pure client (no in-process world)
+        // The local server Player on a listen host; the networked-stats mirror on a pure client (fed each frame
+        // by UpdateHudMirror — null until the handshake accepts). Either way the full skinned HUD renders.
+        Player? p = LocalServerPlayer ?? _hudMirror;
         if (ReferenceEquals(p, _lastHudPlayer))
             return;
         _lastHudPlayer = p;
@@ -6681,7 +6740,134 @@ public sealed partial class NetGame : Node3D
         // and the C# API can override it at runtime (XonoticGodot.Game.WorldTint).
         XonoticGodot.Game.WorldTint.ApplyWorldspawn(_bsp);
 
+        _worldEnv = env; // kept so a pure client can swap in the real map's sky/fog/tint once its BSP loads (ApplyMapSky)
         AddChild(new WorldEnvironment { Name = "WorldEnvironment", Environment = env });
+    }
+
+    /// <summary>
+    /// Re-apply the real map's skybox, fog and colour-tint baseline to the live <see cref="WorldEnvironment"/>,
+    /// replacing the procedural sky <see cref="AddLight"/> put up before the map was known. Called by
+    /// <see cref="LoadClientMapFromServer"/> once a pure <c>--connect</c> client has loaded the server's BSP.
+    /// No-op when the environment or BSP isn't available.
+    /// </summary>
+    private void ApplyMapSky()
+    {
+        if (_worldEnv is null || _bsp is null)
+            return;
+        Sky? sky = XonoticGodot.Game.Loaders.SkyboxLoader.TryBuild(_bsp, _assets?.Assets);
+        if (sky is not null)
+            _worldEnv.Sky = sky;
+        XonoticGodot.Game.MapLoader.ApplyFog(_worldEnv, _bsp);
+        XonoticGodot.Game.WorldTint.ApplyWorldspawn(_bsp);
+    }
+
+    /// <summary>
+    /// A pure <c>--connect</c> client boots on a flat prediction floor (<see cref="BootClientFacade"/>) because it
+    /// doesn't yet know the server's map. Once the handshake accept delivers the map name (+ gametype), load that
+    /// BSP locally and wire it in three ways so the remote player sees and moves through the REAL world, not a void:
+    /// <list type="number">
+    ///   <item>swap the ambient trace world's flat floor for the map's collision, so the predicted local player
+    ///         clips real geometry (fixes the walk-through-walls / <c>PREDICTION DESYNC</c> on a pure client);</item>
+    ///   <item>attach the render worldmodel + PVS cull + particle collision (<see cref="AttachWorldRender"/>);</item>
+    ///   <item>swap the procedural sky for the map's real skybox/fog/tint (<see cref="ApplyMapSky"/>).</item>
+    /// </list>
+    /// One-shot (<see cref="_clientMapLoaded"/>); inert on a listen server (its map is loaded in
+    /// <see cref="StartListenServer"/>) and when the map can't be resolved in the VFS (stays on the flat floor).
+    /// </summary>
+    private void LoadClientMapFromServer(string mapName, string gametype)
+    {
+        if (_clientMapLoaded || _isListenServer || string.IsNullOrWhiteSpace(mapName))
+            return;
+
+        XonoticGodot.Formats.Bsp.BspData? bsp = TryLoadMapBsp(mapName);
+        if (bsp is null)
+        {
+            GD.PrintErr($"[NetGame] client: server map '{mapName}' not found in the VFS — staying on the flat " +
+                        "prediction floor (world will not render).");
+            return;
+        }
+        _clientMapLoaded = true;
+        _map = mapName;
+        if (!string.IsNullOrWhiteSpace(gametype))
+            _gametype = gametype;
+        _bsp = bsp;
+        // Drop the SAME gametype-conditional "*N" submodels the server dropped, so the client's render + collision
+        // agree with authority (render and collision MUST match — GameDemo.cs:134/181).
+        _droppedSubmodels = GameMapView.ComputeDroppedSubmodels(bsp, _gametype);
+
+        // (1) Prediction/gameplay collision: replace the flat floor the carrier has been tracing against with the
+        // real map collision. The ambient EngineServices keeps its entity table (the carrier lives there) + clock +
+        // cvars + models; only the static brush world the trace consults changes. Safe between frames (single-thread).
+        BspCollisionBuilder.Result built = BspCollisionBuilder.Build(bsp, _droppedSubmodels);
+        if (Api.Services is XonoticGodot.Engine.Simulation.EngineServices es)
+        {
+            es.SetCollisionWorld(built.World);
+            es.Pvs = new XonoticGodot.Formats.Bsp.BspPvs(bsp);
+            // Register the inline "*N" brush models so a predicted move clips networked doors/plats (QC setmodel
+            // resolves the model bounds + clip brushes from the catalog on the SetModel a snapshot drives).
+            BspCollisionBuilder.RegisterSubmodels(built.Submodels, es.ModelsImpl);
+        }
+
+        // (2) Render the worldmodel + PVS entity-cull + particle/decal collision (the same path the listen server
+        // runs in SetupRender), now that _bsp is set.
+        AttachWorldRender();
+
+        // (3) The map's real skybox / fog / colour tint, replacing the procedural sky AddLight put up pre-map.
+        ApplyMapSky();
+
+        // (4) The map-dependent HUD/ambience feeds SetupCameraAndHud/SetupMusic couldn't wire in _Ready (the map
+        // name wasn't known yet on a pure client):
+        // — radar minimap image + world bounds (QC mi_min/mi_max), so the image and the blips align;
+        if (_radar is not null)
+        {
+            _radar.MapName = _map;
+            if (bsp.Models.Length > 0)
+            {
+                _radar.MapMinXY = new Vector2(bsp.Models[0].Mins.X, bsp.Models[0].Mins.Y);
+                _radar.MapMaxXY = new Vector2(bsp.Models[0].Maxs.X, bsp.Models[0].Maxs.Y);
+            }
+        }
+        // — waypoint-sprite distance-fade ramp (QC waypointsprite_fadedistance = vlen(mi_scale));
+        if (_waypointLayer is not null && bsp.Models.Length > 0)
+        {
+            NVec3 mn = bsp.Models[0].Mins, mx = bsp.Models[0].Maxs;
+            _waypointLayer.MapSize = new NVec3(mx.X - mn.X, mx.Y - mn.Y, mx.Z - mn.Z).Length();
+        }
+        // — map music: SetupMusic ran with no map name, so resolve the mapinfo cdtrack now. The MusicPlayer
+        //   re-reads CdTrack each frame, so a late set starts the track cleanly. (trigger_music/target_music
+        //   volumes stay listen-host-only — they are server entities and aren't networked.)
+        if (_musicPlayer is not null && _vfs is not null)
+        {
+            string mapinfoPath = $"maps/{_map}.mapinfo";
+            string cdTrack = "";
+            if (_vfs.Exists(mapinfoPath))
+            {
+                try { cdTrack = ParseMapinfoCdTrack(_vfs.ReadText(mapinfoPath)); }
+                catch { /* unreadable mapinfo — no music */ }
+            }
+            string resolvedTrack = MusicPlayer.ResolveMusicPath(cdTrack);
+            if (!string.IsNullOrEmpty(resolvedTrack))
+            {
+                _musicPlayer.CdTrack = resolvedTrack;
+                GD.Print($"[NetGame] map music: '{resolvedTrack}' (from mapinfo, client map load)");
+            }
+        }
+        // — warpzone portal window/disc renderers (SetupCameraAndHud skipped them — no _mapRoot yet). The zone
+        //   transforms aren't networked, so on a pure client these degrade to the dark-mirror placeholder rather
+        //   than the live see-through render — but the portal FRAMES render instead of nothing. _camera is live
+        //   (SetupCameraAndHud ran in _Ready; this fires from _Process on the first accept).
+        if (_mapRoot is not null && _camera is not null && _portalRenderer is null)
+        {
+            _portalRenderer = new XonoticGodot.Game.Client.PortalRenderer { Name = "PortalRenderer" };
+            AddChild(_portalRenderer);
+            _portalRenderer.Setup(_mapRoot, _camera);
+
+            _portalDiscRenderer = new XonoticGodot.Game.Client.PortalDiscRenderer { Name = "PortalDiscRenderer" };
+            AddChild(_portalDiscRenderer);
+            _portalDiscRenderer.Setup(_camera, (path, skin) => _assets?.LoadModel(path, skin));
+        }
+
+        GD.Print($"[NetGame] client loaded map '{_map}' ({_gametype}) for render + prediction collision.");
     }
 
     // (the old hardcoded BotName table moved into BotPopulation's bots.txt fallback — T39)

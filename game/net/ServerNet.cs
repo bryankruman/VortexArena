@@ -1440,6 +1440,11 @@ public sealed class ServerNet : IDisposable
         _scratchWriter.WriteUShort(st.NetId);                     // your net entity id
         _scratchWriter.WriteFloat(1f / SimulationLoopTicRate);     // server tick RATE in Hz (1/dt) for client timing
         _scratchWriter.WriteString(_serverName);                   // server display name (for the client UI)
+        // The current map + gametype so a pure remote client can load the BSP itself — rendering the world and
+        // building its own prediction collision (NetGame.LoadClientMapFromServer). ClientNet.HandleAccept reads
+        // these two strings in this exact order, right after the server name.
+        _scratchWriter.WriteString(_world.Services.Cvars.GetString("mapname"));
+        _scratchWriter.WriteString(_world.GameType?.RegistryName ?? "dm");
         _transport.Send(peerId, _scratchWriter.WrittenSpan, reliable: true);
 
         // [W14a-QW4] QC ClientInit_misc (server/client.qc:907): right after the accept, send the one-shot per-server
@@ -2949,6 +2954,22 @@ public sealed class ServerNet : IDisposable
             MineCount = wsMineCount, MineLimit = wsMineLimit,
             ArcHeat = wsArcHeat,
         }.Write(w); // ClientNet.HandleSnapshot reads this via OwnerWeaponRings.Read, in lockstep
+
+        // Owner inventory (QC the ammo/items STATs, stats.qh RES_* + STAT_WEAPONS): the ammo pools, the owned-
+        // weapon bitset, and the unlimited-ammo flag — what a PURE remote client's full HUD (ammo panel, weapons
+        // panel, crosshair ring color) needs; a listen host reads the same values straight off LocalServerPlayer.
+        // Appended at the END of the owner block; ClientNet.HandleSnapshot reads these in this exact order.
+        // Floats (ammo pools are float resources; fuel burns fractionally). WriteULong is 32-bit, so the 64-bit
+        // WepSet rides as lo/hi halves.
+        w.WriteFloat(p.GetResource(ResourceType.Shells));
+        w.WriteFloat(p.GetResource(ResourceType.Bullets));
+        w.WriteFloat(p.GetResource(ResourceType.Rockets));
+        w.WriteFloat(p.GetResource(ResourceType.Cells));
+        w.WriteFloat(p.GetResource(ResourceType.Fuel));
+        ulong wep = p.OwnedWeaponSet.Bits;
+        w.WriteULong((uint)(wep & 0xFFFFFFFFUL));
+        w.WriteULong((uint)(wep >> 32));
+        w.WriteBool(p.UnlimitedAmmo);
     }
 
     // =====================================================================================

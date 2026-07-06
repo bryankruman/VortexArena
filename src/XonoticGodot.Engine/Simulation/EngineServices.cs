@@ -37,6 +37,13 @@ public sealed class EngineServices : IEngineServices
     /// </summary>
     public XonoticGodot.Formats.Bsp.BspPvs? Pvs { get => TraceImpl.Pvs; set => TraceImpl.Pvs = value; }
 
+    /// <summary>
+    /// Swap the static collision world the trace service clips against, in place (keeping the entity table, clock,
+    /// cvars and models). A pure network client boots on a flat prediction floor and calls this once it has loaded
+    /// the server's real map BSP, so the predicted local player collides with real geometry.
+    /// </summary>
+    public void SetCollisionWorld(CollisionWorld world) => TraceImpl.SetCollisionWorld(world);
+
     /// <param name="world">The collision world this facade traces against.</param>
     /// <param name="sharedCvars">
     /// An optional process-wide cvar store to reuse instead of a fresh one. The menu front-end creates the

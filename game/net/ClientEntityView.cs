@@ -308,7 +308,7 @@ public sealed partial class ClientEntityView : Node
     /// <c>Strength</c> isn't networked (the QC wire carries only time + flags), so it's defaulted; the overlays
     /// only need the effect's PRESENCE + timer, which round-trip exactly.
     /// </summary>
-    private static void ApplyStatusEffects(Entity e, byte[]? blob)
+    internal static void ApplyStatusEffects(Entity e, byte[]? blob)
     {
         List<ActiveStatusEffect> list = e.StatusEffects;
         if (list.Count == 0 && (blob is null || blob.Length == 0))
