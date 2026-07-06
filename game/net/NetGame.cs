@@ -348,8 +348,8 @@ public sealed partial class NetGame : Node3D
     // not in the movement dt.
     private float _inputDeltaTime = XonoticGodot.Engine.Simulation.SimulationLoop.TicRate;
 
-    // FPS eye height (Xonotic PL_VIEW_OFS '0 0 35'). Mouse-look sensitivity now reads the live `sensitivity`
-    // cvar (LookSensitivity), not a hardcoded constant, so the input-settings dialog drives it.
+    // FPS eye height (Xonotic PL_VIEW_OFS '0 0 35'). Mouse-look reads the live `sensitivity` × m_yaw/m_pitch
+    // cvars (DP cl_input.c formula), so the input-settings dialog drives it and tuned m_yaw/m_pitch work.
     private const float EyeHeight = 35f;
 
     // Standing player hull (Xonotic sv_player_mins/maxs), Quake units — same as PlayerController.HullMins/Maxs.
@@ -5285,18 +5285,20 @@ public sealed partial class NetGame : Node3D
 
         // Accumulate mouse-look while the cursor is captured (the Shell owns Escape + the mouse around the
         // in-game menu). Mouse right → yaw decreases (Quake CCW yaw); mouse down → pitch increases (down-positive).
-        // Sensitivity is the live `sensitivity` cvar (the value the input-settings dialog binds), not a hardcoded
-        // constant; the `m_pitch` SIGN gives invert-Y (the dialog's "Invert aiming" flips m_pitch < 0). The shared
-        // view's SensitivityScale folds in (QC setsensitivityscale) so zoomed aim is finer on the net path too.
+        // DP formula (cl_input.c:692-694): yaw -= m_yaw · dx · sensitivity · zoom; pitch += m_pitch · dy ·
+        // sensitivity · zoom — m_pitch is SIGNED (the dialog's "Invert aiming" flips it negative at |0.022|).
+        // The shared view's SensitivityScale is the QC setsensitivityscale zoom factor. A hardcoded 0.025 here
+        // previously replaced m_yaw (DP 0.022) — +13.6% view turn per mouse count vs Base at equal sensitivity,
+        // which in air-strafe turning reads as sharper movement, not just hotter aim.
         // QC FixIntermissionClient / SVC_INTERMISSION: at intermission the engine freezes the player view at the
         // intermission camera and mouse-look is locked. Mirror it by ignoring look input while the match is over
         // (the angles latched at intermission entry are held), so the scoreboard view doesn't swing with the mouse.
         if (@event is InputEventMouseMotion motion && Input.MouseMode == Input.MouseModeEnum.Captured
             && !(_client?.MatchIntermission ?? false))
         {
-            float sens = LookSensitivity() * _view.SensitivityScale;
-            _viewAngles.Y -= motion.Relative.X * sens;
-            _viewAngles.X += motion.Relative.Y * sens * PitchSign();
+            float sens = Sensitivity() * _view.SensitivityScale;
+            _viewAngles.Y -= motion.Relative.X * sens * MYaw();
+            _viewAngles.X += motion.Relative.Y * sens * MPitch();
             _viewAngles.X = Mathf.Clamp(_viewAngles.X, -89f, 89f);
         }
     }
@@ -5449,21 +5451,29 @@ public sealed partial class NetGame : Node3D
     private static bool IsWeaponSwitchImpulse(int imp)
         => (imp >= 1 && imp <= 14) || (imp >= 230 && imp <= 253);
 
-    /// <summary>The live look sensitivity (DP `sensitivity` cvar) folded with the base feel — the value the
-    /// input-settings dialog writes. Falls back to the previous hardcoded feel when the cvar is unset.</summary>
-    private float LookSensitivity()
+    /// <summary>The live `sensitivity` cvar (the input-settings dialog's slider), unset → the DP engine
+    /// default <b>3</b> (cl_main.c:53 <c>"sensitivity","3","mouse speed multiplier"</c>). NOTE this is the
+    /// raw multiplier — the degrees-per-count scale comes from <see cref="MYaw"/>/<see cref="MPitch"/>, as in
+    /// DP. (To match a Base profile exactly, set the same `sensitivity` value here as there.)</summary>
+    private static float Sensitivity()
     {
         float s = Api.Services is not null ? Api.Cvars.GetFloat("sensitivity") : 0f;
-        // The `sensitivity` cvar is ~1..9 (xonotic default 6); scale it into the deg/pixel feel the prior
-        // constant (0.15 ≈ sensitivity 6 × 0.025) gave, so existing aim is unchanged at the default.
-        return s > 0f ? s * 0.025f : 0.15f;
+        return s > 0f ? s : 3f;
     }
 
-    /// <summary>Invert-Y sign from `m_pitch` (DP: negative pitch inverts the Y axis). +1 normal, −1 inverted.</summary>
-    private static float PitchSign()
+    /// <summary>DP `m_yaw` (default 0.022 deg/count): the yaw half of the mouse scale. Unset/0 → 0.022.</summary>
+    private static float MYaw()
     {
-        if (Api.Services is null) return 1f;
-        return Api.Cvars.GetFloat("m_pitch") < 0f ? -1f : 1f;
+        float v = Api.Services is not null ? Api.Cvars.GetFloat("m_yaw") : 0f;
+        return v != 0f ? v : 0.022f;
+    }
+
+    /// <summary>DP `m_pitch` (default 0.022 deg/count, SIGNED — negative inverts the Y axis; the input
+    /// dialog's "Invert aiming" writes ±0.022). Unset/0 → +0.022.</summary>
+    private static float MPitch()
+    {
+        float v = Api.Services is not null ? Api.Cvars.GetFloat("m_pitch") : 0f;
+        return v != 0f ? v : 0.022f;
     }
 
     /// <summary>
