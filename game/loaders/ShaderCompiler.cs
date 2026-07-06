@@ -376,6 +376,12 @@ public static class ShaderCompiler
     {
         if (def.Deforms.Count > 0 && HasWaveDeform(def))
             return true;
+        // A multi-frame animMap must CYCLE (the static path binds only frame 0 — playtest r14: the mortar
+        // sight sat frozen on its first frame), and an rgbGen wave must pulse (same stage: the sight blink).
+        if (stage.AnimMap is { Frames.Length: > 1 })
+            return true;
+        if (stage.RgbGen is { Type: ColorGenType.Wave, Wave: not null })
+            return true;
         foreach (TcMod m in stage.TcMods)
         {
             switch (m.Type)
@@ -419,6 +425,19 @@ public static class ShaderCompiler
         string albedoName = StageImageName(stage);
         Texture2D? albedo = ResolveStageTexture(stage, albedoName, ctx) ?? ctx.WhiteTexture();
         mat.SetShaderParameter("albedo_tex", albedo);
+
+        // animMap frames 1..N-1 (frame 0 IS albedo_tex — StageImageName resolves it). A frame that fails
+        // to load falls back to frame 0 so the cycle degrades to a shorter blink, not a white flash.
+        // Load-time only (material build), so the string-built uniform names are fine here.
+        if (stage.AnimMap is { Frames.Length: > 1 } am)
+        {
+            int frames = Math.Min(am.Frames.Length, 8); // Q3 MAX_IMAGE_ANIMATIONS
+            for (int i = 1; i < frames; i++)
+            {
+                Texture2D? frameTex = ctx.LoadTexture(AssetPaths.StripImageExtension(am.Frames[i]));
+                mat.SetShaderParameter("anim_tex_" + i, frameTex ?? albedo);
+            }
+        }
         return mat;
     }
 
@@ -450,6 +469,13 @@ public static class ShaderCompiler
         sb.Append("render_mode ").Append(string.Join(", ", modes)).Append(";\n\n");
 
         sb.Append("uniform sampler2D albedo_tex : source_color, filter_linear_mipmap_anisotropic;\n");
+        // animMap frame cycling (playtest r14 D): one sampler per extra frame, selected below by
+        // int(TIME*fps) % N (Q3 tr_shade.c R_BindAnimatedImage). Frame 0 stays albedo_tex so a map that
+        // fails to resolve degrades to the old static look. Q3 caps animations at 8 frames.
+        int animFrames = stage.AnimMap is { Frames.Length: > 1 } ? Math.Min(stage.AnimMap.Frames.Length, 8) : 1;
+        for (int i = 1; i < animFrames; i++)
+            sb.Append("uniform sampler2D anim_tex_").Append(i)
+              .Append(" : source_color, filter_linear_mipmap_anisotropic;\n");
         // Dynamic whole-map colour tint (XonoticGodot.Game.WorldTint) — a global shader parameter so animated
         // world surfaces (scrolling textures, lava) re-tint with the rest of the map. Identity (1,1,1) default.
         sb.Append("global uniform vec3 map_tint;\n");
@@ -472,13 +498,62 @@ public static class ShaderCompiler
         sb.Append("    vec2 uv = UV;\n");
         foreach (TcMod m in stage.TcMods)
             EmitTcMod(sb, m);
-        sb.Append("    vec4 c = texture(albedo_tex, uv);\n");
+        if (animFrames > 1)
+        {
+            // animMap: pick this frame's sampler. A dynamically-uniform if-chain (GDShader has no sampler
+            // arrays); fps clamped so a malformed 0 doesn't divide the cycle away.
+            float fps = stage.AnimMap!.Fps > 0f ? stage.AnimMap.Fps : 2f;
+            sb.Append("    int fr = int(TIME * ").Append(Flt(fps)).Append(") % ").Append(animFrames)
+              .Append(";                // animMap cycle\n");
+            sb.Append("    vec4 c = texture(albedo_tex, uv);\n");
+            for (int i = 1; i < animFrames; i++)
+                sb.Append("    if (fr == ").Append(i).Append(") c = texture(anim_tex_").Append(i).Append(", uv);\n");
+        }
+        else
+        {
+            sb.Append("    vec4 c = texture(albedo_tex, uv);\n");
+        }
+        EmitRgbGen(sb, stage.RgbGen);
         sb.Append("    ALBEDO = c.rgb * map_tint;\n");
         sb.Append("    ALPHA = c.a;\n");
         if (alphaTest)
             sb.Append("    if (c.a < ALPHA_CUTOFF) discard;\n");
         sb.Append("}\n");
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Emit the <c>rgbGen</c> colour modulation onto the running <c>c</c> (playtest r14 D — the mortar
+    /// sight's <c>rgbGen wave sawtooth 0 1 0 10</c> blink). Only the forms a generated stage can honor:
+    /// <c>wave</c> (Q3 waveform, clamped 0..1 exactly as the fixed-function vertex colour clamped) and
+    /// <c>const</c>. Identity/vertex/entity forms keep the default untouched colour — same as before.
+    /// </summary>
+    private static void EmitRgbGen(StringBuilder sb, ColorGen? cg)
+    {
+        if (cg is { Type: ColorGenType.Wave, Wave: not null })
+        {
+            WaveForm w = cg.Wave;
+            // value = base + amplitude * func(phase + time*freq), func over one period of x in [0,1).
+            sb.Append("    float wx = fract(").Append(Flt(w.Phase)).Append(" + TIME * ").Append(Flt(w.Frequency))
+              .Append(");   // rgbGen wave ").Append(w.RawName).Append('\n');
+            string func = w.Func switch
+            {
+                WaveFunc.Sin => "sin(wx * 6.2831853)",
+                WaveFunc.Square => "(wx < 0.5 ? 1.0 : -1.0)",
+                // Q3 triangle table: 0 -> 1 over the first quarter, back to 0, then mirrored negative.
+                WaveFunc.Triangle => "(1.0 - 4.0 * abs(fract(wx + 0.25) - 0.5))",
+                WaveFunc.Sawtooth => "wx",
+                WaveFunc.InverseSawtooth => "(1.0 - wx)",
+                _ => "sin(wx * 6.2831853)", // noise/unknown: a periodic stand-in beats a frozen constant
+            };
+            sb.Append("    c.rgb *= clamp(").Append(Flt(w.Base)).Append(" + ").Append(Flt(w.Amplitude))
+              .Append(" * ").Append(func).Append(", 0.0, 1.0);\n");
+        }
+        else if (cg is { Type: ColorGenType.Const } cc && cc.Parms.Length >= 3)
+        {
+            sb.Append("    c.rgb *= vec3(").Append(Flt(cc.Parms[0])).Append(", ").Append(Flt(cc.Parms[1]))
+              .Append(", ").Append(Flt(cc.Parms[2])).Append(");   // rgbGen const\n");
+        }
     }
 
     /// <summary>Emit the GLSL for one tcMod operation, transforming the running <c>uv</c>.</summary>

@@ -2006,13 +2006,15 @@ public sealed partial class NetGame : Node3D
     private float _viewmodelLastAttackFinished;
 
     /// <summary>
-    /// (#41) Sample the map's baked lightgrid at the camera and drive the viewmodel's light modulate —
-    /// stage 1 of DP-faithful model lighting (Mod_Q3BSP_LightPoint samples per entity; the viewmodel is what
-    /// the player stares at, so it goes first — players/items are the documented follow-up). The q3map cell
-    /// values are 0..255 with ~128 ≈ nominal, so <c>(ambient + 0.5·directed)/128</c> lands near identity in
-    /// an averagely-lit room, brightens in yards and dims/tints in colored corridors. Floored so a pitch-black
-    /// cell can't erase the gun (DP keeps a minimum too), capped to keep overbright rooms sane. No grid on the
-    /// map → identity (the flat pre-#41 look).
+    /// (#41, upgraded r14 B/C) Sample the map's baked lightgrid at the camera and drive the viewmodel's
+    /// DP-style grid shading — Mod_Q3BSP_LightPoint samples per entity; the viewmodel is what the player
+    /// stares at, so it goes first (players/items are the documented follow-up). The full sample is pushed
+    /// (ambient RGB + directed RGB + the baked light DIRECTION) and the skin shader reproduces DP's
+    /// MODE_LIGHTDIRECTION formula per pixel — position-varying colored shading structure instead of the
+    /// r13 flat modulate. Scale is DP's ABSOLUTE 1/128 (Mod_Q3BSP_LightPoint <c>stylescale</c>: grid byte
+    /// 128 = 1.0, above overbrightens — with the r_model_light_gamma response this reads like DP, where
+    /// the r13 self-calibrating normalization was a crutch for the linear pipeline compressing it), tunable
+    /// via <c>r_model_light_scale</c>. No grid on the map → the PBR + fill-light fallback.
     /// </summary>
     private void UpdateViewModelLightgrid()
     {
@@ -2021,19 +2023,19 @@ public sealed partial class NetGame : Node3D
         XonoticGodot.Formats.Bsp.LightGridData? grid = _bsp?.LightGrid;
         if (grid is null || _camera is null || !GodotObject.IsInstanceValid(_camera))
         {
-            _viewModel.SetLightMod(new Color(1f, 1f, 1f));
+            _viewModel.SetGridLight(false, Vector3.One, Vector3.Zero, Vector3.Up);
             return;
         }
         System.Numerics.Vector3 eye = Coords.ToQuake(_camera.GlobalPosition);
-        grid.Sample(eye, out System.Numerics.Vector3 amb, out System.Numerics.Vector3 dir, out _);
-        // Self-calibrating scale (r13): normalize by the MAP's average lit-cell intensity, so 1.0 = an
-        // averagely-lit spot on this map, bright yards push toward the cap and dark corridors dip — a fixed
-        // /128 divisor mostly darkened (typical Xonotic grids average well below 128) and read as no change.
-        float scale = 1f / MathF.Max(24f, grid.AverageIntensity);
-        float r = Math.Clamp((amb.X + 0.5f * dir.X) * scale, 0.35f, 1.7f);
-        float g = Math.Clamp((amb.Y + 0.5f * dir.Y) * scale, 0.35f, 1.7f);
-        float b = Math.Clamp((amb.Z + 0.5f * dir.Z) * scale, 0.35f, 1.7f);
-        _viewModel.SetLightMod(new Color(r, g, b));
+        grid.Sample(eye, out System.Numerics.Vector3 amb, out System.Numerics.Vector3 dir, out System.Numerics.Vector3 dirn);
+        string scaleCvar = MenuState.Cvars.GetString("r_model_light_scale");
+        float userScale = string.IsNullOrWhiteSpace(scaleCvar) ? 1f : MenuState.Cvars.GetFloat("r_model_light_scale");
+        float scale = (userScale <= 0f ? 1f : userScale) / 128f;
+        var ambient = new Vector3(amb.X, amb.Y, amb.Z) * scale;
+        var diffuse = new Vector3(dir.X, dir.Y, dir.Z) * scale;
+        // The sample direction is QUAKE axes; the shader wants GODOT world axes (it view-transforms per pixel).
+        Vector3 dirG = dirn.LengthSquared() > 1e-6f ? Coords.ToGodot(dirn).Normalized() : Vector3.Up;
+        _viewModel.SetGridLight(true, ambient, diffuse, dirG);
     }
 
     /// <summary>

@@ -504,32 +504,69 @@ public partial class ViewModel : Node3D
     }
 
     /// <summary>
-    /// The lightgrid-sampled model light at the player's position (#41): DP lights every model from the BSP
-    /// lightgrid (<c>Mod_Q3BSP_LightPoint</c>) — a gun in a dark corridor is dim, a bright yard makes it pop,
-    /// colored light tints it. The host samples the grid at the camera each frame and pushes the modulate
-    /// here; it rides the skin shader's per-instance <c>colormod</c> uniform (identity white = the flat
-    /// pre-#41 look, also the no-grid fallback). Epsilon-gated: the grid varies smoothly, so most frames skip.
+    /// The lightgrid-sampled model light at the player's position (#41, upgraded r14 to real DP grid
+    /// SHADING): DP lights every model from the BSP lightgrid (<c>Mod_Q3BSP_LightPoint</c>) — ambient +
+    /// a directed lobe along the baked light direction + a colored specular, all position-varying. The
+    /// host samples the grid at the camera each frame and pushes the terms here; they ride the skin
+    /// shader's per-instance <c>grid_*</c> uniforms (see <c>PlayerSkinShader</c>), which switch the gun
+    /// onto the DP-formula branch and off Godot's scene lights. <paramref name="on"/> false = no grid on
+    /// the map → the PBR + fill-light fallback (the pre-#41 look). Values are DP scale (1.0 ≈ grid byte
+    /// 128, may exceed 1); <paramref name="dir"/> is normalized, GODOT world axes, pointing AT the light.
+    /// Epsilon-gated: the grid varies smoothly, so most frames skip the tree-walk.
     /// </summary>
-    public void SetLightMod(Color light)
+    public void SetGridLight(bool on, Vector3 ambient, Vector3 diffuse, Vector3 dir)
     {
-        if (Mathf.Abs(light.R - _lightMod.R) + Mathf.Abs(light.G - _lightMod.G) + Mathf.Abs(light.B - _lightMod.B) < 0.01f)
+        if (on == _gridOn
+            && (ambient - _gridAmbient).LengthSquared() < 1e-4f
+            && (diffuse - _gridDiffuse).LengthSquared() < 1e-4f
+            && (dir - _gridDir).LengthSquared() < 1e-4f)
             return;
-        _lightMod = light;
-        ReapplyInstanceTint();
+        _gridOn = on;
+        _gridAmbient = ambient;
+        _gridDiffuse = diffuse;
+        _gridDir = dir;
+        // The always-on fill exists to keep the PBR-lit gun legible; the grid-lit branch ignores scene
+        // lights entirely (EMISSION output), so leaving the omni on would only spill onto nearby world
+        // geometry through the camera.
+        if (_fillLight is not null && GodotObject.IsInstanceValid(_fillLight))
+            _fillLight.Visible = !on;
+        PushGridLight();
     }
 
-    private Color _lightMod = new(1f, 1f, 1f);
+    private bool _gridOn;
+    private Vector3 _gridAmbient = Vector3.One;
+    private Vector3 _gridDiffuse = Vector3.Zero;
+    private Vector3 _gridDir = Vector3.Up;
 
-    /// <summary>Push the current team tint + lightgrid modulate onto the model's skin-shader instance
-    /// uniforms (colormod = the light, shirt/pants = the team color). Harmless on plain-material v_ models
-    /// (no such uniforms — the StandardMaterial tint in ApplyMaterialFx handles those instead).</summary>
+    /// <summary>
+    /// Push the grid-light uniforms, folding in the muzzle-flash pop while <see cref="_flashTime"/> runs:
+    /// the grid branch ignores the flash OmniLight (EMISSION path), but in DP the muzzle dlight DOES light
+    /// the viewmodel (r_shadow_realtime_dlight 1), so a warm ambient boost stands in for it.
+    /// </summary>
+    private void PushGridLight()
+    {
+        if (_modelRoot is null || !GodotObject.IsInstanceValid(_modelRoot))
+            return;
+        Vector3 ambient = _gridAmbient;
+        if (_gridOn && _flashTime > 0f)
+        {
+            float f = Mathf.Clamp(_flashTime / 0.06f, 0f, 1f);
+            ambient += new Vector3(1f, 0.93f, 0.8f) * (0.5f * f);
+        }
+        ModelTint.ApplyGridLight(_modelRoot, _gridOn, ambient, _gridDiffuse, _gridDir);
+    }
+
+    /// <summary>Push the current team tint onto the model's skin-shader instance uniforms (shirt/pants =
+    /// the team color), plus the grid-light terms. Harmless on plain-material v_ models (no such uniforms —
+    /// the StandardMaterial tint in ApplyMaterialFx handles those instead).</summary>
     private void ReapplyInstanceTint()
     {
         if (_modelRoot is null || !GodotObject.IsInstanceValid(_modelRoot))
             return;
         Color shirtPants = _hasTeam ? _teamColormod : ModelTint.Black;
         Color glowU = _hasTeam ? _teamGlow : ModelTint.White;
-        ModelTint.Apply(_modelRoot, _lightMod, glowU, shirtPants, shirtPants);
+        ModelTint.Apply(_modelRoot, ModelTint.White, glowU, shirtPants, shirtPants);
+        PushGridLight();
     }
 
     // =================================================================================================
@@ -561,9 +598,11 @@ public partial class ViewModel : Node3D
             Effects?.MuzzleFlash(effect, originQuake, dirQuake);
         }
 
-        // Flash light + recoil.
+        // Flash light + recoil (+ the grid-lit ambient pop standing in for the flash light — see PushGridLight).
         _flashTime = 0.06f;
         _flashLight.LightEnergy = 3.0f;
+        if (_gridOn)
+            PushGridLight();
         _recoil = Mathf.Min(_recoil + RecoilKick, RecoilKick * 2f);
 
         // Muzzle-flash MODEL (Base W_MuzzleFlash_Model — models/flash.md3 MDL_DEVASTATOR_MUZZLEFLASH and
@@ -995,6 +1034,9 @@ public partial class ViewModel : Node3D
             // Keep the flash light parked at the muzzle.
             if (_muzzleMarker is not null && GodotObject.IsInstanceValid(_muzzleMarker))
                 _flashLight.GlobalPosition = _muzzleMarker.GlobalPosition;
+            // Grid-lit guns don't see the flash OmniLight — decay the stand-in ambient boost with it.
+            if (_gridOn)
+                PushGridLight();
         }
 
         // Recoil recovers along view forward (+X Quake). It and the sway both feed the gunorg below.

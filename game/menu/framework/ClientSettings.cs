@@ -237,6 +237,12 @@ public static class ClientSettings
         c.Register("r_map_tint_strength", "0");
         c.Register("r_scene_tint", "1 1 1");
         c.Register("r_scene_tint_strength", "0");
+        // Lightgrid model lighting (playtest r14). r_model_light_gamma: 1 = DP-faithful gamma-space light
+        // response on grid-lit models (display scales linearly with grid light — the "punch"), 0 = plain
+        // linear multiply through the tonemap. r_model_light_scale multiplies the grid sample (1 = DP's
+        // absolute 1/128 scale). NOT archived, same rationale as the tints: live-tuning knobs.
+        c.Register("r_model_light_gamma", "1");
+        c.Register("r_model_light_scale", "1");
     }
 
     /// <summary>

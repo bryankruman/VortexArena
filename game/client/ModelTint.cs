@@ -66,6 +66,28 @@ public static class ModelTint
     }
 
     /// <summary>
+    /// Push the lightgrid model-lighting instance-uniforms (playtest r14 B/C) on every mesh under
+    /// <paramref name="root"/>: <c>grid_lit</c> switches the skin shader onto the DP grid-lit branch,
+    /// <c>grid_ambient</c>/<c>grid_diffuse</c> are the sample's RGB terms (DP scale, 1.0 ≈ byte 128,
+    /// may exceed 1 — q3map overbright), <c>grid_dir</c> the baked light direction (normalized, GODOT
+    /// world axes, pointing AT the light). Same harmless-on-StandardMaterial contract as
+    /// <see cref="Apply(Node,Color,Color,Color,Color)"/>. Pass <paramref name="on"/> false to return the
+    /// model to the PBR path (the no-grid-map fallback).
+    /// </summary>
+    public static void ApplyGridLight(Node root, bool on, Vector3 ambient, Vector3 diffuse, Vector3 dir)
+    {
+        if (root is null)
+            return;
+        foreach (MeshInstance3D mi in Meshes(root))
+        {
+            mi.SetInstanceShaderParameter(PlayerSkinShader.GridLitUniform, on ? 1f : 0f);
+            mi.SetInstanceShaderParameter(PlayerSkinShader.GridAmbientUniform, ambient);
+            mi.SetInstanceShaderParameter(PlayerSkinShader.GridDiffuseUniform, diffuse);
+            mi.SetInstanceShaderParameter(PlayerSkinShader.GridDirUniform, dir);
+        }
+    }
+
+    /// <summary>
     /// Override ONLY the <c>colormod</c> instance-uniform on a cached mesh list, leaving glow/shirt/pants as a
     /// prior <see cref="ApplyAppearance(IReadOnlyList{MeshInstance3D},int,bool,float,bool)"/> set them. Used by the
     /// frozen overlay to multiply a player's whole model toward icy-blue without disturbing its team colors (QC

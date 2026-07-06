@@ -1021,6 +1021,37 @@ nudge-out-of-solid; see #9), **#14** flag jitter (user-deferred).
   (direction bytes are already decoded); (c) plain StandardMaterial3D weapon surfaces ignore the instance
   colormod (skin-shader surfaces only) — most weapon bodies are skin-shader, rest follow with (a)'s mechanism.
 
+### 42. Mortar/weapons still bland vs Base — DP-formula grid shading + gamma response + sight anim — FIXED (needs playtest)
+- [x] **Status:** Implemented (r15) — experiments **B, C, D + A-behind-a-cvar** from
+  `planning/weapon-render-pipeline-comparison-2026-07-05.md`. Verify: the gun shows directional
+  light-and-shade that CHANGES as you move through the map (bright yards pop, dark corridors dim, colored
+  light tints), colored glints track the map lighting, and the mortar's sight cycles its 3 frames and
+  pulses its blink. `set r_model_light_gamma 0` should visibly flatten the gun (A/B look comparison).
+- **What changed (screenshot-verified: shading structure + specular glint + gamma-0 flattens; no shader errors):**
+  - **B — real grid shading:** `PlayerSkinShader` gained a `grid_lit` instance-uniform branch reproducing
+    DP's `MODE_LIGHTDIRECTION` per pixel: `tex×ambient + tex×diffuse×max(0,N·L) +
+    gloss.rgb×diffuse×pow(max(0,N·H), 1+32·gloss.a) + glow` from the lightgrid sample (`grid_ambient` /
+    `grid_diffuse` / `grid_dir` pushed by `NetGame.UpdateViewModelLightgrid` → `ViewModel.SetGridLight` →
+    `ModelTint.ApplyGridLight`). EMISSION-only output (scene lights can't double-light); the 6.0-energy
+    ViewFill is hidden while grid-lit; muzzle flash pops via a decaying warm ambient boost (DP's dlight
+    lights the viewmodel — the grid branch can't see the OmniLight). No grid on the map → the old PBR+fill.
+  - **C — colored DP specular:** the `gloss.rgb × directed × pow(N·H, 1+32·gloss.a)` term above (Blinn
+    half-vector against the BAKED direction, no N·L gate — DP has none).
+  - **A — gamma-faithful response (cvar `r_model_light_gamma`, default 1):** DP multiplies light onto
+    GAMMA-encoded texels (vid_sRGB 0, no tonemap) → display scales LINEARLY with light. The shader
+    re-encodes the texel gamma, multiplies there, clamps (DP's framebuffer saturates), and pre-decodes so
+    Linear tonemap + sRGB encode round-trips it. 0 = plain linear multiply (visibly flatter — confirmed).
+    Global shader param registered/polled by `WorldTint`; scale knob `r_model_light_scale` (default 1 =
+    DP's absolute 1/128 — the r13 "self-calibrating average" normalization was a crutch for the linear
+    response and is gone).
+  - **D — sight animation:** `ShaderCompiler.NeedsAnimatedShader` now triggers on multi-frame `animMap`
+    and `rgbGen wave` (the sight stage has neither tcMod nor deform — it previously compiled STATIC, frozen
+    on frame 1 with no blink). The generated stage shader cycles `int(TIME*fps) % N` over per-frame
+    samplers and emits the Q3 waveform (`sin/square/triangle/sawtooth/inversesawtooth`, clamped 0..1;
+    `rgbGen const` too). Parser pinned by new `AnimMap_MortarSightStage_ParsesFramesFpsAndWave`.
+- **Follow-ups (unchanged from #41):** players/items/monsters via the same `ApplyGridLight` mechanism;
+  plain StandardMaterial3D surfaces still ignore grid light (skin-shader surfaces only).
+
 ---
 
 ## Pending
