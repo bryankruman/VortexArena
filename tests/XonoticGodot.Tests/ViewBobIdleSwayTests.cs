@@ -46,6 +46,25 @@ public class ViewBobIdleSwayTests
     // Inverted pair (makeXonoticCheckBox(1, ...) builds yes=0 / no=1): 0 reads checked, 1 unchecked.
     [InlineData(0f, 0f, 1f, true)]
     [InlineData(1f, 0f, 1f, false)]
+    // crosshair_hittest (yes 1.25 / no 1): 1 = hit tests without the shrink (unchecked), 0 = tests off
+    // (still unchecked — the separate "Perform hit tests" box owns that), 1.25 = shrink on.
+    [InlineData(1.25f, 1.25f, 1f, true)]
+    [InlineData(1f, 1.25f, 1f, false)]
+    [InlineData(0f, 1.25f, 1f, false)]
+    // g_waypointsprite_crosshairfadealpha (yes 0.25 / no 1) — inverted VALUE pair: smaller = checked.
+    [InlineData(0.25f, 0.25f, 1f, true)]
+    [InlineData(1f, 0.25f, 1f, false)]
+    // hud_shownames_crosshairdistance (yes 25 / no 0): the yes value is a DISTANCE; a hand-set larger
+    // radius still reads checked.
+    [InlineData(25f, 25f, 0f, true)]
+    [InlineData(100f, 25f, 0f, true)]
+    [InlineData(0f, 25f, 0f, false)]
+    // con_notify (yes 4 / no 0): the hand-set modes 1/2 sit below the midpoint (2) -> unchecked.
+    [InlineData(4f, 4f, 0f, true)]
+    [InlineData(1f, 4f, 0f, false)]
+    // notification CHOICE pairs (yes 2 / no 1): unchecked is the SIMPLE variant, not off.
+    [InlineData(2f, 2f, 1f, true)]
+    [InlineData(1f, 2f, 1f, false)]
     public void LoadChecked_UsesQcMidpointRule(float value, float yes, float no, bool expected)
     {
         Assert.Equal(expected, CheckBoxValue.LoadChecked(value, yes, no));

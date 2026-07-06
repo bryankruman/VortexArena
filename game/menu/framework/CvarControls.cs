@@ -26,10 +26,6 @@ public static class Widgets
     public static CvarCheckBox CheckBox(string cvar, string label, string tooltip = "", string on = "1", string off = "0")
         => new(cvar, Localization.Tr(label), on, off) { TooltipText = Localization.Tr(tooltip) };
 
-    /// <summary>QC <c>makeXonoticCheckBoxEx(bit, cvar, label)</c> — toggles one bit of an integer-flags cvar.</summary>
-    public static CvarFlagCheckBox FlagCheckBox(string cvar, int bit, string label, string tooltip = "")
-        => new(cvar, bit, Localization.Tr(label)) { TooltipText = Localization.Tr(tooltip) };
-
     /// <summary>
     /// QC <c>makeXonoticCheckBoxEx(yesValue, noValue, cvar, label)</c> — a checkbox that stores one of two
     /// VALUES in the cvar (checkbox.qc:33-42; e.g. cl_bobfall 0.05/0, v_idlescale 1/0, cl_eventchase_death
@@ -195,42 +191,11 @@ public partial class CvarValueCheckBox : CheckBox
     }
 }
 
-/// <summary>A checkbox toggling a single bit of an integer bitmask cvar (QC checkbox "Ex" with bit mask).</summary>
-public partial class CvarFlagCheckBox : CheckBox
-{
-    private readonly string _cvar;
-    private readonly int _bit;
-    private bool _updating;
-
-    public CvarFlagCheckBox(string cvar, int bit, string label)
-    {
-        _cvar = cvar; _bit = bit;
-        Text = label;
-        Toggled += OnToggled;
-    }
-
-    public override void _EnterTree() { CvarUi.Cvars.Changed += OnCvarChanged; Refresh(); }
-    public override void _ExitTree() { CvarUi.Cvars.Changed -= OnCvarChanged; }
-
-    private void OnCvarChanged(string name) { if (name == _cvar) Refresh(); }
-
-    private void Refresh()
-    {
-        if (_updating) return;
-        _updating = true;
-        ButtonPressed = ((int)CvarUi.Cvars.GetFloat(_cvar) & _bit) != 0;
-        _updating = false;
-    }
-
-    private void OnToggled(bool pressed)
-    {
-        if (_updating) return;
-        int v = (int)CvarUi.Cvars.GetFloat(_cvar);
-        v = pressed ? (v | _bit) : (v & ~_bit);
-        CvarUi.Cvars.Set(_cvar, v.ToString(CultureInfo.InvariantCulture));
-        CvarUi.Cvars.MarkArchived(_cvar);
-    }
-}
+// NOTE: there is deliberately NO bit-flag checkbox here. QC has no such widget — every
+// makeXonoticCheckBoxEx(a, b, cvar, label) call is a VALUE-pair checkbox (a/b are the stored yes/no
+// values, checkbox.qc:33-42). An earlier CvarFlagCheckBox misread those first two args as a bit mask,
+// which left 19 menu checkboxes inert (bit 0 masks nothing) — port new checkboxes with ValueCheckBox
+// (or plain CheckBox for the makeXonoticCheckBox(isInverted, ...) 1/0 form).
 
 // ---------------------------------------------------------------------------------------------------------
 //  Slider (with value readout)
