@@ -3501,6 +3501,11 @@ public sealed partial class NetGame : Node3D
             _shownamesLayer.LocalIsSpectating = _client.SpectateeStatus != 0;
             _shownamesLayer.ChaseActive = _view.ChaseActive;
             _shownamesLayer.LocalTeam = LocalShownamesTeam();
+            // [#55] The REAL teamplay flag (networked ScoreInfo → GameScores.Teamplay; the in-process server
+            // shares the same static on a listen host). The layer previously derived teamplay from
+            // LocalTeam != None — the #27 pants-team trap: FFA players carry a pants-derived team, so DM
+            // players sharing profile colors classified as teammates (LOS skipped, names always visible).
+            _shownamesLayer.Teamplay = XonoticGodot.Common.Gameplay.Scoring.GameScores.Teamplay;
         }
 
         // Scoreboard (QC +showscores): show while the scoreboard key is held, and feed it the networked rows +

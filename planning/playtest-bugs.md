@@ -1300,6 +1300,18 @@ both consumers hoisted out of the host-only block earlier) — likely fixed by t
   though PVS ≠ LOS, so (a) is needed regardless).
 - **First look:** `ShowNamesLayer` vs QC `client/shownames.qc` (the visibility/alpha function);
   `ServerNet.RelevantEntitiesFor` player treatment.
+- **CONFIRMED root cause (2026-07-06, second pass):** the LOS/fade chain was fully ported and healthy —
+  the first audit missed the layer's TEAMPLAY derivation: `_Draw` computed
+  `bool teamplay = LocalTeam != Teams.None`. That is **the #27 FFA pants-team trap**: every FFA player
+  carries a non-zero pants-color-derived team (`ScoreRowWire.Team` / `NetEntityState.Colormap` mirror
+  it), so in DM `teamplay` read TRUE and any player sharing the local profile colors passed
+  `sameTeamColor` → classified a TEAMMATE → `entcsPrivate/sameteam` → **the enemy LOS trace was skipped
+  entirely** (shownames.qc:56's teammate arm) + unconditional fade-in + through-wall + the teammate
+  status bar. Both playtest instances (and bots) ran default profile colors → every name visible all the
+  time. **Fix:** the layer takes an explicit `Teamplay` flag fed from `GameScores.Teamplay` (the
+  networked ScoreInfo truth — the same source #27 mandates); `LocalTeam` is documented as
+  pants-poisoned-in-FFA and only compared under that gate. In FFA every non-self tag now takes the enemy
+  path (LOS trace vs the real map + fades).
 
 ### 56. Warpzones broken for the remote client — render AND exit direction **[client-map-load]**
 - [ ] **Status:** Not started

@@ -58,9 +58,18 @@ public partial class ShowNamesLayer : Control
 
     /// <summary>The local client's team (QC the local <c>entcs</c> team) — drives the <c>sameteam</c> branch
     /// (teammate tags fade in unconditionally + may show the status bar; enemies obey the enemy gates). A listen
-    /// server feeds the local server Player's team; a pure client derives it from the local scoreboard row. 0 =
-    /// no team (FFA): then no player is "sameteam", matching QC where a teamless local has only enemies.</summary>
+    /// server feeds the local server Player's team; a pure client derives it from the local scoreboard row.
+    /// ⚠ In FFA this is NON-ZERO (the pants-color-derived team the port carries on every player — the #27 trap),
+    /// so it must NEVER be used as a teamplay test on its own: <see cref="Teamplay"/> gates every compare.</summary>
     public int LocalTeam { get; set; }
+
+    /// <summary>Whether the ACTIVE GAMETYPE is team-based (QC <c>teamplay</c>, networked via the ScoreInfo block
+    /// → <c>GameScores.Teamplay</c>). THE gate for every team compare in this layer — playtest #55's root cause
+    /// was deriving this from <c>LocalTeam != None</c>: in FFA every player carries a pants-color-derived team,
+    /// so players sharing profile colors classified as TEAMMATES (LOS trace skipped, tags always visible,
+    /// through-wall + status bar). Exactly the #27 friendly-fire trap — same rule: gate at the call site on the
+    /// real teamplay flag, never inside a team-field compare.</summary>
+    public bool Teamplay { get; set; }
 
     /// <summary>Whether the local player is in third-person (QC <c>autocvar_chase_active</c> / event-chase). The
     /// own-name tag only draws in chase, exactly like <c>Draw_ShowNames</c>'s self branch.</summary>
@@ -154,7 +163,10 @@ public partial class ShowNamesLayer : Control
         NVec3 viewOrigin = Coords.ToQuake(Camera.GlobalPosition);
 
         float offset = CvarF("hud_shownames_offset", 52f);
-        bool teamplay = LocalTeam != Teams.None;
+        // [#55] THE authoritative teamplay flag (GameScores.Teamplay via the feed) — NOT `LocalTeam != None`:
+        // FFA players carry a pants-derived non-zero team, so the old derivation turned DM into "everyone with
+        // my profile colors is a teammate" (no LOS trace, tags always on). The #27 rule: gate on real teamplay.
+        bool teamplay = Teamplay;
 
         // ---- pass 1: compute each visible player's fade alpha + screen box (QC Draw_ShowNames_All loop) ----
         _drawIds.Clear();
