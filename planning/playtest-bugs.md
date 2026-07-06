@@ -1037,13 +1037,14 @@ nudge-out-of-solid; see #9), **#14** flag jitter (user-deferred).
     lights the viewmodel — the grid branch can't see the OmniLight). No grid on the map → the old PBR+fill.
   - **C — colored DP specular:** the `gloss.rgb × directed × pow(N·H, 1+32·gloss.a)` term above (Blinn
     half-vector against the BAKED direction, no N·L gate — DP has none).
-  - **A — gamma-faithful response (cvar `r_model_light_gamma`, default 1):** DP multiplies light onto
+  - **A — gamma-faithful response (cvar `r_model_light_gamma`):** DP multiplies light onto
     GAMMA-encoded texels (vid_sRGB 0, no tonemap) → display scales LINEARLY with light. The shader
     re-encodes the texel gamma, multiplies there, clamps (DP's framebuffer saturates), and pre-decodes so
     Linear tonemap + sRGB encode round-trips it. 0 = plain linear multiply (visibly flatter — confirmed).
     Global shader param registered/polled by `WorldTint`; scale knob `r_model_light_scale` (default 1 =
     DP's absolute 1/128 — the r13 "self-calibrating average" normalization was a crutch for the linear
-    response and is gone).
+    response and is gone). **Default flipped to 0 in r15: Bryan preferred the linear look in the live
+    A/B ("I think it looks better with r_model_light_gamma 0 — leave the feature in though").**
   - **D — sight animation:** `ShaderCompiler.NeedsAnimatedShader` now triggers on multi-frame `animMap`
     and `rgbGen wave` (the sight stage has neither tcMod nor deform — it previously compiled STATIC, frozen
     on frame 1 with no blink). The generated stage shader cycles `int(TIME*fps) % N` over per-frame
@@ -1051,6 +1052,33 @@ nudge-out-of-solid; see #9), **#14** flag jitter (user-deferred).
     `rgbGen const` too). Parser pinned by new `AnimMap_MortarSightStage_ParsesFramesFpsAndWave`.
 - **Follow-ups (unchanged from #41):** players/items/monsters via the same `ApplyGridLight` mechanism;
   plain StandardMaterial3D surfaces still ignore grid light (skin-shader surfaces only).
+
+### 43. Player PROFILE color (FFA) never applies — only team color did; weapons + bodies — FIXED (needs playtest)
+- [x] **Status:** Implemented (r15). Verify (FFA): pick shirt/pants in Multiplayer ▸ Profile → your gun's
+  `_shirt`-mask panels tint your shirt color and its glow takes the pants color; bots' bodies AND their
+  held guns show their own colors; everything still team-colors correctly in teamplay. Verified by
+  capture: `--cvar _cl_color 212` → blue shirt panels on the mortar viewmodel.
+- **CONFIRMED root cause — the packed `clientcolors` never left the server.** Base applies the colormap
+  palette UNCONDITIONALLY (viewmodel: `e.colormap = 256 + entcs_GetClientColors(...)`, view.qc:317;
+  exterior gun: `colormap = owner.colormap`, weaponsystem.qc:180; teamplay just forces clientcolors to
+  `17*teamcode` server-side). The port: (1) humans never sent `_cl_color` (the `color` client command +
+  `SV_ChangeTeam` sink existed server-side with ZERO callers — only bots set colors); (2) the entity wire
+  carried only the TEAM byte (`Colormap`); (3) every render sink was `hasTeam ? team : Black`.
+- **FIX (full chain):**
+  - Wire: new `EntityField.Colors` (bit 25, byte) = packed `16*shirt+pants`; `ServerNet` stamps it from
+    `Player.ClientColors`; `ClientEntityView` → `Entity.Colors`. Codec pinned by
+    `ClientColors_RoundTrip_Through_The_Delta_Codec`.
+  - Client push: `NetGame.PushLocalPlayerColor` (change-gated per frame) — listen host applies via
+    `Teamplay.ChangeTeam` (QC SV_ChangeTeam: FFA-only recolor), pure client sends `color <n>`.
+  - Render: `ResolveForcedColormap` returns `1024 + Colors` when unforced (full palette paints — QC form);
+    `ModelTint.ApplyColormap` decodes packed maps (shirt+pants nibbles + pants glow);
+    `ViewEntityRenderer` tints the held gun from the OWNER's resolved colormap (change-gated, re-applied
+    on rebuild); viewmodel: `UpdateViewModelColors` = pants/shirt palette + `weaponentity_glowmod`
+    pants-glow fallback (vortex `wr_glow` charge override kept), watched-player aware (spectator-correct).
+- **Note (user-visible, not a bug):** the "invisible names are not allowed → Player#1" warning during
+  verification is the QC-faithful name check — `~/XonData/config.cfg` had `seta _cl_name "^x06b"` (a color
+  tag only, no visible chars: the profile name editor's color chip inserts `^xRGB` into the name box).
+  Type an actual name after picking the color.
 
 ---
 

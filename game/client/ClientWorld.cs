@@ -1779,9 +1779,13 @@ public partial class ClientWorld : Node3D
     private int ResolveForcedColormap(Entity e)
     {
         int own = (int)e.Team;
+        // [r15 #43] the networked packed clientcolors (16*shirt+pants — FFA profile colors, or the team-forced
+        // 17*teamcode). When present, the UNFORCED colormap is the QC-form 1024+colors so ModelTint paints the
+        // real shirt/pants palette (Base: .colormap follows .clientcolors); 0 falls back to the team path.
+        int packed = e.Colors != 0 ? 1024 + (e.Colors & 0xFF) : 0;
         AppearanceContext? ctx = AppearanceProvider?.Invoke();
         if (ctx is null)
-            return NormalizeTeamColormap(own);
+            return packed != 0 ? packed : NormalizeTeamColormap(own);
 
         // QC cl_survival.qc NET_HANDLE colormap override + ForcePlayercolors_Skip (CBC_ORDER_LAST): once a Survival
         // round is live/resolved, every known player wears the hardcoded survival palette — red if the client knows
@@ -1807,8 +1811,9 @@ public partial class ClientWorld : Node3D
             cm, ctx.PlayerLocalNum, e.Index, ctx.TeamCount);
         // playtest-bugs #8: `own` is Entity.Team = the NUM_TEAM_* color CODE (4/13/12/9), but ModelTint wants the
         // colormap nibble — normalize it (team codes → 1..4) so team PLAYERS tint the right color, not pink. A
-        // forced (packed >=1024) colormap is already in colormap form, so it flows through untouched.
-        return forced != 0 ? forced : NormalizeTeamColormap(own);
+        // forced (packed >=1024) colormap is already in colormap form, so it flows through untouched. Unforced,
+        // the networked clientcolors (packed) win over the plain team nibble (#43 — FFA profile colors paint).
+        return forced != 0 ? forced : (packed != 0 ? packed : NormalizeTeamColormap(own));
     }
 
     private static float Now() => Api.Services?.Clock?.Time ?? 0f;

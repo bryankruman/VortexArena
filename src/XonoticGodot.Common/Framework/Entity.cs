@@ -91,6 +91,12 @@ public partial class Entity
     public int SpawnFlags, Items;
     public float Team, Frags;
 
+    /// <summary>[r15 #43] QC entcs <c>.clientcolors</c> as networked to the CLIENT proxy: the packed
+    /// <c>16*shirt+pants</c> palette colors (FFA profile color or the team-forced <c>17*teamcode</c>).
+    /// 0 = colorless (render falls back to the team path). Server-side gameplay reads
+    /// <c>Player.ClientColors</c> instead; this field exists for the client render entity.</summary>
+    public int Colors;
+
     // --- bot-avoidance / dodging (QC .bot_dodge / .bot_dodgerating) ---
     /// <summary>
     /// QC <c>.bot_dodge</c> — marks this entity as a projectile/hazard the havocbot dodge logic should avoid.

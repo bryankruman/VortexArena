@@ -174,12 +174,13 @@ public partial class ViewModel : Node3D
     private float _recoil;                 // current recoil displacement (Quake units, decays to 0)
     private Node3D? _muzzleFlashNode;      // live flash-model node (single slot; replaced each Fire call)
 
-    // Team colormap + per-weapon glowmod (Base viewmodel_draw lines 302-321: e.colormap = 256 + c;
-    // e.glowmod = weaponentity_glowmod(wep, c)). _teamGlow is the resolved glow color (per-weapon wr_glow override
-    // or the team palette color); _teamColormod tints the gun's albedo toward the team color so the held weapon
-    // reads as "yours". _hasTeam is false in FFA (no tint, native glow). _glowApplied tracks whether the current
-    // model's materials already carry the tint so we only re-walk on a change (mirrors _noDepthTestApplied).
-    private Color _teamColormod = new(1f, 1f, 1f);
+    // Player colormap + per-weapon glowmod (Base viewmodel_draw lines 302-321: e.colormap = 256 + c where c =
+    // entcs_GetClientColors — the packed shirt/pants profile colors in EVERY mode, #43; e.glowmod =
+    // weaponentity_glowmod(wep, c)). _teamGlow is the resolved glow color (per-weapon wr_glow override or the
+    // pants palette color); _shirtColor/_pantsColor tint the gun's _shirt/_pants masks so the held weapon reads
+    // as "yours". _hasTeam ("has color") is false only when no colors resolved (untinted, native glow).
+    // _glowDirty tracks whether the current model's materials already carry the tint so we only re-walk on a
+    // change (mirrors _noDepthTestApplied).
     private Color _teamGlow = new(1f, 1f, 1f);
     private bool _hasTeam;
     private bool _glowDirty = true;        // force a material re-walk after a model swap or a color change
@@ -480,28 +481,34 @@ public partial class ViewModel : Node3D
     }
 
     /// <summary>
-    /// Set the held weapon's team colormap tint + glowmod, port of the per-child loop in Base
-    /// <c>viewmodel_draw</c> (view.qc:302-321): <c>e.colormap = 256 + c</c> (the local player's team colors) and
-    /// <c>e.glowmod = weaponentity_glowmod(wep, c)</c> (the per-weapon <c>wr_glow</c> override, falling back to the
-    /// team's palette color). So the first-person gun reads as <i>yours</i> — it tints to your team color and
-    /// glows with it (e.g. the Vortex charge glow). <paramref name="hasTeam"/> false (FFA / no team) leaves the gun
-    /// untinted with its native glow, matching Base where a teamless local has colormap 0 (white = no swap).
+    /// Set the held weapon's colormap tint + glowmod, port of the per-child loop in Base
+    /// <c>viewmodel_draw</c> (view.qc:302-321): <c>e.colormap = 256 + c</c> where <c>c</c> is
+    /// <c>entcs_GetClientColors(current_player)</c> — the local player's packed shirt/pants colors,
+    /// UNCONDITIONALLY (the FFA profile color; teamplay's team color falls out because the server forces
+    /// clientcolors to the team) — and <c>e.glowmod = weaponentity_glowmod(wep, c)</c> (the per-weapon
+    /// <c>wr_glow</c> override, falling back to the pants palette color). So the first-person gun reads as
+    /// <i>yours</i> in every mode (#43). <paramref name="hasColor"/> false (colorless — colors never
+    /// networked / spectating nobody) leaves the gun untinted with its native glow.
     ///
     /// <para>Applied two ways to cover both view-model rig kinds: full-rig <c>h_*</c> hand models render through
     /// <see cref="PlayerSkinShader"/> (instance-uniform colormod/glow via <see cref="ModelTint"/>); invisible-hand
     /// <c>v_*</c> models render with a plain <see cref="StandardMaterial3D"/>, so the tint is layered onto the
     /// surface materials in <see cref="ApplyMaterialFx"/>. Idempotent — only re-walks when the color changes.</para>
     /// </summary>
-    public void SetTeamGlow(Color glow, Color colormod, bool hasTeam)
+    public void SetPlayerColors(Color glow, Color shirt, Color pants, bool hasColor)
     {
-        if (_hasTeam == hasTeam && _teamGlow == glow && _teamColormod == colormod)
+        if (_hasTeam == hasColor && _teamGlow == glow && _shirtColor == shirt && _pantsColor == pants)
             return;
         _teamGlow = glow;
-        _teamColormod = colormod;
-        _hasTeam = hasTeam;
+        _shirtColor = shirt;
+        _pantsColor = pants;
+        _hasTeam = hasColor;
         _glowDirty = true;
         ReapplyInstanceTint();
     }
+
+    private Color _shirtColor = new(0f, 0f, 0f);
+    private Color _pantsColor = new(0f, 0f, 0f);
 
     /// <summary>
     /// The lightgrid-sampled model light at the player's position (#41, upgraded r14 to real DP grid
@@ -563,9 +570,10 @@ public partial class ViewModel : Node3D
     {
         if (_modelRoot is null || !GodotObject.IsInstanceValid(_modelRoot))
             return;
-        Color shirtPants = _hasTeam ? _teamColormod : ModelTint.Black;
+        Color shirt = _hasTeam ? _shirtColor : ModelTint.Black;
+        Color pants = _hasTeam ? _pantsColor : ModelTint.Black;
         Color glowU = _hasTeam ? _teamGlow : ModelTint.White;
-        ModelTint.Apply(_modelRoot, ModelTint.White, glowU, shirtPants, shirtPants);
+        ModelTint.Apply(_modelRoot, ModelTint.White, glowU, shirt, pants);
         PushGridLight();
     }
 
@@ -1132,9 +1140,10 @@ public partial class ViewModel : Node3D
         _modelAlpha = a;
         _noDepthTestApplied = true;
         _glowDirty = false;
-        // Team colormod (albedo tint toward the team color) + glowmod (emission) on plain-material v_ models, the
-        // StandardMaterial analog of Base e.colormap/e.glowmod. FFA (no team) → no tint, native (white) glow.
-        ApplyMaterialFx(_modelRoot, a, _hasTeam ? _teamColormod : (Color?)null, _hasTeam ? _teamGlow : (Color?)null);
+        // Player colormod (subtle albedo tint toward the PANTS color — the dominant personal color, and exactly
+        // the team color in teamplay) + glowmod (emission) on plain-material v_ models, the StandardMaterial
+        // analog of Base e.colormap/e.glowmod. Colorless → no tint, native (white) glow.
+        ApplyMaterialFx(_modelRoot, a, _hasTeam ? _pantsColor : (Color?)null, _hasTeam ? _teamGlow : (Color?)null);
     }
 
     /// <summary>Forget the applied material fx so the NEXT frame re-walks the freshly-built model (depth-test +

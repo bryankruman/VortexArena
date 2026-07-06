@@ -101,16 +101,19 @@ public static class ModelTint
     }
 
     /// <summary>
-    /// Apply a player's team/colormap tint: the team color drives the shirt + pants masks AND the glow
-    /// (DP sets glowmod from the pants color). FFA / unknown (no team) leaves the model untinted with a
-    /// white — i.e. native — glow. Colormod stays white (no per-entity darkening here).
+    /// Apply a player's team/colormap tint: shirt (high nibble) + pants (low nibble) masks AND the glow
+    /// (DP sets glowmod from the pants color — QC <c>weaponentity_glowmod</c>'s fallback). A plain team
+    /// nibble (1..4) keeps the team mapping; a packed colormap (≥1024 / non-zero high nibble, #43) paints
+    /// the full <c>colormapPaletteColor</c> palette — the FFA profile colors. Colorless leaves the model
+    /// untinted with a white — i.e. native — glow. Colormod stays white (no per-entity darkening here).
     /// </summary>
     public static void ApplyColormap(Node root, int colormap)
     {
-        Color team = TeamColor(colormap, out bool hasTeam);
-        Color tint = hasTeam ? team : Black;
-        Color glow = hasTeam ? team : White;
-        Apply(root, White, glow, tint, tint);
+        ColormapColors(colormap, out Color shirt, out Color pants, out bool hasColor);
+        Apply(root, White,
+            hasColor ? pants : White,
+            hasColor ? shirt : Black,
+            hasColor ? pants : Black);
     }
 
     /// <summary>

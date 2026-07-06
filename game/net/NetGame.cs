@@ -1830,11 +1830,16 @@ public sealed partial class NetGame : Node3D
         bool hidden = id < 0 || id >= XonoticGodot.Common.Gameplay.Weapons.Count
             || _client.Health <= 0 || _view.ChaseActive || _client.MatchIntermission;
 
-        // Team colormap + per-weapon glowmod (Base viewmodel_draw 302-321): tint the held gun to the local
-        // player's team color and glow with it. Applied every frame (cheap — SetTeamGlow early-returns when the
-        // color is unchanged) so a mid-match team swap / charge change repaints. Resolved from the SAME local-team
-        // source the shownames/scoreboard use (listen-server Player.Team, else the networked scoreboard row).
-        UpdateViewModelTeamGlow();
+        // [#43] Push the local profile color (_cl_color) to the server: listen host applies it directly
+        // (QC SV_ChangeTeam — FFA-only recolor), a pure client sends the `color` command. Change-gated.
+        PushLocalPlayerColor();
+
+        // Player colormap + per-weapon glowmod (Base viewmodel_draw 302-321): tint the held gun to the local
+        // player's packed shirt/pants colors — the FFA profile color, or the team color in teamplay (the server
+        // forces clientcolors there) — and glow with the pants palette / wr_glow. Applied every frame (cheap —
+        // SetPlayerColors early-returns when the color is unchanged) so a mid-match team swap / recolor / charge
+        // change repaints.
+        UpdateViewModelColors();
 
         // Reload animation (Base wframe WFRAME_RELOAD → anim_reload). The port does not network the wframe temp
         // entity, but the reload state IS observable from the already-networked clip counter: clip_load == -1 is the
@@ -1891,33 +1896,39 @@ public sealed partial class NetGame : Node3D
     /// <summary>
     /// Resolve + push the held view-model's team colormap tint + glowmod (Base <c>viewmodel_draw</c> 302-321 →
     /// <c>weaponentity_glowmod</c>, all.qh:402). The glow is the per-weapon <c>wr_glow</c> override (Vortex /
-    /// Overkill-Nex charge glow) when the weapon supplies one, else the team's palette color
-    /// (<c>colormapPaletteColor(c &amp; 0x0F, true)</c> — what <see cref="ModelTint.TeamColor"/> resolves). FFA / no
-    /// team leaves the gun untinted with its native glow. Local team comes from the same source the shownames /
-    /// scoreboard use (<see cref="LocalShownamesTeam"/>). Cheap to call every frame — <see cref="ViewModel.SetTeamGlow"/>
-    /// early-returns when nothing changed.
+    /// Overkill-Nex charge glow) when the weapon supplies one, else the pants palette color
+    /// (<c>colormapPaletteColor(c &amp; 0x0F, true)</c>). [#43] The colors are the watched player's packed
+    /// <c>clientcolors</c> — Base <c>entcs_GetClientColors(current_player)</c>: the FFA profile color, or the
+    /// team color in teamplay (the server forces clientcolors to <c>17*teamcode</c> there, so team display falls
+    /// out with no special case). Colorless (never networked / no player) leaves the gun untinted with its
+    /// native glow. Cheap to call every frame — <see cref="ViewModel.SetPlayerColors"/> early-returns when
+    /// nothing changed.
     /// </summary>
-    private void UpdateViewModelTeamGlow()
+    private void UpdateViewModelColors()
     {
         if (_viewModel is null || !GodotObject.IsInstanceValid(_viewModel))
             return;
 
-        // LocalShownamesTeam returns the NUM_TEAM_* color CODE (Red=4/Blue=13/…) — normalize to the colormap
-        // nibble (1..4) TeamColor expects, or a blue player's 13 reads as "no team" and the gun never tints
-        // (playtest r9; the same code-vs-nibble trap as the #8 flag colors).
-        int team = XonoticGodot.Game.Client.ClientWorld.NormalizeTeamColormap(LocalShownamesTeam());
-        Color teamColor = XonoticGodot.Game.Client.ModelTint.TeamColor(team, out bool hasTeam);
-        if (!hasTeam)
+        int colors = LocalViewedClientColors();
+        if (colors == 0)
         {
-            _viewModel.SetTeamGlow(XonoticGodot.Game.Client.ModelTint.White,
-                XonoticGodot.Game.Client.ModelTint.White, false);
+            _viewModel.SetPlayerColors(XonoticGodot.Game.Client.ModelTint.White,
+                XonoticGodot.Game.Client.ModelTint.Black, XonoticGodot.Game.Client.ModelTint.Black, false);
             return;
         }
 
-        // Per-weapon wr_glow override: Vortex (and Overkill-Nex) glow with the charge level, fading from the team
-        // color (vortex_glowcolor: f*colors*0.3 below animlimit, +f*colors*0.7 above). Default weapons return
-        // '0 0 0' → fall back to the team palette color (weaponentity_glowmod's `if (!g) g = palette`).
-        Color glow = teamColor;
+        float paletteTime = XonoticGodot.Common.Services.Api.Services?.Clock?.Time ?? 0f;
+        (float sr, float sg, float sb) = XonoticGodot.Engine.Simulation.CsqcModelAppearance.ColormapPaletteColor(
+            (colors >> 4) & 0x0F, isPants: false, paletteTime);
+        (float pr, float pg, float pb) = XonoticGodot.Engine.Simulation.CsqcModelAppearance.ColormapPaletteColor(
+            colors & 0x0F, isPants: true, paletteTime);
+        var shirt = new Color(sr, sg, sb);
+        var pants = new Color(pr, pg, pb);
+
+        // Per-weapon wr_glow override: Vortex (and Overkill-Nex) glow with the charge level, fading from the
+        // player's colors (vortex_glowcolor: f*colors*0.3 below animlimit, +f*colors*0.7 above). Default weapons
+        // return '0 0 0' → fall back to the pants palette color (weaponentity_glowmod's `if (!g) g = palette`).
+        Color glow = pants;
         int wid = _client?.ActiveWeaponId ?? -1;
         if (wid >= 0 && wid < XonoticGodot.Common.Gameplay.Weapons.Count)
         {
@@ -1946,15 +1957,67 @@ public sealed partial class NetGame : Node3D
 
                 if (charge is { } c)
                 {
-                    glow = VortexGlowColor(teamColor, Mathf.Max(0.25f, c));
+                    glow = VortexGlowColor(pants, Mathf.Max(0.25f, c));
                     if (glow.R + glow.G + glow.B <= 0.001f)
-                        glow = teamColor; // charge disabled → fall back to team color
+                        glow = pants; // charge disabled → fall back to the pants palette color
                 }
             }
         }
 
-        _viewModel.SetTeamGlow(glow, teamColor, true);
+        _viewModel.SetPlayerColors(glow, shirt, pants, true);
     }
+
+    /// <summary>
+    /// [#43] The packed <c>clientcolors</c> of the player this client is LOOKING THROUGH (Base
+    /// <c>entcs_GetClientColors(current_player)</c>): the listen host reads its live slot, a pure client /
+    /// a followed spectatee reads the watched player's networked <see cref="XonoticGodot.Net.NetEntityState.Colors"/>.
+    /// 0 = no colors resolved.
+    /// </summary>
+    private int LocalViewedClientColors()
+    {
+        int specNet = _client?.SpectatingNetId ?? 0;
+        if (LocalServerPlayer is { } p && specNet == 0)
+            return p.ClientColors & 0xFF;
+        int watched = specNet != 0 ? specNet : (_client?.LocalNetId ?? 0);
+        if (watched != 0 && _client != null && _client.TryGetRemoteState(watched, out var rs))
+            return rs.Colors & 0xFF;
+        return 0;
+    }
+
+    /// <summary>
+    /// [#43] Push the local profile color (<c>_cl_color</c>, packed <c>16*shirt+pants</c> — what the
+    /// multiplayer-profile palette grids edit) to the server, Base's engine-side color userinfo: the listen
+    /// host applies it directly through <c>SV_ChangeTeam</c> (<see cref="XonoticGodot.Server.Teamplay.ChangeTeam"/>
+    /// — a NO-OP in teamplay, where the team owns the colors), a pure client sends the <c>color</c> client
+    /// command (same server sink). Change-gated so it costs one cvar read per frame; an unset/0 cvar pushes
+    /// nothing (keeps the colorless default look rather than forcing white/white).
+    /// </summary>
+    private void PushLocalPlayerColor()
+    {
+        string s = MenuState.Cvars.GetString("_cl_color");
+        int want = string.IsNullOrWhiteSpace(s) ? 0 : (int)MenuState.Cvars.GetFloat("_cl_color") & 0xFF;
+        if (want == _lastPushedClColor)
+            return;
+        if (want == 0 && _lastPushedClColor == int.MinValue)
+        {
+            _lastPushedClColor = 0; // never chosen — leave the server default alone
+            return;
+        }
+
+        if (_serverWorld is { } w && LocalServerPlayer is { } p)
+        {
+            w.Teamplay.ChangeTeam(p, want); // QC SV_ChangeTeam: recolors in FFA, ignored in teamplay
+            _lastPushedClColor = want;
+        }
+        else if (_client is { Accepted: true } c)
+        {
+            c.SendStringCommand($"color {want}");
+            _lastPushedClColor = want;
+        }
+        // Neither ready yet (connecting) → try again next frame.
+    }
+
+    private int _lastPushedClColor = int.MinValue;
 
     /// <summary>
     /// Drive the first-person reload animation from the networked clip state — the port's stand-in for Base's

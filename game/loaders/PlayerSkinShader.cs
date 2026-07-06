@@ -140,8 +140,9 @@ global uniform vec3 entity_tint;
 // r_model_light_gamma (experiment A, registered/polled by WorldTint): DP renders models in GAMMA space
 // (vid_sRGB 0 — light multiplies the gamma-encoded texel, no tonemap, so displayed brightness scales
 // LINEARLY with light). The port is linear end-to-end, which compresses the same math perceptually
-// (~L^0.45) — the structural ""bland"" divergence. 1 (default) = emulate DP: redo the multiply on
-// gamma-encoded values and pre-decode the result so Linear tonemap + sRGB encode displays it verbatim.
+// (~L^0.45). 1 = emulate DP: redo the multiply on gamma-encoded values and pre-decode the result so
+// Linear tonemap + sRGB encode displays it verbatim. 0 (default — preferred in the r15 playtest A/B)
+// = plain linear multiply; the grid shading structure is identical either way.
 global uniform float model_light_gamma;
 
 void fragment() {

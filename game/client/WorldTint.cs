@@ -64,8 +64,9 @@ public static class WorldTint
     private const string SceneTintStrengthCvar = "r_scene_tint_strength";
 
     // Model-light gamma toggle (playtest r14 experiment A): rides this class because it is the same
-    // machinery — a global shader parameter driven by a live-polled cvar. 1 (default) = grid-lit models
-    // use DP's gamma-space light response (see PlayerSkinShader.ModelLightGammaUniform); 0 = linear.
+    // machinery — a global shader parameter driven by a live-polled cvar. 1 = grid-lit models use DP's
+    // gamma-space light response (see PlayerSkinShader.ModelLightGammaUniform); 0 (default — Bryan
+    // preferred the linear look in the r15 A/B) = linear multiply.
     private const string ModelLightGammaCvar = "r_model_light_gamma";
 
     private static bool _registered;
@@ -97,9 +98,9 @@ public static class WorldTint
         RenderingServer.GlobalShaderParameterAdd(
             EntityTintUniform, RenderingServer.GlobalShaderParameterType.Vec3, Vector3.One);
         RenderingServer.GlobalShaderParameterAdd(
-            Loaders.PlayerSkinShader.ModelLightGammaUniform, RenderingServer.GlobalShaderParameterType.Float, 1.0f);
+            Loaders.PlayerSkinShader.ModelLightGammaUniform, RenderingServer.GlobalShaderParameterType.Float, 0.0f);
         _mapApplied = _entityApplied = Vector3.One;
-        _gammaApplied = 1f;
+        _gammaApplied = 0f;
     }
 
     /// <summary>
@@ -216,8 +217,8 @@ public static class WorldTint
             PushEntity(_entityBaseline);
         }
 
-        // r_model_light_gamma → the grid-lit models' response-curve toggle (unset = the default 1, faithful).
-        float gamma = CvarF(ModelLightGammaCvar, 1f) > 0.5f ? 1f : 0f;
+        // r_model_light_gamma → the grid-lit models' response-curve toggle (unset = the default 0, linear).
+        float gamma = CvarF(ModelLightGammaCvar, 0f) > 0.5f ? 1f : 0f;
         if (gamma != _gammaApplied)
         {
             _gammaApplied = gamma;
@@ -225,7 +226,7 @@ public static class WorldTint
         }
     }
 
-    private static float _gammaApplied = 1f;
+    private static float _gammaApplied;
 
     // ---- internals ----------------------------------------------------------------------------------------
 

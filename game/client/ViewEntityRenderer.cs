@@ -42,6 +42,7 @@ public sealed class ViewEntityRenderer
         public bool PlayerHeld;            // true = a player's held weapon (hide until owner rendered)
         public int BuildKey = int.MinValue;// weaponId (player) or modelIndex (standalone) — rebuild on change
         public Node3D? AttachedTo;         // the owner tag we're parented to (null = unattached)
+        public int TintKey = int.MinValue; // last owner colormap applied (#43) — re-tint only on change/rebuild
     }
 
     // Keyed by the networked entity's own net id (a player id, or a view-entity id — disjoint id spaces).
@@ -81,9 +82,24 @@ public sealed class ViewEntityRenderer
             h.BuildKey = buildKey;
             if (playerHeld) RebuildFromWeapon(h, weaponId);
             else RebuildFromEntity(h, e);
+            h.TintKey = int.MinValue; // fresh meshes start untinted — force the colormap re-apply below
         }
 
         EnsureAttached(h);
+
+        // [r15 #43] the held gun wears the OWNER's colormap (Base weaponsystem.qc:180 `this.colormap =
+        // this.owner.colormap`; glow = weaponentity_glowmod's pants-palette fallback): the FFA profile color,
+        // the team color in teamplay, and any cl_forceplayercolors reassignment — PlayerColormap resolves all
+        // three exactly like the body. Change-gated: the tree-walk only happens on a real color/model change.
+        if (playerHeld)
+        {
+            int cm = _render.PlayerColormap(e);
+            if (cm != h.TintKey)
+            {
+                h.TintKey = cm;
+                ModelTint.ApplyColormap(h.Node, cm);
+            }
+        }
 
         // Unattached standalone entity: follow the networked world pose (the player case stays hidden — its
         // pose is the hand tag, which isn't available until the owner is rendered).
