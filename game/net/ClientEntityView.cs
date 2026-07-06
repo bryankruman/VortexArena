@@ -121,7 +121,13 @@ public sealed partial class ClientEntityView : Node
         // Fill the proxy from the decoded state + interpolated pose (the CSQCModel property copy).
         e.Origin = origin;
         e.OldOrigin = origin;
-        e.Angles = angles;
+        // [#50] Player BODIES are yaw-only in Base: entcs networks angles_y alone (ent_cs.qc:144-146 forces
+        // X/Z to 0) and CSQCPlayer only ever writes e.angles_y (cl_player.qc:659), so looking up/down NEVER
+        // pitches the model — aim pitch belongs to the animdecide upper-body layer, not the entity basis.
+        // The port networks the player's full view angles (the aim), which routed players onto EntityNode's
+        // pitched full-basis path and tilted the whole body. Zero pitch/roll for player kinds here — the one
+        // choke point both the pure client AND the listen host render players through.
+        e.Angles = s.Kind == NetEntityKind.Player ? new NVec3(0f, angles.Y, 0f) : angles;
         e.Velocity = s.Velocity;
         e.Frame = s.Frame;
         e.Skin = s.Skin;

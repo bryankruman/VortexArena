@@ -1082,5 +1082,296 @@ nudge-out-of-solid; see #9), **#14** flag jitter (user-deferred).
 
 ---
 
+## 2026-07-06 batch — remote-client / client-map-load playtest (#44–#59)
+
+Found playtesting the **two-instance remote-client session** (`--host` + `--connect 127.0.0.1`) on branch
+`feature/client-map-load` (post-main-merge `a02f92c`). Most items are pure-client parity gaps from that
+effort; #52–#54 are general issues spotted during the same session.
+
+**Fix pass 2026-07-06 (same branch, needs playtest):** #44 sv_spectate restored to 1 + host `early_join_requested`
+auto-join; #45 unblocked by #44 (full ObserverOrSpectatorThink flow was already ported: +jump join, +attack cycle,
++attack2 free-fly, SpectateCopy); #46 messagemode/messagemode2 chat prompt (ChatPrompt.cs + Shell wiring);
+#47 port-default `sv_maxidle_playertospectator 0` (deliberate divergence — Base ships 60);
+#48 `.spr` billboard render (chatbubble was a placeholder box) + the prompt raises BUTTON_CHAT;
+#49/#51/#58 root cause = `TryGetRemoteState(LocalNetId)` always MISSES (own entity lives in LocalState) →
+new `ClientNet.TryGetViewedState` + 3 call-site fixes (viewmodel anim frame / colors / vortex glow);
+#50 players render yaw-only in ClientEntityView (Base entcs networks yaw alone);
+#52 healtharmor icons: removed the `_big/_mega` "enhancement" (Base always draws plain health/armor);
+#54 ghost tint now covers ShaderMaterial surfaces (powerups are glow-shader-heavy — flat dark substitute, DP
+clamped-multiply look); #55 audited — the full Base gate chain (entcs privacy + enemy LOS trace vs the real map
++ fades) is already ported and traces the post-map-load collision; needs live evidence if it still leaks;
+#57/#59 audited end-to-end clean (rings ride OwnerWeaponRings, hitsound diffs LocalState.HitDamageDealtTotal —
+both consumers hoisted out of the host-only block earlier) — likely fixed by the round-2 HUD mirror; RETEST.
+#53 HUD editor: parity work delegated (see the item's appended notes). #56 warpzones: DEFERRED — see the item.
+
+### 44. `sv_spectate` is forced to 0 — should be Base's default 1 **[client-map-load]**
+- [ ] **Status:** Not started
+- **Symptom:** The listen server runs with `sv_spectate 0`; Base ships `sv_spectate 1` (spectating allowed).
+- **CONFIRMED mechanism (why it's 0):** `NetGame.StartListenServer` sets it deliberately
+  (`game/net/NetGame.cs` ~:655, long comment): with Base's `sv_spectate 1` the QC PlayerPreThink autojoin
+  gate (`!(sv_spectate||g_campaign||forced_spectator)`) never fires for a passive client, and the
+  self-hosted listen host used to sit as a permanent observer under the connect overlay — so the port
+  flipped the cvar to get "host AND play". That workaround costs us spectating entirely (see #45) and
+  arms the sv_spectate=0 spectator-KICK block (see #47).
+- **Fix direction:** restore `sv_spectate 1` and implement the host's auto-join the way Base actually
+  enters a match (join on +fire from the observer/welcome state; Create-Game UX can send the join for the
+  host explicitly) instead of repurposing a server policy cvar. Re-check `ListenHostAutojoinTests`
+  (they pin the current sv_spectate=0 behavior).
+
+### 45. Spectating doesn't work generally — inspect Base's spectate flow and implement it **[client-map-load]**
+- [ ] **Status:** Not started (needs a thorough Base inspection first)
+- **Symptom:** Spectating is broadly non-functional in the two-instance session.
+- **Expected (Base):** observers can free-fly; +attack cycles through players (chase-cam their view,
+  including their viewmodel/HUD stats via SpectateCopy); +jump returns to free-fly; scoreboard marks
+  spectators; `spec`/`spectate` commands work; spectators persist (not kicked) with `sv_spectate 1`.
+- **Notes:** pieces EXIST in the port — `SpectateeStatus` is networked (owner block), `SpectateCopy`
+  pressed-keys/stat copy is referenced server-side, T44 free-fly observer movement works, the camera has
+  a spectate branch (`_client.SpectatingNetId` reads in NetGame) — but the end-to-end flow was never
+  exercised: with `sv_spectate 0` (#44) a would-be spectator is auto-joined or kicked, so none of it is
+  reachable in normal play. Likely intertwined: fix #44 first, then audit observer→spectate→cycle→return
+  against QC `server/client.qc` (ObserverThink/SpectatorThink/PlayerUseKey) + `cl_view` spectate cam.
+- **First look:** QC `sv_spectate`/`ObserverOrSpectatorThink`/`SpectateNext/Prev` vs
+  `ClientManager.ObserverOrSpectatorThink` + `ServerNet.DriveObserverJoins` + NetGame's spectate camera.
+
+### 46. Chat features aren't implemented (input side) — inspect Base's messagemode flow **[client-map-load]**
+- [ ] **Status:** Not started (needs a thorough Base inspection first)
+- **Symptom:** No way to chat in-game; chat features "don't seem to be implemented at all."
+- **Notes (what exists vs what's missing — unverified):** the server→client half EXISTS: `Chat.Say`
+  routing (public/team/private, T46), `ServerNet.BroadcastPrint` → `PrintReceived` → the ChatPanel
+  scrollback + console. What appears MISSING is the client INPUT half: Base's `messagemode`/
+  `messagemode2` (T / Y binds) chat prompt line — the port's binds route to the console interpreter, but
+  there's no chat-prompt UI state (type → Enter sends `say`/`say_team`, Esc cancels), and no
+  con_chat prompt rendering. Also related: the typing indicator (#48) should key off messagemode-open.
+- **First look:** Base `keys.c`/`console.c` messagemode + `client/hud/panel/chat.qc` vs the port's
+  `BindInput`/`ConsoleOverlay`/ChatPanel; wire T/Y → a chat input line → `say`/`say_team` client command.
+
+### 47. Disable the no-idling auto-spectate/kick by default **[client-map-load]**
+- [ ] **Status:** Not started
+- **Symptom:** Idle players get auto-moved/kicked (the "no idling" enforcement) by default.
+- **Expected:** Off by default — Base ships `sv_maxidle 0` (no idle kick) and only kicks/spectates
+  idlers when a server op sets it.
+- **Notes:** two suspects in the port: the sv_spectate=0 parked-spectator KICK block
+  (`GameWorld.PlayerFrameIdleAll` — armed by #44's forced 0) and any ported `sv_maxidle` /
+  `sv_maxidle_spectatormode` logic whose default drifted from Base. Verify which one fired in the
+  playtest, then align defaults with Base's cfg (likely falls out of #44 for the kick block).
+
+### 48. Typing indicator above a player's head renders as a block glyph **[client-map-load]**
+- [ ] **Status:** Not started
+- **Symptom:** The typing indicator over a player's head draws as a placeholder block (missing glyph),
+  not the chat bubble.
+- **Expected (Base):** the chat-bubble sprite (`models/misc/chatbubble.spr` / the csqc chat icon) shown
+  while a player has messagemode open.
+- **Notes (hypothesis):** #35's chat-bubble implementation (merged from main, `a0e3f9b`) appears to
+  render a TEXT glyph the HUD font lacks → tofu box. Should draw Base's bubble art instead; also the
+  "is typing" state for HUMANS needs the messagemode hook (#46) — today only bots set it.
+- **First look:** the #35 chat-bubble render site (ShowNames/nameplate layer) + Base `shownames.qc` /
+  chatbubble asset resolve.
+
+### 49. Remote client's muzzle flash looks generic/strange **[client-map-load]**
+- [ ] **Status:** Not started
+- **Symptom:** Weapon-fire muzzle flash on the pure client plays oddly — looks like a generic flash,
+  not the weapon's own (host looks right).
+- **Notes (hypothesis, unverified):** the first-person flash rides `ViewModel.Fire()` +
+  per-weapon `MuzzleModelPath`/muzzle effects set at equip; the pure-client equip path (networked
+  ActiveWeaponId → EquipNetworkedWeapon) may skip the per-weapon muzzle setup the listen path gets, or
+  the predicted-fire feedback (`UpdateLocalFireFeedback`, cl_predictfire) falls back to a generic effect
+  when there's no local server Player. Compare host vs remote logs for the flash-model resolve.
+- **First look:** `NetGame.EquipNetworkedWeapon` muzzle wiring + `UpdateLocalFireFeedback` on the pure
+  client vs listen host; `ViewModel.FlashModelFactory`/`MuzzleModelFor`.
+
+### 50. Remote player model pitches its whole body when looking up/down **[client-map-load]**
+- [ ] **Status:** Not started
+- **Symptom:** Watching the other (real) player: when they look down, their whole body rotates
+  downward instead of bending.
+- **Expected (Base):** player models never pitch whole-body — legs stay upright; aim pitch drives the
+  torso/aim blend only (animdecide upper-body; cf. the lean work — render-only, never via angles).
+- **Notes (strong hypothesis):** `EntityNode.SyncFromEntity` has two angle paths — full-basis for
+  pitched/rolled entities, yaw-only for players/items/flags. The networked player angles now carry the
+  view PITCH, which likely routes players onto the full-basis (pitched) path → whole-body tilt. Players
+  should render yaw-only regardless of networked pitch (pitch belongs to the aim/torso layer).
+  ⚠ angle/basis work → read `planning/COORDINATE_CONVENTIONS.md` first (#7's lesson).
+- **First look:** `EntityNode.SyncFromEntity` path selection for `Kind.Player` + where ClientEntityView
+  copies snapshot angles onto the proxy; Base `CSQCPlayer_ModelAppearance`/animdecide for the aim blend.
+
+### 51. Hagar fire animation loops continuously on the remote client **[client-map-load]**
+- [ ] **Status:** Not started
+- **Symptom:** The hagar's fire animation never stops for the pure client (the #40 symptom, which was
+  FIXED on the listen host — r12 "stop looping hagar fire").
+- **Notes:** #40's fix likely keyed off listen-host state (LocalServerPlayer / the server-side weapon
+  frame), so the pure-client viewmodel (driven from the networked ActiveWeaponId + predicted fire) never
+  gets the stop edge. Same family as #49 (pure-client viewmodel anim feeds) and #57/#58 — the
+  viewmodel's per-frame state sources need a networked-stats path like the HUD mirror got.
+- **First look:** the #40 fix site (ViewModel fire-anim stop condition) — what state it reads on a pure
+  client; cross-ref `view-bobfall-idle-sway` notes (weapon framegroups are slot-indexed).
+
+### 52. HUD health/armor icons are wrong — use Base's art *(general, found in this session)*
+- [ ] **Status:** Not started
+- **Symptom:** The health and armor icons in the HUD don't match Xonotic's.
+- **Expected:** the icons Base's HUD skin ships (`gfx/hud/luma/health`/`armor` family) — resolved
+  skin-aware through the mounted content, exactly like the weapon icons already are.
+- **Notes:** NOT part of the networking/remote-client work (also wrong on the host). The HealthArmor
+  panel is drawing a substitute glyph/icon; the TextureCache VFS resolve is already skin-aware
+  (`gfx/hud/<skin>/…`), so this is likely just wrong icon names/fallback in the panel.
+- **First look:** `HealthArmorPanel` icon paths vs Base `hud_healtharmor` skin assets;
+  `planning/HUD_PARITY_CONTRACT.md`.
+
+### 53. HUD editor doesn't match Base — full-functionality parity review *(general)*
+- [x] **Status:** Core functionality landed 2026-07-06 (feature/client-map-load); remaining gaps listed below
+- **Symptom:** The port's HUD editor is wrong vs Base's.
+- **Expected:** Base's in-game HUD configure mode (`_hud_configure`): per-panel drag/resize with grid
+  snap, the panel setup dialogs (the 22-panel set), border/padding controls, dock/skin selection,
+  save-to-config — full functionality pairing.
+- **First look:** Base `qcsrc/client/hud/hud_config.qc` + `qcsrc/menu/xonotic/dialog_hudsetup_exit.qc`
+  family vs the port's `game/menu/dialogs/DialogHudPanels`/HUD editor + `HudManager`; write the gap list
+  into `planning/HUD_PARITY_CONTRACT.md` before implementing.
+- **2026-07-06 audit result:** the editor core (`game/hud/HudConfigEditor.cs`, the hud_config.qc port) was
+  already faithful — drag/resize with grid-before-collision snap, 4-corner grips, arrow nudge
+  (Alt=resize/Shift=fine/Ctrl=no-collision), Ctrl+Tab/Space/C/V/Z/S, `ftos_mindecimals` pos/size cvar
+  round-trip, grid+centerline draw, `_hud_panelorder` — and so were the 22 per-panel dialogs
+  (`HudPanelCommon` binds the exact Base `hud_panel_<p>_bg*` cvar set) and the exit dialog
+  (panel-bg defaults / dock picker / grid controls). What was BROKEN was every seam that lets you reach
+  or see it. Fixed this pass:
+  - `_hud_configure 0/1` via menu buttons was INERT (MenuCommand had no bare-cvar fallback) — enter/exit
+    both dead. Fixed: DP bare-cvar set/print fallback in `MenuCommand.Dispatch` default; `togglemenu` case.
+  - ESC (`menu_showhudexit`) + double-click (`menu_showhudoptions <panel>`) + Ctrl+S (`hud save`) fell
+    through the interpreter's unknown-command server-forward — all no-ops. Fixed: the editor registers the
+    three verbs on the shared interp (`HudConfigEditor.RegisterEditorCommands`); MenuCommand cases +
+    `MenuDialogRegistry` entries for the QC dialog names (`HUDExit`, `HUD<panel>` ×22, `hudconfirm`).
+  - The OS pointer stayed CAPTURED while configuring (NetGame's `UiOwnsCursor` reassert predates the
+    editor; net files owned by concurrent work) — mouse editing impossible. Fixed additively:
+    `MouseCapture.HudEditorWantsCursor` override latch, driven per-frame by `HudConfigEditor.Update`,
+    with Godot cursor shapes for move/"\\"/"/" resize (QC cursor_type).
+  - Panels with bg "0" (chat/notify/racetimer/…) and data-less event panels were INVISIBLE in the editor.
+    Fixed per the hud.qh configure macros: `HudPanel.Resolve` configure branch (bg "0" → border_default at
+    `hud_configure_bg_minalpha`; enabled floor; disabled panels fixed 0.25 bg+fg; `teamcolorforced` red
+    test tint), a `_Draw` pre-pass so bail-early panels still paint their frame, and `HudManager` forces
+    StartHidden MAIN panels visible while configuring (restored on exit).
+  - Hover feedback: ported `HUD_Panel_Check_Mouse_Pos` + the white 0.1-alpha grab/hover fill (QC
+    hud_config.qc:999/1055).
+  - `hud save <name>` backend: `HudConfigEditor.ExportCfg` (HUD_Panel_ExportCfg port) writes
+    `hud_<skin>_<name>.cfg` seta dumps under `<userdir>/data/`; wired to Ctrl+S, the console verb, and the
+    exit dialog's "Save current skin".
+  - "Enter HUD editor" button now runs QC `HUDSetup_Check_Gamestatus` (in-match → `togglemenu 0;
+    _hud_configure 1`; else the hudconfirm dialog → `map _hudsetup` — the map ships in the maps pk3).
+- **Remaining gaps (out of this pass's scope):**
+  1. HUD skin LIST backend (enumerate `data/hud_*.cfg` + Set skin/Refresh/Filter in the exit dialog) —
+     honest stub note remains; `HudPanelCommon.SkinListProvider` is the hook.
+  2. Per-panel DUMMY preview content in configure mode: Base panels draw sample data when configuring
+     (ammo shows all types, vote shows a sample vote, weapons full grid, …); the port shows the forced
+     frame only, except the panels that already carry config previews (centerprint, infomessages,
+     pressedkeys, strafehud, engineinfo). Needs per-panel edits (files owned by other work this pass).
+  3. Highlight border draws a flat-color frame, not Base's tiled `border_highlighted`/`_highlighted2` art;
+     the cursor is the OS pointer with shape hints, not Base's drawn cursor art. Cosmetic.
+  4. `hud_configure_menu_open` nuances: Base blends the highlighted panel's bg alpha and pins a preview
+     into the open panel dialog (`HUD_Panel_UpdatePosSize_ForMenu`); the port opens dialogs over the game
+     without the blend.
+  5. The NetGame-standalone overlays (scoreboard/radar — see the hud-standalone-vs-manager memory) don't
+     follow `hud_panel_*` cvars, so editing the radar rect moves the manager's (data-less) RadarPanel, not
+     the live standalone radar.
+  6. `_hud_panelorder` persists the port's discovery indices, not Base registry ids — a Base-exported cfg's
+     panel order won't map onto the port (pre-existing).
+  7. QC forces editor exit on `isdemo()` / `intermission == 2`; the port covers the scoreboard-up case only
+     (no demo/intermission signal is wired into the editor).
+  8. Event-based binds are swallowed faithfully while configuring, but POLLED input paths (e.g. the Pong
+     key drive) aren't frozen. Minor.
+
+### 54. Powerup pickups don't ghost-darken when taken *(general)*
+- [ ] **Status:** Not started
+- **Symptom:** Taken powerups (strength/shield) stay bright until respawn; other items correctly turn
+  dark (the #29 ghost tint).
+- **Expected (Base):** taken powerups ghost-darken like every other g_ghost_items pickup.
+- **Notes:** #29's fix (`deabd99`, ghost/stay-weapon colormod) evidently doesn't cover the powerup
+  classes — either they bypass the shared taken→ghost sink or their model tint path ignores the ghost
+  colormod. Compare Base's Item_Show/ghost-items path for item_strength/item_shield vs the port's
+  `ItemPickupRules` respawn-wait state + the #29 tint site.
+- **First look:** the #29 implementation + `ItemPickupRules` powerup respawn path; Base
+  `common/items` ghost handling (`g_ghost_items_color`, colormod `'-1 -1 -1'` family).
+
+### 55. Remote client sees enemy names through walls / at all times **[client-map-load]**
+- [ ] **Status:** Not started
+- **Symptom:** As the pure client, enemy nameplates show constantly — including players not visible
+  on screen.
+- **Expected (Base):** `shownames` gates enemy tags on actual VISIBILITY (LOS trace + on-screen +
+  distance fade; teammates get the through-wall treatment, enemies never).
+- **Notes (two suspects):** (a) the port's `ShowNamesLayer` draw gate lacks QC `Draw_ShowNames`'s
+  LOS-trace/alpha logic (now tractable client-side: the pure client HAS the map collision since the
+  client-map-load work — the trace can run locally); (b) server-side, check whether player/nameplate
+  entities bypass the sv_cullentities_pvs cull (a wall-hidden enemy ideally isn't networked at all —
+  though PVS ≠ LOS, so (a) is needed regardless).
+- **First look:** `ShowNamesLayer` vs QC `client/shownames.qc` (the visibility/alpha function);
+  `ServerNet.RelevantEntitiesFor` player treatment.
+
+### 56. Warpzones broken for the remote client — render AND exit direction **[client-map-load]**
+- [ ] **Status:** Not started
+- **Symptom:** As the pure client: the warpzone portal renderer is broken (placeholder/black), and
+  traversal exits with the wrong angle/output direction.
+- **Notes:** the RENDER half is a KNOWN limitation of the client-map-load round-2 work: portal
+  window/disc renderers are constructed post-map-load, but the zone transforms live in the server-side
+  `WarpzoneTrace.AmbientManager` and are NOT networked → dark-mirror placeholder only. The EXIT-ANGLE
+  half is likely the same root: client prediction + the fixangle/view-rotation path (`WarpzoneFixView`)
+  read those ambient zones, so a pure client predicts through the zone with no transform → wrong
+  facing/velocity until reconcile snaps it.
+- **Fix direction (promising):** the pure client now LOADS the map BSP — warpzones are static map
+  entities (`trigger_warpzone` + targets), so the client can build the SAME zone set locally from its
+  parsed BSP entities (no protocol change) and feed WarpzoneTrace/PortalRenderer/WarpzoneFixView.
+  ⚠ read the `warpzone-angle-resolution` postmortem + memory before touching any of this.
+- **First look:** where GameWorld links warpzone pairs at boot (reuse that pass client-side in
+  `LoadClientMapFromServer`); `PortalRenderer.Setup` zone lookup; prediction's warp handling.
+- **2026-07-06 fix-pass status: DEFERRED (scoped, not implemented).** Findings from this pass: Base
+  NETWORKS zones (ENT_CLIENT_WARPZONE: source+target origin/angles + extents, sent once) and the client
+  computes the transform (`WarpZone_SetUp`) + view (`WarpZone_camera_transform`) + traces
+  (`WarpZone_TraceBox_ThroughZone`); on a crossing the server sends WARPZONE_TELEPORTED and the client
+  rotates its VIEW ANGLES + pending predicted inputs (`CL_RotateMoves`). The port's plumbing is ambient:
+  `GameWorld.Boot` → `Services.TraceImpl.SetWarpzoneManager(Warpzones)` publishes to
+  `WarpzoneTrace.AmbientManager`, which prediction (TriggerTouch), PortalRenderer, and WarpzoneFixView all
+  read — so the WHOLE feature lights up on a pure client the moment a locally-built `WarpzoneManager` is
+  published on the client facade's TraceService. The blocker: zone construction/linking currently lives
+  inside GameWorld's entity-spawn pipeline — it needs extracting into a standalone builder fed by the
+  client-parsed BSP entity dicts (called from `LoadClientMapFromServer`). Do that extraction as its own
+  change with the warpzone postmortem open.
+
+### 57. Crosshair special-weapon ring (hagar load etc.) missing on the remote client **[client-map-load]**
+- [ ] **Status:** Not started
+- **Symptom:** The around-crosshair weapon indicator (hagar secondary load, vortex charge, clip) shows
+  on the host but not the pure client.
+- **Notes (strong hypothesis from this session's work):** the DATA is already networked —
+  `OwnerWeaponRings` rides the owner block into `ClientNet.LocalWeaponRings` ("feeds the crosshair
+  rings on a PURE remote client") — but the CrosshairPanel's ring feed reads the local server Player's
+  weapon-slot state, which on a pure client is now the HUD-mirror Player (`_hudMirror`, added this
+  round) whose slot state is empty ⇒ no rings. Wire the ring values from `LocalWeaponRings` on the
+  mirror path (stamp them onto the mirror's slot state in `UpdateHudMirror`, or feed the panel directly).
+- **First look:** CrosshairPanel's ring value source + `NetGame.UpdateHudMirror`;
+  `ClientNet.LocalWeaponRings` consumers (find who reads it today — possibly nobody).
+
+### 58. Weapon coloring (profile/team tint) missing on the remote client **[client-map-load]**
+- [ ] **Status:** Not started
+- **Symptom:** Weapon models don't take the player color tint for the pure client (works on the host).
+- **Notes:** #43 (r15, merged from main) wired the full color chain — and its own notes say the pure
+  client SENDS its color (`color <n>`) and the entity wire carries packed `Colors`, including on the OWN
+  entity slice (`ClientNet.LocalState.Colors`). So the remaining gap is the OWN-viewmodel tint source on
+  a pure client: `UpdateViewModelColors` likely resolves colors from `LocalServerPlayer.ClientColors`
+  (host-only). Read them from `LocalState.Colors` / stamp onto `_hudMirror` instead. Third-person
+  weapons on OTHER players come from their entity Colors and may already work — verify which case the
+  playtest saw.
+- **First look:** `NetGame.UpdateViewModelColors` color source on a pure client; `_hudMirror` stamping;
+  #43's fix-chain notes above.
+
+### 59. Hit-sound confirmation doesn't fire for the remote client **[client-map-load]**
+- [ ] **Status:** Not started
+- **Symptom:** Landing hits as the pure client plays no hitsound (works on the host).
+- **Notes (strong hypothesis):** the hitsound is driven by diffing the owner's cumulative
+  `HitDamageDealtTotal` stat, which IS networked on the own entity slice
+  (`NetEntityState.HitDamageDealtTotal`, kept as `ClientNet.LocalState`) — but the `HitSound` consumer
+  in NetGame likely diffs the listen host's server-side stat (LocalServerPlayer), so the pure client
+  never sees the delta. Switch the feed to `LocalState.HitDamageDealtTotal` when there's no local world.
+  Adjacent sibling (same family, verify while there): the T51 damage-text layer is "fed from the
+  server-side DamagetextMutator's drained events" — that drain is listen-only too, so floating damage
+  numbers are probably also dead on a pure client. Cross-ref the `sound-system-and-two-bugs` memory
+  (hitsound file/damagetext coupling) before fixing.
+- **First look:** the `HitDamageDealtTotal` consumer in NetGame (`_hitSound` feed) + the DamageText
+  drain; route both from networked owner state on the pure client.
+
+---
+
 ## Pending
 _More items to be added — playtest in progress._

@@ -66,6 +66,20 @@ public partial class Shell : Node
     private bool _windowFocused = true;      // OS window focus, tracked from _Notification (drives auto-pause)
     private CanvasLayer? _loadingLayer;
     private LoadingScreen? _loadingScreen;
+    private Game.Hud.ChatPrompt _chatPrompt = null!;   // [#46] the messagemode chat input line
+
+    /// <summary>[#46] <c>messagemode</c>/<c>messagemode2</c>: open the chat prompt (in a match only — at the
+    /// menu there is nobody to talk to; print the standard hint instead, like other match-only commands).</summary>
+    private void OpenChatPrompt(bool team)
+    {
+        if (!MatchRunning || ConsoleState.IsOpen)
+        {
+            if (!MatchRunning)
+                XonoticGodot.Common.Diagnostics.Log.Help("messagemode: not connected — start a match first.");
+            return;
+        }
+        _chatPrompt.Open(team);
+    }
 
     /// <summary>Apply any <c>--cvar NAME VALUE</c> command-line overrides into the shared store (repeatable; each
     /// <c>--cvar</c> token consumes the next two args). For test/automation/A-B runs that need to pin a cvar at
@@ -118,6 +132,23 @@ public partial class Shell : Node
         // `bind` lines layered on top — one source of truth shared by `bind`/gameplay input. Here we only wire
         // the runtime hook: release all held buttons whenever the console opens (DP in_releaseall).
         BindInput.Install();
+
+        // [#46] The messagemode chat prompt (the DP engine chat input the stock ENTER/T/Y/Z binds target — Base
+        // has NO QC-side chat input). Lives on its own high CanvasLayer (over the HUD, under the console) and
+        // submits through the SAME dual route a console-typed `say` takes: the in-process listen world as a
+        // client command, else the remote string-command channel. The commands exist even at the menu (they
+        // print a hint), so a bind fired outside a match never lands in the void.
+        var chatLayer = new CanvasLayer { Name = "ChatPromptLayer", Layer = 90 };
+        AddChild(chatLayer);
+        _chatPrompt = new Game.Hud.ChatPrompt { Name = "ChatPrompt" };
+        _chatPrompt.Submit = line =>
+        {
+            if (LocalRouteCommand(line) is null)
+                RouteRemoteCommand(line);
+        };
+        chatLayer.AddChild(_chatPrompt);
+        MenuState.Interp!.RegisterCommand("messagemode", _ => OpenChatPrompt(team: false));
+        MenuState.Interp!.RegisterCommand("messagemode2", _ => OpenChatPrompt(team: true));
 
         // The client-side `screenshot` command (DP CF_CLIENT, bound to F12 by binds-xonotic.cfg): a Godot node that
         // grabs the next rendered frame and writes it to user://screenshots/. Registered on the SHARED interpreter

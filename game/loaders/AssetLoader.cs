@@ -145,6 +145,38 @@ public sealed class AssetLoader
         if (key.Length == 0)
             return null;
 
+        // [#48] Quake SPRITE models (.spr — the chat bubble models/misc/chatbubble.spr is the stock user of
+        // this path): DP renders these as camera-facing billboards; the shipped data also carries the frame as
+        // a plain `<name>.spr_0.tga` next to the .spr (the DP external-frame override), so we don't need a
+        // .spr container parser — a billboard quad textured with that frame IS the faithful render. Without
+        // this branch the loader fell through to the placeholder box (the "block" over typing players' heads).
+        if (key.EndsWith(".spr", StringComparison.OrdinalIgnoreCase))
+        {
+            Texture2D? sprTex = LoadTexture(key + "_0");
+            if (sprTex is not null)
+            {
+                var spr = new MeshInstance3D
+                {
+                    Name = "sprite",
+                    // Base chatbubble.spr renders ~16qu square; sized to read like DP's at head offset.
+                    Mesh = new QuadMesh { Size = new Vector2(16f, 16f) },
+                    MaterialOverride = new StandardMaterial3D
+                    {
+                        ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                        Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
+                        BillboardMode = BaseMaterial3D.BillboardModeEnum.Enabled,
+                        AlbedoTexture = sprTex,
+                        NoDepthTest = false,
+                    },
+                    CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
+                };
+                var sprRoot = new Node3D { Name = "spr" };
+                sprRoot.AddChild(spr);
+                return sprRoot;
+            }
+            // No external frame → fall through to the normal (placeholder) path.
+        }
+
         // Cache key includes the skin variant (different skins build different nodes).
         string cacheKey = skinIndex == 0 ? key : $"{key}#skin{skinIndex}";
         if (!_modelCache.TryGetValue(cacheKey, out Func<Node3D?>? factory))

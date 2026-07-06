@@ -1640,7 +1640,29 @@ public partial class ClientWorld : Node3D
     private static Material? TintVariant(Material? source, Godot.Vector3 colormod)
     {
         if (source is not BaseMaterial3D src)
-            return null; // ShaderMaterial (animated shader) — leave the shared material in place, alpha-only
+        {
+            // [#54] ShaderMaterial (a compiled Q3/glow/skin shader — the POWERUP models are almost entirely
+            // these): an arbitrary shader's output can't be colormod-multiplied from here, and the old
+            // "leave it live" no-op meant a taken strength/shield never darkened while plain-material items
+            // did. DP applies colormod as a final clamped multiply over the WHOLE surface (fullbright passes
+            // included) — with the shipped default '-1 -1 -1' that lands on flat BLACK — so substitute a
+            // cached flat dark unshaded material (alpha still rides the node transparency, like DP's
+            // alpha *= cl_ghost_items). Faithful for the default; a custom cl_ghost_items_color tints the
+            // silhouette to that color, which matches the clamped-multiply look on a dark base.
+            if (source is null)
+                return null;
+            var skey = (source, colormod);
+            if (_itemTintVariants.TryGetValue(skey, out Material? scached))
+                return scached;
+            var flat = new StandardMaterial3D
+            {
+                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+                AlbedoColor = new Color(
+                    Mathf.Max(colormod.X, 0f), Mathf.Max(colormod.Y, 0f), Mathf.Max(colormod.Z, 0f), 1f),
+            };
+            _itemTintVariants[skey] = flat;
+            return flat;
+        }
         var key = (source!, colormod);
         if (_itemTintVariants.TryGetValue(key, out Material? cached))
             return cached;

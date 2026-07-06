@@ -192,6 +192,7 @@ public sealed partial class NetGame : Node3D
     private float _fireClock;
     private readonly Dictionary<int, float> _weaponReadyTime = new();
     private bool _loggedAccept;
+    private bool _hostJoinRequested;             // [#44] one-shot: the listen host's early_join_requested `join` sent
     private bool _cameraReady;                   // C5: false until the first snapshot seeds the predicted eye
     private int _prevHealth = -1;               // previous networked local health, for the damage red-flash edge
     private bool _inputActive;                   // tracks the active→inactive edge to release held buttons (pause/console)
@@ -647,14 +648,18 @@ public sealed partial class NetGame : Node3D
         // wantThreaded + unifyStore were resolved above (before the world was built) since they pick the
         // cvar-store model; the worker/gate setup below reuses that one decision so the two never disagree.
 
-        // Create-a-match / `--host` is "host AND play": the local host should spawn straight into the match, not
-        // sit as an observer. xonotic-server.cfg ships `sv_spectate 1` (spectating allowed) which — faithful to QC
-        // PlayerPreThink (server/client.qc:2715: autojoin only when `!(sv_spectate||g_campaign||forced_spectator)`)
-        // — means a passive real client NEVER delayed-autojoins; it waits for a +fire/+jump join. On a self-hosted
-        // listen server that left the player a permanent observer at world origin under the black connect overlay.
-        // `sv_spectate 0` = "clients spawn as players immediately" (the cvar's own definition) restores the intended
-        // ~1s autojoin so Create→Start drops you into the game, like real Xonotic. (Join-on-fire still works.)
-        _serverWorld.Services.Cvars.Set("sv_spectate", "0");
+        // [#44] sv_spectate stays at Base's shipped `1` (spectating allowed). The old port set it to 0 here to
+        // make the host auto-spawn — which as a side effect made spectating impossible for EVERYONE (and armed
+        // the sv_spectate=0 spectator-kick). The host's "Create Game and play" UX is now the Base-faithful
+        // `early_join_requested` equivalent instead: NetGame requests a one-shot `join` for the LOCAL player the
+        // moment its observer attaches (see RequestHostAutoJoin in _Process) — remote clients get the real
+        // observer flow (+jump joins, +attack spectates, exactly QC ObserverOrSpectatorThink).
+        //
+        // [#47] Port-default divergence (2026-07-06 playtest): Base ships sv_maxidle_playertospectator 60 (an
+        // idle PLAYER is moved to spectator after 60s — client.qc:2982 arms the block even with sv_maxidle 0).
+        // Bryan wants no idle auto-spectate by default; the shipped cfg tree sets 60, so override it post-load.
+        // Operators can re-enable by setting it back (the Base-faithful machinery in PlayerFrameIdleAll is intact).
+        _serverWorld.Services.Cvars.Set("sv_maxidle_playertospectator", "0");
 
         // A single-player campaign is "host AND play" too, but g_campaign re-arms the spectator-hold sv_spectate
         // just cleared; opt the local host out so it spawns straight into the loaded level (Create-Game UX).
@@ -1954,8 +1959,9 @@ public sealed partial class NetGame : Node3D
                 }
                 else
                 {
+                    // TryGetViewedState: the own entity lives in LocalState, never the remote table (see #51/#58).
                     int watched = specNet != 0 ? specNet : (_client?.LocalNetId ?? 0);
-                    if (watched != 0 && _client != null && _client.TryGetRemoteState(watched, out var rs)
+                    if (watched != 0 && _client != null && _client.TryGetViewedState(watched, out var rs)
                         && rs.WepentView.VortexCharge > 0f)
                         charge = rs.WepentView.VortexCharge;
                 }
@@ -1984,7 +1990,10 @@ public sealed partial class NetGame : Node3D
         if (LocalServerPlayer is { } p && specNet == 0)
             return p.ClientColors & 0xFF;
         int watched = specNet != 0 ? specNet : (_client?.LocalNetId ?? 0);
-        if (watched != 0 && _client != null && _client.TryGetRemoteState(watched, out var rs))
+        // TryGetViewedState (NOT TryGetRemoteState): the own entity is kept in ClientNet.LocalState, never the
+        // remote table — the old lookup MISSED for a pure client's own colors, so the first-person weapon never
+        // took the profile/team tint on a remote client (playtest #58).
+        if (watched != 0 && _client != null && _client.TryGetViewedState(watched, out var rs))
             return rs.Colors & 0xFF;
         return 0;
     }
@@ -2129,7 +2138,11 @@ public sealed partial class NetGame : Node3D
         else
             return;                                        // listen host: the host-derived reload anim owns the frame
 
-        if (watched != 0 && _client.TryGetRemoteState(watched, out var rs))
+        // TryGetViewedState (NOT TryGetRemoteState): the OWN entity is diverted to ClientNet.LocalState and never
+        // enters the remote table, so the pure-client "watched == self" lookup used to MISS every frame — the
+        // viewmodel then never received the server's idle edge and a LOOPING fire clip (h_hagar) pumped forever
+        // (playtest #51, the remote twin of the r12 host fix).
+        if (watched != 0 && _client.TryGetViewedState(watched, out var rs))
             _viewModel.SetNetAnimFrame(rs.WepentView.ViewmodelFrame);
     }
 
@@ -3075,6 +3088,21 @@ public sealed partial class NetGame : Node3D
                 // and collides with the REAL world instead of the flat prediction floor (no-op on a listen server).
                 if (!_isListenServer)
                     LoadClientMapFromServer(_client.ServerMapName, _client.ServerGametype);
+            }
+
+            // [#44] The listen host's "Create Game and play" join — Base's `early_join_requested` arm of the
+            // PlayerPreThink autojoin (client.qc:2715): the host explicitly ASKED to start a match, so its own
+            // client requests `join` once, the moment its observer attaches. With sv_spectate back at Base's 1
+            // the passive delayed-autojoin no longer exists (faithful — it only armed when sv_spectate was 0),
+            // so without this the host — and every scripted flow that expects the host to spawn (--map smoke,
+            // --camera-trace, perf runs, --screenshot's CaptureGate) — would sit at the observer prompt forever.
+            // Remote clients are NOT auto-joined: they get the real Base observer flow (+jump joins, +attack
+            // spectates). A campaign host already auto-joins via CampaignHostAutojoin; the extra join is a no-op.
+            if (_isListenServer && !_hostJoinRequested && LocalServerPlayer is { IsObserver: true } hostObs
+                && _serverWorld is { } joinWorld)
+            {
+                _hostJoinRequested = true;
+                joinWorld.Commands.Execute("join", isServerConsole: false, caller: hostObs);
             }
 
             // LISTEN-SERVER prediction parity: the predicted carrier and the authoritative host Player are TWO
@@ -5859,7 +5887,7 @@ public sealed partial class NetGame : Node3D
     {
         _fireClock += dt;
 
-        bool active = !GetTree().Paused && !ConsoleState.IsOpen && !UiOwnsCursor;
+        bool active = !GetTree().Paused && !ConsoleState.IsOpen && !XonoticGodot.Game.Hud.ChatPrompt.IsOpen && !UiOwnsCursor; // chat prompt = DP key_dest message: movement/fire keys suspended while typing
         if (!active)
         {
             // Input is owned elsewhere (in-game menu / console / minigame / quickmenu): drop the edge state and the
@@ -6091,7 +6119,7 @@ public sealed partial class NetGame : Node3D
         // HUD UI (minigame menu/board or the quick-chat menu) is open. On the edge into inactive, drop all held
         // buttons (DP in_releaseall) so a key held at that moment doesn't stay down once input resumes. The view
         // angles hold their last value, so the camera stays put.
-        bool active = !GetTree().Paused && !ConsoleState.IsOpen && !UiOwnsCursor;
+        bool active = !GetTree().Paused && !ConsoleState.IsOpen && !XonoticGodot.Game.Hud.ChatPrompt.IsOpen && !UiOwnsCursor; // chat prompt = DP key_dest message: movement/fire keys suspended while typing
         if (active != _inputActive)
         {
             _inputActive = active;
@@ -6153,8 +6181,8 @@ public sealed partial class NetGame : Node3D
         // the console makes input inactive (movement keys are released + zeroed), but the typing FLAG itself must
         // still ride the command so the server can exempt the typist (camp-check g_campcheck_typecheck gate,
         // type-frag classification, etc.). Mirrors QC PHYS_INPUT_BUTTON_CHAT being live while the chat box is up.
-        if (ConsoleState.IsOpen)
-            buttons |= InputButtons.Chat;
+        if (ConsoleState.IsOpen || XonoticGodot.Game.Hud.ChatPrompt.IsOpen)
+            buttons |= InputButtons.Chat; // messagemode prompt ALSO raises BUTTON_CHAT (the DP key_dest != game rule) -> server chat bubble
 
         // C2S impulse (QC usercmd.impulse): consume the one-shot weapon-switch/reload number a bind set this
         // frame (RunBoundCommand stamped it into _pendingImpulse, edge-triggered). Stamp it onto THIS command and

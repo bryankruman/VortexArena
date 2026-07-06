@@ -1385,6 +1385,19 @@ public sealed class ClientNet : IDisposable
         return false;
     }
 
+    /// <summary>
+    /// The decoded entity slice of the player this client is LOOKING THROUGH — works for the OWN entity too.
+    /// The own entity never enters the remote table (<see cref="HandleSnapshot"/> diverts it to
+    /// <see cref="LocalState"/> so it's never interpolated), so a <see cref="TryGetRemoteState"/> on
+    /// <see cref="LocalNetId"/> always MISSES — the silent breaker of every pure-client "watched == self"
+    /// consumer (viewmodel anim frame, viewmodel colors, vortex glow). Use THIS for view-through reads.
+    /// </summary>
+    public bool TryGetViewedState(int netId, out NetEntityState state)
+    {
+        if (netId != 0 && netId == LocalNetId && LocalState is { } ls) { state = ls; return true; }
+        return TryGetRemoteState(netId, out state);
+    }
+
     /// <summary>Drop a remote entity (the renderer calls this when the server stops sending it / it's removed).</summary>
     public void ForgetRemote(int netId) => _remotes.Remove(netId);
 

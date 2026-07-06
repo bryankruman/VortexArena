@@ -542,20 +542,16 @@ public partial class HealthArmorPanel : HudPanel
         }
     }
 
-    /// <summary>Draw a health/armor skin icon, swapping to the over-max art variants (a port enhancement:
-    /// <c>_big</c> past max, <c>_mega</c> well past it) for the classic "you're overcharged" cue. Falls back
-    /// to a tinted box matching the bar color when the art is missing so the cell is never blank.</summary>
+    /// <summary>Draw the health/armor skin icon — ALWAYS the plain <c>health</c>/<c>armor</c> pic, exactly like
+    /// Base (<c>healtharmor.qc</c> passes the bare name to <c>DrawNumIcon</c>/<c>drawpic_aspect_skin</c>; the
+    /// <c>_small/_medium/_big/_mega</c> files in the skin are the ITEM pickup icons, not panel art). The old
+    /// port "enhancement" swapped to <c>_big</c>/<c>_mega</c> past 50%/100% of max — which meant the panel showed
+    /// the wrong (item-variant) icon at any normal over-100 value (playtest #52). Falls back to a tinted box
+    /// matching the bar color when the art is missing so the cell is never blank.</summary>
     private void DrawIcon(string baseName, float value, float max, Rect2 rect, float alpha)
     {
-        string name = baseName;
-        if (max > 0f)
-        {
-            if (value > max) name = baseName + "_mega";
-            else if (value > max * 0.5f) name = baseName + "_big";
-        }
         var modulate = new Color(1f, 1f, 1f, Mathf.Clamp(alpha, 0f, 1f));
-        if (DrawSkinPic(name, rect, modulate)) return;
-        if (name != baseName && DrawSkinPic(baseName, rect, modulate)) return;
+        if (DrawSkinPic(baseName, rect, modulate)) return;
 
         // Fallback glyph: a small filled square tinted like the resource.
         Color box = baseName == "armor" ? DefaultArmorColor : DefaultHealthColor;
