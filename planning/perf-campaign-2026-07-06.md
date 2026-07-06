@@ -94,19 +94,86 @@ provisional until the census lands; expect Phase 1 to re-rank Phases 2–3 (that
 All on the fresh release export, two runs per cell (count-based metrics converge; fps percentiles
 need the two-run rule), `Get-Process dotnet` idle, portals pinned except where they're the variable.
 
-| Capture | Question it answers |
-|---|---|
-| **catharsis, 6 bots, 60 s** | Did R1/R2 realize the rcpu win? (historical anchor: 228 fps, DP ≈ 300). This is the single number that decides whether Phase 3 leads with render-submission or traces. |
-| **stormkeep, 6 bots, 90 s** | Release-build hitch census vs the 07-03 debug reference (1%-low 90). New baseline json. |
-| **weapon sweep** — fire every weapon, sight every roster model (scripted attack-injection if the r9 probe harness is recoverable; otherwise a 2-min manual pass with `cl_frameprofiler_alert 1`) | **Did `grid_lit`/animMap/unshaded-additive variants add first-use PIPELINE-COMPILE hitches?** The warm pass has no coverage for them. |
-| **warpzone map, portals on vs off** | Portal tax on release (debug said 1.4 ms p50 / 2× draws) → sizes item 3.1. |
-| **mid-match bot join (start 0 bots, add 6 at t=30)** | Join-window census in isolation: pipeline pair count, tracewalk tails, streamer behavior. |
-| **idle empty map, 5 min** | Floor: present pacing, scope-coverage debt line, any periodic tick. |
+**2026-07-06 revision (Bryan):** the idle stand-at-spawn camera is not representative — it never
+traverses the map, never sees gunplay, and exercises none of the weapon-render variants. Captures now
+default to perf-run's **demo scenario**: the host spectates a living bot first-person
+(`cl_bench_spectate`, with view-entity hiding + `cl_spectate_smoothangles`), every bot carries the 8
+core weapons (`g_weaponarena`) and rotates through them one-by-one (`bot_ai_weapon_rotate 8`), forced
+respawn keeps everyone fighting. This replaces the artificial "weapon sweep" and "mid-match join"
+cells — a spectated demo run IS a continuous weapon sweep with real traversal. The debug shakedown
+already validated the approach: 6 PIPELINE-COMPILE primaries (worst 114 ms, one at t=62 s mid-match)
+where the idle camera saw 2 small ones.
 
-Deliverables: regenerated `tools/perf-baselines/` (catharsis + stormkeep + warpzone), a hitch census
+| Capture (demo scenario unless noted) | Question it answers |
+|---|---|
+| **catharsis, 6 bots, 90 s ×2** | Steady-state census on the busiest map + the R1/R2 anchor. Idle-scenario reads from today: capped avg 134/125, uncapped p50 5.0 ms (~200 fps ceiling). |
+| **stormkeep, 6 bots, 90 s ×2** | Census + new baseline. Idle read: post-load nearly clean (4–5 primaries/80 s, 0.1%-low 90+) — demo shows what that misses. |
+| **solarium + xoylent, 6 bots, 90 s** | Two more DM maps (all stock maps ship waypoints) — map-varied hitch classes, streaming, different material sets. |
+| **catharsis uncapped (`-Cvar "cl_maxfps 1024"`) ×2** | Throughput headroom vs the 144 auto-cap (cl_maxfps 0 ⇒ `max(144, refresh)` — the deliberate 06-14 present-jitter fix; "uncapped" is a diagnostic mode only). |
+| **catharsis + stormkeep, `-Scenario idle`** | The old floor camera, for continuity with the 07-03 numbers and as the render-load control. |
+
+Deliverables: regenerated `tools/perf-baselines/` (demo-scenario catharsis + stormkeep), a hitch census
 table with named owners per class, the scope-coverage debt list, and a **re-ranked Phase 2/3**.
 Also read the census for surprises from the three weeks of unprofiled merges — new scopes, new
 allocators, anything the ledger above doesn't predict.
+
+### Phase 1 RESULTS — the 2026-07-06 census (release export @ this branch, demo scenario, 90 s, 6 bots)
+
+Post-load (t ≥ 20 s) numbers; two runs where shown. `idle ctl` = the old stand-at-spawn camera on the
+same export. Older idle cells ran on the morning export (pre-bench code — inert difference).
+
+| cell | pl avg fps | pl p99 | pl 1%low | pl 0.1%low | pl hitch ms | pl primaries | pipe (total/sync) |
+|---|---|---|---|---|---|---|---|
+| catharsis demo A/B | 128.2 / 127.4 | 16.7 / 20.8 | 60 / 48 | 11 / 14 | **6037 / 6494** | **245 / 250** | 128/65 · 134/68 |
+| catharsis idle ctl | 127.3 | 13.9 | 72 | 32 | 2306 | 73 | 116/62 |
+| xoylent demo | 136.4 | 15.9 | 63 | 29 | 2371 | 170 | 124/62 |
+| solarium demo | 137.2 | 12.7 | 78 | 18 | 2376 | 105 | 138/71 |
+| stormkeep demo A/B | 143.0 / 143.4 | 8.3 / 8.3 | 120 / 120 | 60 / 60 | **331 / 213** | **23 / 12** | 133/67 · 129/65 |
+| catharsis demo uncapped ×2 | 150.0 / 149.4 | 16.7 / 16.8 | 60 / 60 | 14 / 23 | 5855 / 6424 | (census not comparable uncapped) | 136/69 · 134/68 |
+
+**Headline findings (each reproduced across runs):**
+
+1. **The idle camera was hiding most of the problem.** Real gameplay (spectated bot, all weapons,
+   forced respawn) shows 245–250 post-load primaries / ~6.2 s over-budget on catharsis where the
+   idle control shows 73 / 2.3 s. Smoothness work must be measured with the demo scenario from now on.
+2. **`ng.process` — the server tick's bot AI under sustained combat — is the #1 steady-state hitch
+   owner on every busy map**: 3.2–3.8 s over-budget/90 s on catharsis, 2.3 s on solarium AND xoylent
+   (the watchdog names `bot.seed`/`bot.rate`). Constant kills + forced respawns re-rate strategies far
+   more often than the idle match did. The 07-03 round-1 fixes hold (no 100 ms+ single ticks), but the
+   30–60 ms tail class is now the dominant mid-match stutter, and it clusters (un-jittered
+   `bot_ai_strategyinterval` — `BotBrain.cs:358`).
+3. **`hud.trueaim` re-emerges on open maps — 1.3–2.4 s over-budget on catharsis** (≈0 on
+   stormkeep/xoylent, 118 ms solarium). The panel traces a 32768 qu ray + a box trace per frame; its
+   06-14 static-aim cache never misses on an idle camera (why nobody saw it since) but a real/spectated
+   player re-aims every frame. Cheap fix exists in-tree: `cl_crosshair_trueaim_rate` (default 0);
+   structural fix is R6 BIH. Also explains part of catharsis-vs-stormkeep gap.
+4. **The weapon-variant PSO warm gap is real and map-independent**: ~62–71 SYNC pipeline compiles in
+   every join window (any map) + 3–6 PIPELINE-COMPILE primaries per demo match — worst measured
+   114.5 ms (debug) / 74.5 ms mid-match. The warm pass has no coverage for the r12–r15 shader variants
+   (`grid_lit`, animMap cycling, unshaded additive — verified absent).
+5. **Stormkeep steady state is genuinely near-clean** (0.1%-low 60, p99 8.3 under full combat) — the
+   07-03 campaign's wins were real; catharsis/xoylent-class open maps are where the remaining work is.
+6. **The load-phase roster warm grew**: 404 MB single-frame alloc on catharsis (230 MB stormkeep),
+   plus a second unattributed 277 MB `proc:other` storm at t≈5 s (catharsis only) and 104 MB at t≈1 s
+   — three gen2s before the match starts, 0.1%-low pinned at 7–8 everywhere (full-session).
+7. **`cl_maxfps 0` is NOT uncapped**: auto-cap = `max(144, refresh)` (deliberate 06-14 present-jitter
+   fix, ClientSettings.cs — capped 144 measured 5× fewer hitches than 256). Uncapped demo throughput:
+   p50 6.1–6.2 ms (~163 fps) vs idle-uncapped 5.0 ms (~200) — real gameplay costs ~1.1 ms/frame of
+   CPU headroom. The June "228 fps" anchor predates the cap and the r9+ render features; treat 200
+   (idle) / 163 (combat) as today's uncapped catharsis reality.
+8. Constants: gen2 ×6 per run everywhere (combat alloc 1.9–2.0 GB/90 s — R7 entity pool still the
+   named fix); `proc:other` scope debt 350–420 ms per run (burn-down list); `stream.predecode`
+   200–370 ms in-play streaming; `wz_portal_lookat` appears inert (portal cell showed no draw
+   increase — investigate when portal work starts; the demo camera crosses warpzones organically).
+
+**Re-ranked Phase 2 (hitches) per this census:**
+2.1 bot-AI combat cost (`ng.process`/`bot.rate` — jitter + walk caps + a fresh profile of what melts) →
+2.2 `hud.trueaim` rate-cap + catharsis long-trace investigation →
+2.3 weapon-variant warm coverage (kills the mid-match PIPE class) →
+2.4 roster-warm frame staggering (+ name the 277 MB `proc:other` storm) →
+2.5 R7 entity pool (gen2 ×6) → 2.6 R30 physics trim.
+Phase 3 (fps) ranking unchanged except: BIH (R6) rises — it now underwrites BOTH 2.1 (tracewalks)
+and 2.2 (trueaim rays); portal half-rate stays top of the pure-fps list.
 
 ### Phase 2 — kill the known hitches (smoothness; biggest player-felt win first)
 

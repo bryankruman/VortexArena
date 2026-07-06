@@ -12,8 +12,15 @@ tracer: see **NET-DEBUGGING.md** (`net_input_trace`) and **TROUBLESHOOTING.md**.
 1. **Capture on the release export** (debug builds hitch differently and are watermarked as such):
    ```powershell
    tools\perf-run.ps1 -Label repro            # 35s catharsis + 6 bots, profiler forced on, auto-report
-   tools\perf-run.ps1 -Label repro -Map stormkeep -Secs 60
+   tools\perf-run.ps1 -Label repro -Map stormkeep -Secs 90
+   tools\perf-run.ps1 -Label floor -Scenario idle   # the old stand-at-spawn camera (floor readings)
    ```
+   The default **demo scenario** spectates a living bot first-person (`cl_bench_spectate`), gives every
+   bot the 8 core weapons (`g_weaponarena`) rotating one-by-one (`bot_ai_weapon_rotate 8`), and forces
+   respawns — the capture camera traverses the map and sees real gunplay, so first-use shader compiles,
+   streaming, and combat effects actually show up in the census (an idle spawn camera exercises almost
+   none of that; the 2026-07-06 idle runs read 2 PIPELINE-COMPILE primaries where the demo run read 6,
+   worst 114 ms).
    Or in any running game: console → `set cl_frameprofiler 1` (2 = also echo the 5 s snapshots), play,
    quit. Session files land in `<userdir>/logs/session-<stamp>.{log,csv}` (newest ~50 pairs are kept) —
    `~/XonData` for real play; perf-run captures use an **isolated scratch profile**

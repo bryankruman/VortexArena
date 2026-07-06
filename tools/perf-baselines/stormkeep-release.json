@@ -1,0 +1,863 @@
+{
+ "session": "session-20260706-173653",
+ "log": "C:\\Users\\Bryan\\Projects\\Xonotic\\XonoticGodot\\.claude\\worktrees\\sweet-chaum-b1d580\\_scratch\\perf-userdir\\logs\\session-20260706-173653.log",
+ "frames": 12374,
+ "duration_s": 100.118,
+ "avg_fps": 137.78791929329296,
+ "p50_ms": 6.94,
+ "p95_ms": 7.14,
+ "p99_ms": 12.29,
+ "p999_ms": 127.36,
+ "low1_fps": 81.36696501220506,
+ "low01_fps": 7.851758793969849,
+ "max_ms": 150.0,
+ "hitch_time_ms": 3614.31,
+ "slow_frames": 121,
+ "slow_cut_ms": 12.492,
+ "old_schema": false,
+ "top_offenders": [
+  [
+   "iqm.mesh",
+   1794.0500000000004
+  ],
+  [
+   "ng.process",
+   716.5199999999995
+  ],
+  [
+   "proc:other",
+   402.49999999999994
+  ],
+  [
+   "stream.predecode",
+   370.06999999999977
+  ],
+  [
+   "cev.process",
+   172.78
+  ],
+  [
+   "iqm.anims",
+   97.02000000000001
+  ],
+  [
+   "stream.build",
+   38.44
+  ],
+  [
+   "viewmodel",
+   15.579999999999998
+  ]
+ ],
+ "alloc_total_mb": 1451.6875,
+ "alloc_storms": [
+  {
+   "t": 3.842,
+   "mb": 230.201171875,
+   "top1": "iqm.mesh",
+   "gc2": 1
+  },
+  {
+   "t": 1.168,
+   "mb": 104.05078125,
+   "top1": "proc:other",
+   "gc2": 2
+  },
+  {
+   "t": 16.509,
+   "mb": 73.310546875,
+   "top1": "ng.process",
+   "gc2": 0
+  },
+  {
+   "t": 1.428,
+   "mb": 48.79296875,
+   "top1": "proc:other",
+   "gc2": 0
+  },
+  {
+   "t": 7.175,
+   "mb": 34.025390625,
+   "top1": "iqm.mesh",
+   "gc2": 1
+  },
+  {
+   "t": 8.681,
+   "mb": 17.3798828125,
+   "top1": "iqm.mesh",
+   "gc2": 0
+  },
+  {
+   "t": 16.595,
+   "mb": 16.822265625,
+   "top1": "ng.process",
+   "gc2": 0
+  },
+  {
+   "t": 20.928,
+   "mb": 16.3271484375,
+   "top1": "stream.predecode",
+   "gc2": 0
+  },
+  {
+   "t": 17.012,
+   "mb": 12.0712890625,
+   "top1": "stream.predecode",
+   "gc2": 0
+  },
+  {
+   "t": 8.081,
+   "mb": 12.05859375,
+   "top1": "iqm.mesh",
+   "gc2": 0
+  }
+ ],
+ "gc": {
+  "gc0": 133,
+  "gc1": 36,
+  "gc2": 6
+ },
+ "gc_pause_ms": 424.27,
+ "pipe_total": 133,
+ "pipe_sync": [
+  {
+   "t": 3.842,
+   "n": 39,
+   "ms": 146.2
+  },
+  {
+   "t": 8.081,
+   "n": 5,
+   "ms": 124.09
+  },
+  {
+   "t": 8.327,
+   "n": 2,
+   "ms": 125.91
+  },
+  {
+   "t": 9.723,
+   "n": 1,
+   "ms": 141.51
+  },
+  {
+   "t": 13.81,
+   "n": 4,
+   "ms": 133.33
+  },
+  {
+   "t": 14.072,
+   "n": 5,
+   "ms": 137.35
+  },
+  {
+   "t": 14.084,
+   "n": 1,
+   "ms": 21.75
+  },
+  {
+   "t": 16.47,
+   "n": 1,
+   "ms": 83.75
+  },
+  {
+   "t": 18.142,
+   "n": 1,
+   "ms": 10.55
+  },
+  {
+   "t": 18.316,
+   "n": 1,
+   "ms": 6.94
+  },
+  {
+   "t": 23.372,
+   "n": 1,
+   "ms": 16.26
+  },
+  {
+   "t": 28.153,
+   "n": 3,
+   "ms": 39.99
+  },
+  {
+   "t": 37.111,
+   "n": 1,
+   "ms": 22.52
+  },
+  {
+   "t": 42.265,
+   "n": 1,
+   "ms": 10.5
+  },
+  {
+   "t": 88.826,
+   "n": 1,
+   "ms": 6.94
+  }
+ ],
+ "draws_p50": 382.0,
+ "postload_secs": 20.0,
+ "postload": {
+  "frames": 11621,
+  "duration_s": 81.282,
+  "avg_fps": 143.02371404807693,
+  "p50_ms": 6.94,
+  "p95_ms": 7.14,
+  "p99_ms": 8.33,
+  "p999_ms": 16.79,
+  "low1_fps": 120.04801920768307,
+  "low01_fps": 59.55926146515783,
+  "max_ms": 39.99,
+  "hitch_time_ms": 330.94,
+  "slow_frames": 27,
+  "slow_cut_ms": 12.492,
+  "draws_p50": 393.0,
+  "census": {
+   "CPU-LOGIC": 15,
+   "ASSET-BUILD": 1,
+   "MIXED": 4,
+   "PIPELINE-COMPILE": 3
+  },
+  "recovery": 4
+ },
+ "logdata": {
+  "events": [
+   {
+    "t": 14.7,
+    "cls": "CPU-LOGIC",
+    "ms": 14.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 14.7,
+    "cls": "MIXED",
+    "ms": 17.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 14.7,
+    "cls": "VSYNC/PRESENT",
+    "ms": 12.5,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 16.5,
+    "cls": "PIPELINE-COMPILE",
+    "ms": 83.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 16.5,
+    "cls": "CPU-LOGIC",
+    "ms": 58.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 16.6,
+    "cls": "VSYNC/PRESENT",
+    "ms": 72.9,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 16.6,
+    "cls": "PIPELINE-COMPILE",
+    "ms": 62.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 16.6,
+    "cls": "CPU-LOGIC",
+    "ms": 13.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 16.7,
+    "cls": "CPU-LOGIC",
+    "ms": 24.7,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 16.7,
+    "cls": "MIXED",
+    "ms": 22.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 16.7,
+    "cls": "CPU-LOGIC",
+    "ms": 20.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 16.7,
+    "cls": "MIXED",
+    "ms": 12.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 16.8,
+    "cls": "MIXED",
+    "ms": 16.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 16.8,
+    "cls": "CPU-LOGIC",
+    "ms": 19.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 16.8,
+    "cls": "MIXED",
+    "ms": 19.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 16.8,
+    "cls": "CPU-LOGIC",
+    "ms": 18.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 16.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 17.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 16.8,
+    "cls": "CPU-LOGIC",
+    "ms": 14.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 16.9,
+    "cls": "VSYNC/PRESENT",
+    "ms": 18.2,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 16.9,
+    "cls": "MIXED",
+    "ms": 20.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 16.9,
+    "cls": "CPU-LOGIC",
+    "ms": 18.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 16.9,
+    "cls": "MIXED",
+    "ms": 18.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 16.9,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.6,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 16.9,
+    "cls": "MIXED",
+    "ms": 13.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.0,
+    "cls": "MIXED",
+    "ms": 14.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.0,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.0,
+    "cls": "MIXED",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.0,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.0,
+    "cls": "MIXED",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.1,
+    "cls": "MIXED",
+    "ms": 16.7,
+    "n": 3,
+    "rec": false
+   },
+   {
+    "t": 17.1,
+    "cls": "CPU-LOGIC",
+    "ms": 15.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.1,
+    "cls": "CPU-LOGIC",
+    "ms": 15.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.1,
+    "cls": "MIXED",
+    "ms": 15.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.2,
+    "cls": "MIXED",
+    "ms": 16.4,
+    "n": 3,
+    "rec": false
+   },
+   {
+    "t": 17.2,
+    "cls": "VSYNC/PRESENT",
+    "ms": 15.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 17.2,
+    "cls": "CPU-LOGIC",
+    "ms": 16.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.2,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.2,
+    "cls": "MIXED",
+    "ms": 15.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.3,
+    "cls": "CPU-LOGIC",
+    "ms": 15.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.3,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.3,
+    "cls": "MIXED",
+    "ms": 15.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.3,
+    "cls": "MIXED",
+    "ms": 15.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.3,
+    "cls": "CPU-LOGIC",
+    "ms": 15.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.3,
+    "cls": "MIXED",
+    "ms": 15.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.4,
+    "cls": "CPU-LOGIC",
+    "ms": 15.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.4,
+    "cls": "CPU-LOGIC",
+    "ms": 16.6,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 17.4,
+    "cls": "MIXED",
+    "ms": 14.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.4,
+    "cls": "CPU-LOGIC",
+    "ms": 15.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.4,
+    "cls": "VSYNC/PRESENT",
+    "ms": 15.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 17.4,
+    "cls": "CPU-LOGIC",
+    "ms": 15.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.5,
+    "cls": "MIXED",
+    "ms": 13.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.5,
+    "cls": "MIXED",
+    "ms": 13.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 17.5,
+    "cls": "CPU-LOGIC",
+    "ms": 14.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 20.6,
+    "cls": "CPU-LOGIC",
+    "ms": 35.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 20.7,
+    "cls": "VSYNC/PRESENT",
+    "ms": 13.1,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 21.0,
+    "cls": "CPU-LOGIC",
+    "ms": 13.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 21.1,
+    "cls": "ASSET-BUILD",
+    "ms": 29.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 21.1,
+    "cls": "MIXED",
+    "ms": 30.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 21.2,
+    "cls": "CPU-LOGIC",
+    "ms": 13.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 21.2,
+    "cls": "MIXED",
+    "ms": 22.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 21.2,
+    "cls": "CPU-LOGIC",
+    "ms": 16.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 23.4,
+    "cls": "PIPELINE-COMPILE",
+    "ms": 16.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 28.2,
+    "cls": "PIPELINE-COMPILE",
+    "ms": 40.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 28.2,
+    "cls": "CPU-LOGIC",
+    "ms": 16.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 28.2,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 28.6,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 28.6,
+    "cls": "CPU-LOGIC",
+    "ms": 13.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 37.1,
+    "cls": "PIPELINE-COMPILE",
+    "ms": 22.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 38.8,
+    "cls": "CPU-LOGIC",
+    "ms": 13.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 42.8,
+    "cls": "CPU-LOGIC",
+    "ms": 17.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 43.6,
+    "cls": "CPU-LOGIC",
+    "ms": 35.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 43.6,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 45.6,
+    "cls": "CPU-LOGIC",
+    "ms": 14.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 48.1,
+    "cls": "MIXED",
+    "ms": 12.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 49.1,
+    "cls": "MIXED",
+    "ms": 12.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 49.1,
+    "cls": "CPU-LOGIC",
+    "ms": 12.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 71.1,
+    "cls": "CPU-LOGIC",
+    "ms": 14.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 77.1,
+    "cls": "CPU-LOGIC",
+    "ms": 14.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 82.7,
+    "cls": "CPU-LOGIC",
+    "ms": 19.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 93.3,
+    "cls": "CPU-LOGIC",
+    "ms": 19.6,
+    "n": 1,
+    "rec": false
+   }
+  ],
+  "census": {
+   "CPU-LOGIC": 40,
+   "MIXED": 29,
+   "PIPELINE-COMPILE": 5,
+   "ASSET-BUILD": 1
+  },
+  "recovery": 11,
+  "env": "managed-debugger=False godot-context=release csharp=Release(optimized) vsync=Enabled maxfps=0 refresh=60Hz cpu=24c gpu=NVIDIA GeForce RTX 3080",
+  "debug_build": false,
+  "summary": [
+   "=== frame profiler session summary (101s, 12374 frames) ===",
+   "  fps: avg 137.7  1%low 81  0.1%low 8  (median 6.9ms, worst 150.0ms)",
+   "  hitches: 86 total \u2014 75 primaries: 1 ASSET-BUILD, 5 PIPELINE-COMPILE, 40 CPU-LOGIC, 29 MIXED; +11 VSYNC/PRESENT recovery tails",
+   "    worst[1]: 83.7ms PIPELINE-COMPILE (ng.process) @ t=16.5s",
+   "    worst[2]: 72.9ms VSYNC/PRESENT (ng.process) @ t=16.6s",
+   "    worst[3]: 62.2ms PIPELINE-COMPILE (ng.process) @ t=16.6s",
+   "    worst[4]: 58.2ms CPU-LOGIC (ng.process) @ t=16.5s",
+   "    worst[5]: 40.0ms PIPELINE-COMPILE (cev.process) @ t=28.2s",
+   "  gc: g0+133 g1+36 g2+6, total pause 424ms",
+   "  alloc: 1.4GB total, 8MB/s recent, peak 230.2MB in one frame @ t=3.8s, heap 369.2MB",
+   "  scope coverage debt: proc:other dominated 1 hitch(es), watchdog '(unscoped)' won 2 \u2014 add Prof scopes there"
+  ]
+ },
+ "clusters": [
+  {
+   "start": 14.7,
+   "end": 17.5,
+   "count": 52,
+   "ms": 1013.9999999999999,
+   "classes": {
+    "CPU-LOGIC": 25,
+    "MIXED": 25,
+    "PIPELINE-COMPILE": 2
+   }
+  },
+  {
+   "start": 20.6,
+   "end": 21.2,
+   "count": 7,
+   "ms": 161.10000000000002,
+   "classes": {
+    "CPU-LOGIC": 4,
+    "ASSET-BUILD": 1,
+    "MIXED": 2
+   }
+  },
+  {
+   "start": 28.2,
+   "end": 28.6,
+   "count": 3,
+   "ms": 70.5,
+   "classes": {
+    "PIPELINE-COMPILE": 1,
+    "CPU-LOGIC": 2
+   }
+  },
+  {
+   "start": 42.8,
+   "end": 45.6,
+   "count": 3,
+   "ms": 67.4,
+   "classes": {
+    "CPU-LOGIC": 3
+   }
+  },
+  {
+   "start": 48.1,
+   "end": 49.1,
+   "count": 3,
+   "ms": 38.6,
+   "classes": {
+    "MIXED": 2,
+    "CPU-LOGIC": 1
+   }
+  }
+ ]
+}
