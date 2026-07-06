@@ -748,7 +748,10 @@ public sealed class AssetLoader
     /// <summary>
     /// Load and parse the model's <c>.framegroups</c> sidecar (e.g. <c>player.iqm.framegroups</c>): the named
     /// animation ranges that carve the model's flat pose stack into clips. Returns null when there is no
-    /// sidecar (the builder then uses the model's own anims / a single default clip).
+    /// sidecar (the builder then uses the model's own anims / a single default clip). Weapon hand rigs
+    /// (<c>models/weapons/h_*</c>) get Base's slot-index clip names stamped onto their nameless groups
+    /// (all.qc:373-376: 0=fire, 1=fire2, 2=idle, 3=reload) so the ViewModel's idle/fire/reload lookups —
+    /// and the builders' idle autoplay — address the ranges Base plays by index.
     /// </summary>
     private List<FrameGroup>? LoadFrameGroups(string modelKey)
     {
@@ -758,7 +761,7 @@ public sealed class AssetLoader
             return null;
         try
         {
-            return FrameGroups.Parse(_vfs.ReadText(sidecar));
+            return WeaponRigAnims.NameGroups(modelKey, FrameGroups.Parse(_vfs.ReadText(sidecar)));
         }
         catch (Exception ex)
         {

@@ -315,7 +315,7 @@ features:
     constants:
       - { name: "fov range", base: "60-130 step 5", port: "same; FirstPersonView reads fov", match: true }
       - { name: "cl_zoomfactor domain", base: "2-10/0.5 + 11-30/1", port: "same enumeration", match: true }
-      - { name: "cl_eventchase_death", base: "checkboxEx value 2", port: "FlagCheckBox bit 0 (writes 1, not 2)", match: false }
+      - { name: "cl_eventchase_death", base: "checkboxEx value 2", port: "ValueCheckBox 2/0 (QC value-pair semantics)", match: true }
     status:
       logic: faithful
       values: partial
@@ -326,16 +326,15 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "cl_eventchase_death checkbox writes the wrong value: QC checkBoxEx(2,...) sets 2 (chase even while the body slides); the port FlagCheckBox toggles bit 0 -> writes 1, and FirstPersonView:591 special-cases ==2 — so ticking the box actually DISABLES the default-2 behavior."
       - "cl_unpress_zoom_on_death / _on_spawn / _on_weapon_switch and cl_unpress_attack_on_weapon_switch are DEAD as cvars — the unpress-on-death behavior is hardcoded always-on (NetGame:3097 comment), not toggleable."
       - "cl_smoothviewheight is live (NetGame) but QC's chase_active in [-1,0] gating on the perspective sub-rows is reduced to single-condition binds."
-      - "'View bobbing' drops the cl_bob2 makeMulti (DialogSettingsGame.cs:476 writes cl_bob only) while FirstPersonView.cs:675 reads cl_bob2 LIVE — ticking the box enables only half the QC bob (the horizontal component stays 0)."
       - "cl_clippedspectating IS replicated + consumed server-side (Commands.cs:586 ClippedSpectatingProvider)."
     verification:
       - { kind: code, ref: "FirstPersonView reads fov(293,528)/cl_zoomfactor(277,302)/cl_zoomspeed(304)/cl_zoomsensitivity(375)/cl_zoomscroll(257,325)/cl_velocityzoom_enabled+type(545)/cl_eventchase_death(591,740)/cl_bob(651)/cl_bobfall(706)/v_idlescale(603); ChaseCamera reads chase_back(57)", result: pass }
       - { kind: code, ref: "grep cl_unpress -> menu bindings + comments only", result: fail }
+      - { kind: code, ref: "2026-07-05: the five perspective checkboxes (cl_eventchase_death 2/0, cl_bobfall 0.05/0, cl_smoothviewheight 0.05/0, cl_bob 0.01/0 + makeMulti cl_bob2, v_idlescale 1/0) rewired from the inert bit-0 FlagCheckBox to CvarValueCheckBox (QC XonoticCheckBox midpoint-load + mindecimals-save; CheckBoxValue math pinned by ViewBobIdleSwayTests)", result: pass }
     confidence: high
-    notes: "View bob / chase camera landed after the 06-14 audit (which recorded them 'not implemented'); this tab is now mostly live. chase_up consumption unverified (only chase_back seen). cl_reticle is bound AND live (game/client/ReticleOverlay.cs reads it)."
+    notes: "View bob / chase camera landed after the 06-14 audit (which recorded them 'not implemented'); this tab is now mostly live. chase_up consumption unverified (only chase_back seen). cl_reticle is bound AND live (game/client/ReticleOverlay.cs reads it). 2026-07-05: the earlier gaps 'eventchase checkbox writes 1 not 2' and ''View bobbing' drops the cl_bob2 makeMulti' are FIXED — the old bit-0 FlagCheckBox wiring was in fact fully inert ((v & 0) != 0 never true; a toggle wrote the int-truncated value back), so none of the five perspective checkboxes ever worked; all five now use faithful QC value-pair semantics."
 
   - id: menu-dialogs.settings.game_weapons
     name: "Game>Weapons tab: priority list, cycling opts, autoswitch, viewmodel visuals, tracer teamcolor"

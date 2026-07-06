@@ -6098,8 +6098,8 @@ public sealed partial class NetGame : Node3D
             // sets ViewOfs to the crouch/standing value each predicted tick, QC STAT(PL_CROUCH_VIEW_OFS)/PL_VIEW_OFS).
             // In faithful mode this is the viewheightavg-blended height (smooth crouch); else the raw live offset.
             EyeHeightZ = eyeOfsZ,
-            // QC IS_ONGROUND / (input_buttons & BIT(1)): drive the horizontal view-bob smooth ramp (cl_bob2) and
-            // the fall-bob swing trigger (cl_bobfall). Both off by default, so no observable effect in a stock match.
+            // QC IS_ONGROUND / (input_buttons & BIT(1)): drive the horizontal view-bob smooth ramp (cl_bob2, off
+            // by default) and the fall-bob swing trigger (cl_bobfall 0.05 — ON in stock Xonotic: the landing dip).
             OnGround = _carrier?.OnGround ?? false,
             JumpHeld = BindTable.JumpHeld,
         };

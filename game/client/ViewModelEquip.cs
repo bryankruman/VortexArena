@@ -32,8 +32,10 @@ internal readonly struct ViewModelEquip
     /// RIG's bones:
     /// <list type="number">
     ///   <item><b>INVISIBLE-HAND</b> (the h_ rig exposes a <c>weapon</c>/<c>tag_weapon</c> bone — the IQM rigs
-    ///   h_arc/h_nex/h_shotgun/…): render the <c>v_</c> VISUAL model attached to that bone's rest (position-only,
-    ///   the legacy path), exactly as Base attaches the v_ <c>weaponchild</c> to the <c>weapon</c> bone.</item>
+    ///   h_arc/h_nex/h_shotgun/…): render the h_ rig node (dummy <c>nodraw</c> mesh hidden) with the <c>v_</c>
+    ///   VISUAL model riding a live <see cref="BoneAttachment3D"/> on that bone, exactly as Base attaches the
+    ///   v_ <c>weaponchild</c> to the <c>weapon</c> bone — the rig's idle/fire/reload animation sways the gun.
+    ///   Falls back to the static bone-rest attach when the rig has no usable skeleton/bone.</item>
     ///   <item><b>FULL-MODEL</b> (the h_ rig has NO such bone — the DPM rigs h_rl/h_crylink/h_electro/h_gl/
     ///   h_hagar/ok_*): render the <b>h_ RIG ITSELF</b> (its own gun+hand mesh) at <c>attach = identity</c>, and
     ///   IGNORE the v_ model — Base leaves the weaponchild NULL and the rig IS the viewmodel. The rig is authored
@@ -65,11 +67,59 @@ internal readonly struct ViewModelEquip
             // Rig classified full-model but failed to build — fall through to the v_ path as a last resort.
         }
 
-        // INVISIBLE-HAND (IQM rigs with a weapon bone) OR a missing/unbuildable rig: render the v_ model,
-        // attached to the rig's weapon-attach bone (position-only — see WeaponAttachTransform).
+        // INVISIBLE-HAND (IQM rigs with a weapon bone): Base renders the h_ rig entity (whose only mesh is a
+        // 2-triangle `nodraw` dummy plane) and attaches the v_ model to its `weapon` bone
+        // (setattachment(weaponchild, this, "weapon"), all.qc:381-400) — so the rig's idle/fire/reload BONE
+        // animation is what sways the gun in your hands. Reproduce that: build the rig node (its
+        // AnimationPlayer autoplays the looping idle clip), hide its dummy mesh, and hang the v_ model off a
+        // live BoneAttachment3D on the weapon bone. The composite (rig root) is the equip model at identity.
         Node3D? built = assets.LoadModel(vModelPath);
+        if (invisibleHand == true && built is not null)
+        {
+            Node3D? rig = assets.LoadModel(hPath);
+            if (rig is not null)
+            {
+                Skeleton3D? skel = IqmBuilder.FindSkeleton(rig);
+                string? boneName = null;
+                if (skel is not null)
+                {
+                    foreach (string b in new[] { "weapon", "tag_weapon" })
+                    {
+                        if (skel.FindBone(b) >= 0) { boneName = b; break; }
+                    }
+                }
+                if (skel is not null && boneName is not null)
+                {
+                    HideRigMeshes(rig);
+                    var boneFollow = new BoneAttachment3D { Name = "WeaponBoneAttach" };
+                    skel.AddChild(boneFollow);           // parent FIRST so the attachment resolves its skeleton
+                    boneFollow.BoneName = boneName;
+                    built.Transform = Transform3D.Identity; // QC weaponchild rides the bone at zero offset
+                    boneFollow.AddChild(built);
+                    return new ViewModelEquip { Model = rig, Attach = Transform3D.Identity, IsHandRig = false };
+                }
+                rig.QueueFree(); // classified invisible-hand but no usable skeleton/bone — fall back to static
+            }
+        }
+
+        // Fallback (missing/unbuildable rig, or no weapon bone resolved): render the v_ model alone, attached
+        // at the rig's STATIC weapon-bone rest (position-only — see WeaponAttachTransform). No idle sway.
         Transform3D attach = WeaponAttachTransform(assets, vModelPath);
         return new ViewModelEquip { Model = built, Attach = attach, IsHandRig = false };
+    }
+
+    /// <summary>
+    /// Hide every mesh of the hand rig — Base's invisible-hand rigs carry a single 2-triangle plane with the
+    /// <c>nodraw</c> material (verified across h_shotgun/h_nex/h_uzi/h_arc), so the rendered result in Base is
+    /// "no hands". Hiding is the deterministic equivalent regardless of how the material pipeline resolves the
+    /// <c>nodraw</c> name. The skeleton keeps animating hidden meshes' bones (BoneAttachment3D still follows).
+    /// </summary>
+    private static void HideRigMeshes(Node node)
+    {
+        if (node is MeshInstance3D mesh)
+            mesh.Visible = false;
+        foreach (Node child in node.GetChildren())
+            HideRigMeshes(child);
     }
 
     /// <summary>

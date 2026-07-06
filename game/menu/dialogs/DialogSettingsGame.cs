@@ -457,28 +457,34 @@ public partial class DialogSettingsGameView : SettingsTab
         var perspGroup = new ButtonGroup();
         box.AddChild(Widgets.RadioButton("chase_active", "0", "1st person perspective", perspGroup));
 
-        // QC: checkBoxEx(2, bit 0, "cl_eventchase_death",...); dep chase_active∈[-1,0].
-        var eventChase = Widgets.FlagCheckBox("cl_eventchase_death", 0, "Slide to third person upon death");
+        // These five are QC VALUE-PAIR checkboxes — makeXonoticCheckBoxEx(yesValue, noValue, cvar, label)
+        // stores yesValue when checked / noValue when unchecked (NOT a bit toggle; the old FlagCheckBox
+        // wiring with bit 0 masked nothing and made every one of them inert).
+
+        // QC: makeXonoticCheckBoxEx(2, 0, "cl_eventchase_death",...); dep chase_active∈[-1,0].
+        var eventChase = Widgets.ValueCheckBox("cl_eventchase_death", 2f, 0f, "Slide to third person upon death");
         box.AddChild(eventChase);
         Dependent.Bind(eventChase, "chase_active", -1, 0);
 
-        // QC: checkBoxEx(0.05, bit 0, "cl_bobfall",...); dep chase_active∈[-1,0].
-        var bobFall = Widgets.FlagCheckBox("cl_bobfall", 0, "Smooth the view when landing from a jump");
+        // QC: makeXonoticCheckBoxEx(0.05, 0, "cl_bobfall",...); dep chase_active∈[-1,0]. ON in stock Xonotic
+        // (xonotic-client.cfg:151 cl_bobfall 0.05) — the landing dip.
+        var bobFall = Widgets.ValueCheckBox("cl_bobfall", 0.05f, 0f, "Smooth the view when landing from a jump");
         box.AddChild(bobFall);
         Dependent.Bind(bobFall, "chase_active", -1, 0);
 
-        // QC: checkBoxEx(0.05, bit 0, "cl_smoothviewheight",...); dep chase_active∈[-1,0].
-        var smoothCrouch = Widgets.FlagCheckBox("cl_smoothviewheight", 0, "Smooth the view while crouching");
+        // QC: makeXonoticCheckBoxEx(0.05, 0, "cl_smoothviewheight",...); dep chase_active∈[-1,0].
+        var smoothCrouch = Widgets.ValueCheckBox("cl_smoothviewheight", 0.05f, 0f, "Smooth the view while crouching");
         box.AddChild(smoothCrouch);
         Dependent.Bind(smoothCrouch, "chase_active", -1, 0);
 
-        // QC: checkBoxEx_T(0.01, bit 0, "cl_bob",...) makeMulti("cl_bob2"); dep chase_active∈[-1,0].
-        var bob = Widgets.FlagCheckBox("cl_bob", 0, "View bobbing while walking around");
+        // QC: makeXonoticCheckBoxEx_T(0.01, 0, "cl_bob",...) + makeMulti("cl_bob2"); dep chase_active∈[-1,0].
+        var bob = Widgets.ValueCheckBox("cl_bob", 0.01f, 0f, "View bobbing while walking around",
+            multiCvars: "cl_bob2");
         box.AddChild(bob);
         Dependent.Bind(bob, "chase_active", -1, 0);
 
-        // QC: checkBoxEx(1, bit 0, "v_idlescale",...); dep chase_active∈[-1,0].
-        var idle = Widgets.FlagCheckBox("v_idlescale", 0, "View waving while idle");
+        // QC: makeXonoticCheckBoxEx(1, 0, "v_idlescale",...); dep chase_active∈[-1,0] — the idle view sway.
+        var idle = Widgets.ValueCheckBox("v_idlescale", 1f, 0f, "View waving while idle");
         box.AddChild(idle);
         Dependent.Bind(idle, "chase_active", -1, 0);
 

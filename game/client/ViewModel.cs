@@ -397,10 +397,11 @@ public partial class ViewModel : Node3D
     }
 
     /// <summary>
-    /// Resolve a named muzzle socket (e.g. <c>tag_shot</c>) from a built skeletal model's <see cref="Skeleton3D"/>
-    /// bone rest, creating a child <see cref="Marker3D"/> at that local transform so it inherits the ViewBasis +
-    /// sway like the mesh. Returns null when the model has no skeleton or no such bone. Static rest pose (the
-    /// v_-attach path is also static-rest); a live-animated muzzle would need a BoneAttachment3D follow.
+    /// Resolve a named muzzle socket (e.g. <c>tag_shot</c>) from a built skeletal model's <see cref="Skeleton3D"/>,
+    /// creating a child <see cref="Marker3D"/> under a live <see cref="BoneAttachment3D"/> so the marker FOLLOWS
+    /// the bone's animated pose (the flash/light ride the rig's idle sway and fire recoil, matching Base where
+    /// the shot tag is part of the animated model). Returns null when the model has no skeleton or no such bone.
+    /// With no animation playing the attachment sits at the bone rest — the old static-rest placement.
     /// </summary>
     private static Marker3D? MarkerFromSkeletonBone(Node3D model, string boneName)
     {
@@ -409,15 +410,18 @@ public partial class ViewModel : Node3D
             return null;
         // Bones may be stored under a sanitized name (IqmBuilder replaces ':','/','@','%','.' with '_'); the
         // muzzle tag names (tag_shot/shot/…) contain none of those, so a direct find suffices, but fall back to
-        // a sanitized find for safety. GetBoneGlobalRest composes the parent chain into built model space.
+        // a sanitized find for safety.
         int idx = skel.FindBone(boneName);
         if (idx < 0)
             idx = skel.FindBone(boneName.Replace(':', '_').Replace('/', '_').Replace('@', '_').Replace('%', '_').Replace('.', '_'));
         if (idx < 0)
             return null;
-        var marker = new Marker3D { Name = boneName, Transform = skel.GetBoneGlobalRest(idx) };
-        // Parent under the skeleton so the marker shares the gun's exact built model space.
-        skel.AddChild(marker);
+        var follow = new BoneAttachment3D { Name = boneName + "_follow" };
+        // Parent under the skeleton FIRST so the attachment resolves it, then bind the bone by name.
+        skel.AddChild(follow);
+        follow.BoneName = skel.GetBoneName(idx);
+        var marker = new Marker3D { Name = boneName };
+        follow.AddChild(marker);
         return marker;
     }
 

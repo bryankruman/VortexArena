@@ -1,13 +1,13 @@
 unit: cl-viewmodel
 category: client
 base_ref_rev: "v0.8.6-1779-g863cd3e84"
-last_audited: "2026-06-28"  # re-audited post wepent-channel + weapon-visuals wave (working tree atop 493c876). TWO rows moved: (1) muzzle.flash_model FULLY CLOSED — md3 flash frame now cycled (FlashModelFactory returns a ModelAnimator for multi-frame flash MD3s, SpawnMuzzleFlashModel SetRawFrame 2->4->6->8 across the 3 think ticks, faithful to W_MuzzleFlash_Model_Think frame+=2). (2) anim.networked_frames — SetWeaponModel now captures the h_-rig AnimationPlayer (_iqmAnimPlayer) so the networked ViewmodelFrame selector can drive a clip on the LIVE equip path (logic partial->faithful); NOT fully closed: playback runtime-unverified + asset-name-dependent + v_ statics still don't cycle, so presentation stays partial, liveness partial, values/timing missing. Casings/glow/alpha/sway/align rows unchanged from 06-27.
+last_audited: "2026-07-05"  # landing-bob/idle-sway wave: the two asset-dependency gaps in anim.networked_frames CLOSED — (1) weapon h_ rig framegroups get Base's slot-index clip names stamped at load (WeaponRigAnims: 0=fire,1=fire2,2=idle,3=reload — the shipped sidecars are nameless, the old synthesized names put the FIRE group under 'idle'), so the name-based clip lookups hit the authored ranges on IQM *and* DPM rigs; (2) invisible-hand weapons now render the h_ rig node (nodraw dummy mesh hidden) with the v_ model on a live BoneAttachment3D 'weapon' bone (ViewModelEquip), so the rig's idle/fire/reload animation sways the gun — runtime-verified via screenshot A/B at two idle phases (shotgun pose visibly differs). Prior 06-28 note (flash-model close + _iqmAnimPlayer capture) retained below. Casings/glow/alpha/sway/align rows unchanged from 06-27.
 summary:
   feature_count: 13
   worst_gaps:
     - "Per-child m_skin (wepskin) is not applied; the gun renders with its base material. Team colormap is an approximate whole-model albedo tint, not a true palette colormap swap (colormap/glowmod ARE applied — colormod + Vortex/team glow)."
     - "Weapon-switch animation is a slide-down, not Base's barrel-tip (this.angles_x = -90*f*f), and is not keyed to per-weapon switchdelay_raise/drop or weapon_nextthink (port does not network wframe)."
-    - "Networked weapon fire/idle/reload animation: the wframe-equivalent selector now drives the h_-rig AnimationPlayer on the live path, but playback is runtime-unverified (clip names asset-dependent), invisible-hand v_*.md3 weapons still never cycle, and there is no synced per-frame frame= (values/timing missing)."
+    - "Networked weapon fire/idle/reload animation: clips now play on ALL weapon classes (slot-named framegroups + animated invisible-hand rigs, 2026-07-05), but there is still no synced per-frame frame= (values/timing missing) and the consumer stays spectatee/pure-client path-split."
 features:
   - id: cl-viewmodel.model.select_and_rig
     name: "View-model entity + model select (invisible-hand vs full-rig), rebuild on weapon change"
@@ -21,7 +21,7 @@ features:
       - "game/net/NetGame.cs:EquipNetworkedWeapon"
     constants:
       - { name: "r_drawviewmodel", base: "1", port: "implicit (always drawn when alive/1st-person)", match: true }
-      - { name: "anim framegroups (fire1/fire2/idle/reload)", base: "'0 1 0.01' / '1 1 0.01' / '2 1 0.01' / '3 1 0.01'", port: "best-effort local clip (no framegroup preset)", match: false }
+      - { name: "anim framegroups (fire1/fire2/idle/reload)", base: "animfixfps slot indices '0/1/2/3' (all.qc:373-376)", port: "WeaponRigAnims stamps the slot names (fire/fire2/idle/reload) onto the nameless h_ sidecar groups at load; clips play at the sidecar's authored fps/loop — the same ranges DP plays by index", match: true }
     status:
       logic: faithful
       values: faithful
@@ -31,12 +31,12 @@ features:
       liveness: live
     intended_divergence: false
     divergence_rationale: null
-    gaps:
-      - "anim framegroup presets (animfixfps fire1/fire2/idle/reload) not preset; port plays a best-effort local clip."
+    gaps: []
     verification:
       - { kind: code, ref: "ViewModel.SetWeaponModel + ViewModelEquip.Build invisible-hand/full-rig branch; EquipNetworkedWeapon rebuilds on weapon-id or wr_viewmodel change (NetGame:1624), hides on dead/holster/chase/intermission", result: pass }
+      - { kind: code, ref: "2026-07-05: invisible-hand branch now renders the h_ rig (nodraw dummy mesh hidden) with the v_ model on a live BoneAttachment3D 'weapon' bone — Base setattachment(weaponchild, this, 'weapon') — so the rig's animation carries the gun; static bone-rest attach kept as the no-skeleton fallback. Slot-name framegroup stamping pinned by ViewBobIdleSwayTests.", result: pass }
     confidence: high
-    notes: "Invisible-hand (v_ attached to h_ rig 'weapon'/'tag_weapon' tag) vs full-rig classification is faithful to CL_WeaponEntity_SetModel. movedir from 'shot' tag drives shot origin. Live on NetGame match path."
+    notes: "Invisible-hand (v_ attached to h_ rig 'weapon'/'tag_weapon' tag) vs full-rig classification is faithful to CL_WeaponEntity_SetModel. movedir from 'shot' tag drives shot origin. Live on NetGame match path. 2026-07-05: the invisible-hand attach is now the LIVE animated bone (idle sway/fire recoil/reload dip reach the gun, verified via two-phase idle screenshot diff on the shotgun); the framegroup-preset gap closed via WeaponRigAnims slot naming."
 
   - id: cl-viewmodel.anim.networked_frames
     name: "Networked weapon fire/idle/reload animation (wframe temp entity)"
@@ -60,18 +60,18 @@ features:
       timing: missing
       presentation: partial
       audio: na
-      liveness: partial
+      liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Visible playback is now wired on the live equip path BUT runtime-unverified and asset-dependent: SetWeaponModel now captures the IQM/DPM h_-rig AnimationPlayer (_iqmAnimPlayer), and PlayIdle/FindFireClip/PlayReload/SetNetAnimFrame route through it, so a full-rig (h_*) weapon that ships fire/idle/reload framegroups WILL cycle on the networked frame. Not yet confirmed in-game that the weapon rigs' framegroups are actually NAMED fire/idle/reload (the clip lookup is name-based: HasAnimation(\"fire\"/\"reload\"/\"idle\")); if a rig's framegroups carry other names the clip lookup misses and the gun stays static -> presentation:partial/unknown, not faithful."
-      - "Invisible-hand v_*.md3 weapons (most of the roster) render a STATIC single-frame md3 with no AnimationPlayer, so _iqmAnimPlayer is null and the networked frame plays no clip for them — only full-model DPM/IQM rigs animate. Hence liveness:partial (animates on some weapons/paths, not all)."
-      - "No server frame-TIMING sync: Base networks the per-frame frame= via attackrate/restartanim; the port plays a local clip once on a rising edge of the 0/1/2/3/4 selector (no synced playhead, no animfixfps framegroup presets) -> values/timing remain missing."
+      - "CLOSED 2026-07-05 (was: clip names asset-dependent): weapon h_ rig framegroups are slot-named at load (WeaponRigAnims — the shipped sidecars are NAMELESS and the old synthesized player-canonical names put the FIRE group under 'idle'), so HasAnimation(\"fire\"/\"idle\"/\"reload\") hits the authored ranges on both IQM and DPM rigs."
+      - "CLOSED 2026-07-05 (was: invisible-hand v_ statics never cycle): the invisible-hand equip now renders the h_ rig with the v_ model on a live weapon-bone BoneAttachment3D, so ALL weapon classes animate (idle verified visually; fire/reload clips reachable via the same AnimationPlayer)."
+      - "No server frame-TIMING sync: Base networks the per-frame frame= via attackrate/restartanim; the port plays a local clip once on a rising edge of the 0/1/2/3/4 selector (no synced playhead) -> values/timing remain missing."
       - "Consumer is still path-split: UpdateViewModelAnimFromNet feeds the frame only on the spectatee / pure-client branch; on the listen-host local player the host-derived UpdateViewModelReloadAnim + best-effort Fire() own the anim instead."
     verification:
       - { kind: code, ref: "WepentResolver.Resolve (WepentResolver.cs:113) stamps ViewmodelFrame from the slot fire-state/clip sentinel; networked via WepentViewCodec + NetEntity.WepentView delta bit; ServerNet.cs:2133 produces it per player; NetGame.UpdateViewModelAnimFromNet (EquipNetworkedWeapon, NetGame:1956) consumes it for the spectatee/pure-client branch and calls ViewModel.SetNetAnimFrame. CHANGED THIS WAVE (working-tree, atop 493c876): SetWeaponModel (the live EquipNetworkedWeapon path, NetGame:1848) now captures the model's IQM/DPM AnimationPlayer into _iqmAnimPlayer (ViewModel.cs:391, model.FindChild(\"AnimationPlayer\")) and FindFireClip/PlayReload/PlayIdle/SetNetAnimFrame all branch through it (plus an IsPlaying idle-recovery in _Process). So the live h_-rig equip path is NO LONGER categorically _animator=null/no-op — a full-rig weapon with named fire/idle/reload framegroups cycles on the networked frame. Selector LOGIC + backend routing are faithful; visible playback is wired but runtime-unverified (clip names depend on the weapon rig framegroup assets) and only covers full-rig weapons (v_*.md3 statics have no AnimationPlayer).", result: pass }
     confidence: medium
-    notes: "WAVE PROGRESS (playback wired onto the live path; NOT fully closed): this wave's working-tree edit removes the prior dead-end — SetWeaponModel now captures the h_-rig AnimationPlayer (_iqmAnimPlayer) and PlayIdle/FindFireClip/PlayReload/SetNetAnimFrame route through it, so the networked WepentView.ViewmodelFrame selector can actually drive a clip on the LIVE EquipNetworkedWeapon path for full-model DPM/IQM weapons (the old note's '_animator=null so no-op' is now stale). logic upgraded partial->faithful (selector + dual-backend routing complete). NOT closed: presentation stays partial — playback is runtime-unverified (clip lookup is name-based; not confirmed the weapon rig framegroups are named fire/idle/reload) and v_*.md3 invisible-hand weapons have no AnimationPlayer so they still never cycle; liveness stays partial (some weapons/paths only, consumer still spectatee/pure-client split); values/timing remain missing (rising-edge clip, no synced per-frame frame= / no animfixfps presets). Confidence medium pending an in-game eyeball that a full-rig weapon visibly cycles fire/reload."
+    notes: "WAVE PROGRESS (playback wired onto the live path): SetWeaponModel captures the h_-rig AnimationPlayer (_iqmAnimPlayer) and PlayIdle/FindFireClip/PlayReload/SetNetAnimFrame route through it. logic faithful (selector + dual-backend routing complete). 2026-07-05: the two asset dead-ends CLOSED — weapon-rig framegroups are slot-named at load (WeaponRigAnims: the shipped sidecars are nameless; the old player-canonical synthesis named the FIRE group 'idle', so 'idle' looped the fire anim on IQM rigs and DPM rigs matched nothing), and invisible-hand weapons render the animated h_ rig with the v_ model bone-attached — every weapon class now animates (liveness live; idle sway verified via two-phase screenshot diff). REMAINING: values/timing missing (rising-edge clip, no synced per-frame frame=), consumer spectatee/pure-client split, fire/reload cycling not yet eyeballed in-game -> presentation stays partial, confidence medium."
 
   - id: cl-viewmodel.model.skin_colormap_glow_effects
     name: "Per-child skin / team colormap / glowmod / EF_NODEPTHTEST / cheap effects mask"
