@@ -165,6 +165,15 @@ public sealed class Reconciler
     private float _errorUntilTime;     // csqcplayer_predictionerrortime
     private float _errorFactor;        // csqcplayer_predictionerrorfactor
 
+    // One-shot teleport-snap pulse: raised when SetPredictionError classifies a correction as TELEPORT-class
+    // (an origin jump past MaxErrorOrigin that isn't knockback) — i.e. a discontinuity the PREDICTION never saw,
+    // like a server-only warpzone/teleporter crossing or a respawn-in-place. The camera consumes it once per
+    // frame and SNAPS its render-side view smoothing (stair glide / eye height) across the jump instead of
+    // gliding the height difference (QC csqcmodel_teleported semantics). Deliberately NOT raised by ResetError():
+    // the camera itself calls ResetError (via the teleport pulse) to reseed the smoothers, and raising the flag
+    // there would re-trigger the snap every frame forever.
+    private bool _teleportSnapPending;
+
     // --- stair-smoothing state (csqcmodel CSQCModel_ApplyStairSmoothing) ---
     // The rendered camera Z LAGS the live predicted Z and catches up at StairSmoothSpeed, hard-clamped to within
     // one step height of the live Z every frame (so it can NEVER persist an offset on a slope — the bug the old
@@ -402,6 +411,7 @@ public sealed class Reconciler
             // here while moving normally are the signature of a rubberband. Developer-gated (QC Con_DPrintf).
             if (Log.WillTrace)
                 Log.Trace($"[reconcile] origin SNAP {oLen:0.0}u (>{MaxErrorOrigin}) — teleport/respawn or desync; smoothing reset");
+            _teleportSnapPending = true; // one-shot for the camera: snap the view smoothing across this jump
             ResetError();
             return;
         }
@@ -455,6 +465,17 @@ public sealed class Reconciler
     {
         if (now >= _errorUntilTime) return Vector3.Zero;
         return _errorVelocity * ((_errorUntilTime - now) * _errorFactor);
+    }
+
+    /// <summary>One-shot: true when a TELEPORT-class correction (the <see cref="SetPredictionError"/> origin-snap
+    /// path) landed since the last call — a discontinuity the prediction never saw (server-only warpzone/teleporter
+    /// crossing, respawn, desync). The camera reads this once per frame and snaps its view smoothing across the
+    /// jump instead of gliding it (QC csqcmodel_teleported).</summary>
+    public bool ConsumeTeleportSnap()
+    {
+        bool pending = _teleportSnapPending;
+        _teleportSnapPending = false;
+        return pending;
     }
 
     // ---------------------------------------------------------------------

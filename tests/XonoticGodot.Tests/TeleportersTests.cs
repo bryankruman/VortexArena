@@ -226,6 +226,12 @@ public sealed class TeleportersTests
         Assert.True(carrier.FixAngle);
         Assert.Equal(mangle, carrier.FixAngleAngles);
 
+        // The TELEPORT PULSE for the view smoothing (QC .lastteleporttime): the camera consumes it one-shot to
+        // SNAP the stair/eye-height glide across the exit — without it a height-different destination reads as
+        // a brief dip while the glide eases the Z difference. (.fixangle can't serve as the signal: the host's
+        // view-snap consume clears it during the input drain, before the camera runs.)
+        Assert.Equal(1f, carrier.LastTeleportTime); // the booted clock's time
+
         // No server-only side effects in predicted mode: the sound/effect debounce never armed.
         Assert.Equal(padLTimeBefore, tele.PushLTime);
     }

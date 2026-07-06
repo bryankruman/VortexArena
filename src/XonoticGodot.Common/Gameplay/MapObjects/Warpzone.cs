@@ -365,6 +365,12 @@ public sealed class WarpzoneManager
             // loop that also thrashes navigation (route clears + forced strategy re-rates every crossing).
             // Human clients get ViewAngles re-stamped from input every tick, so this is human-harmless.
             e.ViewAngles = e.Angles;
+            // [sv-antilag.clear.on_spawn] A warpzone crossing relocates the player exactly like a teleporter —
+            // raise the same explicit one-shot Teleporters.TeleportPlayer does, so (a) the lag-comp ring drops
+            // the pre-warp history (a shot can't rewind the player back through the seam) and (b) the snapshot's
+            // Teleported no-interp flag is stamped even for a CLOSE pair whose crossing displacement stays under
+            // the ServerNet TeleportTickDistance heuristic — without it the remote model LERPS across the seam.
+            e.AntilagNeedsClear = true;
         }
         e.AVelocity = wz.Transform.TransformVelocity(e.AVelocity);
         // QC WarpZone_TeleportPlayer (server.qc:46-47): stamp the teleport bookkeeping — lastteleport_origin is

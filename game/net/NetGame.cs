@@ -2711,10 +2711,9 @@ public sealed partial class NetGame : Node3D
         // client accumulators are pre-scaled here.
         float slowmo = ResolveTimeScale();
 
-        // Arm the predicted-warpzone budget: ONE predicted crossing per render frame, across every reconcile
-        // replay chain this frame runs (see TriggerTouch.PredictedWarpBudget — kills the replay round-trip
-        // through both paired zones that stamped a bogus entry-facing view snap).
-        XonoticGodot.Engine.Simulation.TriggerTouch.PredictedWarpBudget = 1;
+        // (The predicted-warpzone budget is armed PER REPLAY CHAIN inside ClientNet — Predict + the snapshot
+        // reconcile — not per render frame here: while the crossing tick is unacked every chain must re-cross,
+        // and a frame-scoped budget starved the later chains, bouncing the camera back through the seam.)
 
         // Drive the listen server (if any) by real elapsed time — it runs its fixed ticks, pulls each client's
         // queued input, simulates, and broadcasts snapshots.
@@ -5580,8 +5579,8 @@ public sealed partial class NetGame : Node3D
     // The last APPLIED fixangle of either kind (wall-clock seconds) — the replay-echo discard window's anchor.
     private float _lastFixApplyTime = -1f;
 
-    // One-shot consumption cursor for the carrier's LastTeleportTime pulse (the predicted-warpzone teleport
-    // signal the view smoothing snaps on — see the faithfulSmoothing block).
+    // One-shot consumption cursor for the carrier's LastTeleportTime pulse (the predicted teleporter/warpzone
+    // crossing signal the view smoothing snaps on — see the TELEPORT SNAP block at the top of UpdateCamera).
     private float _lastSmoothedTeleportTime = -1f;
 
     // One-shot consumption cursor for the predicted-warp view pulse (TriggerTouch.LastPredictedWarpSeq).
@@ -5974,6 +5973,28 @@ public sealed partial class NetGame : Node3D
         _view.Spectating = false;
 
         float now = _renderClock; // the clock the reconciler armed the prediction-error decay with (see _Process)
+
+        // TELEPORT SNAP — consumed BEFORE the error-offset read so a teleport frame renders with no stale
+        // smoothing at all. A teleport must SNAP every view smoother across the discontinuity, never glide it
+        // (QC csqcmodel_teleported) — otherwise paired warpzone windows / teleporter pads at different heights
+        // read as a brief dip/raise while the stair glide eases the Z difference. Two one-shot signals:
+        //  - the carrier's LastTeleportTime pulse: stamped by BOTH ambient predictors on a PREDICTED crossing
+        //    (TriggerTouch.PredictTeleportsAmbient / PredictWarpzonesAmbient). The carrier's .fixangle is NOT
+        //    usable here — ConsumePredictedFixAngle consumes+clears it during the input drain, before this runs.
+        //  - the reconciler's teleport-snap pulse: a SERVER-side crossing the prediction never saw lands as a
+        //    teleport-class origin correction (Reconciler.SetPredictionError's snap path) — also respawns/desyncs.
+        bool teleported = false;
+        if (_carrier is not null && _carrier.LastTeleportTime != _lastSmoothedTeleportTime)
+        {
+            _lastSmoothedTeleportTime = _carrier.LastTeleportTime;
+            if (_carrier.LastTeleportTime > 0f)
+                teleported = true;
+        }
+        if (_client.ConsumeTeleportSnap())
+            teleported = true;
+        if (teleported)
+            _client.SnapViewSmoothing(); // port-path stair reseed + error-offset clear (the faithful smoother snaps below)
+
         NVec3 predicted = _client.PredictedOrigin + _client.PredictionErrorOffset(now);
 
         // A DEAD local player's body is frozen at the death spot (PlayerPhysics.Move bails on IS_DEAD). The server
@@ -6044,18 +6065,9 @@ public sealed partial class NetGame : Node3D
             _faithfulSmoothing.SmoothViewHeight = CvarOr(cv, "cl_smoothviewheight", 0.05f);
             _faithfulSmoothing.StepHeight = CvarOr(cv, "sv_stepheight", 31f);
             bool onground = _carrier?.OnGround ?? true;
-            // A teleport this tick snaps the glide instead of smoothing the cross-map jump — QC csqcmodel_teleported
-            // does the same. Two signals: the carrier .fixangle (predicted trigger_teleport pass) and the
-            // LastTeleportTime pulse (the predicted WARPZONE crossing, which deliberately does not stamp fixangle
-            // — see PredictWarpzonesAmbient; without this pulse the stair smoother glides the height difference
-            // between the paired windows and every crossing reads as a dip/step).
-            bool teleported = _carrier?.FixAngle ?? false;
-            if (_carrier is not null && _carrier.LastTeleportTime != _lastSmoothedTeleportTime)
-            {
-                _lastSmoothedTeleportTime = _carrier.LastTeleportTime;
-                if (_carrier.LastTeleportTime > 0f)
-                    teleported = true;
-            }
+            // `teleported` (hoisted above, QC csqcmodel_teleported) snaps the glide instead of smoothing the
+            // cross-map jump — without it the stair smoother glides the height difference between the paired
+            // windows and every warpzone/teleporter crossing reads as a dip/step.
             XonoticGodot.Net.FaithfulViewSmoothing.Result r =
                 _faithfulSmoothing.Apply(predicted.Z, dt, onground, eyeOfsZ, teleported);
             predicted.Z = r.StairZ;

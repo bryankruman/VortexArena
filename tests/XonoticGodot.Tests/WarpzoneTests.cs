@@ -108,6 +108,10 @@ public class WarpzoneTests
         Assert.Equal(e.Angles, e.FixAngleAngles);      // host applies the already-transformed exit facing verbatim
         // Exit faces +outForward (North): yaw ≈ 90, NOT the entry yaw 180 — the view IS re-oriented to the new plane.
         Assert.True(System.MathF.Abs(e.FixAngleAngles.Y - 90f) < 0.5f);
+        // The explicit teleport signal for the net layer (same one-shot Teleporters.TeleportPlayer raises): clears
+        // the lag-comp ring AND stamps the snapshot's Teleported no-interp flag even for a CLOSE pair whose
+        // crossing displacement stays under the ServerNet distance heuristic (remote models must snap, not lerp).
+        Assert.True(e.AntilagNeedsClear);
     }
 
     [Fact]

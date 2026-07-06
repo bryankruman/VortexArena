@@ -251,6 +251,18 @@ public sealed class ClientNet : IDisposable
         _reconciler.ForceSmoothWindow = forceWindow;
     }
 
+    /// <summary>One-shot teleport pulse from the RECONCILE side: true when a snapshot's correction was
+    /// teleport-class (<see cref="Reconciler.SetPredictionError"/>'s origin-snap path) — a server-side
+    /// teleporter/warpzone crossing or respawn the prediction never saw. The camera consumes it once per frame
+    /// and snaps the view smoothing across the jump (alongside the carrier's LastTeleportTime pulse, which
+    /// covers the PREDICTED crossings).</summary>
+    public bool ConsumeTeleportSnap() => _reconciler.ConsumeTeleportSnap();
+
+    /// <summary>Snap all render-side view smoothing to truth NOW (a teleport this frame): clears the decaying
+    /// error offsets and reseeds the stair smoother to the live predicted Z, so nothing glides the discontinuity
+    /// (QC csqcmodel_teleported clears the view smoothing on a teleport).</summary>
+    public void SnapViewSmoothing() => _reconciler.ResetError();
+
     // ---- renderer-facing events ----
 
     /// <summary>Raised for each received effect/temp-entity (the client renderer spawns the particle/sound).</summary>
@@ -537,7 +549,16 @@ public sealed class ClientNet : IDisposable
     /// (replay-only — the prediction error is measured/armed in <see cref="HandleSnapshot"/> when a new ack
     /// lands, not on every input tick, so smoothing decays cleanly between snapshots).</summary>
     private void Predict(float now)
-        => _reconciler.Predict(_serverState, _serverAckedSeq, _vars, now);
+    {
+        // Arm the predicted-warpzone budget for THIS replay chain (one crossing per chain — see
+        // TriggerTouch.PredictedWarpBudget). Every Predict/Reconcile is a FULL replay from the acked seed, so
+        // while a crossing tick is still unacked each chain must re-cross the zone to land on the far side.
+        // Arming once per render frame instead (the old model) starved the frame's later chains — the final
+        // predict then left the carrier on the NEAR side and the camera bounced back through the seam for a
+        // frame (the warpzone "view dips/raises briefly" report).
+        XonoticGodot.Engine.Simulation.TriggerTouch.PredictedWarpBudget = 1;
+        _reconciler.Predict(_serverState, _serverAckedSeq, _vars, now);
+    }
 
     // =====================================================================================
     //  Receive
@@ -1237,6 +1258,8 @@ public sealed class ClientNet : IDisposable
             _serverAckedSeq = ackedSeq;
 
             // Reconcile immediately so prediction error is measured + smoothing armed the moment the ack lands.
+            // The reconcile replay is its own chain — arm its own predicted-warp budget (see Predict()).
+            XonoticGodot.Engine.Simulation.TriggerTouch.PredictedWarpBudget = 1;
             _reconciler.Reconcile(_serverState, _serverAckedSeq, _vars, serverTime, _previousPredictionAtAck);
         }
 

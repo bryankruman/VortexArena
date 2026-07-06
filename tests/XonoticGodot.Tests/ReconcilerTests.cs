@@ -80,6 +80,44 @@ public class ReconcilerTests
     }
 
     [Fact]
+    public void TeleportSizedOriginJump_RaisesTheOneShotTeleportSnapPulse()
+    {
+        // The camera consumes this pulse to snap the STAIR/eye-height smoothing across a discontinuity the
+        // prediction never saw (a server-only warpzone/teleporter crossing, a respawn) — without it the stair
+        // glide eases the height difference into a visible dip/raise. One-shot: read once, then cleared.
+        Reconciler rec = NewReconciler();
+        rec.SetPredictionError(new Vector3(1000f, 0f, 0f), Vector3.Zero, now: 0f);
+        Assert.True(rec.ConsumeTeleportSnap(), "a teleport-class snap must raise the pulse");
+        Assert.False(rec.ConsumeTeleportSnap(), "the pulse is one-shot");
+    }
+
+    [Fact]
+    public void SmallErrorAndKnockback_DoNotRaiseTheTeleportSnapPulse()
+    {
+        Reconciler rec = NewReconciler();
+
+        // A small in-bounds residual is ordinary smoothing, not a teleport.
+        rec.SetPredictionError(new Vector3(0f, 0f, 5f), Vector3.Zero, now: 0f);
+        Assert.False(rec.ConsumeTeleportSnap(), "a small residual is not a teleport");
+
+        // A velocity spike with a plausible origin delta is damage KNOCKBACK (smoothed) — not a teleport either.
+        rec.SetPredictionError(new Vector3(10f, 0f, 0f), new Vector3(500f, 0f, 0f), now: 1f / 72f);
+        Assert.False(rec.ConsumeTeleportSnap(), "knockback is smoothed, not teleport-snapped");
+    }
+
+    [Fact]
+    public void ExternalResetError_DoesNotRaiseTheTeleportSnapPulse()
+    {
+        // ResetError is also what the CAMERA calls when it consumes a teleport pulse (SnapViewSmoothing), and
+        // what the spawn-settle / pre-match-freeze holds call every snapshot. If ResetError raised the pulse,
+        // the camera's own consume would re-trigger itself every frame forever (stair smoothing permanently
+        // snapped off). Only SetPredictionError's teleport-classified path may raise it.
+        Reconciler rec = NewReconciler();
+        rec.ResetError();
+        Assert.False(rec.ConsumeTeleportSnap(), "an external reset must not read as a teleport");
+    }
+
+    [Fact]
     public void SetPredictionError_KnockbackSpike_SmoothsAsForce_NotDiscarded()
     {
         // PORT EXTENSION (diverges from stock QC's vdist(v,>,192) discard): jumppads + teleporters are now client-

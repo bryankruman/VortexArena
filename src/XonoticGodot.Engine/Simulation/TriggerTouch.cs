@@ -163,7 +163,15 @@ public static class TriggerTouch
             if (!CollisionWorld.BoxesOverlap(areaMin, areaMax, t.AbsMin, t.AbsMax))
                 continue;
 
-            XonoticGodot.Common.Gameplay.Teleporters.SimpleTeleportPlayer(t, mover, predicted: true);
+            if (XonoticGodot.Common.Gameplay.Teleporters.SimpleTeleportPlayer(t, mover, predicted: true) is not null)
+            {
+                // The TELEPORT PULSE for the view smoothing (same bookkeeping the warpzone predictor stamps):
+                // the stair/eye-height glide must SNAP across the exit, never smooth a height difference into a
+                // dip. TeleportPlayer stamps .lastteleporttime only on the authoritative (!predicted) path, and
+                // the .fixangle it stamps is consumed+cleared by the host's view-snap BEFORE the camera runs —
+                // so the carrier needs its own stamp here for the camera's one-shot smoothing consume.
+                mover.LastTeleportTime = XonoticGodot.Common.Gameplay.MapMover.Now();
+            }
             return; // one teleport per tick — the mover has moved off this (fixed) overlap box
         }
     }
@@ -190,15 +198,21 @@ public static class TriggerTouch
     /// when moving INTO the IN plane) so the predicted warp fires on the same tick the server's touch does.
     /// </summary>
     /// <summary>
-    /// Predicted-warp budget: how many warpzone crossings the PREDICTOR may still apply this render frame
-    /// (across every reconcile replay chain). The host arms it to 1 each frame (NetGame._Process); each
-    /// predicted warp consumes one. Without the cap, a replay chain could carry the carrier through BOTH
-    /// paired zones (T_B∘T_A == identity — e.g. re-cross the original zone at tick K, then a later replayed
-    /// tick drifts back through the partner), stamping a bogus ENTRY-facing fixangle that overwrote the
-    /// correct exit view (the "one direction comes out reversed" report — observed live as a predicted snap
-    /// equal to the pre-warp view). A genuine same-frame double-crossing is sacrificed: the AUTHORITATIVE
-    /// server stamp still snaps it correctly a frame later. Defaults effectively-unlimited for headless
-    /// tests that never arm it.
+    /// Predicted-warp budget: how many warpzone crossings the PREDICTOR may still apply in the CURRENT replay
+    /// chain. The client arms it to 1 at the start of EVERY chain (ClientNet: the per-snapshot reconcile replay
+    /// AND each fresh-input predict are separate full replays from the acked seed); each predicted warp consumes
+    /// one. Without the cap, one chain could carry the carrier through BOTH paired zones (T_B∘T_A == identity —
+    /// e.g. re-cross the original zone at tick K, then a later replayed tick drifts back through the partner),
+    /// stamping a bogus ENTRY-facing fixangle that overwrote the correct exit view (the "one direction comes out
+    /// reversed" report — observed live as a predicted snap equal to the pre-warp view). A genuine double-crossing
+    /// within one chain is sacrificed: the AUTHORITATIVE server stamp still snaps it correctly a frame later.
+    ///
+    /// The scope MUST be per chain, not per render frame: while the crossing tick is still unacked, EVERY chain
+    /// has to re-cross the zone to land on the far side. A per-frame budget (the original model) let the first
+    /// chain consume it and STARVED the rest — the frame's final predict then left the carrier on the NEAR side,
+    /// bouncing the camera back through the seam for a frame and gliding the paired windows' height difference
+    /// on the way back (the "view dips/raises through a warpzone" report). Defaults effectively-unlimited for
+    /// headless tests that never arm it.
     /// </summary>
     public static int PredictedWarpBudget = int.MaxValue;
 
