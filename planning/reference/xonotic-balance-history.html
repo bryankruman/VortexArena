@@ -1,0 +1,1314 @@
+<title>Xonotic Weapon Balance — Change History</title>
+<style>
+/*
+  Design:  Compact reference doc for an arena FPS balance changelog.
+  Same palette/type stack as the physics history doc.
+  Extra patterns: per-release weapon change tables with inline before/after diff rows.
+
+  ground   #07100e
+  surface  #0c1a16
+  border   #162a24
+  code     #6ec9bc
+  hot      #df7b3c
+  text1    #bdd8d1
+  text2    #4c7872
+  text3    #2d5450
+  add      #4baa6b
+  rem      #c4a235
+*/
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html {
+  background: #07100e;
+  color: #bdd8d1;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 15px;
+  line-height: 1.72;
+}
+
+body {
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 0 24px 120px;
+}
+
+/* ──────────────────────── HEADER ──────────────────────── */
+
+.page-head {
+  position: relative;
+  padding: 52px 0 42px;
+  border-bottom: 1px solid #162a24;
+  margin-bottom: 52px;
+  overflow: hidden;
+}
+
+.page-head::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(#162a24 1px, transparent 1px),
+    linear-gradient(90deg, #162a24 1px, transparent 1px);
+  background-size: 36px 36px;
+  mask-image: linear-gradient(to bottom, transparent 0%, rgba(0,0,0,0.5) 40%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, rgba(0,0,0,0.5) 40%, transparent 100%);
+  pointer-events: none;
+}
+
+.head-inner { position: relative; }
+
+.head-eyebrow {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.64rem;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: #df7b3c;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.head-eyebrow::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #162a24;
+  max-width: 240px;
+}
+
+.head-title {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: clamp(1.45rem, 4vw, 2.1rem);
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+  color: #cee8e2;
+  text-wrap: balance;
+  margin-bottom: 16px;
+}
+
+.head-title .file-ref { color: #6ec9bc; font-weight: 400; }
+
+.head-sub {
+  font-size: 0.885rem;
+  color: #4c7872;
+  max-width: 64ch;
+  line-height: 1.65;
+  margin-bottom: 22px;
+}
+
+.head-sub code {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.84em;
+  color: #6ec9bc;
+  background: rgba(110,201,188,0.08);
+  padding: 1px 4px;
+}
+
+.head-pills { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.meta-pill {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.64rem;
+  letter-spacing: 0.05em;
+  color: #4c7872;
+  background: #0a1410;
+  border: 1px solid #162a24;
+  padding: 4px 12px;
+  white-space: nowrap;
+}
+
+.meta-pill strong { color: #bdd8d1; font-weight: 500; }
+
+/* ──────────────────────── SECTIONS ──────────────────────── */
+
+.section { margin-bottom: 60px; }
+
+.section-heading {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #df7b3c;
+  margin-bottom: 22px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.section-heading::before { content: '//'; color: #2d5450; }
+
+/* ──────────────────────── ROSTER TABLE ──────────────────────── */
+
+.roster-wrap {
+  overflow-x: auto;
+  border: 1px solid #162a24;
+  margin-bottom: 16px;
+}
+
+.roster-table {
+  border-collapse: collapse;
+  font-size: 0.76rem;
+  font-variant-numeric: tabular-nums;
+  width: 100%;
+}
+
+.roster-table thead { background: #090e0c; }
+
+.roster-table th {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #2d5450;
+  padding: 8px 12px;
+  text-align: center;
+  border: 1px solid #162a24;
+  white-space: nowrap;
+}
+
+.roster-table th:first-child { text-align: left; border-left: 2px solid #df7b3c; padding-left: 14px; }
+
+.roster-table td {
+  padding: 6px 12px;
+  border: 1px solid #0f1e1b;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.roster-table td:first-child {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.76rem;
+  color: #6ec9bc;
+  text-align: left;
+  border-left: 2px solid transparent;
+  white-space: nowrap;
+  padding-left: 14px;
+}
+
+.roster-table tr:hover td { background: rgba(12,26,22,0.6); }
+
+.dot-yes   { display: inline-block; width: 8px; height: 8px; background: #4baa6b; border-radius: 50%; }
+.dot-mut   { display: inline-block; width: 8px; height: 8px; background: #c4a235; border-radius: 50%; }
+.dot-no    { display: inline-block; width: 4px; height: 4px; background: #162a24; border-radius: 50%; margin: 2px; }
+.dot-new   { display: inline-block; width: 8px; height: 8px; background: #5a9fd4; border-radius: 50%; }
+.dot-gone  { display: inline-block; width: 8px; height: 4px; background: #c4a235; border-radius: 1px; }
+
+.roster-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 0.73rem;
+  color: #4c7872;
+  margin-top: 10px;
+}
+
+.legend-item { display: flex; align-items: center; gap: 6px; }
+
+/* ──────────────────────── GLOBAL MECHANICS TABLE ──────────────────────── */
+
+.global-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #162a24;
+  margin-bottom: 10px;
+}
+
+.global-table {
+  border-collapse: collapse;
+  font-size: 0.79rem;
+  font-variant-numeric: tabular-nums;
+  width: 100%;
+}
+
+.global-table thead { background: #090e0c; }
+
+.global-table th {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #2d5450;
+  padding: 10px 14px;
+  text-align: left;
+  border-bottom: 1px solid #162a24;
+  white-space: nowrap;
+}
+
+.global-table th:first-child { border-left: 2px solid #df7b3c; padding-left: 12px; }
+
+.global-table tbody tr { border-bottom: 1px solid #0f1e1b; }
+.global-table tbody tr:last-child { border-bottom: none; }
+.global-table tbody tr:hover { background: rgba(12,26,22,0.7); }
+
+.global-table td { padding: 7px 14px; vertical-align: middle; }
+.global-table td:first-child { border-left: 2px solid transparent; }
+
+.p-name {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.76rem;
+  color: #6ec9bc;
+  white-space: nowrap;
+}
+
+.p-rel {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.72rem;
+  color: #df7b3c;
+  white-space: nowrap;
+}
+
+.p-val {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+
+.p-old { color: #c4a235; }
+.p-new { color: #4baa6b; }
+.p-note { font-size: 0.745rem; color: #4c7872; line-height: 1.5; }
+.p-note strong { color: #8db8b2; font-weight: 500; }
+.p-note code {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.84em;
+  color: #6ec9bc;
+  background: rgba(110,201,188,0.08);
+  padding: 1px 4px;
+}
+
+/* ──────────────────────── TIMELINE ──────────────────────── */
+
+.timeline { display: flex; flex-direction: column; position: relative; }
+
+.timeline::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 1px;
+  background: linear-gradient(to bottom, #162a24 95%, transparent 100%);
+}
+
+.era { padding: 0 0 50px 32px; position: relative; }
+.era:last-child { padding-bottom: 0; }
+
+.era::before {
+  content: '';
+  position: absolute;
+  left: -4px; top: 10px;
+  width: 9px; height: 9px;
+  background: #df7b3c;
+  box-shadow: 0 0 0 3px #07100e;
+}
+
+.era.major::before { background: #6ec9bc; }
+.era.minor::before { background: #2d5450; width: 7px; height: 7px; left: -3px; }
+
+.era-stamp {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.64rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #df7b3c;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.era-hash { color: #2d5450; font-size: 0.62rem; }
+
+.era-title {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.96rem;
+  font-weight: 600;
+  color: #cee8e2;
+  line-height: 1.3;
+  margin-bottom: 12px;
+  text-wrap: balance;
+}
+
+.era-prose {
+  font-size: 0.875rem;
+  color: #8db8b2;
+  line-height: 1.68;
+  max-width: 66ch;
+  margin-bottom: 16px;
+}
+
+.era-prose code {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.84em;
+  color: #6ec9bc;
+  background: rgba(110,201,188,0.08);
+  padding: 1px 4px;
+}
+
+.era-prose strong { color: #bdd8d1; font-weight: 500; }
+
+/* ──────────────────────── PER-WEAPON CHANGE TABLE ──────────────────────── */
+
+.change-wrap {
+  overflow-x: auto;
+  border: 1px solid #162a24;
+  margin: 4px 0 12px;
+}
+
+.change-table {
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.77rem;
+  width: 100%;
+}
+
+.change-table thead { background: #090e0c; }
+
+.change-table th {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #2d5450;
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid #162a24;
+  white-space: nowrap;
+}
+
+.change-table th:first-child { border-left: 2px solid #df7b3c; padding-left: 12px; }
+
+.change-table .wep-group-row td {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  color: #6ec9bc;
+  background: #090e0c;
+  padding: 5px 12px;
+  border-top: 1px solid #162a24;
+  border-bottom: 1px solid #162a24;
+}
+
+.change-table .wep-group-row td:first-child { border-left: 2px solid #6ec9bc; }
+
+.change-table .wep-group-row .wep-rename {
+  color: #2d5450;
+  font-size: 0.6rem;
+  margin-left: 8px;
+  letter-spacing: 0.04em;
+}
+
+.change-table tbody tr { border-bottom: 1px solid #0c1a16; }
+.change-table tbody tr:last-child { border-bottom: none; }
+.change-table tbody tr:hover { background: rgba(12,26,22,0.6); }
+
+.change-table td { padding: 6px 12px; vertical-align: middle; }
+.change-table td:first-child { border-left: 2px solid transparent; }
+
+.ct-param {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.72rem;
+  color: #4c7872;
+  white-space: nowrap;
+}
+
+.ct-old {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.72rem;
+  color: #c4a235;
+  white-space: nowrap;
+  text-decoration: line-through;
+  text-decoration-color: #c4a23550;
+}
+
+.ct-new {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.72rem;
+  color: #4baa6b;
+  white-space: nowrap;
+}
+
+.ct-note { font-size: 0.72rem; color: #2d5450; line-height: 1.4; }
+.ct-note strong { color: #4c7872; font-weight: 500; }
+
+/* ──────────────────────── CALLOUTS ──────────────────────── */
+
+.callout {
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 12px 16px 14px;
+  border-left: 2px solid;
+  background: #090e0c;
+  margin: 10px 0;
+}
+
+.callout-ok   { border-left-color: #4baa6b; }
+.callout-warn { border-left-color: #c4a235; }
+.callout-info { border-left-color: #5a9fd4; }
+.callout-hot  { border-left-color: #df7b3c; }
+
+.callout-tag {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #2d5450;
+}
+
+.callout-ok   .callout-tag { color: #4baa6b; }
+.callout-warn .callout-tag { color: #c4a235; }
+.callout-info .callout-tag { color: #5a9fd4; }
+.callout-hot  .callout-tag { color: #df7b3c; }
+
+.callout-body { font-size: 0.83rem; color: #4c7872; line-height: 1.65; }
+.callout-body code {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.84em;
+  color: #6ec9bc;
+  background: rgba(110,201,188,0.08);
+  padding: 1px 4px;
+}
+.callout-body strong { color: #8db8b2; font-weight: 500; }
+
+/* ──────────────────────── VOTE TABLE ──────────────────────── */
+
+.vote-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #162a24;
+  margin-bottom: 10px;
+}
+
+.vote-table {
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  width: 100%;
+}
+
+.vote-table thead { background: #090e0c; }
+
+.vote-table th {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #2d5450;
+  padding: 9px 14px;
+  text-align: left;
+  border-bottom: 1px solid #162a24;
+  white-space: nowrap;
+}
+
+.vote-table th:first-child { border-left: 2px solid #df7b3c; }
+
+.vote-table tbody tr { border-bottom: 1px solid #0f1e1b; }
+.vote-table tbody tr:last-child { border-bottom: none; }
+.vote-table tbody tr:hover { background: rgba(12,26,22,0.6); }
+.vote-table td { padding: 8px 14px; vertical-align: top; }
+.vote-table td:first-child {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.72rem;
+  color: #df7b3c;
+  white-space: nowrap;
+  border-left: 2px solid transparent;
+}
+
+.vote-table .vt-date {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.72rem;
+  color: #4c7872;
+  white-space: nowrap;
+}
+
+.vote-table .vt-body { font-size: 0.8rem; color: #8db8b2; line-height: 1.5; }
+.vote-table .vt-body code {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.84em;
+  color: #6ec9bc;
+  background: rgba(110,201,188,0.08);
+  padding: 1px 4px;
+}
+.vote-table .vt-body strong { color: #bdd8d1; font-weight: 500; }
+
+/* ──────────────────────── SOURCES ──────────────────────── */
+
+.source-list { display: flex; flex-direction: column; gap: 10px; }
+
+.source-row { display: flex; gap: 12px; align-items: flex-start; }
+
+.source-kind {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.59rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border: 1px solid;
+  white-space: nowrap;
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.source-kind.git { color: #6ec9bc; border-color: #6ec9bc40; }
+
+.source-text { font-size: 0.78rem; color: #4c7872; line-height: 1.55; word-break: break-all; }
+.source-text code {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.84em;
+  color: #6ec9bc;
+  background: rgba(110,201,188,0.08);
+  padding: 1px 4px;
+}
+
+/* ──────────────────────── MISC ──────────────────────── */
+
+hr { border: none; border-top: 1px solid #162a24; margin: 54px 0; }
+
+code {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.84em;
+  color: #6ec9bc;
+  background: rgba(110,201,188,0.08);
+  padding: 1px 5px;
+}
+
+.gap-list { display: flex; flex-direction: column; gap: 14px; }
+.gap-row { display: flex; gap: 14px; align-items: flex-start; }
+.gap-icon { font-family: 'Cascadia Code', monospace; font-size: 0.72rem; color: #c4a235; margin-top: 3px; flex-shrink: 0; }
+.gap-body { font-size: 0.855rem; color: #4c7872; line-height: 1.65; max-width: 62ch; }
+.gap-body strong { color: #8db8b2; font-weight: 500; }
+
+a:focus-visible { outline: 2px solid #df7b3c; outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+@media (max-width: 600px) {
+  body { padding: 0 14px 80px; }
+  .change-table .ct-note { display: none; }
+}
+</style>
+
+<header class="page-head">
+  <div class="head-inner">
+    <div class="head-eyebrow">balance-xonotic.cfg + bal-wep-xonotic.cfg &nbsp;·&nbsp; git-verified &nbsp;·&nbsp; v0.6 → current</div>
+    <h1 class="head-title">
+      Xonotic Weapon Balance<br>
+      <span class="file-ref">Change History</span>
+    </h1>
+    <p class="head-sub">
+      All changes verified from git history in <code>Base/data/xonotic-data.pk3dir</code>.
+      Covers the default balance preset only (<code>balance-xonotic.cfg</code> / <code>bal-wep-xonotic.cfg</code>)
+      — not XDF, XPM, Overkill, or other non-default presets.
+      Three mechanics changes at v0.8.0 fundamentally altered how weapons feel:
+      absolute projectile velocity, invincible projectiles, and higher armor blocking.
+    </p>
+    <div class="head-pills">
+      <span class="meta-pill">Releases: <strong>0.6 · 0.7 · 0.8.0 · 0.8.1 · 0.8.2 · 0.8.5 · 0.8.6 · current</strong></span>
+      <span class="meta-pill">Formal votes: <strong>#25 · #29 · #30</strong></span>
+      <span class="meta-pill">Updated: <strong>2026-07-04</strong></span>
+    </div>
+  </div>
+</header>
+
+<!-- ───────────────────────────────── ARSENAL ROSTER -->
+<section class="section">
+  <h2 class="section-heading">Weapon roster by release</h2>
+
+  <div class="roster-wrap">
+    <table class="roster-table">
+      <thead>
+        <tr>
+          <th>Weapon</th>
+          <th>0.6</th>
+          <th>0.7</th>
+          <th>0.8.0</th>
+          <th>0.8.1</th>
+          <th>0.8.2</th>
+          <th>0.8.5</th>
+          <th>0.8.6</th>
+          <th>Current</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Blaster (Laser)</td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+        </tr>
+        <tr>
+          <td>Shotgun</td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+        </tr>
+        <tr>
+          <td>MachineGun (Uzi)</td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+        </tr>
+        <tr>
+          <td>Mortar (Grenade Launcher)</td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+        </tr>
+        <tr>
+          <td>Electro</td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+        </tr>
+        <tr>
+          <td>Crylink</td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+        </tr>
+        <tr>
+          <td>Vortex (Nex)</td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+        </tr>
+        <tr>
+          <td>Hagar</td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+        </tr>
+        <tr>
+          <td>Devastator (Rocket Launcher)</td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+        </tr>
+        <tr>
+          <td>MineLayer</td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-mut" title="mutator-only"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+        </tr>
+        <tr>
+          <td>Vaporizer (MinstaNex)</td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+        </tr>
+        <tr>
+          <td>HLAC</td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+        </tr>
+        <tr>
+          <td>Rifle</td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+        </tr>
+        <tr>
+          <td>Seeker</td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+        </tr>
+        <tr>
+          <td>Arc</td>
+          <td><span class="dot-no"></span></td>
+          <td><span class="dot-no"></span></td>
+          <td><span class="dot-new" title="added"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+          <td><span class="dot-yes"></span></td>
+        </tr>
+        <tr>
+          <td>Shockwave</td>
+          <td><span class="dot-no"></span></td>
+          <td><span class="dot-no"></span></td>
+          <td><span class="dot-new"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-mut"></span></td>
+          <td><span class="dot-gone" title="removed Feb 2025"></span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="roster-legend">
+    <div class="legend-item"><span class="dot-yes"></span> Default / always available</div>
+    <div class="legend-item"><span class="dot-mut"></span> Mutator or game-mode only</div>
+    <div class="legend-item"><span class="dot-new"></span> Added this release</div>
+    <div class="legend-item"><span class="dot-gone"></span> Removed</div>
+    <div class="legend-item"><span class="dot-no"></span> Not yet added</div>
+  </div>
+</section>
+
+<hr>
+
+<!-- ───────────────────────────────── GLOBAL MECHANICS -->
+<section class="section">
+  <h2 class="section-heading">Global mechanics — cross-release changes</h2>
+
+  <p style="font-size:0.84rem;color:#4c7872;margin-bottom:16px;max-width:66ch;line-height:1.65;">
+    These settings apply to all weapons and fundamentally change how combat feels.
+    The v0.8.0 row in particular contains three of the most impactful changes in the game's history.
+  </p>
+
+  <div class="global-table-wrap">
+    <table class="global-table">
+      <thead>
+        <tr>
+          <th>Setting</th>
+          <th>Release</th>
+          <th>Before</th>
+          <th>After</th>
+          <th>Effect</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td class="p-name">g_balance_selfdamagepercent</td>
+          <td class="p-rel">0.5→0.6</td>
+          <td class="p-val p-old">0.75</td>
+          <td class="p-val p-new">0.65</td>
+          <td class="p-note">Less splash self-punishment. Encourages aggressive close-range rocket/mortar use.</td>
+        </tr>
+        <tr>
+          <td class="p-name">g_balance_weaponswitchdelay (global)</td>
+          <td class="p-rel">0.5→0.6</td>
+          <td class="p-val p-old">0.15</td>
+          <td class="p-val p-new">0.20</td>
+          <td class="p-note">Slower global weapon switching. Later replaced by per-weapon <code>switchdelay_drop/raise</code> at v0.7.</td>
+        </tr>
+        <tr>
+          <td class="p-name">g_throughfloor_damage</td>
+          <td class="p-rel">0.5→0.6</td>
+          <td class="p-val p-old">0.40</td>
+          <td class="p-val p-new">0.75</td>
+          <td class="p-note">Splash damage through floors nearly doubled — boosted floor-level explosive effectiveness.</td>
+        </tr>
+        <tr>
+          <td class="p-name">g_throughfloor_force</td>
+          <td class="p-rel">0.5→0.6</td>
+          <td class="p-val p-old">0.70</td>
+          <td class="p-val p-new">0.75</td>
+          <td class="p-note">Force through floors also increased.</td>
+        </tr>
+        <tr>
+          <td class="p-name">per-weapon switchdelay_drop/raise</td>
+          <td class="p-rel">0.6→0.7</td>
+          <td class="p-val p-old">global 0.20</td>
+          <td class="p-val p-new">per-weapon</td>
+          <td class="p-note">Global delay replaced. Most weapons: 0.2/0.2. Vortex (Nex): 0.3/0.3 (slower to equip/unequip).</td>
+        </tr>
+        <tr>
+          <td class="p-name" style="color:#df7b3c;">g_projectiles_newton_style</td>
+          <td class="p-rel">0.7→0.8.0</td>
+          <td class="p-val p-old">2 (relative+corrected)</td>
+          <td class="p-val p-new">0 (absolute)</td>
+          <td class="p-note"><strong>Major.</strong> Style 2 added player velocity to projectiles (rockets felt faster when running forward). Style 0 = absolute Quake-style: rocket speed is always constant regardless of player velocity.</td>
+        </tr>
+        <tr>
+          <td class="p-name" style="color:#df7b3c;">g_projectiles_damage</td>
+          <td class="p-rel">0.7→0.8.0</td>
+          <td class="p-val p-old">2 (destructible)</td>
+          <td class="p-val p-new">−2 (invincible)</td>
+          <td class="p-note"><strong>Major.</strong> Projectiles can no longer be destroyed mid-flight. Rockets, grenades, and orbs survive all incoming fire. Dramatically changes the incentive to shoot at incoming projectiles.</td>
+        </tr>
+        <tr>
+          <td class="p-name" style="color:#df7b3c;">g_balance_armor_blockpercent</td>
+          <td class="p-rel">0.7→0.8.0</td>
+          <td class="p-val p-old">0.60</td>
+          <td class="p-val p-new">0.70</td>
+          <td class="p-note"><strong>Major.</strong> Armor absorbs 70% of damage (up from 60%). Significantly extends effective health for armored players; rewards item control more.</td>
+        </tr>
+        <tr>
+          <td class="p-name">g_projectiles_keep_owner</td>
+          <td class="p-rel">0.8.0→0.8.1</td>
+          <td class="p-val p-old">0</td>
+          <td class="p-val p-new">1</td>
+          <td class="p-note">Projectiles no longer collide with their owner. Blaster/rocket jumping no longer requires moving away from the explosion.</td>
+        </tr>
+        <tr>
+          <td class="p-name">g_projectiles_interact</td>
+          <td class="p-rel">vote 29 (2025)</td>
+          <td class="p-val p-old">2</td>
+          <td class="p-val p-new">1</td>
+          <td class="p-note">Projectiles no longer push each other on contact. Paired with the Devastator <code>damageforcescale</code> change below.</td>
+        </tr>
+        <tr>
+          <td class="p-name">g_projectiles_spread_style</td>
+          <td class="p-rel">post-0.8.6</td>
+          <td class="p-val p-old">7</td>
+          <td class="p-val p-new">4 (Gaussian)</td>
+          <td class="p-note">Spread distribution changed from uniform to Gaussian — random-spread weapons now cluster more toward center, reducing outlier shots.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<hr>
+
+<!-- ───────────────────────────────── TIMELINE -->
+<section class="section">
+  <h2 class="section-heading">Per-release weapon changes</h2>
+
+  <div class="timeline">
+
+    <!-- ── v0.6 BASELINE ── -->
+    <div class="era">
+      <div class="era-stamp">xonotic-v0.6.0 &nbsp;<span class="era-hash">// baseline</span></div>
+      <div class="era-title">v0.6 state — key values before any changes</div>
+      <p class="era-prose">
+        File: monolithic <code>balanceXonotic.cfg</code>. Weapon renames had not happened yet
+        (still Laser, Uzi, Nex, etc.). Self-damage 0.75, armor block 0.6, newton style 2 (relative velocity).
+      </p>
+
+      <div class="change-wrap">
+        <table class="change-table">
+          <thead><tr><th>Weapon</th><th>Parameter</th><th style="color:#4c7872;">v0.6 value</th><th></th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr class="wep-group-row"><td colspan="5">Laser</td></tr>
+            <tr><td></td><td class="ct-param">primary_damage</td><td class="ct-old" style="text-decoration:none;color:#bdd8d1;">25</td><td></td><td class="ct-note">25 dmg, 300 force, 70 radius, 6000 speed</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Shotgun</td></tr>
+            <tr><td></td><td class="ct-param">primary_bullets / damage</td><td class="ct-old" style="text-decoration:none;color:#bdd8d1;">14 × 4</td><td></td><td class="ct-note">56 total; spread 0.12, refire 0.75</td></tr>
+            <tr><td></td><td class="ct-param">secondary_damage (melee)</td><td class="ct-old" style="text-decoration:none;color:#bdd8d1;">80</td><td></td><td class="ct-note">Multi-swing melee; refire 1.25</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Uzi (MachineGun)</td></tr>
+            <tr><td></td><td class="ct-param">sustained_damage / refire</td><td class="ct-old" style="text-decoration:none;color:#bdd8d1;">10 / 0.1</td><td></td><td class="ct-note">100 dps; first shot 14 dmg; reload 60 ammo</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Mortar</td></tr>
+            <tr><td></td><td class="ct-param">primary_damage / radius</td><td class="ct-old" style="text-decoration:none;color:#bdd8d1;">50 / 120</td><td></td><td class="ct-note">Bounces (health 15/30); no spread</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Electro</td></tr>
+            <tr><td></td><td class="ct-param">primary_damage</td><td class="ct-old" style="text-decoration:none;color:#bdd8d1;">40</td><td></td><td class="ct-note">combo dmg 50; combo radius 300</td></tr>
+            <tr><td></td><td class="ct-param">secondary_damage / speed</td><td class="ct-old" style="text-decoration:none;color:#bdd8d1;">40 / 1000</td><td></td><td class="ct-note">Orbs; force 50, refire 0.2</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Crylink</td></tr>
+            <tr><td></td><td class="ct-param">primary_damage / shots</td><td class="ct-old" style="text-decoration:none;color:#bdd8d1;">12 / 6</td><td></td><td class="ct-note">Speed 2000; force -60; joindelay 0.1</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Nex (Vortex)</td></tr>
+            <tr><td></td><td class="ct-param">primary_damage / refire</td><td class="ct-old" style="text-decoration:none;color:#bdd8d1;">80 / 1.5</td><td></td><td class="ct-note">Force 400, ammo 6, switchdelay 0.3</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Hagar</td></tr>
+            <tr><td></td><td class="ct-param">primary_damage / speed</td><td class="ct-old" style="text-decoration:none;color:#bdd8d1;">25 / 2200</td><td></td><td class="ct-note">Spread 0 (both primary and secondary)</td></tr>
+            <tr class="wep-group-row"><td colspan="5">RocketLauncher (Devastator)</td></tr>
+            <tr><td></td><td class="ct-param">primary_damage / radius</td><td class="ct-old" style="text-decoration:none;color:#bdd8d1;">80 / 110</td><td></td><td class="ct-note">Force 400, speed 1300, refire 1.1, ammo 4</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── v0.6 → v0.7 ── -->
+    <div class="era">
+      <div class="era-stamp">v0.6.0 → v0.7.0</div>
+      <div class="era-title">Nex nerf; Crylink secondary redesign; per-weapon switch times</div>
+      <p class="era-prose">
+        The global weapon switch delay was replaced with per-weapon values. Most weapons kept 0.2s but
+        Nex got a longer 0.3s delay — the first explicit "big gun penalty." Nex damage dropped from 90 to 80.
+        Crylink secondary was completely redesigned, and HLAC/Rifle became mutator-only.
+        MineLayer stopped spawning by default.
+      </p>
+
+      <div class="change-wrap">
+        <table class="change-table">
+          <thead><tr><th>Weapon</th><th>Parameter</th><th>Before</th><th>After</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr class="wep-group-row"><td colspan="5">Nex (Vortex)</td></tr>
+            <tr><td></td><td class="ct-param">primary_damage</td><td class="ct-old">90</td><td class="ct-new">80</td><td class="ct-note">10 dmg nerf. Had been 90 since at least v0.5.</td></tr>
+            <tr><td></td><td class="ct-param">primary_animtime</td><td class="ct-old">0.4</td><td class="ct-new">0.6</td><td class="ct-note">Slower fire animation.</td></tr>
+            <tr><td></td><td class="ct-param">switchdelay_drop/raise</td><td class="ct-old">0.2</td><td class="ct-new">0.3</td><td class="ct-note">Slower to equip/unequip than other weapons.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Electro</td></tr>
+            <tr><td></td><td class="ct-param">secondary_lifetime</td><td class="ct-old">3</td><td class="ct-new">4</td><td class="ct-note">Orbs persist 1s longer.</td></tr>
+            <tr><td></td><td class="ct-param">secondary_refire2</td><td class="ct-old">1.5</td><td class="ct-new">1.6</td><td class="ct-note">Slightly slower second-orb fire.</td></tr>
+            <tr><td></td><td class="ct-param">combo_radius</td><td class="ct-old">175</td><td class="ct-new">150</td><td class="ct-note">Combo explosion radius slightly tighter.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Crylink</td></tr>
+            <tr><td></td><td class="ct-param">primary_force</td><td class="ct-old">−60</td><td class="ct-new">−50</td><td class="ct-note">Slightly less backward pull on primary.</td></tr>
+            <tr><td></td><td class="ct-param">secondary — complete redesign</td><td class="ct-old">5 dmg, 3 shots</td><td class="ct-new">10 dmg, 5 shots</td><td class="ct-note">Radius 70→100, speed 2000→3000, force −40→−150, bounces 1→0, refire 0.2→0.7. Secondary became a wide slow-moving volley burst.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Arsenal changes (no stat entry)</td></tr>
+            <tr><td></td><td class="ct-param">HLAC, Rifle</td><td class="ct-old">default</td><td class="ct-new">mutator only</td><td class="ct-note">Removed from default spawn rotation. Balance entries kept but not loaded without the mutator.</td></tr>
+            <tr><td></td><td class="ct-param">MineLayer</td><td class="ct-old">default spawn</td><td class="ct-new">mutator only</td><td class="ct-note">Still in balance file; requires Mine Layer mutator to spawn.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── v0.7 → v0.8.0 (MAJOR) ── -->
+    <div class="era major">
+      <div class="era-stamp">v0.7.0 → v0.8.0 &nbsp;<span class="era-hash">// weapons branch reloaded (Dec 2013)</span></div>
+      <div class="era-title">Weapon renames; file split; three fundamental mechanics changes</div>
+      <p class="era-prose">
+        The largest single restructure in the game's balance history. The monolithic
+        <code>balanceXonotic.cfg</code> was split into <code>balance-xonotic.cfg</code> (global settings)
+        and <code>bal-wep-xonotic.cfg</code> (all per-weapon stats). Six weapons were renamed.
+        Three mechanics changes fundamentally shifted how combat plays.
+        Arc was added as a new weapon. Overkill-mutator weapons were added.
+        The charge mechanic was introduced on Vortex.
+      </p>
+
+      <div class="callout callout-hot">
+        <span class="callout-tag">Three foundational mechanics changes</span>
+        <span class="callout-body">
+          (1) <strong>Absolute projectile velocity</strong> (<code>g_projectiles_newton_style 2→0</code>): Rockets no longer inherit player momentum — a rocket fired while moving at 600 u/s has the same speed as one fired while standing still. This standardizes range estimation across all movement speeds.<br>
+          (2) <strong>Invincible projectiles</strong> (<code>g_projectiles_damage 2→−2</code>): Projectiles can no longer be destroyed mid-flight. No more shooting down rockets in transit.<br>
+          (3) <strong>Higher armor blocking</strong> (<code>g_balance_armor_blockpercent 0.6→0.7</code>): Armor absorbs 70% of incoming damage. With 100 armor, an 80 dmg rocket hits for 24 health damage instead of 32 — a 25% effective health increase.
+        </span>
+      </div>
+
+      <div class="callout callout-info" style="margin-top:8px;">
+        <span class="callout-tag">Weapon renames (Dec 2013)</span>
+        <span class="callout-body">Uzi → <strong>MachineGun</strong> · Nex → <strong>Vortex</strong> · MinstaNex → <strong>Vaporizer</strong> · Laser → <strong>Blaster</strong> · RocketLauncher → <strong>Devastator</strong> · GrenadeLauncher → <strong>Mortar</strong></span>
+      </div>
+
+      <div class="change-wrap" style="margin-top:12px;">
+        <table class="change-table">
+          <thead><tr><th>Weapon</th><th>Parameter</th><th>v0.7</th><th>v0.8.0</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr class="wep-group-row"><td colspan="5">Shotgun</td></tr>
+            <tr><td></td><td class="ct-param">secondary_damage (melee)</td><td class="ct-old">80</td><td class="ct-new">70</td><td class="ct-note">Another small melee reduction.</td></tr>
+            <tr><td></td><td class="ct-param">primary_solidpenetration</td><td class="ct-old">—</td><td class="ct-new">3.8</td><td class="ct-note">New: pellets now penetrate thin walls/players up to 3.8 units.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Electro</td></tr>
+            <tr><td></td><td class="ct-param">secondary_damage</td><td class="ct-old">40 / 20 edge</td><td class="ct-new">30 / 15 edge</td><td class="ct-note">Orbs deal less direct damage.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Crylink</td></tr>
+            <tr><td></td><td class="ct-param">secondary_force</td><td class="ct-old">−150</td><td class="ct-new">−250</td><td class="ct-note">Secondary pull force substantially increased.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Vortex (was Nex)</td></tr>
+            <tr><td></td><td class="ct-param">charge system added</td><td class="ct-old">—</td><td class="ct-new">charge_start 0.5 / rate 0.6</td><td class="ct-note">New mechanic: Vortex charges up during the hold. Min damage 40 (at start 0.5 charge). First shot is always partial-charge; full charge = 80 dmg.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Arc (new weapon)</td></tr>
+            <tr><td></td><td class="ct-param">added</td><td class="ct-old">—</td><td class="ct-new">beam_damage 100</td><td class="ct-note">Continuous beam weapon. Range 1000 (later 1500). Healing beam mode included.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Vaporizer (was MinstaNex)</td></tr>
+            <tr><td></td><td class="ct-param">primary_damage</td><td class="ct-old">150</td><td class="ct-new">150 (explicit)</td><td class="ct-note">Secondary (blaster-style fire) added but disabled by default.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── v0.8.0 → v0.8.1 ── -->
+    <div class="era">
+      <div class="era-stamp">v0.8.0 → v0.8.1</div>
+      <div class="era-title">Blaster nerfed; Shotgun bullets reduced; Electro orb rework; Hagar spread zeroed</div>
+      <p class="era-prose">
+        Several weapons tuned after the large v0.8.0 structural changes. Blaster damage was reduced —
+        the logic being that the new <code>g_projectiles_keep_owner 1</code> (added this release) made
+        rocket-jumping easier, so jump tools shouldn't also deal heavy damage.
+        Electro secondary orbs got <code>touchexplode 1</code> (they now explode on contact with enemies,
+        not just after a delay). Hagar spread was set to 0 on both fire modes.
+      </p>
+
+      <div class="change-wrap">
+        <table class="change-table">
+          <thead><tr><th>Weapon</th><th>Parameter</th><th>Before</th><th>After</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr class="wep-group-row"><td colspan="5">Blaster</td></tr>
+            <tr><td></td><td class="ct-param">primary_damage</td><td class="ct-old">25</td><td class="ct-new">20</td><td class="ct-note">−20% damage. Blaster is a utility/jump tool, not a damage dealer.</td></tr>
+            <tr><td></td><td class="ct-param">primary_edgedamage</td><td class="ct-old">12.5</td><td class="ct-new">10</td><td class="ct-note">Proportional edge reduction.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Shotgun</td></tr>
+            <tr><td></td><td class="ct-param">primary_bullets</td><td class="ct-old">14</td><td class="ct-new">12</td><td class="ct-note">Two fewer pellets per shot.</td></tr>
+            <tr><td></td><td class="ct-param">primary_damage</td><td class="ct-old">3.5</td><td class="ct-new">4</td><td class="ct-note">Per-pellet damage up slightly — compensates slightly for fewer bullets.</td></tr>
+            <tr><td></td><td class="ct-param">primary_spread</td><td class="ct-old">0.11</td><td class="ct-new">0.12</td><td class="ct-note">Slightly wider spread.</td></tr>
+            <tr><td></td><td class="ct-param">secondary_animtime</td><td class="ct-old">1.0</td><td class="ct-new">1.15</td><td class="ct-note">Melee swing animation 15% slower.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Electro</td></tr>
+            <tr><td></td><td class="ct-param">primary_midaircombo_radius</td><td class="ct-old">150</td><td class="ct-new">0</td><td class="ct-note">Disabled the radius that auto-triggered mid-air combos. Now requires deliberate aim.</td></tr>
+            <tr><td></td><td class="ct-param">secondary_spread</td><td class="ct-old">0.04</td><td class="ct-new">0</td><td class="ct-note">Orbs now fire perfectly straight.</td></tr>
+            <tr><td></td><td class="ct-param">secondary_touchexplode</td><td class="ct-old">0</td><td class="ct-new">1</td><td class="ct-note">Orbs now detonate on contact with enemies (not just the ground/timeout).</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Crylink</td></tr>
+            <tr><td></td><td class="ct-param">primary_damage</td><td class="ct-old">12</td><td class="ct-new">10</td><td class="ct-note">Back to v0.5 level.</td></tr>
+            <tr><td></td><td class="ct-param">primary_linkexplode</td><td class="ct-old">1</td><td class="ct-new">0</td><td class="ct-note">Links no longer explode when all shots reconnect (mechanic disabled).</td></tr>
+            <tr><td></td><td class="ct-param">secondary_damage</td><td class="ct-old">10</td><td class="ct-new">8</td><td class="ct-note">Secondary burst reduced.</td></tr>
+            <tr><td></td><td class="ct-param">secondary_force</td><td class="ct-old">−250</td><td class="ct-new">−200</td><td class="ct-note">Slightly less secondary pull.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Hagar</td></tr>
+            <tr><td></td><td class="ct-param">primary_spread</td><td class="ct-old">0.03</td><td class="ct-new">0</td><td class="ct-note">Dead-accurate primary fire.</td></tr>
+            <tr><td></td><td class="ct-param">secondary_spread</td><td class="ct-old">0.05</td><td class="ct-new">0</td><td class="ct-note">Dead-accurate loaded burst fire.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Arc</td></tr>
+            <tr><td></td><td class="ct-param">beam_damage</td><td class="ct-old">115</td><td class="ct-new">100</td><td class="ct-note">Beam DPS reduced.</td></tr>
+            <tr><td></td><td class="ct-param">beam_force</td><td class="ct-old">900</td><td class="ct-new">600</td><td class="ct-note">Beam push force reduced.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── v0.8.1 → v0.8.2 ── -->
+    <div class="era minor">
+      <div class="era-stamp">v0.8.1 → v0.8.2</div>
+      <div class="era-title">No weapon stat changes — system additions only</div>
+      <p class="era-prose">
+        No changes to weapon damage, force, radius, speed, or refire rates. Additions:
+        lava burn damage cvars, <code>g_jetpack_reverse_thrust</code>, NIX ammo buff (fuel 0→100),
+        pickup name renames (<code>armormega</code>, <code>healthbig</code>), and per-gametype
+        grapple hook settings. Rifle section received a cosmetic reorder only.
+      </p>
+    </div>
+
+    <!-- ── v0.8.2 → v0.8.5 ── -->
+    <div class="era">
+      <div class="era-stamp">v0.8.2 → v0.8.5</div>
+      <div class="era-title">Vortex force halved; Blaster force buffed; Mortar long-lived grenades; Electro secondary refire swap</div>
+      <p class="era-prose">
+        The largest post-v0.8.0 balance patch. Vortex force was cut in half — it could previously
+        throw players a great distance; at 200 it still moves them but no longer dominates physics
+        interactions. Blaster force increased to improve rocket jumping feel. Mortar grenades became
+        dramatically more persistent (5s → 20s), enabling trap-setting play. Electro secondary
+        refire order was swapped: rapid initial fire, then slower sustained cadence.
+      </p>
+
+      <div class="change-wrap">
+        <table class="change-table">
+          <thead><tr><th>Weapon</th><th>Parameter</th><th>Before</th><th>After</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr class="wep-group-row"><td colspan="5">Blaster</td></tr>
+            <tr><td></td><td class="ct-param">primary_force</td><td class="ct-old">300</td><td class="ct-new">375</td><td class="ct-note">+25% jump force. Cleaner rocket jumping.</td></tr>
+            <tr><td></td><td class="ct-param">primary_force_zscale</td><td class="ct-old">1.25</td><td class="ct-new">1</td><td class="ct-note">Uniform force in all directions; no vertical bonus.</td></tr>
+            <tr><td></td><td class="ct-param">secondary_force</td><td class="ct-old">300</td><td class="ct-new">360</td><td class="ct-note">Secondary (when enabled) force also up.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Mortar</td></tr>
+            <tr><td></td><td class="ct-param">primary_lifetime</td><td class="ct-old">5</td><td class="ct-new">20</td><td class="ct-note">Grenades persist 4× longer. Enables trap play and area denial.</td></tr>
+            <tr><td></td><td class="ct-param">secondary_lifetime</td><td class="ct-old">5</td><td class="ct-new">20</td><td class="ct-note">Same for secondary grenades.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Electro</td></tr>
+            <tr><td></td><td class="ct-param">secondary_refire / refire2</td><td class="ct-old">0.2 / 1.6</td><td class="ct-new">1.2 / 0.2</td><td class="ct-note">Swapped: now rapid follow-up (0.2), then 1.2s reset. Players can lay a quick second orb without a long wait, but can't spam indefinitely.</td></tr>
+            <tr><td></td><td class="ct-param">midaircombo cvars</td><td class="ct-old">—</td><td class="ct-new">added enemy/own/teammate</td><td class="ct-note">New options for which entity types can trigger mid-air combos. Default: all enabled.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Crylink</td></tr>
+            <tr><td></td><td class="ct-param">primary_linkexplode</td><td class="ct-old">0</td><td class="ct-new">1</td><td class="ct-note">Re-enabled: links explode when all shots converge again.</td></tr>
+            <tr><td></td><td class="ct-param">secondary_ammo</td><td class="ct-old">2</td><td class="ct-new">3</td><td class="ct-note">Secondary burst costs 1 more ammo.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Vortex</td></tr>
+            <tr><td></td><td class="ct-param">primary_force</td><td class="ct-old">400</td><td class="ct-new">200</td><td class="ct-note"><strong>Major nerf.</strong> Halved. Vortex can no longer fling players as dramatically.</td></tr>
+            <tr><td></td><td class="ct-param">charge_always</td><td class="ct-old">—</td><td class="ct-new">0</td><td class="ct-note">Charge does not accumulate when weapon is unequipped (new option, default off).</td></tr>
+            <tr class="wep-group-row"><td colspan="5">HLAC</td></tr>
+            <tr><td></td><td class="ct-param">primary_speed</td><td class="ct-old">9000</td><td class="ct-new">6000</td><td class="ct-note">Projectile speed reduced to match other weapons.</td></tr>
+            <tr><td></td><td class="ct-param">secondary_speed</td><td class="ct-old">9000</td><td class="ct-new">6000</td><td class="ct-note">Same for secondary burst.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Arc</td></tr>
+            <tr><td></td><td class="ct-param">range</td><td class="ct-old">1000</td><td class="ct-new">1500</td><td class="ct-note">+50% beam range.</td></tr>
+            <tr><td></td><td class="ct-param">bolt enabled</td><td class="ct-old">0</td><td class="ct-new">1</td><td class="ct-note">Bolt fire mode activated (burst discharge).</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── v0.8.5 → v0.8.6 ── -->
+    <div class="era minor">
+      <div class="era-stamp">v0.8.5 → v0.8.6</div>
+      <div class="era-title">No weapon stat changes — gametype additions only</div>
+      <p class="era-prose">
+        Mayhem and Team Mayhem gamemodes added their start-stats to <code>balance-xonotic.cfg</code>.
+        The only change to <code>bal-wep-xonotic.cfg</code> was a line-ordering cleanup in the Rifle
+        section — no stat changes. Weapon balance at v0.8.6 is identical to v0.8.5.
+      </p>
+    </div>
+
+    <!-- ── post-0.8.6 ── -->
+    <div class="era major">
+      <div class="era-stamp">v0.8.6 → current &nbsp;<span class="era-hash">// post-release, 2021–2026</span></div>
+      <div class="era-title">MachineGun reload removed; HLAC redesigned; MineLayer CTF buff; plasma ammo eliminated</div>
+      <p class="era-prose">
+        The longest sustained period of incremental change. Key themes: accessibility improvements
+        (MachineGun reload vote, Blaster faster switch), new configurability (damagefalloff, spread patterns),
+        cleanup of dead code (plasma ammo, Shockwave, Overkill secondary modes), and the
+        MineLayer CTF-defense buff. Three changes went through the formal community balance vote system.
+      </p>
+
+      <div class="change-wrap">
+        <table class="change-table">
+          <thead><tr><th>Weapon</th><th>Parameter</th><th>Before</th><th>After</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr class="wep-group-row"><td colspan="5">Blaster &nbsp;<span class="wep-rename">vote 30 · Aug 2025</span></td></tr>
+            <tr><td></td><td class="ct-param">primary_animtime</td><td class="ct-old">0.2</td><td class="ct-new">0.1</td><td class="ct-note">Faster fire animation — can switch away from Blaster immediately after a shot.</td></tr>
+            <tr><td></td><td class="ct-param">switchdelay_drop / raise</td><td class="ct-old">0.2 / 0.2</td><td class="ct-new">0.1 / 0.1</td><td class="ct-note">Blaster equips and holsters twice as fast. Makes jump-then-switch combos smoother.</td></tr>
+            <tr><td></td><td class="ct-param">secondary stats</td><td class="ct-old">(disabled)</td><td class="ct-new">removed</td><td class="ct-note">Aug 2024: disabled-secondary cvars cleaned from config entirely.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">MachineGun &nbsp;<span class="wep-rename">vote 25 · Jul 2023</span></td></tr>
+            <tr><td></td><td class="ct-param">reload_ammo</td><td class="ct-old">60</td><td class="ct-new">0</td><td class="ct-note"><strong>Major.</strong> Mandatory reload mechanic removed. MachineGun no longer forces a reload animation at 60 shots — continuous fire is now unlimited by ammo economy alone.</td></tr>
+            <tr><td></td><td class="ct-param">spread system (Sep 2024)</td><td class="ct-old">fixed</td><td class="ct-new">time-based decay</td><td class="ct-note">New: <code>spread_decay</code> cvar — spread grows with sustained fire and recovers over time. Also <code>spread_crouchmod</code> for crouched accuracy.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Mortar</td></tr>
+            <tr><td></td><td class="ct-param">pickup_ammo</td><td class="ct-old">—</td><td class="ct-new">40</td><td class="ct-note">Configurable pickup ammo count added to all weapons (Aug 2025).</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Electro</td></tr>
+            <tr><td></td><td class="ct-param">combo_duration</td><td class="ct-old">—</td><td class="ct-new">0</td><td class="ct-note">New option: delay combo explosion for a set time (0 = instant, as before).</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Crylink &nbsp;<span class="wep-rename">// contested history</span></td></tr>
+            <tr><td></td><td class="ct-param">primary_bouncedamagefactor</td><td class="ct-old">0.5</td><td class="ct-new">1.0 → 0.5</td><td class="ct-note">Jul 2023: raised to 1.0 (bounced shots deal full damage). Mar 2024: reverted — revert accompanied by disabling linkexplode again.</td></tr>
+            <tr><td></td><td class="ct-param">primary_linkexplode</td><td class="ct-old">1 (v0.8.5)</td><td class="ct-new">0 (Mar 2024)</td><td class="ct-note">Re-disabled again. Has oscillated: off→on (v0.8.5)→off (v0.8.1 style)→on (v0.8.5 style)→off. Currently disabled.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Vortex</td></tr>
+            <tr><td></td><td class="ct-param">charge_rot_unequipped</td><td class="ct-old">—</td><td class="ct-new">0 (May 2026)</td><td class="ct-note">New option to decay charge when holstered; off by default. Currently disabled — charge persists when switching weapons.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Devastator &nbsp;<span class="wep-rename">vote 29 · Jul 2025</span></td></tr>
+            <tr><td></td><td class="ct-param">damageforcescale</td><td class="ct-old">1</td><td class="ct-new">0</td><td class="ct-note">Rockets no longer push other entities (players, projectiles) on direct impact. Combined with <code>g_projectiles_interact 2→1</code>: projectiles don't push each other either.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">MineLayer &nbsp;<span class="wep-rename">Jan 2026 · bones_was_here</span></td></tr>
+            <tr><td></td><td class="ct-param">lifetime</td><td class="ct-old">10</td><td class="ct-new">30</td><td class="ct-note">3× longer persistence. Mines are a serious long-term threat now.</td></tr>
+            <tr><td></td><td class="ct-param">limit</td><td class="ct-old">3</td><td class="ct-new">4</td><td class="ct-note">One extra mine allowed on the map.</td></tr>
+            <tr><td></td><td class="ct-param">refire</td><td class="ct-old">1.5</td><td class="ct-new">1.0</td><td class="ct-note">Faster placement rate.</td></tr>
+            <tr><td></td><td class="ct-param">proximity_radius</td><td class="ct-old">150</td><td class="ct-new">125</td><td class="ct-note">Slightly tighter trigger zone.</td></tr>
+            <tr><td></td><td class="ct-param">proximity_time_core / edge</td><td class="ct-old">0.5 / 0.5</td><td class="ct-new">0.1 / 0.3</td><td class="ct-note">Much faster detonation after triggering — less time to escape.</td></tr>
+            <tr><td></td><td class="ct-param">damageforcescale</td><td class="ct-old">0</td><td class="ct-new">1.25</td><td class="ct-note">Mines now blast players away on explosion. Previously did no force.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">HLAC &nbsp;<span class="wep-rename">"Turbo HLAC" · Oct 2025 · bones_was_here</span></td></tr>
+            <tr><td></td><td class="ct-param">primary_damage</td><td class="ct-old">18</td><td class="ct-new">10</td><td class="ct-note">Half-blaster damage per shot.</td></tr>
+            <tr><td></td><td class="ct-param">primary_refire</td><td class="ct-old">0.15</td><td class="ct-new">0.078125</td><td class="ct-note">~12.8 shots per second (ticrate multiple). Previously ~6.7/s.</td></tr>
+            <tr><td></td><td class="ct-param">primary_spread_min / max</td><td class="ct-old">0.01 / 0.25</td><td class="ct-new">0 / 0.03125</td><td class="ct-note">Dead accurate first shot; very tight max spread. Feels like a minigun that actually hits.</td></tr>
+            <tr><td></td><td class="ct-param">primary_animtime</td><td class="ct-old">0.4</td><td class="ct-new">0.03125</td><td class="ct-note">Near-instantaneous per-shot animation. Total DPS maintained at ~100.</td></tr>
+            <tr class="wep-group-row"><td colspan="5">Shockwave</td></tr>
+            <tr><td></td><td class="ct-param">status</td><td class="ct-old">mutator prototype</td><td class="ct-new">removed (Feb 2025)</td><td class="ct-note">Commit 571f63db2: "Remove the unfinished Shockwave prototype." Weapon number #19 reassigned to Arc.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<hr>
+
+<!-- ───────────────────────────────── BALANCE VOTES -->
+<section class="section">
+  <h2 class="section-heading">Formal balance votes (post-0.8.6)</h2>
+
+  <p style="font-size:0.84rem;color:#4c7872;margin-bottom:16px;max-width:66ch;line-height:1.65;">
+    Post-release balance changes go through a community vote. Only changes that pass a supermajority
+    are committed to the default preset. Numbers are sequential across all votes, not just the ones
+    that affect the default preset.
+  </p>
+
+  <div class="vote-table-wrap">
+    <table class="vote-table">
+      <thead>
+        <tr>
+          <th>Vote</th>
+          <th>Date</th>
+          <th>Change</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Vote 25</td>
+          <td class="vt-date">2023-07-11</td>
+          <td class="vt-body"><strong>MachineGun: remove mandatory reload.</strong> <code>reload_ammo 60 → 0</code>. The reload was seen as an accessibility and feel issue — it interrupted combat flow without adding meaningful decision-making. Passed via council vote.</td>
+        </tr>
+        <tr>
+          <td>Vote 29</td>
+          <td class="vt-date">2025-07-12</td>
+          <td class="vt-body"><strong>Reduce projectile physics interactions.</strong> <code>g_projectiles_interact 2 → 1</code> (projectiles no longer push each other) and <code>g_balance_devastator_damageforcescale 1 → 0</code> (Devastator no longer pushes entities on direct hit). Rationale: rocket physics were creating unpredictable interactions and were frequently exploited.</td>
+        </tr>
+        <tr>
+          <td>Vote 30</td>
+          <td class="vt-date">2025-08-30</td>
+          <td class="vt-body"><strong>Blaster: faster switch and animation.</strong> <code>primary_animtime 0.2 → 0.1</code> and <code>switchdelay_drop/raise 0.2 → 0.1</code>. Makes the blaster-jump-to-weapon combo more viable in rapid play without changing any damage values.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<hr>
+
+<!-- ───────────────────────────────── OPEN QUESTIONS -->
+<section class="section">
+  <h2 class="section-heading">Gaps and open questions</h2>
+  <div class="gap-list">
+    <div class="gap-row">
+      <span class="gap-icon">?</span>
+      <span class="gap-body"><strong>v0.5.0 → v0.6.0 complete diff not verified per-weapon.</strong>
+        The v0.5.0 baseline section above is drawn from the full file read; the v0.6.0 diff
+        was constructed from a partial diff output. A few low-impact parameters may have changed
+        without being captured here.</span>
+    </div>
+    <div class="gap-row">
+      <span class="gap-icon">?</span>
+      <span class="gap-body"><strong>Seeker, Porto, Fireball, Tuba, Hook.</strong>
+        These weapons have had their balance entries throughout but were not individually diffed
+        across releases. Changes to Seeker (missile count, speed, tag radius), Hook (pull force,
+        range), and Fireball (rare as a spawnable) are not documented here.</span>
+    </div>
+    <div class="gap-row">
+      <span class="gap-icon">?</span>
+      <span class="gap-body"><strong>Crylink <code>linkexplode</code> oscillation rationale.</strong>
+        The mechanic has been toggled on/off at least four times. The reasoning behind each toggle
+        was not fully captured from commit messages alone — community discussion context would fill this gap.</span>
+    </div>
+    <div class="gap-row">
+      <span class="gap-icon">?</span>
+      <span class="gap-body"><strong>Balance votes 1–24 and 26–28.</strong>
+        Only votes that changed <code>balance-xonotic.cfg</code> or <code>bal-wep-xonotic.cfg</code>
+        were visible in the git log. Earlier votes and those affecting other presets are not documented here.</span>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<!-- ───────────────────────────────── SOURCES -->
+<section class="section">
+  <h2 class="section-heading">Sources</h2>
+  <div class="source-list">
+    <div class="source-row">
+      <span class="source-kind git">git</span>
+      <span class="source-text"><code>git log -p --follow -- balanceXonotic.cfg balance-xonotic.cfg bal-wep-xonotic.cfg</code> on Base/data/xonotic-data.pk3dir — full diff history</span>
+    </div>
+    <div class="source-row">
+      <span class="source-kind git">git</span>
+      <span class="source-text"><code>git diff xonotic-v0.6..xonotic-v0.7 -- balanceXonotic.cfg</code> and equivalent for each release pair — per-release diffs</span>
+    </div>
+    <div class="source-row">
+      <span class="source-kind git">git</span>
+      <span class="source-text"><code>git show xonotic-v0.6:balanceXonotic.cfg</code>, <code>xonotic-v0.7:balanceXonotic.cfg</code>, <code>xonotic-v0.8.0:balance-xonotic.cfg</code>, <code>xonotic-v0.8.0:bal-wep-xonotic.cfg</code> — tag snapshots</span>
+    </div>
+  </div>
+</section>
