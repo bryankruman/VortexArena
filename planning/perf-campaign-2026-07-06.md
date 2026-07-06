@@ -189,14 +189,56 @@ mostly re-frames the goal: drive p50 down (frame time) AND kill the ng.process/t
 (variance), then revisit present pacing (mailbox jitter) as the last-mile polish once the real spikes
 are gone. Baselines are uncapped demo captures now.
 
-**Re-ranked Phase 2 (hitches) per this census:**
+### Phase 1c — the fine-tooth frame-budget decomposition (Bryan: "DP gets 300–400+; comb finer")
+
+Per-frame CSV columns (`proc/rcpu/gpu/phys/rest`) decomposed over post-load frames, plus two brackets:
+`vid_vsync 0` A/B and a bots-0 idle floor. Median stormkeep demo frame (5.56 ms → 180 fps):
+
+| bucket | combat (demo) | empty-map floor | what it is | verdict |
+|---|---|---|---|---|
+| `proc` | **2.01 ms** | 1.07 ms | all our C# `_Process` | biggest OURS — see split below |
+| `rest` | **~2.2 ms** | 1.71 ms | main-loop overhead + present (ms − proc − rcpu; overlaps gpu) | biggest overall; NOT vsync (persists with vsync off) — Godot per-iteration machinery |
+| `rcpu` | 0.95 ms | 0.70 ms | render-thread submit (~405 draws) | R1/R2 worked; June's "rcpu deficit" is closed |
+| `gpu` | 1.01 ms | 0.68 ms | GPU render (overlaps rest) | not the limiter (RTX 3080) |
+| `phys` | 0.39 ms | 0.15 ms | Godot 60 Hz physics phase | ~pure waste: only 5 cosmetic `_PhysicsProcess` nodes; gameplay collision is our TraceService |
+
+`proc` split (top1 accounting, stormkeep steady state): `ng.process` ~1.2 ms leading 56 % of frames
+(72 Hz server tick + input/prediction + HUD feeds — **one giant scope, needs sub-scopes before it can
+be shaved**), `particles.cpu` ~0.56 ms on 24 %, `hud.trueaim` ~1.4 ms on 8 % (a steady tax even on
+stormkeep — it just never crosses the hitch floor there), `cw.process` ~0.45 ms.
+
+**Measured brackets:** `vid_vsync 0` = p50 5.56→5.00 ms AND better tails (1%-low 91→105, 0.1%-low
+50→59, p99 11.0→9.6) — mailbox costs ~0.5 ms/frame + jitter; the 06-14 mailbox pick predates the uncap
+and this scenario, re-decide. Bots-0 idle floor = **3.70 ms (~270 fps)**: today's engine+world ceiling
+on stormkeep; combat adds ~0.9 ms proc + ~0.6 ms elsewhere.
+
+**The honest DP story:** 300 fps = 3.33 ms, 400 = 2.5 ms. Our EMPTY map already spends 3.7 ms, of which
+~1.7 ms is Godot main-loop/present overhead DP simply doesn't have (immediate flat renderer, no scene
+tree, no per-iteration server sync) and ~1.1 ms is our own floor proc. Reaching DP numbers is therefore
+a three-front program: (1) shave `proc` toward ~1.2 ms (sub-scope ng.process → R4 memo, trueaim
+rate-cap, particles budget, bot think — the Phase 2 list, same items), (2) reclaim `phys` (~0.35 ms:
+R30 tick-rate cut + migrate the 5 cosmetic nodes to `_Process`), (3) attack `rest` (vsync-off default
+≈ −0.5 ms now; then the hard part: Godot iteration overhead — audio/input/server-sync audit, threaded
+render model, swapchain depth — engine-level, slowest payoff). Realistic waypoints: ~4.3 ms (230 fps)
+combat after the cheap fronts; ~3.5 ms (285 fps) after the proc program; 300+ requires the rest-bucket
+engine work. The "228 fps" June anchor is retired (pre-cap-era, pre-r9 features, idle camera).
+
+**Re-ranked Phase 2 (hitches + frame time) per the census & decomposition:**
+2.0 **instrument `ng.process`** — sub-scopes for input/prediction, server tick already scoped, HUD
+feeds, camera, misc (it leads 56 % of frames as one opaque 1.2 ms blob; nothing inside can be shaved
+until it's named) + quick wins while in there: R30 physics trim (measured ~0.35 ms steady + a hitch
+amplifier; migrate the 5 cosmetic `_PhysicsProcess` nodes) and the vsync-off default decision
+(measured −0.5 ms + better lows; Bryan A/Bs tearing) →
 2.1 bot-AI combat cost (`ng.process`/`bot.rate` — jitter + walk caps + a fresh profile of what melts) →
-2.2 `hud.trueaim` rate-cap + catharsis long-trace investigation →
+2.2 `hud.trueaim` rate-cap + catharsis long-trace investigation (a steady ~1.4 ms tax on 8 % of frames
+everywhere, hitch-class on catharsis) →
 2.3 weapon-variant warm coverage (kills the mid-match PIPE class) →
 2.4 roster-warm frame staggering (+ name the 277 MB `proc:other` storm) →
-2.5 R7 entity pool (gen2 ×6) → 2.6 R30 physics trim.
-Phase 3 (fps) ranking unchanged except: BIH (R6) rises — it now underwrites BOTH 2.1 (tracewalks)
-and 2.2 (trueaim rays); portal half-rate stays top of the pure-fps list.
+2.5 R7 entity pool (gen2 ×6) → 2.6 `particles.cpu` budget review (~0.56 ms on a quarter of combat
+frames — verify against DP's particle CPU before touching; faithful-mode parity constraint).
+Phase 3 (fps) re-frame: BIH (R6) underwrites 2.1 + 2.2; portal half-rate stays; NEW long-pole item —
+**the `rest` bucket (Godot main-loop/present ~1.7 ms at floor): audio/input/server-sync audit,
+threaded render model, swapchain depth** — the gate between ~285 fps and DP-class 300–400.
 
 ### Phase 2 — kill the known hitches (smoothness; biggest player-felt win first)
 
