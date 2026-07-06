@@ -2026,10 +2026,13 @@ public sealed partial class NetGame : Node3D
         }
         System.Numerics.Vector3 eye = Coords.ToQuake(_camera.GlobalPosition);
         grid.Sample(eye, out System.Numerics.Vector3 amb, out System.Numerics.Vector3 dir, out _);
-        const float scale = 1f / 128f;
-        float r = Math.Clamp((amb.X + 0.5f * dir.X) * scale, 0.25f, 1.6f);
-        float g = Math.Clamp((amb.Y + 0.5f * dir.Y) * scale, 0.25f, 1.6f);
-        float b = Math.Clamp((amb.Z + 0.5f * dir.Z) * scale, 0.25f, 1.6f);
+        // Self-calibrating scale (r13): normalize by the MAP's average lit-cell intensity, so 1.0 = an
+        // averagely-lit spot on this map, bright yards push toward the cap and dark corridors dip — a fixed
+        // /128 divisor mostly darkened (typical Xonotic grids average well below 128) and read as no change.
+        float scale = 1f / MathF.Max(24f, grid.AverageIntensity);
+        float r = Math.Clamp((amb.X + 0.5f * dir.X) * scale, 0.35f, 1.7f);
+        float g = Math.Clamp((amb.Y + 0.5f * dir.Y) * scale, 0.35f, 1.7f);
+        float b = Math.Clamp((amb.Z + 0.5f * dir.Z) * scale, 0.35f, 1.7f);
         _viewModel.SetLightMod(new Color(r, g, b));
     }
 

@@ -33,9 +33,30 @@ public sealed class LightGridData
     /// <summary>The raw cells, 8 bytes per point: ambient RGB, directed RGB, dir longitude, dir latitude.</summary>
     private readonly byte[] _cells;
 
+    /// <summary>
+    /// The map's average lit-cell intensity (mean of <c>ambient + 0.5·directed</c> luma over every NON-BLACK
+    /// cell, 0..255 scale). Black cells are skipped — they're the grid points inside the void/solid, which
+    /// dominate most maps and would drag the average toward zero. Callers normalize their samples by this so
+    /// a modulate of 1.0 = "an averagely-lit spot on THIS map" regardless of how bright the map was compiled
+    /// (playtest r13: a fixed /128 scale mostly darkened — typical Xonotic grids average well below 128).
+    /// </summary>
+    public float AverageIntensity { get; }
+
     private LightGridData(Vector3 origin, Vector3 cellSize, int nx, int ny, int nz, byte[] cells)
     {
         Origin = origin; CellSize = cellSize; Nx = nx; Ny = ny; Nz = nz; _cells = cells;
+
+        double sum = 0; long lit = 0;
+        for (int o = 0; o < cells.Length; o += 8)
+        {
+            // Luma of ambient + half the directed term (the same combination Sample consumers use).
+            float v = (cells[o] + cells[o + 1] + cells[o + 2]) / 3f
+                    + 0.5f * (cells[o + 3] + cells[o + 4] + cells[o + 5]) / 3f;
+            if (v <= 1f)
+                continue; // void/solid cell
+            sum += v; lit++;
+        }
+        AverageIntensity = lit > 0 ? (float)(sum / lit) : 128f;
     }
 
     /// <summary>
