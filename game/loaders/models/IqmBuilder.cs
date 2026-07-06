@@ -738,6 +738,10 @@ public static class IqmBuilder
             materialName = remap;
             remapped = true;
         }
+        // A RAW nodraw mesh material also hides (no skin remap needed) — the invisible-hand weapon rigs'
+        // skeleton plane is baked as material 'nodraw'; rendered, it was the black landing-dip triangle (r11).
+        if (SkinFile.IsNoDraw(materialName))
+            return null;
         return materialName;
     }
 
