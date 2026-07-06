@@ -725,8 +725,12 @@ public sealed class PlayerPhysics : IPlayerPhysics
         else
         {
             float sidefric = maxairspd != 0f ? (mp.AirAccelSidewaysFriction / maxairspd) : 0f;
+            // GameplayFixQ2AirAccelerate (live Base: ON) makes the accel step use THIS branch's strafe-clamped/
+            // duck-halved wishspeed instead of wishspeed0 — the limiter on mid-air strafe acceleration. The air
+            // branch is the only Accelerate call site where wishspeed != wishspeed0, so the flag is passed here
+            // only (the water/ladder/fly calls pass wishspeed twice — the fix is a no-op there by construction).
             PMAccelerate.Accelerate(player, dt, wishdir, wishspeed, wishspeed0, airaccel, airaccelqw,
-                mp.AirAccelQWStretchFactor, sidefric, mp.AirSpeedLimitNonQW);
+                mp.AirAccelQWStretchFactor, sidefric, mp.AirSpeedLimitNonQW, mp.GameplayFixQ2AirAccelerate);
         }
 
         if (mp.AirControl != 0f)

@@ -114,7 +114,14 @@ static mparams stock(void){
 #define GF_NOGRAVITYONGROUND          1
 #define GF_STEPMULTIPLETIMES          1
 #define GF_DOWNTRACEONGROUND          1
-#define GF_Q2AIRACCELERATE            0
+/* LIVE Base runs the q2airaccelerate fix ON: QC autocvar inline default 1 (stats.qh:396),
+ * xonotic-server.cfg:562, replicated to CSQC via MOVEFLAG_Q2AIRACCELERATE (stats.qh:401).
+ * player.qc:288-289 applies it INSIDE PM_Accelerate — AFTER the strafe GeomLerp / duck clamps
+ * shrank wishspeed — so the air accel step is accel*dt*wishspeed (pure strafe: 100), NOT
+ * accel*dt*wishspeed0 (350). The old 0 here silently ~tripled mid-air strafe accel; the
+ * verify-against-dp.md §2.2 "benign" verdict only checked the call-site equality and missed the
+ * in-between strafe clamp. Straight-line scenarios are unaffected (wishspeed == wishspeed0). */
+#define GF_Q2AIRACCELERATE            1
 
 #define MAX_CLIP_PLANES 5
 #define ONGROUND_NORMAL_Z 0.7f
