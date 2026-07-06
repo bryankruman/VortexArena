@@ -1793,10 +1793,10 @@ public sealed class ServerNet : IDisposable
         return new MovementInput
         {
             ViewAngles = c.ViewAngles,
-            // Rescale the normalized (±1) wish-move to wish-velocity units via the Darkplaces client input speeds
-            // (cl_forwardspeed=400 / cl_sidespeed=350 / cl_upspeed=400, cl_input.c) — NOT the live sv_maxspeed.
-            // MUST use the SAME scaling the client predictor (EntityMovementStep) uses or prediction and authority
-            // disagree; PlayerPhysics clamps wishspeed to live MaxSpeed downstream, so maxspeed>360 isn't capped.
+            // Rescale the normalized (±1) wish-move to wish-velocity units via the fixspeed value a live Base
+            // client runs with — max(sv_maxspeed, sv_maxairspeed) = 360 stock (sys_phys_fixspeed stuffcmd; see
+            // WishMoveScaling). MUST use the SAME scaling the client predictor (EntityMovementStep) uses or
+            // prediction and authority disagree.
             MoveValues = WishMoveScaling.Scale(c.Forward, c.Side, c.Up),
             FrameTime = c.DeltaTime > 0f ? c.DeltaTime : SimulationLoopTicRate,
             ButtonJump = (b & InputButtons.Jump) != 0,
