@@ -1847,6 +1847,11 @@ public sealed partial class NetGame : Node3D
         // viewmodel's fire/raise/drop/reload clip from the networked WepentView.ViewmodelFrame selector instead.
         UpdateViewModelAnimFromNet();
 
+        // (#41) Lightgrid model light: DP lights every model from the BSP lightgrid at the entity origin
+        // (Mod_Q3BSP_LightPoint) — the port lit everything with one global sun + flat ambient, so guns read
+        // dull/gray indoors. Sample the grid at the camera and modulate the viewmodel's skin-shader tint.
+        UpdateViewModelLightgrid();
+
         // Per-weapon wr_viewmodel override (Base viewmodel_draw 324-327: newname = wep.wr_viewmodel(wep, this)).
         // Only Tuba overrides it, swapping its v_ model by the currently played instrument (tuba/akordeon/
         // kleinbottle). Resolved live so a reload that cycles the instrument rebuilds the gun model. Empty = no
@@ -1982,6 +1987,12 @@ public sealed partial class NetGame : Node3D
             float af = st.AttackFinished;
             if (!reloading && af > _viewmodelLastAttackFinished && _serverWorld is { } sw && af > (float)sw.Time)
                 _viewModel.PlayFireClip();
+            else if (_serverWorld is { } sw2 && af <= (float)sw2.Time)
+                // Attack window closed (refire expired, no new shot): re-assert idle like Base's weapon state
+                // machine does explicitly (w_ready → weapon_thinkf(WFRAME_IDLE)). Needed because SOME fire
+                // clips are authored LOOPING (h_hagar fire loop=1) — the end-of-clip idle recovery never
+                // triggers on those and the gun pumped forever after the last rocket (playtest r12).
+                _viewModel.StopLoopingFire();
             _viewmodelLastAttackFinished = af;
         }
         if (reloading && !_viewmodelReloading)
@@ -1993,6 +2004,34 @@ public sealed partial class NetGame : Node3D
     /// <see cref="UpdateViewModelReloadAnim"/>). Reset on equip is unnecessary: a stale higher value only
     /// suppresses until the first shot pushes past it.</summary>
     private float _viewmodelLastAttackFinished;
+
+    /// <summary>
+    /// (#41) Sample the map's baked lightgrid at the camera and drive the viewmodel's light modulate —
+    /// stage 1 of DP-faithful model lighting (Mod_Q3BSP_LightPoint samples per entity; the viewmodel is what
+    /// the player stares at, so it goes first — players/items are the documented follow-up). The q3map cell
+    /// values are 0..255 with ~128 ≈ nominal, so <c>(ambient + 0.5·directed)/128</c> lands near identity in
+    /// an averagely-lit room, brightens in yards and dims/tints in colored corridors. Floored so a pitch-black
+    /// cell can't erase the gun (DP keeps a minimum too), capped to keep overbright rooms sane. No grid on the
+    /// map → identity (the flat pre-#41 look).
+    /// </summary>
+    private void UpdateViewModelLightgrid()
+    {
+        if (_viewModel is null || !GodotObject.IsInstanceValid(_viewModel))
+            return;
+        XonoticGodot.Formats.Bsp.LightGridData? grid = _bsp?.LightGrid;
+        if (grid is null || _camera is null || !GodotObject.IsInstanceValid(_camera))
+        {
+            _viewModel.SetLightMod(new Color(1f, 1f, 1f));
+            return;
+        }
+        System.Numerics.Vector3 eye = Coords.ToQuake(_camera.GlobalPosition);
+        grid.Sample(eye, out System.Numerics.Vector3 amb, out System.Numerics.Vector3 dir, out _);
+        const float scale = 1f / 128f;
+        float r = Math.Clamp((amb.X + 0.5f * dir.X) * scale, 0.25f, 1.6f);
+        float g = Math.Clamp((amb.Y + 0.5f * dir.Y) * scale, 0.25f, 1.6f);
+        float b = Math.Clamp((amb.Z + 0.5f * dir.Z) * scale, 0.25f, 1.6f);
+        _viewModel.SetLightMod(new Color(r, g, b));
+    }
 
     /// <summary>
     /// Drive the local view-model's anim frame from the networked <see cref="XonoticGodot.Net.WepentViewState.ViewmodelFrame"/>

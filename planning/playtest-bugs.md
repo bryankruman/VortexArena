@@ -996,6 +996,31 @@ nudge-out-of-solid; see #9), **#14** flag jitter (user-deferred).
   OmniLight falloff curve vs DP dlight falloff, the Energy normalization (`min(8,maxc)`), and the
   scene glow HDR threshold (1.0) — each a cheap A/B, deliberately not changed blind.
 
+### 40. Hagar fire animation never stops after firing — FIXED (needs playtest)
+- [x] **Status:** Implemented (r12). Verify: hold hagar fire, release → the pump animation stops (drops to idle);
+  other weapons unchanged.
+- **CONFIRMED root cause:** the hagar's fire clip is authored **loop=1** (`h_hagar.iqm.framegroups`; the
+  other DPM rigs' fire rows are loop=0) — and the port's only fire→idle transition was the end-of-clip
+  recovery (`!IsPlaying()` → PlayIdle), which a LOOPING clip never reaches. Base never waits for clip end:
+  its weapon state machine re-asserts WFRAME_IDLE explicitly when the attack window closes (w_ready →
+  weapon_thinkf).
+- **FIX:** the listen-host anim driver calls the new `ViewModel.StopLoopingFire()` once the slot's
+  ATTACK_FINISHED expires with no new shot — no-op unless the CURRENT clip is a looping fire/fire2.
+
+### 41. Weapons look dull — the port lacked DP's lightgrid MODEL lighting — STAGE 1 SHIPPED (viewmodel)
+- [~] **Status:** Stage 1 implemented (r12): the Q3 BSP **lightgrid** (lump 15) is now parsed
+  (`LightGridData`, dims from the world bounds like DP `Mod_Q3BSP_LoadLightGrid`, trilinear `Sample` like
+  `Mod_Q3BSP_LightPoint`; real-asset test on stormkeep) and the VIEWMODEL is modulated by the sample at the
+  camera each frame (`(ambient + 0.5·directed)/128`, floor 0.25 / cap 1.6, epsilon-gated, identity when a map
+  ships no grid). Verify: the gun brightens in bright yards, dims in dark corridors, tints under colored light.
+- **CONFIRMED root cause:** DP lights EVERY model from the baked lightgrid at the entity origin — the port lit
+  everything with one global "Sun" DirectionalLight + flat 0.6 sky ambient, so guns (and all models) read
+  gray/flat indoors regardless of the map's baked lighting.
+- **Follow-ups (documented, not yet done):** (a) players/items/monsters — same sample at each entity origin
+  (drive `ModelTint` colormod or a per-entity light); (b) the directed term as a real directional light
+  (direction bytes are already decoded); (c) plain StandardMaterial3D weapon surfaces ignore the instance
+  colormod (skin-shader surfaces only) — most weapon bodies are skin-shader, rest follow with (a)'s mechanism.
+
 ---
 
 ## Pending

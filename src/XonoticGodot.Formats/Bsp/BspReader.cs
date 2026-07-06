@@ -92,8 +92,19 @@ public static class BspReader
         // probe heuristic; even page = lightmap, odd page = light direction.)
         DeluxemapSplit split = DetectAndSplitDeluxemaps(rawLightmapPages, faces, entities, BspData.LightmapSize);
 
+        // Lightgrid (lump 15) — the baked per-position MODEL light probes (DP Mod_Q3BSP_LoadLightGrid).
+        // Dims derive from the world model's bounds; a length mismatch disables the grid (Build → null).
+        LightGridData? lightGrid = null;
+        {
+            RawLump gl = lumps[(int)BspLump.LightGrid];
+            if (gl.Length >= 8 && models.Length > 0)
+                lightGrid = LightGridData.Build(models[0].Mins, models[0].Maxs,
+                    data.Slice(gl.Offset, gl.Length).ToArray());
+        }
+
         return new BspData
         {
+            LightGrid = lightGrid,
             Version = version,
             EntitiesText = entText,
             Entities = entities,

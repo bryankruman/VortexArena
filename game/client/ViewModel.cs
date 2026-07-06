@@ -500,15 +500,36 @@ public partial class ViewModel : Node3D
         _teamColormod = colormod;
         _hasTeam = hasTeam;
         _glowDirty = true;
-        // Full-rig (h_*) viewmodels render via PlayerSkinShader; push the team colormap through its instance
-        // uniforms (the same path as the third-person player model). Harmless on plain-material v_ models (no
-        // such uniforms — the StandardMaterial tint in ApplyMaterialFx handles those instead).
-        if (_modelRoot is not null && GodotObject.IsInstanceValid(_modelRoot))
-        {
-            Color shirtPants = hasTeam ? colormod : ModelTint.Black;
-            Color glowU = hasTeam ? glow : ModelTint.White;
-            ModelTint.Apply(_modelRoot, ModelTint.White, glowU, shirtPants, shirtPants);
-        }
+        ReapplyInstanceTint();
+    }
+
+    /// <summary>
+    /// The lightgrid-sampled model light at the player's position (#41): DP lights every model from the BSP
+    /// lightgrid (<c>Mod_Q3BSP_LightPoint</c>) — a gun in a dark corridor is dim, a bright yard makes it pop,
+    /// colored light tints it. The host samples the grid at the camera each frame and pushes the modulate
+    /// here; it rides the skin shader's per-instance <c>colormod</c> uniform (identity white = the flat
+    /// pre-#41 look, also the no-grid fallback). Epsilon-gated: the grid varies smoothly, so most frames skip.
+    /// </summary>
+    public void SetLightMod(Color light)
+    {
+        if (Mathf.Abs(light.R - _lightMod.R) + Mathf.Abs(light.G - _lightMod.G) + Mathf.Abs(light.B - _lightMod.B) < 0.01f)
+            return;
+        _lightMod = light;
+        ReapplyInstanceTint();
+    }
+
+    private Color _lightMod = new(1f, 1f, 1f);
+
+    /// <summary>Push the current team tint + lightgrid modulate onto the model's skin-shader instance
+    /// uniforms (colormod = the light, shirt/pants = the team color). Harmless on plain-material v_ models
+    /// (no such uniforms — the StandardMaterial tint in ApplyMaterialFx handles those instead).</summary>
+    private void ReapplyInstanceTint()
+    {
+        if (_modelRoot is null || !GodotObject.IsInstanceValid(_modelRoot))
+            return;
+        Color shirtPants = _hasTeam ? _teamColormod : ModelTint.Black;
+        Color glowU = _hasTeam ? _teamGlow : ModelTint.White;
+        ModelTint.Apply(_modelRoot, _lightMod, glowU, shirtPants, shirtPants);
     }
 
     // =================================================================================================
@@ -721,6 +742,26 @@ public partial class ViewModel : Node3D
         if (_iqmAnimPlayer is not null && GodotObject.IsInstanceValid(_iqmAnimPlayer)
             && !string.IsNullOrEmpty(n) && _iqmAnimPlayer.CurrentAnimation == n)
             _iqmAnimPlayer.Seek(0.0, update: true);
+    }
+
+    /// <summary>
+    /// Drop a still-looping FIRE clip back to idle — Base's weapon state machine asserts WFRAME_IDLE
+    /// explicitly when the attack window closes (w_ready → weapon_thinkf), it never waits for clip end.
+    /// Needed because some fire clips are authored LOOPING (h_hagar's fire is loop=1): the end-of-clip idle
+    /// recovery in <see cref="_Process"/> never triggers on those, so the gun pumped forever after the last
+    /// shot (playtest r12). No-op unless the CURRENT clip is a looping fire/fire2.
+    /// </summary>
+    public void StopLoopingFire()
+    {
+        if (_iqmAnimPlayer is null || !GodotObject.IsInstanceValid(_iqmAnimPlayer))
+            return;
+        string cur = _iqmAnimPlayer.CurrentAnimation;
+        if (cur is not ("fire" or "fire2" or "shoot" or "attack" or "fire1"))
+            return;
+        Animation? clip = _iqmAnimPlayer.HasAnimation(cur) ? _iqmAnimPlayer.GetAnimation(cur) : null;
+        if (clip is null || clip.LoopMode == Animation.LoopModeEnum.None)
+            return; // non-looping fire ends on its own (the _Process idle recovery handles it)
+        PlayIdle();
     }
 
     private string FindFireClip()
@@ -1069,16 +1110,13 @@ public partial class ViewModel : Node3D
     }
 
     /// <summary>
-    /// Re-push the PlayerSkinShader per-INSTANCE team tint onto the CURRENT model meshes. Must run AFTER a
-    /// freshly-built model is attached: the old swap-time re-seed lived in <see cref="ResetModelFx"/>, which
-    /// every equip path calls BEFORE adding the new model — it walked the outgoing (freed) meshes and the new
-    /// ones kept the shader defaults, silently dropping the team tint on every weapon switch (playtest #36).
+    /// Re-push the PlayerSkinShader per-INSTANCE team tint + lightgrid modulate onto the CURRENT model
+    /// meshes. Must run AFTER a freshly-built model is attached: the old swap-time re-seed lived in
+    /// <see cref="ResetModelFx"/>, which every equip path calls BEFORE adding the new model — it walked the
+    /// outgoing (freed) meshes and the new ones kept the shader defaults, silently dropping the team tint on
+    /// every weapon switch (playtest #36).
     /// </summary>
-    private void ReseedInstanceTint()
-    {
-        if (_hasTeam && _modelRoot is not null && GodotObject.IsInstanceValid(_modelRoot))
-            ModelTint.Apply(_modelRoot, ModelTint.White, _teamGlow, _teamColormod, _teamColormod);
-    }
+    private void ReseedInstanceTint() => ReapplyInstanceTint();
 
     private static void ApplyMaterialFx(Node node, float a, Color? colormod = null, Color? glow = null)
     {
