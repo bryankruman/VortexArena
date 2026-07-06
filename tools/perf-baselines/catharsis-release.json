@@ -1,2064 +1,4501 @@
 {
- "session": "session-20260706-173046",
- "log": "C:\\Users\\Bryan\\Projects\\Xonotic\\XonoticGodot\\.claude\\worktrees\\sweet-chaum-b1d580\\_scratch\\perf-userdir\\logs\\session-20260706-173046.log",
- "frames": 11269,
- "duration_s": 107.69200000000001,
- "avg_fps": 125.44893441321759,
- "p50_ms": 6.94,
- "p95_ms": 11.11,
- "p99_ms": 18.0,
- "p999_ms": 136.36,
- "low1_fps": 55.55555555555556,
- "low01_fps": 7.333528894103842,
+ "session": "session-20260706-175931",
+ "log": "C:\\Users\\Bryan\\Projects\\Xonotic\\XonoticGodot\\.claude\\worktrees\\sweet-chaum-b1d580\\_scratch\\perf-userdir\\logs\\session-20260706-175931.log",
+ "frames": 12815,
+ "duration_s": 108.786,
+ "avg_fps": 142.5960651275119,
+ "p50_ms": 6.06,
+ "p95_ms": 11.43,
+ "p99_ms": 17.62,
+ "p999_ms": 133.33,
+ "low1_fps": 56.75368898978433,
+ "low01_fps": 7.5001875046876165,
  "max_ms": 150.0,
- "hitch_time_ms": 8000.68,
- "slow_frames": 469,
- "slow_cut_ms": 12.492,
+ "hitch_time_ms": 9050.48,
+ "slow_frames": 568,
+ "slow_cut_ms": 12.0,
  "old_schema": false,
  "top_offenders": [
   [
    "ng.process",
-   3813.9499999999944
-  ],
-  [
-   "iqm.mesh",
-   1783.9299999999998
+   3891.7900000000036
   ],
   [
    "hud.trueaim",
-   1340.0700000000015
+   1870.0999999999976
+  ],
+  [
+   "iqm.mesh",
+   1782.9299999999998
   ],
   [
    "proc:other",
-   424.01000000000005
+   760.3800000000002
   ],
   [
    "stream.predecode",
-   253.74999999999991
-  ],
-  [
-   "particles.cpu",
-   186.65
+   278.01
   ],
   [
    "cev.process",
-   108.24999999999999
+   232.64000000000004
+  ],
+  [
+   "particles.cpu",
+   88.48
   ],
   [
    "iqm.anims",
-   77.28999999999999
+   86.21
   ]
  ],
- "alloc_total_mb": 1882.13671875,
+ "alloc_total_mb": 1955.9609375,
  "alloc_storms": [
   {
-   "t": 11.116,
-   "mb": 404.287109375,
+   "t": 11.733,
+   "mb": 404.685546875,
    "top1": "iqm.mesh",
    "gc2": 2
   },
   {
-   "t": 5.098,
-   "mb": 277.2548828125,
+   "t": 5.689,
+   "mb": 277.2509765625,
    "top1": "proc:other",
    "gc2": 2
   },
   {
-   "t": 1.163,
-   "mb": 104.05078125,
+   "t": 1.283,
+   "mb": 104.04296875,
    "top1": "proc:other",
    "gc2": 2
   },
   {
-   "t": 22.887,
-   "mb": 89.3095703125,
+   "t": 24.354,
+   "mb": 57.30078125,
    "top1": "ng.process",
    "gc2": 0
   },
   {
-   "t": 14.314,
-   "mb": 33.9794921875,
+   "t": 24.386,
+   "mb": 34.9169921875,
+   "top1": "ng.process",
+   "gc2": 0
+  },
+  {
+   "t": 15.086,
+   "mb": 33.98046875,
    "top1": "iqm.mesh",
    "gc2": 0
   },
   {
-   "t": 15.734,
-   "mb": 17.37109375,
+   "t": 16.536,
+   "mb": 17.373046875,
    "top1": "iqm.mesh",
    "gc2": 0
   },
   {
-   "t": 27.32,
-   "mb": 16.4169921875,
+   "t": 28.808,
+   "mb": 16.2490234375,
    "top1": "stream.predecode",
    "gc2": 0
   },
   {
-   "t": 23.381,
-   "mb": 16.2080078125,
+   "t": 25.007,
+   "mb": 13.83203125,
    "top1": "stream.predecode",
    "gc2": 0
   },
   {
-   "t": 23.098,
-   "mb": 12.078125,
-   "top1": "stream.predecode",
-   "gc2": 0
-  },
-  {
-   "t": 15.157,
-   "mb": 12.0546875,
+   "t": 15.938,
+   "mb": 12.1552734375,
    "top1": "iqm.mesh",
    "gc2": 0
   }
  ],
  "gc": {
-  "gc0": 175,
-  "gc1": 57,
+  "gc0": 185,
+  "gc1": 59,
   "gc2": 6
  },
- "gc_pause_ms": 630.63,
- "pipe_total": 128,
+ "gc_pause_ms": 770.68,
+ "pipe_total": 134,
  "pipe_sync": [
   {
-   "t": 11.116,
+   "t": 11.733,
    "n": 41,
-   "ms": 150.0
+   "ms": 142.41
   },
   {
-   "t": 15.157,
+   "t": 15.938,
    "n": 5,
-   "ms": 117.41
+   "ms": 117.19
   },
   {
-   "t": 15.383,
+   "t": 16.165,
    "n": 2,
-   "ms": 132.59
+   "ms": 133.33
   },
   {
-   "t": 16.601,
+   "t": 17.514,
    "n": 1,
-   "ms": 118.35
+   "ms": 116.67
   },
   {
-   "t": 20.185,
+   "t": 21.647,
    "n": 4,
-   "ms": 116.7
+   "ms": 118.62
   },
   {
-   "t": 20.4,
+   "t": 21.916,
    "n": 4,
-   "ms": 83.33
+   "ms": 136.6
   },
   {
-   "t": 20.409,
+   "t": 21.938,
    "n": 3,
-   "ms": 18.0
+   "ms": 25.08
   },
   {
-   "t": 22.812,
+   "t": 24.282,
    "n": 1,
-   "ms": 65.91
+   "ms": 69.3
   },
   {
-   "t": 35.953,
+   "t": 43.702,
    "n": 1,
-   "ms": 24.34
+   "ms": 18.61
   },
   {
-   "t": 36.111,
+   "t": 46.614,
    "n": 1,
-   "ms": 8.33
+   "ms": 16.95
   },
   {
-   "t": 45.295,
+   "t": 52.49,
    "n": 1,
-   "ms": 21.4
+   "ms": 6.67
   },
   {
-   "t": 49.316,
+   "t": 54.658,
    "n": 1,
-   "ms": 13.18
+   "ms": 27.5
+  },
+  {
+   "t": 59.536,
+   "n": 3,
+   "ms": 57.06
   }
  ],
- "draws_p50": 584.0,
+ "draws_p50": 436.0,
  "postload_secs": 20.0,
  "postload": {
-  "frames": 11247,
-  "duration_s": 88.67,
-  "avg_fps": 128.2254012615957,
-  "p50_ms": 6.94,
-  "p95_ms": 11.11,
-  "p99_ms": 16.67,
-  "p999_ms": 91.77,
-  "low1_fps": 59.98800239952009,
-  "low01_fps": 10.896807235480004,
-  "max_ms": 148.24,
-  "hitch_time_ms": 6036.71,
-  "slow_frames": 447,
-  "slow_cut_ms": 12.492,
-  "draws_p50": 584.0,
+  "frames": 12798,
+  "duration_s": 89.804,
+  "avg_fps": 145.0540512787266,
+  "p50_ms": 6.06,
+  "p95_ms": 11.29,
+  "p99_ms": 17.04,
+  "p999_ms": 86.66,
+  "low1_fps": 58.68544600938967,
+  "low01_fps": 11.539349180706209,
+  "max_ms": 149.21,
+  "hitch_time_ms": 7513.4400000000005,
+  "slow_frames": 551,
+  "slow_cut_ms": 12.0,
+  "draws_p50": 436.0,
   "census": {
-   "PIPELINE-COMPILE": 6,
-   "CPU-LOGIC": 189,
-   "MIXED": 47,
-   "ASSET-BUILD": 2,
-   "GPU-BOUND": 1
+   "VSYNC/PRESENT": 2,
+   "MIXED": 217,
+   "PIPELINE-COMPILE": 10,
+   "CPU-LOGIC": 292,
+   "ASSET-BUILD": 1,
+   "EXTERNAL": 1
   },
-  "recovery": 64
+  "recovery": 169
  },
  "logdata": {
   "events": [
    {
-    "t": 22.8,
-    "cls": "PIPELINE-COMPILE",
-    "ms": 65.9,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 22.9,
-    "cls": "CPU-LOGIC",
-    "ms": 47.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 22.9,
-    "cls": "CPU-LOGIC",
-    "ms": 70.8,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 22.9,
+    "t": 22.6,
     "cls": "VSYNC/PRESENT",
-    "ms": 22.2,
+    "ms": 10.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 22.6,
+    "cls": "VSYNC/PRESENT",
+    "ms": 17.7,
     "n": 1,
     "rec": true
    },
    {
-    "t": 23.0,
+    "t": 22.6,
     "cls": "MIXED",
+    "ms": 11.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 22.6,
+    "cls": "VSYNC/PRESENT",
+    "ms": 12.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 23.9,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.5,
+    "n": 7,
+    "rec": true
+   },
+   {
+    "t": 24.3,
+    "cls": "PIPELINE-COMPILE",
+    "ms": 69.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 24.4,
+    "cls": "CPU-LOGIC",
+    "ms": 54.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 24.4,
+    "cls": "CPU-LOGIC",
+    "ms": 73.0,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 24.4,
+    "cls": "MIXED",
+    "ms": 13.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 24.4,
+    "cls": "MIXED",
+    "ms": 14.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 24.4,
+    "cls": "CPU-LOGIC",
     "ms": 16.7,
     "n": 1,
     "rec": false
    },
    {
-    "t": 23.2,
+    "t": 24.5,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 24.5,
+    "cls": "CPU-LOGIC",
+    "ms": 13.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 24.5,
+    "cls": "CPU-LOGIC",
+    "ms": 13.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 24.5,
+    "cls": "MIXED",
+    "ms": 10.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 24.5,
+    "cls": "CPU-LOGIC",
+    "ms": 12.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 24.5,
+    "cls": "MIXED",
+    "ms": 11.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 24.5,
+    "cls": "CPU-LOGIC",
+    "ms": 12.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 24.5,
+    "cls": "CPU-LOGIC",
+    "ms": 12.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 24.5,
+    "cls": "MIXED",
+    "ms": 11.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 24.6,
+    "cls": "CPU-LOGIC",
+    "ms": 11.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 24.6,
+    "cls": "CPU-LOGIC",
+    "ms": 11.8,
+    "n": 3,
+    "rec": false
+   },
+   {
+    "t": 24.6,
+    "cls": "MIXED",
+    "ms": 11.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 24.6,
+    "cls": "MIXED",
+    "ms": 11.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 24.6,
+    "cls": "CPU-LOGIC",
+    "ms": 11.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 24.7,
+    "cls": "CPU-LOGIC",
+    "ms": 11.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 24.7,
+    "cls": "VSYNC/PRESENT",
+    "ms": 11.1,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 24.7,
     "cls": "CPU-LOGIC",
     "ms": 18.0,
     "n": 1,
     "rec": false
    },
    {
-    "t": 23.2,
+    "t": 24.7,
     "cls": "MIXED",
-    "ms": 17.0,
+    "ms": 25.1,
     "n": 1,
     "rec": false
    },
    {
-    "t": 23.2,
+    "t": 24.7,
     "cls": "CPU-LOGIC",
-    "ms": 16.6,
+    "ms": 21.4,
     "n": 1,
     "rec": false
    },
    {
-    "t": 23.2,
+    "t": 24.8,
     "cls": "VSYNC/PRESENT",
-    "ms": 13.3,
+    "ms": 16.7,
     "n": 1,
     "rec": true
    },
    {
-    "t": 23.2,
+    "t": 24.8,
     "cls": "MIXED",
-    "ms": 13.3,
+    "ms": 16.7,
     "n": 1,
     "rec": false
    },
    {
-    "t": 23.3,
+    "t": 24.8,
+    "cls": "MIXED",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 24.8,
     "cls": "CPU-LOGIC",
-    "ms": 13.0,
+    "ms": 16.7,
     "n": 1,
     "rec": false
    },
    {
-    "t": 24.3,
+    "t": 24.8,
     "cls": "CPU-LOGIC",
-    "ms": 13.0,
+    "ms": 16.7,
     "n": 1,
     "rec": false
    },
    {
-    "t": 27.1,
-    "cls": "CPU-LOGIC",
-    "ms": 59.6,
+    "t": 24.8,
+    "cls": "MIXED",
+    "ms": 16.7,
     "n": 1,
     "rec": false
    },
    {
-    "t": 27.1,
+    "t": 24.8,
     "cls": "VSYNC/PRESENT",
-    "ms": 13.2,
+    "ms": 16.7,
     "n": 1,
     "rec": true
    },
    {
-    "t": 27.3,
-    "cls": "CPU-LOGIC",
-    "ms": 20.0,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 27.3,
-    "cls": "CPU-LOGIC",
-    "ms": 20.0,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 27.3,
+    "t": 24.9,
     "cls": "MIXED",
-    "ms": 13.3,
+    "ms": 16.7,
     "n": 1,
     "rec": false
    },
    {
-    "t": 27.4,
+    "t": 24.9,
     "cls": "MIXED",
-    "ms": 13.9,
+    "ms": 16.7,
     "n": 2,
     "rec": false
    },
    {
-    "t": 27.4,
-    "cls": "CPU-LOGIC",
-    "ms": 13.9,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 27.4,
-    "cls": "MIXED",
-    "ms": 13.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 27.4,
-    "cls": "MIXED",
-    "ms": 13.6,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 27.4,
-    "cls": "VSYNC/PRESENT",
-    "ms": 13.3,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 27.5,
-    "cls": "MIXED",
-    "ms": 13.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 27.5,
-    "cls": "CPU-LOGIC",
-    "ms": 13.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 27.5,
-    "cls": "CPU-LOGIC",
-    "ms": 13.3,
-    "n": 3,
-    "rec": false
-   },
-   {
-    "t": 27.5,
-    "cls": "VSYNC/PRESENT",
-    "ms": 13.2,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 27.5,
-    "cls": "CPU-LOGIC",
-    "ms": 12.6,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 27.5,
-    "cls": "ASSET-BUILD",
-    "ms": 13.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 27.6,
-    "cls": "CPU-LOGIC",
-    "ms": 13.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 27.6,
-    "cls": "ASSET-BUILD",
-    "ms": 13.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 27.6,
-    "cls": "VSYNC/PRESENT",
-    "ms": 13.0,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 28.3,
-    "cls": "CPU-LOGIC",
-    "ms": 19.4,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 33.7,
-    "cls": "CPU-LOGIC",
-    "ms": 142.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 34.5,
-    "cls": "CPU-LOGIC",
-    "ms": 147.2,
-    "n": 3,
-    "rec": false
-   },
-   {
-    "t": 34.5,
-    "cls": "MIXED",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 34.5,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.6,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 35.2,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.6,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 35.2,
-    "cls": "CPU-LOGIC",
-    "ms": 46.0,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 35.2,
-    "cls": "MIXED",
-    "ms": 23.9,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 35.2,
-    "cls": "CPU-LOGIC",
-    "ms": 15.5,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 36.0,
-    "cls": "PIPELINE-COMPILE",
-    "ms": 24.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 36.2,
-    "cls": "CPU-LOGIC",
-    "ms": 82.1,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 36.3,
-    "cls": "MIXED",
-    "ms": 33.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 36.3,
-    "cls": "CPU-LOGIC",
-    "ms": 24.2,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 36.3,
-    "cls": "MIXED",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 37.6,
-    "cls": "CPU-LOGIC",
-    "ms": 91.8,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 37.6,
-    "cls": "CPU-LOGIC",
-    "ms": 91.8,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 37.6,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.7,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 38.1,
-    "cls": "CPU-LOGIC",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 39.1,
-    "cls": "CPU-LOGIC",
-    "ms": 88.8,
-    "n": 9,
-    "rec": false
-   },
-   {
-    "t": 39.1,
-    "cls": "VSYNC/PRESENT",
-    "ms": 17.8,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 39.1,
-    "cls": "CPU-LOGIC",
-    "ms": 17.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 39.2,
-    "cls": "CPU-LOGIC",
-    "ms": 17.7,
-    "n": 2,
-    "rec": false
-   },
-   {
-    "t": 39.2,
-    "cls": "VSYNC/PRESENT",
-    "ms": 15.4,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 40.0,
-    "cls": "CPU-LOGIC",
-    "ms": 32.8,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 40.0,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.7,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 40.0,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.7,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 40.0,
-    "cls": "CPU-LOGIC",
-    "ms": 21.9,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 41.1,
-    "cls": "CPU-LOGIC",
-    "ms": 21.9,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 42.7,
-    "cls": "CPU-LOGIC",
-    "ms": 26.1,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 42.8,
-    "cls": "CPU-LOGIC",
-    "ms": 26.1,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 42.8,
-    "cls": "MIXED",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 42.8,
-    "cls": "CPU-LOGIC",
-    "ms": 13.9,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 43.0,
-    "cls": "CPU-LOGIC",
-    "ms": 19.7,
-    "n": 6,
-    "rec": false
-   },
-   {
-    "t": 43.0,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.7,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 43.0,
-    "cls": "CPU-LOGIC",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 43.0,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.7,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 43.1,
-    "cls": "MIXED",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 43.1,
-    "cls": "CPU-LOGIC",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 43.1,
-    "cls": "VSYNC/PRESENT",
-    "ms": 15.0,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 43.1,
+    "t": 24.9,
     "cls": "CPU-LOGIC",
     "ms": 15.3,
     "n": 1,
     "rec": false
    },
    {
-    "t": 44.5,
+    "t": 24.9,
     "cls": "CPU-LOGIC",
-    "ms": 17.6,
-    "n": 4,
+    "ms": 15.3,
+    "n": 1,
     "rec": false
    },
    {
-    "t": 44.9,
+    "t": 24.9,
+    "cls": "MIXED",
+    "ms": 9.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 25.0,
+    "cls": "MIXED",
+    "ms": 15.3,
+    "n": 3,
+    "rec": false
+   },
+   {
+    "t": 25.0,
     "cls": "CPU-LOGIC",
-    "ms": 13.0,
+    "ms": 13.9,
     "n": 1,
     "rec": false
    },
    {
-    "t": 45.3,
-    "cls": "PIPELINE-COMPILE",
-    "ms": 21.4,
+    "t": 25.0,
+    "cls": "MIXED",
+    "ms": 13.9,
     "n": 1,
     "rec": false
    },
    {
-    "t": 46.6,
+    "t": 25.0,
     "cls": "CPU-LOGIC",
-    "ms": 133.6,
+    "ms": 13.9,
     "n": 1,
     "rec": false
    },
    {
-    "t": 49.3,
-    "cls": "PIPELINE-COMPILE",
-    "ms": 13.2,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 51.1,
-    "cls": "PIPELINE-COMPILE",
-    "ms": 22.1,
-    "n": 2,
-    "rec": false
-   },
-   {
-    "t": 51.1,
+    "t": 25.0,
     "cls": "CPU-LOGIC",
-    "ms": 13.0,
+    "ms": 14.5,
     "n": 1,
     "rec": false
    },
    {
-    "t": 51.1,
-    "cls": "CPU-LOGIC",
-    "ms": 65.6,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 51.1,
+    "t": 25.0,
     "cls": "MIXED",
     "ms": 16.7,
     "n": 1,
     "rec": false
    },
    {
-    "t": 51.1,
-    "cls": "VSYNC/PRESENT",
-    "ms": 17.0,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 52.0,
-    "cls": "VSYNC/PRESENT",
-    "ms": 17.0,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 52.0,
+    "t": 25.0,
     "cls": "CPU-LOGIC",
-    "ms": 13.3,
+    "ms": 13.9,
     "n": 1,
     "rec": false
    },
    {
-    "t": 54.4,
-    "cls": "CPU-LOGIC",
-    "ms": 16.8,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 54.4,
+    "t": 25.1,
     "cls": "MIXED",
+    "ms": 13.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 25.1,
+    "cls": "CPU-LOGIC",
+    "ms": 13.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 25.1,
+    "cls": "MIXED",
+    "ms": 13.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 26.2,
+    "cls": "MIXED",
+    "ms": 13.9,
+    "n": 5,
+    "rec": false
+   },
+   {
+    "t": 27.5,
+    "cls": "MIXED",
+    "ms": 8.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 28.3,
+    "cls": "CPU-LOGIC",
+    "ms": 11.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 28.6,
+    "cls": "CPU-LOGIC",
+    "ms": 61.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 28.6,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 28.7,
+    "cls": "MIXED",
+    "ms": 10.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 28.7,
+    "cls": "CPU-LOGIC",
+    "ms": 8.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 28.7,
+    "cls": "CPU-LOGIC",
+    "ms": 9.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 28.7,
+    "cls": "VSYNC/PRESENT",
+    "ms": 14.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 28.8,
+    "cls": "CPU-LOGIC",
+    "ms": 14.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 28.8,
+    "cls": "CPU-LOGIC",
+    "ms": 18.3,
+    "n": 3,
+    "rec": false
+   },
+   {
+    "t": 28.8,
+    "cls": "MIXED",
+    "ms": 14.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 28.8,
+    "cls": "CPU-LOGIC",
     "ms": 16.4,
     "n": 1,
     "rec": false
    },
    {
-    "t": 55.7,
+    "t": 28.9,
     "cls": "CPU-LOGIC",
-    "ms": 15.4,
+    "ms": 16.4,
     "n": 1,
     "rec": false
    },
    {
-    "t": 61.6,
-    "cls": "CPU-LOGIC",
-    "ms": 14.0,
+    "t": 28.9,
+    "cls": "MIXED",
+    "ms": 15.0,
     "n": 1,
     "rec": false
    },
    {
-    "t": 63.1,
-    "cls": "CPU-LOGIC",
-    "ms": 14.2,
-    "n": 3,
+    "t": 28.9,
+    "cls": "MIXED",
+    "ms": 15.0,
+    "n": 5,
     "rec": false
    },
    {
-    "t": 63.9,
+    "t": 28.9,
     "cls": "CPU-LOGIC",
+    "ms": 10.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 29.0,
+    "cls": "CPU-LOGIC",
+    "ms": 15.5,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 29.0,
+    "cls": "MIXED",
     "ms": 12.9,
     "n": 1,
     "rec": false
    },
    {
-    "t": 65.3,
+    "t": 29.0,
     "cls": "CPU-LOGIC",
-    "ms": 14.1,
+    "ms": 14.3,
     "n": 1,
     "rec": false
    },
    {
-    "t": 65.8,
+    "t": 29.0,
+    "cls": "ASSET-BUILD",
+    "ms": 14.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 29.0,
     "cls": "CPU-LOGIC",
-    "ms": 16.4,
+    "ms": 14.6,
     "n": 1,
     "rec": false
    },
    {
-    "t": 68.2,
+    "t": 29.1,
     "cls": "CPU-LOGIC",
-    "ms": 16.9,
-    "n": 3,
-    "rec": false
-   },
-   {
-    "t": 70.9,
-    "cls": "CPU-LOGIC",
-    "ms": 14.0,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 72.0,
-    "cls": "CPU-LOGIC",
-    "ms": 17.4,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 86.3,
-    "cls": "CPU-LOGIC",
-    "ms": 40.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 86.3,
-    "cls": "MIXED",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 86.3,
-    "cls": "VSYNC/PRESENT",
-    "ms": 13.5,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 89.6,
-    "cls": "CPU-LOGIC",
-    "ms": 136.4,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 89.6,
-    "cls": "MIXED",
-    "ms": 20.6,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 89.6,
-    "cls": "CPU-LOGIC",
-    "ms": 12.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 89.6,
-    "cls": "CPU-LOGIC",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 89.6,
-    "cls": "MIXED",
-    "ms": 17.1,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 89.6,
-    "cls": "CPU-LOGIC",
-    "ms": 13.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 90.3,
-    "cls": "CPU-LOGIC",
-    "ms": 121.6,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 90.3,
-    "cls": "MIXED",
-    "ms": 17.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 90.4,
-    "cls": "MIXED",
-    "ms": 17.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 90.4,
-    "cls": "CPU-LOGIC",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 90.4,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.4,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 90.4,
-    "cls": "CPU-LOGIC",
-    "ms": 14.0,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 90.8,
-    "cls": "CPU-LOGIC",
-    "ms": 17.7,
-    "n": 6,
-    "rec": false
-   },
-   {
-    "t": 90.8,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.7,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 90.8,
-    "cls": "CPU-LOGIC",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 90.8,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.7,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 90.8,
-    "cls": "CPU-LOGIC",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 90.8,
-    "cls": "MIXED",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 90.9,
-    "cls": "CPU-LOGIC",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 90.9,
-    "cls": "VSYNC/PRESENT",
-    "ms": 15.0,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 90.9,
-    "cls": "CPU-LOGIC",
-    "ms": 15.0,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 91.6,
-    "cls": "CPU-LOGIC",
-    "ms": 141.3,
-    "n": 5,
-    "rec": false
-   },
-   {
-    "t": 91.6,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.7,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 91.6,
-    "cls": "CPU-LOGIC",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 91.6,
-    "cls": "VSYNC/PRESENT",
-    "ms": 13.0,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 91.6,
-    "cls": "CPU-LOGIC",
-    "ms": 16.6,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 92.3,
-    "cls": "CPU-LOGIC",
-    "ms": 93.9,
-    "n": 5,
-    "rec": false
-   },
-   {
-    "t": 92.3,
-    "cls": "MIXED",
-    "ms": 22.8,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 93.0,
-    "cls": "MIXED",
-    "ms": 22.8,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 93.0,
-    "cls": "CPU-LOGIC",
-    "ms": 33.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 93.0,
-    "cls": "MIXED",
-    "ms": 22.8,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 93.6,
-    "cls": "MIXED",
-    "ms": 22.8,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 93.6,
-    "cls": "CPU-LOGIC",
-    "ms": 17.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 95.3,
-    "cls": "CPU-LOGIC",
-    "ms": 79.4,
-    "n": 7,
-    "rec": false
-   },
-   {
-    "t": 95.5,
-    "cls": "CPU-LOGIC",
-    "ms": 22.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 95.5,
-    "cls": "CPU-LOGIC",
-    "ms": 22.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 95.5,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.7,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 95.5,
-    "cls": "MIXED",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 96.3,
-    "cls": "CPU-LOGIC",
-    "ms": 31.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 96.3,
-    "cls": "MIXED",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 96.3,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.7,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 96.3,
-    "cls": "CPU-LOGIC",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 97.2,
-    "cls": "CPU-LOGIC",
-    "ms": 29.8,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 97.2,
-    "cls": "MIXED",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 98.5,
-    "cls": "CPU-LOGIC",
-    "ms": 20.4,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 99.4,
-    "cls": "CPU-LOGIC",
-    "ms": 64.8,
+    "ms": 14.8,
     "n": 2,
     "rec": false
    },
    {
-    "t": 99.4,
-    "cls": "MIXED",
-    "ms": 23.9,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 99.6,
-    "cls": "CPU-LOGIC",
-    "ms": 24.1,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 101.4,
-    "cls": "CPU-LOGIC",
-    "ms": 18.8,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 101.5,
-    "cls": "CPU-LOGIC",
-    "ms": 20.3,
-    "n": 2,
-    "rec": false
-   },
-   {
-    "t": 101.5,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.7,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 101.5,
-    "cls": "CPU-LOGIC",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 101.5,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.7,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 101.5,
-    "cls": "CPU-LOGIC",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 101.6,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.7,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 101.6,
-    "cls": "CPU-LOGIC",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 101.6,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.7,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 101.6,
-    "cls": "CPU-LOGIC",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 101.6,
+    "t": 29.1,
     "cls": "MIXED",
     "ms": 16.7,
     "n": 1,
     "rec": false
    },
    {
-    "t": 101.7,
+    "t": 29.1,
     "cls": "CPU-LOGIC",
-    "ms": 16.7,
+    "ms": 14.6,
     "n": 1,
     "rec": false
    },
    {
-    "t": 101.7,
+    "t": 29.1,
     "cls": "MIXED",
-    "ms": 18.1,
+    "ms": 14.3,
     "n": 1,
     "rec": false
    },
    {
-    "t": 101.7,
-    "cls": "CPU-LOGIC",
-    "ms": 18.1,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 101.8,
-    "cls": "CPU-LOGIC",
-    "ms": 25.5,
-    "n": 2,
-    "rec": false
-   },
-   {
-    "t": 101.8,
-    "cls": "MIXED",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 102.2,
-    "cls": "CPU-LOGIC",
-    "ms": 18.4,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 102.3,
-    "cls": "CPU-LOGIC",
-    "ms": 148.2,
-    "n": 4,
-    "rec": false
-   },
-   {
-    "t": 102.3,
-    "cls": "MIXED",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 102.3,
-    "cls": "CPU-LOGIC",
-    "ms": 20.8,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 102.3,
-    "cls": "VSYNC/PRESENT",
-    "ms": 20.0,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 102.3,
-    "cls": "CPU-LOGIC",
-    "ms": 20.0,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 102.4,
+    "t": 29.1,
     "cls": "VSYNC/PRESENT",
     "ms": 13.1,
     "n": 1,
     "rec": true
    },
    {
-    "t": 102.4,
+    "t": 29.1,
     "cls": "CPU-LOGIC",
-    "ms": 16.7,
+    "ms": 10.5,
     "n": 1,
     "rec": false
    },
    {
-    "t": 102.4,
-    "cls": "VSYNC/PRESENT",
-    "ms": 15.6,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 102.4,
+    "t": 30.3,
     "cls": "CPU-LOGIC",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 102.5,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.7,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 102.5,
-    "cls": "CPU-LOGIC",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 102.5,
-    "cls": "MIXED",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 102.5,
-    "cls": "CPU-LOGIC",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 102.5,
-    "cls": "VSYNC/PRESENT",
-    "ms": 15.3,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 102.5,
-    "cls": "CPU-LOGIC",
-    "ms": 15.0,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 102.5,
-    "cls": "VSYNC/PRESENT",
-    "ms": 15.0,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 102.6,
-    "cls": "CPU-LOGIC",
-    "ms": 15.2,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 102.6,
-    "cls": "MIXED",
-    "ms": 15.0,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 102.6,
-    "cls": "VSYNC/PRESENT",
-    "ms": 13.3,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 102.6,
-    "cls": "CPU-LOGIC",
-    "ms": 14.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 102.6,
-    "cls": "VSYNC/PRESENT",
-    "ms": 13.9,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 102.7,
-    "cls": "CPU-LOGIC",
-    "ms": 13.9,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 102.7,
-    "cls": "CPU-LOGIC",
-    "ms": 14.3,
-    "n": 2,
-    "rec": false
-   },
-   {
-    "t": 102.7,
-    "cls": "VSYNC/PRESENT",
-    "ms": 14.3,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 102.7,
-    "cls": "CPU-LOGIC",
-    "ms": 15.5,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 102.7,
-    "cls": "VSYNC/PRESENT",
-    "ms": 14.6,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 102.8,
-    "cls": "VSYNC/PRESENT",
-    "ms": 14.6,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 102.8,
-    "cls": "CPU-LOGIC",
-    "ms": 14.6,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 102.8,
-    "cls": "MIXED",
-    "ms": 14.6,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 102.8,
-    "cls": "VSYNC/PRESENT",
-    "ms": 14.3,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 102.8,
-    "cls": "CPU-LOGIC",
-    "ms": 14.6,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 102.8,
-    "cls": "VSYNC/PRESENT",
-    "ms": 14.6,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 102.8,
-    "cls": "VSYNC/PRESENT",
-    "ms": 14.6,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 102.8,
-    "cls": "CPU-LOGIC",
-    "ms": 14.6,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 102.8,
-    "cls": "VSYNC/PRESENT",
-    "ms": 14.3,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 102.9,
-    "cls": "CPU-LOGIC",
-    "ms": 14.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 102.9,
-    "cls": "VSYNC/PRESENT",
-    "ms": 14.3,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 102.9,
-    "cls": "CPU-LOGIC",
-    "ms": 14.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 102.9,
-    "cls": "MIXED",
-    "ms": 13.9,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.0,
-    "cls": "CPU-LOGIC",
-    "ms": 14.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.0,
-    "cls": "VSYNC/PRESENT",
-    "ms": 13.6,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 103.0,
-    "cls": "CPU-LOGIC",
-    "ms": 13.9,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.0,
-    "cls": "VSYNC/PRESENT",
-    "ms": 13.6,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 103.0,
-    "cls": "CPU-LOGIC",
-    "ms": 13.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.0,
-    "cls": "MIXED",
-    "ms": 13.0,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.1,
-    "cls": "CPU-LOGIC",
-    "ms": 16.4,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.1,
-    "cls": "VSYNC/PRESENT",
-    "ms": 13.0,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 103.1,
-    "cls": "CPU-LOGIC",
-    "ms": 13.0,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.1,
-    "cls": "CPU-LOGIC",
-    "ms": 13.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.1,
-    "cls": "VSYNC/PRESENT",
-    "ms": 13.3,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 103.2,
-    "cls": "GPU-BOUND",
-    "ms": 13.0,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.2,
-    "cls": "CPU-LOGIC",
-    "ms": 13.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.2,
-    "cls": "MIXED",
-    "ms": 13.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.2,
-    "cls": "VSYNC/PRESENT",
-    "ms": 13.3,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 103.2,
-    "cls": "CPU-LOGIC",
-    "ms": 13.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.2,
-    "cls": "VSYNC/PRESENT",
-    "ms": 13.3,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 103.2,
-    "cls": "VSYNC/PRESENT",
-    "ms": 13.3,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 103.2,
-    "cls": "CPU-LOGIC",
-    "ms": 13.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.2,
-    "cls": "VSYNC/PRESENT",
-    "ms": 13.3,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 103.3,
-    "cls": "CPU-LOGIC",
-    "ms": 13.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.3,
-    "cls": "VSYNC/PRESENT",
-    "ms": 13.3,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 103.3,
-    "cls": "MIXED",
-    "ms": 13.0,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.3,
-    "cls": "CPU-LOGIC",
-    "ms": 13.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.3,
-    "cls": "VSYNC/PRESENT",
-    "ms": 13.0,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 103.3,
-    "cls": "MIXED",
-    "ms": 13.0,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.4,
-    "cls": "CPU-LOGIC",
-    "ms": 13.3,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.4,
-    "cls": "VSYNC/PRESENT",
-    "ms": 13.3,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 103.4,
-    "cls": "CPU-LOGIC",
-    "ms": 19.6,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.4,
-    "cls": "MIXED",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.4,
-    "cls": "CPU-LOGIC",
-    "ms": 18.8,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.5,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.7,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 103.5,
-    "cls": "CPU-LOGIC",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.5,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.7,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 103.5,
-    "cls": "CPU-LOGIC",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.5,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.7,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 103.5,
-    "cls": "CPU-LOGIC",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.6,
-    "cls": "MIXED",
-    "ms": 16.7,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.6,
-    "cls": "CPU-LOGIC",
-    "ms": 28.2,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 103.6,
-    "cls": "VSYNC/PRESENT",
-    "ms": 18.2,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 103.6,
-    "cls": "CPU-LOGIC",
-    "ms": 18.2,
-    "n": 1,
-    "rec": false
-   },
-   {
-    "t": 105.5,
-    "cls": "CPU-LOGIC",
-    "ms": 127.1,
+    "ms": 10.5,
     "n": 3,
     "rec": false
    },
    {
-    "t": 106.9,
+    "t": 30.3,
     "cls": "CPU-LOGIC",
-    "ms": 37.0,
+    "ms": 10.7,
     "n": 1,
     "rec": false
    },
    {
-    "t": 106.9,
-    "cls": "CPU-LOGIC",
-    "ms": 37.0,
+    "t": 31.3,
+    "cls": "MIXED",
+    "ms": 9.6,
     "n": 1,
     "rec": false
    },
    {
-    "t": 106.9,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.7,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 107.2,
-    "cls": "VSYNC/PRESENT",
-    "ms": 16.7,
-    "n": 1,
-    "rec": true
-   },
-   {
-    "t": 107.2,
+    "t": 31.3,
     "cls": "CPU-LOGIC",
-    "ms": 12.9,
+    "ms": 9.2,
     "n": 1,
     "rec": false
    },
    {
-    "t": 107.7,
+    "t": 32.1,
     "cls": "CPU-LOGIC",
-    "ms": 32.0,
+    "ms": 13.6,
     "n": 2,
     "rec": false
    },
    {
-    "t": 107.7,
+    "t": 32.1,
+    "cls": "MIXED",
+    "ms": 12.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 32.2,
+    "cls": "MIXED",
+    "ms": 17.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 32.2,
+    "cls": "VSYNC/PRESENT",
+    "ms": 11.5,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 32.2,
+    "cls": "VSYNC/PRESENT",
+    "ms": 13.3,
+    "n": 4,
+    "rec": true
+   },
+   {
+    "t": 32.2,
+    "cls": "MIXED",
+    "ms": 11.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 32.2,
+    "cls": "MIXED",
+    "ms": 11.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 32.2,
+    "cls": "VSYNC/PRESENT",
+    "ms": 11.1,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 32.3,
+    "cls": "MIXED",
+    "ms": 11.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 32.3,
+    "cls": "MIXED",
+    "ms": 11.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 32.3,
+    "cls": "VSYNC/PRESENT",
+    "ms": 11.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 32.3,
+    "cls": "CPU-LOGIC",
+    "ms": 11.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 32.5,
+    "cls": "CPU-LOGIC",
+    "ms": 11.7,
+    "n": 3,
+    "rec": false
+   },
+   {
+    "t": 32.5,
+    "cls": "MIXED",
+    "ms": 14.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 32.5,
+    "cls": "VSYNC/PRESENT",
+    "ms": 14.1,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 32.5,
+    "cls": "MIXED",
+    "ms": 11.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 32.9,
+    "cls": "VSYNC/PRESENT",
+    "ms": 14.1,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 32.9,
+    "cls": "MIXED",
+    "ms": 19.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 32.9,
+    "cls": "VSYNC/PRESENT",
+    "ms": 12.5,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 32.9,
+    "cls": "MIXED",
+    "ms": 15.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 33.0,
+    "cls": "MIXED",
+    "ms": 15.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 33.0,
+    "cls": "VSYNC/PRESENT",
+    "ms": 14.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 33.0,
+    "cls": "MIXED",
+    "ms": 14.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 33.0,
+    "cls": "VSYNC/PRESENT",
+    "ms": 13.9,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 33.0,
+    "cls": "CPU-LOGIC",
+    "ms": 27.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 33.0,
     "cls": "MIXED",
     "ms": 16.7,
     "n": 1,
     "rec": false
    },
    {
-    "t": 107.7,
+    "t": 33.1,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 33.2,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 2,
+    "rec": true
+   },
+   {
+    "t": 33.2,
+    "cls": "CPU-LOGIC",
+    "ms": 26.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 33.2,
+    "cls": "MIXED",
+    "ms": 21.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 33.2,
+    "cls": "MIXED",
+    "ms": 21.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 33.2,
+    "cls": "VSYNC/PRESENT",
+    "ms": 14.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 34.3,
+    "cls": "VSYNC/PRESENT",
+    "ms": 14.3,
+    "n": 2,
+    "rec": true
+   },
+   {
+    "t": 34.7,
+    "cls": "CPU-LOGIC",
+    "ms": 149.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 34.7,
+    "cls": "MIXED",
+    "ms": 23.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 35.0,
+    "cls": "MIXED",
+    "ms": 23.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 35.0,
+    "cls": "CPU-LOGIC",
+    "ms": 17.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 35.7,
+    "cls": "CPU-LOGIC",
+    "ms": 131.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 35.7,
+    "cls": "VSYNC/PRESENT",
+    "ms": 12.5,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 35.7,
+    "cls": "MIXED",
+    "ms": 13.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 36.1,
+    "cls": "CPU-LOGIC",
+    "ms": 17.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 36.8,
+    "cls": "CPU-LOGIC",
+    "ms": 61.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 36.8,
     "cls": "MIXED",
     "ms": 16.7,
     "n": 1,
     "rec": false
    },
    {
-    "t": 107.7,
+    "t": 36.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 17.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 37.9,
+    "cls": "VSYNC/PRESENT",
+    "ms": 17.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 39.1,
+    "cls": "CPU-LOGIC",
+    "ms": 67.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 39.8,
+    "cls": "CPU-LOGIC",
+    "ms": 67.6,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 39.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 14.6,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 40.1,
+    "cls": "CPU-LOGIC",
+    "ms": 10.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 41.2,
+    "cls": "CPU-LOGIC",
+    "ms": 11.4,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 41.9,
+    "cls": "PIPELINE-COMPILE",
+    "ms": 10.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 42.0,
+    "cls": "CPU-LOGIC",
+    "ms": 11.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 43.1,
+    "cls": "MIXED",
+    "ms": 26.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 43.1,
     "cls": "CPU-LOGIC",
     "ms": 15.4,
     "n": 1,
     "rec": false
    },
    {
-    "t": 108.9,
+    "t": 43.2,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 43.2,
     "cls": "CPU-LOGIC",
-    "ms": 28.0,
+    "ms": 11.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 43.7,
+    "cls": "PIPELINE-COMPILE",
+    "ms": 18.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 45.1,
+    "cls": "CPU-LOGIC",
+    "ms": 11.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 46.6,
+    "cls": "CPU-LOGIC",
+    "ms": 13.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 46.6,
+    "cls": "PIPELINE-COMPILE",
+    "ms": 16.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 46.6,
+    "cls": "CPU-LOGIC",
+    "ms": 14.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 48.1,
+    "cls": "CPU-LOGIC",
+    "ms": 21.0,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 48.3,
+    "cls": "CPU-LOGIC",
+    "ms": 68.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 48.3,
+    "cls": "MIXED",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 48.6,
+    "cls": "CPU-LOGIC",
+    "ms": 41.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 48.6,
+    "cls": "MIXED",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 48.6,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 48.6,
+    "cls": "MIXED",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 49.1,
+    "cls": "CPU-LOGIC",
+    "ms": 86.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 49.1,
+    "cls": "MIXED",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 51.7,
+    "cls": "PIPELINE-COMPILE",
+    "ms": 14.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 51.7,
+    "cls": "CPU-LOGIC",
+    "ms": 15.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 51.7,
+    "cls": "MIXED",
+    "ms": 11.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 51.7,
+    "cls": "MIXED",
+    "ms": 11.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 51.7,
+    "cls": "VSYNC/PRESENT",
+    "ms": 11.1,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 51.7,
+    "cls": "CPU-LOGIC",
+    "ms": 12.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 51.7,
+    "cls": "MIXED",
+    "ms": 12.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 52.8,
+    "cls": "MIXED",
+    "ms": 12.5,
+    "n": 7,
+    "rec": false
+   },
+   {
+    "t": 53.6,
+    "cls": "CPU-LOGIC",
+    "ms": 12.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 54.7,
+    "cls": "PIPELINE-COMPILE",
+    "ms": 27.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 54.7,
+    "cls": "MIXED",
+    "ms": 11.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 54.7,
+    "cls": "CPU-LOGIC",
+    "ms": 13.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 54.7,
+    "cls": "VSYNC/PRESENT",
+    "ms": 13.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 54.7,
+    "cls": "PIPELINE-COMPILE",
+    "ms": 12.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 54.7,
+    "cls": "CPU-LOGIC",
+    "ms": 12.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 54.7,
+    "cls": "MIXED",
+    "ms": 12.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 54.7,
+    "cls": "VSYNC/PRESENT",
+    "ms": 11.2,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 54.7,
+    "cls": "CPU-LOGIC",
+    "ms": 12.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 55.1,
+    "cls": "CPU-LOGIC",
+    "ms": 74.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 55.1,
+    "cls": "MIXED",
+    "ms": 21.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 57.9,
+    "cls": "CPU-LOGIC",
+    "ms": 139.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 57.9,
+    "cls": "MIXED",
+    "ms": 22.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.0,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.0,
+    "cls": "VSYNC/PRESENT",
+    "ms": 15.6,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 58.0,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.0,
+    "cls": "VSYNC/PRESENT",
+    "ms": 10.8,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 58.0,
+    "cls": "CPU-LOGIC",
+    "ms": 11.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.0,
+    "cls": "VSYNC/PRESENT",
+    "ms": 15.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 58.1,
+    "cls": "CPU-LOGIC",
+    "ms": 12.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.1,
+    "cls": "VSYNC/PRESENT",
+    "ms": 14.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 58.1,
+    "cls": "MIXED",
+    "ms": 8.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.1,
+    "cls": "CPU-LOGIC",
+    "ms": 11.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.1,
+    "cls": "VSYNC/PRESENT",
+    "ms": 12.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 58.1,
+    "cls": "MIXED",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.1,
+    "cls": "MIXED",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.1,
+    "cls": "CPU-LOGIC",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.1,
+    "cls": "CPU-LOGIC",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.1,
+    "cls": "MIXED",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.2,
+    "cls": "VSYNC/PRESENT",
+    "ms": 8.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 58.2,
+    "cls": "CPU-LOGIC",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.2,
+    "cls": "MIXED",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.2,
+    "cls": "MIXED",
+    "ms": 8.3,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 58.2,
+    "cls": "CPU-LOGIC",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.2,
+    "cls": "CPU-LOGIC",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.2,
+    "cls": "VSYNC/PRESENT",
+    "ms": 8.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 58.2,
+    "cls": "MIXED",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.3,
+    "cls": "CPU-LOGIC",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.3,
+    "cls": "CPU-LOGIC",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.3,
+    "cls": "MIXED",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.3,
+    "cls": "CPU-LOGIC",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.4,
+    "cls": "CPU-LOGIC",
+    "ms": 8.8,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 58.4,
+    "cls": "MIXED",
+    "ms": 10.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.4,
+    "cls": "MIXED",
+    "ms": 10.8,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 58.4,
+    "cls": "CPU-LOGIC",
+    "ms": 13.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.4,
+    "cls": "MIXED",
+    "ms": 9.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.4,
+    "cls": "MIXED",
+    "ms": 9.1,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 58.4,
+    "cls": "CPU-LOGIC",
+    "ms": 12.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.4,
+    "cls": "MIXED",
+    "ms": 9.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.5,
+    "cls": "MIXED",
+    "ms": 9.7,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 58.5,
+    "cls": "CPU-LOGIC",
+    "ms": 9.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.5,
+    "cls": "MIXED",
+    "ms": 9.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.5,
+    "cls": "MIXED",
+    "ms": 9.7,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 58.5,
+    "cls": "CPU-LOGIC",
+    "ms": 9.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.5,
+    "cls": "MIXED",
+    "ms": 9.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.6,
+    "cls": "CPU-LOGIC",
+    "ms": 12.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.6,
+    "cls": "CPU-LOGIC",
+    "ms": 58.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.6,
+    "cls": "MIXED",
+    "ms": 21.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.6,
+    "cls": "VSYNC/PRESENT",
+    "ms": 20.4,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 58.6,
+    "cls": "CPU-LOGIC",
+    "ms": 16.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.7,
+    "cls": "MIXED",
+    "ms": 13.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.7,
+    "cls": "MIXED",
+    "ms": 13.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.7,
+    "cls": "CPU-LOGIC",
+    "ms": 15.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.7,
+    "cls": "CPU-LOGIC",
+    "ms": 15.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.7,
+    "cls": "MIXED",
+    "ms": 11.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.8,
+    "cls": "MIXED",
+    "ms": 11.1,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 58.8,
+    "cls": "CPU-LOGIC",
+    "ms": 10.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 12.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 58.8,
+    "cls": "MIXED",
+    "ms": 9.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.8,
+    "cls": "MIXED",
+    "ms": 9.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.8,
+    "cls": "CPU-LOGIC",
+    "ms": 10.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.8,
+    "cls": "MIXED",
+    "ms": 10.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.8,
+    "cls": "MIXED",
+    "ms": 10.0,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 58.8,
+    "cls": "CPU-LOGIC",
+    "ms": 10.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.8,
+    "cls": "MIXED",
+    "ms": 9.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.9,
+    "cls": "MIXED",
+    "ms": 9.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.9,
+    "cls": "CPU-LOGIC",
+    "ms": 9.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.9,
+    "cls": "VSYNC/PRESENT",
+    "ms": 9.5,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 58.9,
+    "cls": "CPU-LOGIC",
+    "ms": 9.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 58.9,
+    "cls": "MIXED",
+    "ms": 9.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 59.5,
+    "cls": "MIXED",
+    "ms": 9.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 59.5,
+    "cls": "PIPELINE-COMPILE",
+    "ms": 57.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 59.5,
+    "cls": "MIXED",
+    "ms": 23.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 61.2,
+    "cls": "CPU-LOGIC",
+    "ms": 11.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 61.5,
+    "cls": "CPU-LOGIC",
+    "ms": 17.0,
+    "n": 4,
+    "rec": false
+   },
+   {
+    "t": 61.5,
+    "cls": "VSYNC/PRESENT",
+    "ms": 11.1,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 61.5,
+    "cls": "VSYNC/PRESENT",
+    "ms": 11.1,
+    "n": 2,
+    "rec": true
+   },
+   {
+    "t": 61.5,
+    "cls": "MIXED",
+    "ms": 11.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 61.7,
+    "cls": "MIXED",
+    "ms": 15.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 61.7,
+    "cls": "PIPELINE-COMPILE",
+    "ms": 14.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 61.7,
+    "cls": "MIXED",
+    "ms": 19.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 61.7,
+    "cls": "VSYNC/PRESENT",
+    "ms": 20.1,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 61.8,
+    "cls": "MIXED",
+    "ms": 21.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 61.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 19.8,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 61.8,
+    "cls": "CPU-LOGIC",
+    "ms": 24.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 61.8,
+    "cls": "MIXED",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 61.8,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 61.9,
+    "cls": "CPU-LOGIC",
+    "ms": 21.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 61.9,
+    "cls": "VSYNC/PRESENT",
+    "ms": 20.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 61.9,
+    "cls": "VSYNC/PRESENT",
+    "ms": 20.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 61.9,
+    "cls": "MIXED",
+    "ms": 19.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 62.1,
+    "cls": "MIXED",
+    "ms": 19.4,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 62.1,
+    "cls": "CPU-LOGIC",
+    "ms": 16.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 62.1,
+    "cls": "MIXED",
+    "ms": 11.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 62.1,
+    "cls": "CPU-LOGIC",
+    "ms": 11.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 62.1,
+    "cls": "CPU-LOGIC",
+    "ms": 14.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 62.1,
+    "cls": "VSYNC/PRESENT",
+    "ms": 11.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 62.2,
+    "cls": "MIXED",
+    "ms": 11.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 62.2,
+    "cls": "CPU-LOGIC",
+    "ms": 12.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 62.2,
+    "cls": "VSYNC/PRESENT",
+    "ms": 12.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 62.2,
+    "cls": "MIXED",
+    "ms": 12.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 62.2,
+    "cls": "CPU-LOGIC",
+    "ms": 18.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 62.2,
+    "cls": "MIXED",
+    "ms": 12.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 62.3,
+    "cls": "MIXED",
+    "ms": 12.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 62.3,
+    "cls": "CPU-LOGIC",
+    "ms": 26.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 62.3,
+    "cls": "VSYNC/PRESENT",
+    "ms": 14.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 62.3,
+    "cls": "CPU-LOGIC",
+    "ms": 14.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 62.3,
+    "cls": "VSYNC/PRESENT",
+    "ms": 14.8,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 62.3,
+    "cls": "CPU-LOGIC",
+    "ms": 14.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 62.3,
+    "cls": "VSYNC/PRESENT",
+    "ms": 14.6,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 62.4,
+    "cls": "MIXED",
+    "ms": 14.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 62.4,
+    "cls": "CPU-LOGIC",
+    "ms": 14.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 62.4,
+    "cls": "VSYNC/PRESENT",
+    "ms": 14.6,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 62.4,
+    "cls": "CPU-LOGIC",
+    "ms": 13.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 62.4,
+    "cls": "CPU-LOGIC",
+    "ms": 16.0,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 62.4,
+    "cls": "VSYNC/PRESENT",
+    "ms": 13.6,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 62.5,
+    "cls": "CPU-LOGIC",
+    "ms": 13.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 62.5,
+    "cls": "VSYNC/PRESENT",
+    "ms": 13.6,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 62.5,
+    "cls": "CPU-LOGIC",
+    "ms": 13.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 62.5,
+    "cls": "VSYNC/PRESENT",
+    "ms": 13.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 63.6,
+    "cls": "VSYNC/PRESENT",
+    "ms": 13.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 65.3,
+    "cls": "CPU-LOGIC",
+    "ms": 11.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.3,
+    "cls": "CPU-LOGIC",
+    "ms": 13.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.3,
+    "cls": "MIXED",
+    "ms": 9.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.3,
+    "cls": "CPU-LOGIC",
+    "ms": 9.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.3,
+    "cls": "CPU-LOGIC",
+    "ms": 11.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.3,
+    "cls": "MIXED",
+    "ms": 10.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.3,
+    "cls": "CPU-LOGIC",
+    "ms": 17.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.4,
+    "cls": "CPU-LOGIC",
+    "ms": 17.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.4,
+    "cls": "VSYNC/PRESENT",
+    "ms": 12.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 65.4,
+    "cls": "CPU-LOGIC",
+    "ms": 13.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.4,
+    "cls": "CPU-LOGIC",
+    "ms": 13.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.4,
+    "cls": "VSYNC/PRESENT",
+    "ms": 13.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 65.4,
+    "cls": "MIXED",
+    "ms": 11.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.4,
+    "cls": "CPU-LOGIC",
+    "ms": 12.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.4,
+    "cls": "VSYNC/PRESENT",
+    "ms": 12.5,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 65.4,
+    "cls": "MIXED",
+    "ms": 10.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.4,
+    "cls": "CPU-LOGIC",
+    "ms": 12.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.5,
+    "cls": "MIXED",
+    "ms": 9.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.5,
+    "cls": "CPU-LOGIC",
+    "ms": 9.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.7,
+    "cls": "CPU-LOGIC",
+    "ms": 19.9,
+    "n": 3,
+    "rec": false
+   },
+   {
+    "t": 65.7,
+    "cls": "VSYNC/PRESENT",
+    "ms": 12.5,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 65.8,
+    "cls": "MIXED",
+    "ms": 10.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.8,
+    "cls": "CPU-LOGIC",
+    "ms": 17.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 65.8,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 65.8,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 65.9,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.9,
+    "cls": "VSYNC/PRESENT",
+    "ms": 14.1,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 65.9,
+    "cls": "CPU-LOGIC",
+    "ms": 11.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 65.9,
+    "cls": "VSYNC/PRESENT",
+    "ms": 14.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 66.0,
+    "cls": "CPU-LOGIC",
+    "ms": 10.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 66.1,
+    "cls": "CPU-LOGIC",
+    "ms": 13.3,
+    "n": 3,
+    "rec": false
+   },
+   {
+    "t": 66.1,
+    "cls": "VSYNC/PRESENT",
+    "ms": 10.4,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 66.1,
+    "cls": "MIXED",
+    "ms": 10.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 66.1,
+    "cls": "MIXED",
+    "ms": 10.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 66.1,
+    "cls": "CPU-LOGIC",
+    "ms": 10.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 66.1,
+    "cls": "VSYNC/PRESENT",
+    "ms": 10.4,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 66.2,
+    "cls": "VSYNC/PRESENT",
+    "ms": 10.4,
+    "n": 2,
+    "rec": true
+   },
+   {
+    "t": 66.2,
+    "cls": "CPU-LOGIC",
+    "ms": 10.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 66.7,
+    "cls": "CPU-LOGIC",
+    "ms": 26.6,
+    "n": 3,
+    "rec": false
+   },
+   {
+    "t": 66.7,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 66.7,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 66.7,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.2,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 66.7,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 67.4,
+    "cls": "CPU-LOGIC",
+    "ms": 16.8,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 67.4,
+    "cls": "MIXED",
+    "ms": 25.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 67.6,
+    "cls": "CPU-LOGIC",
+    "ms": 18.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 70.6,
+    "cls": "CPU-LOGIC",
+    "ms": 17.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 71.6,
+    "cls": "CPU-LOGIC",
+    "ms": 17.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 71.6,
+    "cls": "CPU-LOGIC",
+    "ms": 15.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 72.9,
+    "cls": "CPU-LOGIC",
+    "ms": 21.6,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 74.6,
+    "cls": "CPU-LOGIC",
+    "ms": 15.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 75.6,
+    "cls": "CPU-LOGIC",
+    "ms": 23.2,
+    "n": 5,
+    "rec": false
+   },
+   {
+    "t": 75.6,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 75.7,
+    "cls": "CPU-LOGIC",
+    "ms": 18.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 75.7,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 75.7,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 75.7,
+    "cls": "MIXED",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 77.1,
+    "cls": "CPU-LOGIC",
+    "ms": 46.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 78.1,
+    "cls": "CPU-LOGIC",
+    "ms": 46.9,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 78.9,
+    "cls": "MIXED",
+    "ms": 28.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 79.0,
+    "cls": "CPU-LOGIC",
+    "ms": 23.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 79.0,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.1,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 80.8,
+    "cls": "CPU-LOGIC",
+    "ms": 13.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 82.0,
+    "cls": "CPU-LOGIC",
+    "ms": 14.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 83.7,
+    "cls": "CPU-LOGIC",
+    "ms": 129.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 83.7,
+    "cls": "MIXED",
+    "ms": 17.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 83.7,
+    "cls": "MIXED",
+    "ms": 17.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 83.7,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 83.8,
+    "cls": "MIXED",
+    "ms": 10.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 84.0,
+    "cls": "MIXED",
+    "ms": 11.4,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 84.0,
+    "cls": "VSYNC/PRESENT",
+    "ms": 20.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 84.2,
+    "cls": "VSYNC/PRESENT",
+    "ms": 21.4,
+    "n": 8,
+    "rec": true
+   },
+   {
+    "t": 84.2,
+    "cls": "CPU-LOGIC",
+    "ms": 10.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 84.2,
+    "cls": "MIXED",
+    "ms": 10.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 84.2,
+    "cls": "CPU-LOGIC",
+    "ms": 11.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 84.2,
+    "cls": "MIXED",
+    "ms": 11.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 84.2,
+    "cls": "VSYNC/PRESENT",
+    "ms": 10.6,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 84.5,
+    "cls": "CPU-LOGIC",
+    "ms": 10.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 84.5,
+    "cls": "MIXED",
+    "ms": 10.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 84.8,
+    "cls": "CPU-LOGIC",
+    "ms": 12.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 85.8,
+    "cls": "CPU-LOGIC",
+    "ms": 33.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 85.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 11.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 85.8,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 85.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 11.8,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 87.3,
+    "cls": "CPU-LOGIC",
+    "ms": 17.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.3,
+    "cls": "MIXED",
+    "ms": 11.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.3,
+    "cls": "MIXED",
+    "ms": 11.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.3,
+    "cls": "CPU-LOGIC",
+    "ms": 14.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.3,
+    "cls": "MIXED",
+    "ms": 10.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.3,
+    "cls": "MIXED",
+    "ms": 10.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.3,
+    "cls": "CPU-LOGIC",
+    "ms": 10.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.3,
+    "cls": "VSYNC/PRESENT",
+    "ms": 10.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 87.4,
+    "cls": "VSYNC/PRESENT",
+    "ms": 10.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 87.4,
+    "cls": "MIXED",
+    "ms": 10.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.4,
+    "cls": "MIXED",
+    "ms": 10.0,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 87.4,
+    "cls": "VSYNC/PRESENT",
+    "ms": 10.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 87.4,
+    "cls": "CPU-LOGIC",
+    "ms": 10.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.4,
+    "cls": "VSYNC/PRESENT",
+    "ms": 10.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 87.4,
+    "cls": "CPU-LOGIC",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.4,
+    "cls": "MIXED",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.5,
+    "cls": "MIXED",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.5,
+    "cls": "CPU-LOGIC",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.5,
+    "cls": "CPU-LOGIC",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.5,
+    "cls": "MIXED",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.5,
+    "cls": "CPU-LOGIC",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.5,
+    "cls": "MIXED",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.5,
+    "cls": "CPU-LOGIC",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.6,
+    "cls": "CPU-LOGIC",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.6,
+    "cls": "VSYNC/PRESENT",
+    "ms": 8.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 87.6,
+    "cls": "MIXED",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.6,
+    "cls": "MIXED",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.6,
+    "cls": "CPU-LOGIC",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.6,
+    "cls": "MIXED",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.6,
+    "cls": "VSYNC/PRESENT",
+    "ms": 8.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 87.6,
+    "cls": "CPU-LOGIC",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.6,
+    "cls": "MIXED",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.7,
+    "cls": "MIXED",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.7,
+    "cls": "CPU-LOGIC",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.9,
+    "cls": "CPU-LOGIC",
+    "ms": 21.2,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 87.9,
+    "cls": "MIXED",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.9,
+    "cls": "MIXED",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 87.9,
+    "cls": "CPU-LOGIC",
+    "ms": 10.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 88.0,
+    "cls": "VSYNC/PRESENT",
+    "ms": 10.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 88.0,
+    "cls": "MIXED",
+    "ms": 10.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 88.0,
+    "cls": "MIXED",
+    "ms": 10.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 88.0,
+    "cls": "CPU-LOGIC",
+    "ms": 10.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 88.0,
+    "cls": "MIXED",
+    "ms": 10.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 88.0,
+    "cls": "MIXED",
+    "ms": 10.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 88.0,
+    "cls": "CPU-LOGIC",
+    "ms": 22.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 88.0,
+    "cls": "MIXED",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 88.0,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 88.1,
+    "cls": "MIXED",
+    "ms": 11.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 88.1,
+    "cls": "CPU-LOGIC",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 88.1,
+    "cls": "MIXED",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 89.5,
+    "cls": "CPU-LOGIC",
+    "ms": 135.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 89.5,
+    "cls": "VSYNC/PRESENT",
+    "ms": 12.5,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 90.7,
+    "cls": "CPU-LOGIC",
+    "ms": 11.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 90.8,
+    "cls": "CPU-LOGIC",
+    "ms": 18.4,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 90.8,
+    "cls": "MIXED",
+    "ms": 10.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 90.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 10.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 90.8,
+    "cls": "MIXED",
+    "ms": 10.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 90.8,
+    "cls": "CPU-LOGIC",
+    "ms": 10.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 90.8,
+    "cls": "MIXED",
+    "ms": 10.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 90.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 10.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 90.8,
+    "cls": "MIXED",
+    "ms": 10.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 90.8,
+    "cls": "MIXED",
+    "ms": 10.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 90.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 10.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 91.0,
+    "cls": "CPU-LOGIC",
+    "ms": 23.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 91.0,
+    "cls": "MIXED",
+    "ms": 13.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 91.0,
+    "cls": "MIXED",
+    "ms": 13.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 91.0,
+    "cls": "VSYNC/PRESENT",
+    "ms": 11.1,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 91.0,
+    "cls": "CPU-LOGIC",
+    "ms": 11.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 91.0,
+    "cls": "MIXED",
+    "ms": 11.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 91.0,
+    "cls": "VSYNC/PRESENT",
+    "ms": 11.1,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 91.3,
+    "cls": "MIXED",
+    "ms": 12.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 91.3,
+    "cls": "MIXED",
+    "ms": 12.1,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 91.3,
+    "cls": "VSYNC/PRESENT",
+    "ms": 12.2,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 91.3,
+    "cls": "MIXED",
+    "ms": 24.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 91.4,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 91.4,
+    "cls": "MIXED",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 91.4,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 91.4,
+    "cls": "MIXED",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 91.8,
+    "cls": "MIXED",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 91.8,
+    "cls": "CPU-LOGIC",
+    "ms": 26.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 91.8,
+    "cls": "CPU-LOGIC",
+    "ms": 26.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 91.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 91.8,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 91.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 91.8,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 91.8,
+    "cls": "PIPELINE-COMPILE",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 91.9,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 91.9,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 91.9,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 91.9,
+    "cls": "MIXED",
+    "ms": 13.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 92.2,
+    "cls": "CPU-LOGIC",
+    "ms": 17.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 92.7,
+    "cls": "VSYNC/PRESENT",
+    "ms": 13.5,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 92.7,
+    "cls": "CPU-LOGIC",
+    "ms": 17.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 93.7,
+    "cls": "VSYNC/PRESENT",
+    "ms": 14.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 93.8,
+    "cls": "MIXED",
+    "ms": 13.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 93.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 14.8,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 93.8,
+    "cls": "MIXED",
+    "ms": 13.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 93.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.2,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 93.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.2,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 93.8,
+    "cls": "MIXED",
+    "ms": 13.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 93.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 13.9,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 93.9,
+    "cls": "MIXED",
+    "ms": 13.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 93.9,
+    "cls": "MIXED",
+    "ms": 13.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 93.9,
+    "cls": "VSYNC/PRESENT",
+    "ms": 13.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 93.9,
+    "cls": "CPU-LOGIC",
+    "ms": 12.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 93.9,
+    "cls": "MIXED",
+    "ms": 13.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 94.2,
+    "cls": "VSYNC/PRESENT",
+    "ms": 13.8,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 94.3,
+    "cls": "MIXED",
+    "ms": 17.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 94.3,
+    "cls": "MIXED",
+    "ms": 17.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 94.3,
+    "cls": "CPU-LOGIC",
+    "ms": 15.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 94.3,
+    "cls": "VSYNC/PRESENT",
+    "ms": 13.9,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 94.3,
+    "cls": "MIXED",
+    "ms": 11.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 94.3,
+    "cls": "CPU-LOGIC",
+    "ms": 13.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 94.3,
+    "cls": "VSYNC/PRESENT",
+    "ms": 13.9,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 94.4,
+    "cls": "VSYNC/PRESENT",
+    "ms": 13.9,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 94.4,
+    "cls": "CPU-LOGIC",
+    "ms": 13.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 94.4,
+    "cls": "MIXED",
+    "ms": 11.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 94.4,
+    "cls": "VSYNC/PRESENT",
+    "ms": 13.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 94.4,
+    "cls": "CPU-LOGIC",
+    "ms": 13.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 94.4,
+    "cls": "VSYNC/PRESENT",
+    "ms": 13.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 94.4,
+    "cls": "VSYNC/PRESENT",
+    "ms": 13.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 94.4,
+    "cls": "CPU-LOGIC",
+    "ms": 13.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 94.4,
+    "cls": "VSYNC/PRESENT",
+    "ms": 13.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 94.5,
+    "cls": "CPU-LOGIC",
+    "ms": 13.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 94.9,
+    "cls": "CPU-LOGIC",
+    "ms": 25.0,
+    "n": 3,
+    "rec": false
+   },
+   {
+    "t": 94.9,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 94.9,
+    "cls": "CPU-LOGIC",
+    "ms": 17.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 94.9,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 94.9,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 95.0,
+    "cls": "MIXED",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 95.0,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 95.0,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 95.0,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 95.0,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 95.2,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 2,
+    "rec": true
+   },
+   {
+    "t": 95.2,
+    "cls": "CPU-LOGIC",
+    "ms": 28.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 95.2,
+    "cls": "MIXED",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 95.2,
+    "cls": "VSYNC/PRESENT",
+    "ms": 12.5,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 96.7,
+    "cls": "CPU-LOGIC",
+    "ms": 12.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 96.7,
+    "cls": "CPU-LOGIC",
+    "ms": 12.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 96.7,
+    "cls": "VSYNC/PRESENT",
+    "ms": 8.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 96.7,
+    "cls": "MIXED",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 96.7,
+    "cls": "VSYNC/PRESENT",
+    "ms": 8.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 96.7,
+    "cls": "MIXED",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 96.7,
+    "cls": "VSYNC/PRESENT",
+    "ms": 8.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 96.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 8.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 96.8,
+    "cls": "CPU-LOGIC",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 96.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 8.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 96.8,
+    "cls": "MIXED",
+    "ms": 9.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 96.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 9.1,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 96.8,
+    "cls": "CPU-LOGIC",
+    "ms": 9.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 96.8,
+    "cls": "MIXED",
+    "ms": 12.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 96.8,
+    "cls": "MIXED",
+    "ms": 12.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 96.8,
+    "cls": "VSYNC/PRESENT",
+    "ms": 9.1,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 96.9,
+    "cls": "CPU-LOGIC",
+    "ms": 20.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 96.9,
+    "cls": "MIXED",
+    "ms": 10.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 96.9,
+    "cls": "VSYNC/PRESENT",
+    "ms": 10.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 96.9,
+    "cls": "CPU-LOGIC",
+    "ms": 19.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 96.9,
+    "cls": "VSYNC/PRESENT",
+    "ms": 11.1,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 96.9,
+    "cls": "VSYNC/PRESENT",
+    "ms": 11.1,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 96.9,
+    "cls": "CPU-LOGIC",
+    "ms": 21.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 97.0,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 97.0,
+    "cls": "CPU-LOGIC",
+    "ms": 31.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 97.0,
+    "cls": "VSYNC/PRESENT",
+    "ms": 18.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 97.0,
+    "cls": "CPU-LOGIC",
+    "ms": 23.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 97.0,
+    "cls": "VSYNC/PRESENT",
+    "ms": 17.0,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 97.0,
+    "cls": "CPU-LOGIC",
+    "ms": 21.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 97.1,
+    "cls": "MIXED",
+    "ms": 12.5,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 97.1,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 97.1,
+    "cls": "VSYNC/PRESENT",
+    "ms": 8.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 97.1,
+    "cls": "VSYNC/PRESENT",
+    "ms": 8.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 97.1,
+    "cls": "CPU-LOGIC",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 97.1,
+    "cls": "VSYNC/PRESENT",
+    "ms": 8.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 97.1,
+    "cls": "VSYNC/PRESENT",
+    "ms": 8.3,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 97.1,
+    "cls": "CPU-LOGIC",
+    "ms": 8.3,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 97.1,
+    "cls": "MIXED",
+    "ms": 8.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 98.3,
+    "cls": "MIXED",
+    "ms": 8.9,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 98.3,
+    "cls": "CPU-LOGIC",
+    "ms": 9.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 99.0,
+    "cls": "CPU-LOGIC",
+    "ms": 27.8,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 99.0,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 99.1,
+    "cls": "CPU-LOGIC",
+    "ms": 35.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 99.1,
+    "cls": "CPU-LOGIC",
+    "ms": 35.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 99.1,
+    "cls": "EXTERNAL",
+    "ms": 25.0,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 99.1,
+    "cls": "CPU-LOGIC",
+    "ms": 17.6,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 100.1,
+    "cls": "CPU-LOGIC",
+    "ms": 130.9,
+    "n": 2,
+    "rec": false
+   },
+   {
+    "t": 100.1,
+    "cls": "VSYNC/PRESENT",
+    "ms": 15.1,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 100.4,
+    "cls": "CPU-LOGIC",
+    "ms": 13.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 101.3,
+    "cls": "CPU-LOGIC",
+    "ms": 22.1,
+    "n": 4,
+    "rec": false
+   },
+   {
+    "t": 101.3,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 101.3,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 101.3,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 101.3,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 101.3,
+    "cls": "MIXED",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 101.4,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 101.4,
+    "cls": "MIXED",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 101.4,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 101.4,
+    "cls": "MIXED",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 101.4,
+    "cls": "CPU-LOGIC",
+    "ms": 18.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 101.5,
+    "cls": "MIXED",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 101.5,
+    "cls": "CPU-LOGIC",
+    "ms": 18.1,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 101.5,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 101.5,
+    "cls": "CPU-LOGIC",
+    "ms": 13.8,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 101.9,
+    "cls": "CPU-LOGIC",
+    "ms": 43.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 101.9,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 102.4,
+    "cls": "CPU-LOGIC",
+    "ms": 20.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 102.4,
+    "cls": "CPU-LOGIC",
+    "ms": 20.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 102.4,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 102.4,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 102.5,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 102.5,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 102.5,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.7,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 102.5,
+    "cls": "CPU-LOGIC",
+    "ms": 16.7,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 102.5,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.1,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 102.5,
+    "cls": "CPU-LOGIC",
+    "ms": 15.2,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 103.4,
+    "cls": "CPU-LOGIC",
+    "ms": 39.4,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 103.4,
+    "cls": "VSYNC/PRESENT",
+    "ms": 16.4,
+    "n": 1,
+    "rec": true
+   },
+   {
+    "t": 106.2,
+    "cls": "CPU-LOGIC",
+    "ms": 21.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 107.9,
+    "cls": "CPU-LOGIC",
+    "ms": 21.9,
+    "n": 1,
+    "rec": false
+   },
+   {
+    "t": 109.7,
+    "cls": "CPU-LOGIC",
+    "ms": 20.7,
     "n": 1,
     "rec": false
    }
   ],
   "census": {
-   "PIPELINE-COMPILE": 6,
-   "CPU-LOGIC": 189,
-   "MIXED": 47,
-   "ASSET-BUILD": 2,
-   "GPU-BOUND": 1
+   "VSYNC/PRESENT": 2,
+   "MIXED": 217,
+   "PIPELINE-COMPILE": 10,
+   "CPU-LOGIC": 292,
+   "ASSET-BUILD": 1,
+   "EXTERNAL": 1
   },
-  "recovery": 64,
+  "recovery": 169,
   "env": "managed-debugger=False godot-context=release csharp=Release(optimized) vsync=Enabled maxfps=0 refresh=60Hz cpu=24c gpu=NVIDIA GeForce RTX 3080",
   "debug_build": false,
   "summary": [
-   "=== frame profiler session summary (109s, 11269 frames) ===",
-   "  fps: avg 125.4  1%low 56  0.1%low 7  (median 6.9ms, worst 150.0ms)",
-   "  hitches: 309 total \u2014 245 primaries: 2 ASSET-BUILD, 6 PIPELINE-COMPILE, 1 GPU-BOUND, 189 CPU-LOGIC, 47 MIXED; +64 VSYNC/PRESENT recovery tails",
-   "    worst[1]: 148.2ms CPU-LOGIC (particles.cpu) @ t=102.2s",
-   "    worst[2]: 147.2ms CPU-LOGIC (ng.process) @ t=34.5s",
-   "    worst[3]: 142.7ms CPU-LOGIC (cw.process) @ t=33.7s",
-   "    worst[4]: 141.3ms CPU-LOGIC (hud.trueaim) @ t=91.5s",
-   "    worst[5]: 136.4ms CPU-LOGIC (move.in) @ t=89.6s",
-   "  gc: g0+176 g1+57 g2+6, total pause 632ms",
-   "  alloc: 1.8GB total, 9MB/s recent, peak 404.3MB in one frame @ t=11.1s, heap 605.6MB",
-   "  scope coverage debt: proc:other dominated 2 hitch(es), watchdog '(unscoped)' won 3 \u2014 add Prof scopes there"
+   "=== frame profiler session summary (110s, 12815 frames) ===",
+   "  fps: avg 142.6  1%low 57  0.1%low 8  (median 6.1ms, worst 150.0ms)",
+   "  hitches: 692 total \u2014 523 primaries: 1 EXTERNAL, 1 ASSET-BUILD, 10 PIPELINE-COMPILE, 2 VSYNC/PRESENT, 292 CPU-LOGIC, 217 MIXED; +169 VSYNC/PRESENT recovery tails",
+   "    worst[1]: 149.2ms CPU-LOGIC (move.in) @ t=34.7s",
+   "    worst[2]: 139.8ms CPU-LOGIC (hud.trueaim) @ t=57.9s",
+   "    worst[3]: 135.4ms CPU-LOGIC (net.send) @ t=89.5s",
+   "    worst[4]: 131.6ms CPU-LOGIC (particles.cpu) @ t=35.7s",
+   "    worst[5]: 130.9ms CPU-LOGIC (cev.process) @ t=100.1s",
+   "  gc: g0+186 g1+59 g2+6, total pause 772ms",
+   "  alloc: 1.9GB total, 10MB/s recent, peak 404.7MB in one frame @ t=11.7s, heap 599.5MB",
+   "  scope coverage debt: proc:other dominated 11 hitch(es), watchdog '(unscoped)' won 2 \u2014 add Prof scopes there"
   ]
  },
  "clusters": [
   {
-   "start": 89.6,
-   "end": 108.9,
-   "count": 140,
-   "ms": 5111.399999999996,
+   "start": 70.6,
+   "end": 103.4,
+   "count": 195,
+   "ms": 3566.099999999998,
    "classes": {
-    "CPU-LOGIC": 110,
-    "MIXED": 29,
-    "GPU-BOUND": 1
+    "CPU-LOGIC": 116,
+    "MIXED": 77,
+    "PIPELINE-COMPILE": 1,
+    "EXTERNAL": 1
    }
   },
   {
-   "start": 33.7,
-   "end": 46.6,
-   "count": 52,
-   "ms": 2500.9999999999995,
+   "start": 22.6,
+   "end": 36.8,
+   "count": 125,
+   "ms": 2364.199999999999,
    "classes": {
-    "CPU-LOGIC": 44,
-    "MIXED": 6,
+    "MIXED": 60,
+    "PIPELINE-COMPILE": 1,
+    "CPU-LOGIC": 63,
+    "ASSET-BUILD": 1
+   }
+  },
+  {
+   "start": 57.9,
+   "end": 62.5,
+   "count": 107,
+   "ms": 1568.2,
+   "classes": {
+    "CPU-LOGIC": 52,
+    "MIXED": 53,
     "PIPELINE-COMPILE": 2
    }
   },
   {
-   "start": 27.1,
-   "end": 28.3,
-   "count": 19,
-   "ms": 319.90000000000003,
+   "start": 39.1,
+   "end": 49.1,
+   "count": 26,
+   "ms": 708.4000000000002,
    "classes": {
-    "CPU-LOGIC": 11,
-    "MIXED": 6,
-    "ASSET-BUILD": 2
-   }
-  },
-  {
-   "start": 22.8,
-   "end": 24.3,
-   "count": 10,
-   "ms": 292.0,
-   "classes": {
-    "PIPELINE-COMPILE": 1,
-    "CPU-LOGIC": 6,
-    "MIXED": 3
-   }
-  },
-  {
-   "start": 49.3,
-   "end": 52.0,
-   "count": 7,
-   "ms": 166.0,
-   "classes": {
+    "CPU-LOGIC": 18,
     "PIPELINE-COMPILE": 3,
-    "CPU-LOGIC": 3,
-    "MIXED": 1
+    "MIXED": 5
+   }
+  },
+  {
+   "start": 65.3,
+   "end": 67.6,
+   "count": 42,
+   "ms": 622.7999999999998,
+   "classes": {
+    "CPU-LOGIC": 33,
+    "MIXED": 9
    }
   }
  ]

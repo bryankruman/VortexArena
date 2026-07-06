@@ -166,6 +166,29 @@ same export. Older idle cells ran on the morning export (pre-bench code — iner
    200–370 ms in-play streaming; `wz_portal_lookat` appears inert (portal cell showed no draw
    increase — investigate when portal work starts; the demo camera crosses warpzones organically).
 
+### Phase 1b — UNCAPPED re-census (Bryan's call: measure and minimize peak frame time + dips, don't mask them)
+
+`cl_maxfps 0` now means truly Unlimited (c94b8ae — the menu's "Unlimited" was silently auto-capped at
+144; only the untouched DP default 256 still auto-caps), and perf-run captures uncapped from here on.
+Same demo scenario, fresh export, post-load rows (capped twins in parentheses):
+
+| cell | pl avg fps | pl p50 ms | pl p99 | pl p99.9 | pl 1%low | pl 0.1%low | pl hitch ms |
+|---|---|---|---|---|---|---|---|
+| catharsis un A/B | 145.1 / 127.8 (128) | 6.1 / 6.7 (6.9) | 17.0 / 24.4 (17–21) | 87 / 132 (71–92) | 59 / 41 (48–60) | 12 / 8 (11–14) | 7513 / **12723** (6.0–6.5 k) |
+| stormkeep un A/B | 179.8 / 181.5 (143) | 5.6 / 5.6 (6.9) | 11.0 / 9.7 (8.3) | 19.9 / 18.3 (16.8) | 91 / 103 (120) | 50 / 55 (60) | 764 / 1156 (213–331) |
+| solarium un | 167.1 (137) | 5.6 (6.9) | 13.3 (12.7) | 66.7 (55.4) | 75 (78) | 15 (18) | 685 (2376) |
+| xoylent un | 150.1 (136) | 6.2 (6.9) | 16.1 (15.9) | 38.1 (34.8) | 62 (63) | 26 (29) | 3122 (2371) |
+
+Readings: **peak today = ~180 fps avg / p50 5.6 ms on stormkeep-class maps; catharsis stays CPU-bound
+at p50 6.1–6.7** regardless of cap. The uncap costs a small, bounded tail on clean maps (stormkeep
+0.1%-low 60→50–55, p99 8.3→~10 — present-pacing noise now visible) and buys +25–40 avg fps of measured
+headroom. The dip SOURCES are cap-independent and unchanged: `ng.process` (un_catharsis_b caught a
+melt-match at **7.5 s over-budget**, hud.trueaim 3.9 s — bot-fight-intensity variance is exactly the
+"dips" complaint) then `hud.trueaim`, then the PSO warm gap. So the ranked plan stands; the uncap
+mostly re-frames the goal: drive p50 down (frame time) AND kill the ng.process/trueaim tails
+(variance), then revisit present pacing (mailbox jitter) as the last-mile polish once the real spikes
+are gone. Baselines are uncapped demo captures now.
+
 **Re-ranked Phase 2 (hitches) per this census:**
 2.1 bot-AI combat cost (`ng.process`/`bot.rate` — jitter + walk caps + a fresh profile of what melts) →
 2.2 `hud.trueaim` rate-cap + catharsis long-trace investigation →

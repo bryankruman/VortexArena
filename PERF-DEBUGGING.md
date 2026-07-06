@@ -93,9 +93,11 @@ a hitch must also exceed 1.8× the rolling median), `cl_frameprofiler_watchdog` 
 
 - **Measure before theorizing.** The ENet-throttle spawn-stutter burned days of wrong guesses until live
   instrumentation named it (NET-DEBUGGING.md). The profiler now auto-names most things — read it first.
-- **Release build, engaged `cl_maxfps`, same map + bot count**, compare 1%-low and the *primaries*
-  census, not raw totals. Uncapped fps = pathological present pacing; VSYNC counts are machine-load
-  sensitive (interleave A/B runs when they matter).
+- **Release build, same map + bot count + same `cl_maxfps`**, compare the post-load `pl` rows, not raw
+  totals. Since 2026-07-06 captures run UNCAPPED (`cl_maxfps 0` = truly unlimited — peak frame time and
+  its dips are the campaign target); hitch/primaries COUNTS are only comparable between runs at the same
+  cap (the hitch threshold rides the median) — across cap modes diff milliseconds and lows instead.
+  VSYNC counts are machine-load sensitive (interleave A/B runs when they matter).
 - **Two A/B confounds found the hard way (2026-07-03):** (a) a parallel `dotnet build`/agent session
   contaminates a capture — check `Get-Process dotnet` is idle first; (b) the idle capture camera sits at a
   RANDOM spawn, and a warpzone-portal-facing spawn re-renders the scene into the portal viewport (~2× draws,
