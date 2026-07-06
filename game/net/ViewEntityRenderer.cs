@@ -43,6 +43,16 @@ public sealed class ViewEntityRenderer
         public int WeaponId = int.MinValue;
         public float LastAlpha = float.NaN; // last applied render alpha (QC exteriorweaponentity.alpha)
 
+        // [#34] Hand-tag attachment (QC CL_ExteriorWeaponentity_Think: gettagindex "tag_weapon" else
+        // setattachment "bip01 r hand", weaponsystem.qc:158-165). When the owner's skeletal model exposes its
+        // weapon-bone marker (PlayerModel.TagWeaponMarker via ClientWorld.GetAttachmentMarker), the holder is
+        // reparented UNDER that marker with an identity transform — the bone pose IS the gun pose — and
+        // RestOffset goes to zero. While the owner's model is still streaming (no marker yet) the holder falls
+        // back to the old origin+yaw pose with the fixed HandOffset; every Update re-checks, so the gun snaps
+        // onto the hand the frame the skeleton lands.
+        public Node3D? AttachedTo;     // the hand marker we're parented under (null = origin+HandOffset fallback)
+        public Vector3 RestOffset;     // the model's rest position under the holder (Zero attached, HandOffset not)
+
         // [wepentconsumers] Exterior vortex charge-glow (weapon-vortex.fx.charge_glow): a per-INSTANCE emission
         // override on the carrier gun so EVERY observer sees the held weapon brighten with charge — the wr_glow
         // the registry flagged as first-person/host-only. The v_*.md3 models are cached + shared, so we can't
@@ -53,6 +63,11 @@ public sealed class ViewEntityRenderer
         // [W14a QW5] Remote weapon-switch render state (decoded from the wepent block onto the proxy Entity).
         public byte SwitchPhase;       // last seen WepPhase (0 ready, 1 = WS_RAISE, 2 = WS_DROP)
         public float SwitchOffset;     // [0,1] raise/lower lerp: 0 = fully raised (rest), 1 = fully lowered
+
+        // [#36] Owner colormap last pushed onto the weapon's skin-shader instance uniforms (Base
+        // weaponsystem.qc:180: the weaponentity inherits owner.colormap — the _shirt/_pants panels tint with
+        // the carrier's colors). MinValue forces a (re)apply after a model rebuild.
+        public int LastColormap = int.MinValue;
     }
 
     private readonly Dictionary<int, Held> _held = new();
@@ -78,17 +93,49 @@ public sealed class ViewEntityRenderer
 
         if (!_held.TryGetValue(e.Index, out Held? h))
         {
-            h = new Held { Holder = new Node3D { Name = $"wepent#{e.Index}" } };
+            h = new Held { Holder = new Node3D { Name = $"wepent#{e.Index}" }, RestOffset = HandOffset };
             if (GodotObject.IsInstanceValid(_render))
                 _render.AddChild(h.Holder);
             _held[e.Index] = h;
         }
 
-        // Pose the holder to the player's interpolated frame (same Quake→Godot mapping as EntityNode).
+        // [#34] Attach a player's held weapon to the owner's HAND marker when available (QC setattachment to
+        // tag_weapon / "bip01 r hand"); fall back to the origin+yaw fixed-offset pose while the skeletal model
+        // is still streaming. Re-checked every Update so the gun migrates onto the hand as soon as it exists —
+        // the old unconditional fallback left the gun hovering at roughly eye height, yaw-aligned to the view.
         if (GodotObject.IsInstanceValid(h.Holder))
         {
-            h.Holder.Position = Coords.ToGodot(e.Origin);
-            h.Holder.Rotation = new Vector3(0f, -Mathf.DegToRad(e.Angles.Y), 0f);
+            Node3D? marker = s.Kind == NetEntityKind.Player ? _render.GetAttachmentMarker(e.Index, "tag_weapon") : null;
+            // Only a REAL hand/tag marker counts — the entity-root fallback GetAttachmentMarker returns for a
+            // model-less owner would just re-create the wrong-anchor bug with extra reparenting.
+            bool markerUsable = marker is not null && GodotObject.IsInstanceValid(marker)
+                && !ReferenceEquals(marker, _render) && marker.Name == "tag_weapon";
+            if (markerUsable)
+            {
+                if (!ReferenceEquals(h.AttachedTo, marker) || h.Holder.GetParent() != marker)
+                {
+                    h.Holder.Reparent(marker!, keepGlobalTransform: false);
+                    h.Holder.Transform = Transform3D.Identity; // the bone pose IS the gun pose
+                    h.AttachedTo = marker;
+                    h.RestOffset = Vector3.Zero;
+                    if (h.Model is not null && GodotObject.IsInstanceValid(h.Model))
+                        h.Model.Position = h.RestOffset; // re-seat immediately (AdvanceSwitch keeps it fresh)
+                }
+            }
+            else
+            {
+                if (h.AttachedTo is not null)
+                {
+                    // Marker went away (model rebuild / respawn) — fall back to the render-root pose.
+                    if (GodotObject.IsInstanceValid(_render) && h.Holder.GetParent() != _render)
+                        h.Holder.Reparent(_render, keepGlobalTransform: false);
+                    h.AttachedTo = null;
+                    h.RestOffset = HandOffset;
+                }
+                // Pose the holder to the player's interpolated frame (same Quake→Godot mapping as EntityNode).
+                h.Holder.Position = Coords.ToGodot(e.Origin);
+                h.Holder.Rotation = new Vector3(0f, -Mathf.DegToRad(e.Angles.Y), 0f);
+            }
         }
 
         // [W14a QW5] Pick which model to show during a switch, faithful to view.qc viewmodel_draw: WS_DROP
@@ -119,6 +166,22 @@ public sealed class ViewEntityRenderer
             // so the charge-glow block below re-builds and re-applies for the new mesh.
             h.GlowMaterial = null;
             h.LastGlow = new Color(float.NaN, float.NaN, float.NaN);
+            h.LastColormap = int.MinValue; // [#36] fresh mesh → re-push the owner colormap below
+        }
+
+        // [#36] Tint the held weapon's _shirt/_pants skin panels with the OWNER's resolved colormap — Base's
+        // weaponentity inherits owner.colormap (weaponsystem.qc:180), so the gun panels match the body. Uses
+        // the same resolution the player-body appearance pass uses (forcecolors + normalization). Without
+        // this the skin shader's black no-colormap default rendered every panel desaturated gray forever.
+        if (playerHeld && h.Model is not null && GodotObject.IsInstanceValid(h.Model)
+            && GodotObject.IsInstanceValid(_render))
+        {
+            int cmap = _render.PlayerColormap(e);
+            if (cmap != h.LastColormap)
+            {
+                h.LastColormap = cmap;
+                ModelTint.ApplyColormap(h.Model, cmap);
+            }
         }
 
         // [W14a QW5] Drive the raise/lower dip off the networked WepPhase (1 = WS_RAISE, 2 = WS_DROP); phase 0
@@ -347,11 +410,12 @@ public sealed class ViewEntityRenderer
 
         if (h.Model is null || !GodotObject.IsInstanceValid(h.Model))
             return;
-        // The model rests at HandOffset; the dip lowers it (Godot −Y) and tucks it slightly back toward the body
-        // (−Z, the player frame's backward) so it reads as stowed rather than sinking through the hand. A zero dip
-        // (SwitchOffset 0) leaves the gun exactly at the hand offset.
+        // The model rests at RestOffset (#34: Zero when parented to the hand marker — the bone pose IS the gun
+        // pose — else the legacy HandOffset fallback); the dip lowers it (Godot −Y) and tucks it slightly back
+        // toward the body (−Z) so it reads as stowed rather than sinking through the hand. A zero dip
+        // (SwitchOffset 0) leaves the gun exactly at rest.
         float dip = h.SwitchOffset * SwitchLowerDistance;
-        h.Model.Position = HandOffset + new Vector3(0f, -dip, -dip * 0.25f);
+        h.Model.Position = h.RestOffset + new Vector3(0f, -dip, -dip * 0.25f);
     }
 
     /// <summary>Free every weapon view-entity (client teardown).</summary>

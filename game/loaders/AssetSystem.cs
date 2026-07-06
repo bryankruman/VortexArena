@@ -299,6 +299,13 @@ public sealed class AssetSystem
             mat.SetShaderParameter(PlayerSkinShader.ReflectMaskUniform, reflect);
             mat.SetShaderParameter("has_reflect", true);
             mat.SetShaderParameter(PlayerSkinShader.ReflectStrengthUniform, 1.0f);
+            // dpreflectcube — DELIBERATELY NOT BOUND (playtest r8): DP applies the reflect cubemap only inside
+            // its RTLIGHT shader permutations (USEREFLECTCUBE), and stock Xonotic runs with realtime world
+            // lighting OFF — so in practice the term is nearly invisible in Base. The always-on EMISSION add we
+            // shipped first mirrored the sky at full strength on every reflect-masked panel: bright sky-colored
+            // patches that read as HOLES through the gun + chrome ("too shiny / seeing through geometry",
+            // r8 screenshots). The shader's no-cubemap fallback (a restrained metal sheen that never kills the
+            // diffuse) is the faithful default look; revisit binding the cube only with a real rtlight pass.
         }
 
         Texture2D? norm = LoadTexture(baseName + "_norm");
@@ -325,6 +332,51 @@ public sealed class AssetSystem
         // (ModelTint). They default to no team tint / white colormod when unset, so there is nothing to set
         // on the shared, cached material.
         return mat;
+    }
+
+    // --- dpreflectcube (playtest #36) ----------------------------------------------------------------
+    private Cubemap? _defaultReflectCube;
+    private bool _defaultReflectCubeTried;
+
+    /// <summary>
+    /// The `cubemaps/default/sky` environment cubemap every shipped weapon shader names via
+    /// <c>dpreflectcube</c> (scripts/weapons.shader) — six faces loaded in DP box order (+X −X +Y −Y +Z −Z,
+    /// r_sky.c's <c>px/nx/py/ny/pz/nz</c> convention, no flips), QUAKE axes; the skin shader converts its
+    /// sample direction Godot→Quake to match. Built once and cached (null-cached on a miss so a data set
+    /// without the faces never re-probes).
+    /// CURRENTLY UNWIRED BY DESIGN (playtest r8): DP evaluates dpreflectcube only in its rtlight shader
+    /// permutations and stock Xonotic ships realtime world lighting OFF, so the faithful default look has no
+    /// visible cubemap term — the always-on EMISSION add read as sky-mirror holes on the guns. Kept for a
+    /// future realtime-lighting pass (bind via <see cref="PlayerSkinShader.ReflectCubeUniform"/> +
+    /// <c>has_reflect_cube</c>).
+    /// </summary>
+    internal Cubemap? DefaultReflectCubemap()
+    {
+        if (_defaultReflectCubeTried)
+            return _defaultReflectCube;
+        _defaultReflectCubeTried = true;
+
+        string[] suffixes = { "px", "nx", "py", "ny", "pz", "nz" }; // DP box order = GL cubemap layer order
+        var faces = new Godot.Collections.Array<Image>();
+        foreach (string s in suffixes)
+        {
+            Image? img = LoadImage("cubemaps/default/sky" + s);
+            if (img is null)
+            {
+                XonoticGodot.Common.Diagnostics.Log.Info("[AssetSystem] cubemaps/default/sky*: face missing — weapon reflection falls back to the mild sheen.");
+                return null;
+            }
+            // All layers of a layered texture must share one format/size; the shipped faces are uniform PNGs,
+            // but normalize the format defensively (a DDS/TGA override could differ).
+            if (img.GetFormat() != Image.Format.Rgba8)
+                img.Convert(Image.Format.Rgba8);
+            img.GenerateMipmaps();
+            faces.Add(img);
+        }
+        var cube = new Cubemap();
+        cube.CreateFromImages(faces);
+        _defaultReflectCube = cube;
+        return cube;
     }
 
     /// <summary>
