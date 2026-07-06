@@ -116,24 +116,48 @@ public sealed class PlayerSkeleton
     /// 2+4. <paramref name="viewPitch"/> is <c>v_angle.x</c> (bends the aim bones unless <paramref name="isDead"/>).
     /// </summary>
     public void FromFrames(SkeletonAnim anim, float viewPitch, bool isDead)
+        => FromFrames(anim, anim, 0f, 0f, viewPitch, isDead);
+
+    /// <summary>
+    /// The crossfading form (Base csqcmodel's <c>cl_lerpanim</c> framegroup blend): pose from the CURRENT blend
+    /// <paramref name="anim"/> while keeping <paramref name="legsRetain"/> / <paramref name="torsoRetain"/> of
+    /// the OUTGOING blend <paramref name="prev"/> per channel (1 = all old → 0 = all new; the caller ramps each
+    /// over the fade window). Composed exactly the way DP's <c>skel_build</c> is meant to be layered: build the
+    /// old pose (retainfrac 0), then the new pose with <c>retainfrac = oldWeight</c> — the
+    /// <c>Matrix4x4_Interpolate</c> tail of VM_CL_skel_build (clvm_cmds.c:4651-4661), which DP does NOT
+    /// renormalize after, and neither do we. With both retains 0 this is a single build per bone run,
+    /// bit-identical to the plain form.
+    /// </summary>
+    public void FromFrames(SkeletonAnim anim, SkeletonAnim prev, float legsRetain, float torsoRetain,
+        float viewPitch, bool isDead)
     {
         EnsureCreated();
         if (_skel == 0) return;
         int n = _numBones;
 
-        float saveLerp = anim.Lerp, saveLerp3 = anim.Lerp3, saveLerp4 = anim.Lerp4;
+        // The per-channel frame routing (the QC's lerpfrac juggling, [W14b LI3]):
+        // UPPER = the torso frames 3+4, both DOUBLED so a (Lerp3,Lerp4) pair summing to 0.5 fully fills the
+        // upper body (frame1's weight → 0). LOWER = the legs frames 1+2 only; the torso lerps are pinned to 0
+        // so the torso frames can NEVER bleed into the legs. Copies by value — the caller's anim is untouched.
+        static SkeletonAnim Upper(SkeletonAnim a) { a.Lerp = 0f; a.Lerp3 *= 2f; a.Lerp4 *= 2f; return a; }
+        static SkeletonAnim Lower(SkeletonAnim a) { a.Lerp *= 2f; a.Lerp3 = 0f; a.Lerp4 = 0f; return a; }
+
+        // Build one channel's bone range, crossfading from the outgoing blend when retain > 0.
+        void BuildRange(in SkeletonAnim cur, in SkeletonAnim old, float retain, int first1, int last1)
+        {
+            if (retain > 0f)
+                _mgr.Build(_skel, old, _model, 0f, first1, last1); // seed: the outgoing clips' continuing pose
+            _mgr.Build(_skel, cur, _model, retain, first1, last1);
+        }
 
         // fixbone: build everything as the UPPER body first and snapshot the split bone's orientation, so it can
-        // be re-anchored after the per-group split (QC fixbone_oldangles).
+        // be re-anchored after the per-group split (QC fixbone_oldangles). Uses the SAME (crossfaded) upper blend
+        // the real upper run gets below, so the re-anchor matches the rendered torso mid-fade too.
         BoneMatrix fixboneOrientation = default;
         bool haveFix = false;
         if (_cfg.FixBone && _cfg.BoneUpperBody > 0)
         {
-            // [W14b LI3] snapshot the split bone with the SAME upper-body weighting the real upper run uses below
-            // (frames 1+3+4, both doubled) so the re-anchor orientation matches the action-animated torso, not a
-            // stale frame3-only pose. Lerp4 = 0 for the static aim path keeps this bit-identical there.
-            SkeletonAnim a = anim; a.Lerp = 0; a.Lerp3 = saveLerp3 * 2; a.Lerp4 = saveLerp4 * 2;
-            _mgr.Build(_skel, a, _model, 0f, 1, n);
+            BuildRange(Upper(anim), Upper(prev), torsoRetain, 1, n);
             fixboneOrientation = _mgr.GetBoneAbs(_skel, _cfg.BoneUpperBody);
             haveFix = true;
         }
@@ -146,17 +170,10 @@ public sealed class PlayerSkeleton
             int type = _boneType[bone];
             for (bone++; bone < n && _boneType[bone] == type; bone++) { }
 
-            SkeletonAnim a = anim;
-            // [W14b LI3] UPPER body = the torso/action frames 3+4 (frame1 weight → 0 when Lerp3+Lerp4 = 0.5),
-            // both DOUBLED so a (Lerp3,Lerp4) pair summing to 0.5 fully fills the upper body with the action clip
-            // (Frame3 current + Frame4 next). The static aim path passes Lerp4 = 0, so this stays bit-identical
-            // (frame3 only) there; an active action passes a non-zero Lerp4 to animate frame3→frame4.
-            if (type == BoneTypeUpper) { a.Lerp = 0; a.Lerp3 = saveLerp3 * 2; a.Lerp4 = saveLerp4 * 2; } // frames 1+3+4
-            // LOWER body = the LEGS frames 1+2 only. Frame4 carries the TORSO's next frame (LI3), which must NEVER
-            // bleed into the legs, so pin the lower Lerp4 to 0 (was saveLerp4*2 — a no-op for the static path where
-            // Lerp4 was always 0, but it would tear the torso into the legs once an action feeds a non-zero Lerp4).
-            else { a.Lerp = saveLerp * 2; a.Lerp3 = 0; a.Lerp4 = 0; }                                    // frames 1+2
-            _mgr.Build(_skel, a, _model, 0f, firstBone + 1, bone); // 1-based inclusive [firstBone+1 .. bone]
+            if (type == BoneTypeUpper)
+                BuildRange(Upper(anim), Upper(prev), torsoRetain, firstBone + 1, bone); // frames 3+4 (torso)
+            else
+                BuildRange(Lower(anim), Lower(prev), legsRetain, firstBone + 1, bone);  // frames 1+2 (legs)
         }
 
         if (haveFix)
@@ -193,9 +210,10 @@ public sealed class PlayerSkeleton
     /// <summary>
     /// QC <c>skel_set_boneabs</c> (player_skeleton.qc): set a bone's MODEL-SPACE transform by deriving the
     /// relative transform from its parent's current absolute transform — <c>rel = parentAbs⁻¹ · abs</c> (the
-    /// matrix-native form of the QC's AnglesTransform left-divide). 1-based bonenum.
+    /// matrix-native form of the QC's AnglesTransform left-divide). 1-based bonenum. Public for the corpse
+    /// ragdoll, which writes its driven bones through this exact seam (parents first).
     /// </summary>
-    private void SetBoneAbs(int bonenum, in BoneMatrix abs)
+    public void SetBoneAbs(int bonenum, in BoneMatrix abs)
     {
         int parent = _mgr.GetBoneParent(_skel, bonenum); // 1-based parent, 0 if root
         if (parent > 0)

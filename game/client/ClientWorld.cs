@@ -99,6 +99,18 @@ public partial class ClientWorld : Node3D
     /// the same loop simply marks every node visible each frame (no separate disable-reset bookkeeping needed).</summary>
     public XonoticGodot.Formats.Bsp.BspPvs? Pvs { get; set; }
 
+    /// <summary>The client-world tracer for corpse ragdolls (worldspawn brushes, no entities, no gate — the
+    /// same pattern as the particle tracer; NEVER the ambient Api.Trace, which on a listen host is the SERVER
+    /// world under the tick lock). Wired by the host from the same collision build the particles use.</summary>
+    public XonoticGodot.Engine.Collision.TraceService? RagdollTrace { get; private set; }
+
+    /// <summary>Hand the client-side collision world to the systems that trace against it client-only.</summary>
+    public void SetClientCollision(XonoticGodot.Engine.Collision.CollisionWorld world)
+        => RagdollTrace = new XonoticGodot.Engine.Collision.TraceService(world);
+
+    /// <summary>True on a --headless host (dummy renderer): visual-only CPU work like ragdolls must skip.</summary>
+    private static readonly bool HeadlessHost = DisplayServer.GetName() == "headless";
+
     /// <summary>Per-entity model animators (players/monsters/vehicles with MD3 anim).</summary>
     private readonly Dictionary<int, ModelAnimator> _animators = new();
 
@@ -1105,6 +1117,23 @@ public partial class ClientWorld : Node3D
             && XonoticGodot.Game.Client.PortalRenderer.ActiveExitViewsQuake.Count == 0;
         float cullDist = CvarF("cl_pose_cull_distance", 1500f);
         float cullDistSq = poseCull ? cullDist * cullDist : 0f;
+        // Base csqcmodel's clip-switch crossfade window (cl_lerpanim_maxdelta_framegroups, cl_model.qc:29,
+        // default 0.1 s; 0 = snap, the pre-crossfade port behavior). Read once per frame, written per model.
+        float lerpAnimMax = CvarF("cl_lerpanim_maxdelta_framegroups", 0.1f);
+        // Corpse ragdolls (PORT DIVERGENCE, default OFF): only with a client collision world, never on a
+        // headless host (the pose path still runs there — a CPU ragdoll would be pure server cost). The
+        // cl_ragdoll_max budget counts live ragdolls; over budget, new deaths keep the animated die1/die2.
+        bool ragdollOn = RagdollTrace is not null && !HeadlessHost && CvarF("cl_ragdoll", 0f) != 0f;
+        int ragdollBudget = 0;
+        if (ragdollOn)
+        {
+            int max = (int)CvarF("cl_ragdoll_max", 6f);
+            int active = 0;
+            foreach (PlayerModel p in _playerModels.Values)
+                if (p.RagdollActive)
+                    active++;
+            ragdollBudget = max - active;
+        }
         int localId = AppearanceProvider?.Invoke()?.LocalNetId ?? -1;
         // [W14b LI3] the server clock the networked anim-action start is stamped on; NaN (no provider) disables the
         // torso-action overlay so a pure demo / the smoke harness keeps the static aim pose unchanged.
@@ -1121,7 +1150,13 @@ public partial class ClientWorld : Node3D
                 // QC ENT_CLIENT_STATUSEFFECTS frozen: hold the skeletal pose static while encased (the ice block
                 // freezes the animation, not just the tint). Set from the networked StatusEffects bitmap before posing.
                 pm.FrozenHold = HasStatusEffect(e, StatusEffectsCatalog.Frozen);
+                pm.FadeSeconds = lerpAnimMax;
+                pm.RagdollTrace = ragdollOn ? RagdollTrace : null;
+                bool wasRagdoll = pm.RagdollActive;
+                pm.RagdollAllowNew = ragdollBudget > 0;
                 pm.Pose(e, dtAnim, poseCull, isLocal, distSq, cullDistSq, serverNow);
+                if (!wasRagdoll && pm.RagdollActive)
+                    ragdollBudget--;
                 // Cosmetic add-on layer also attaches to the skeletal player node (it follows origin/yaw like the
                 // EntityNode path) so the ice block / held buff glow ride the posed body too.
                 _cosmetics.Drive(e, pm);

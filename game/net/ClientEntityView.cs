@@ -106,6 +106,18 @@ public sealed partial class ClientEntityView : Node
             DriveEntity(id, s, origin, angles);
         }
 
+        // The local player's DEAD body: prediction owns the live entity (never in _remotes — ClientNet keeps
+        // only the LocalState slice), but the death cam (cl_eventchase_death) looks back at YOUR corpse,
+        // which Base renders. Feed that slice through the same drive while the Dead flag is up; on respawn
+        // the flag clears, the id stops being _seen, and CullDeparted below removes the body. Raw snapshot
+        // origin (no interp) is fine: the corpse rests almost immediately, and the ragdoll solves in world
+        // space anyway (its inverse-entity-transform bone writes cancel any origin stepping exactly).
+        if (!_net.IsObserving && _net.LocalState is { } ls && (ls.Flags & NetEntityFlags.Dead) != 0)
+        {
+            _seen.Add(_net.LocalNetId);
+            DriveEntity(_net.LocalNetId, ls, ls.Origin, ls.Angles);
+        }
+
         CullDeparted();
         _viewEntities.Process();
     }

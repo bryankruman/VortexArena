@@ -220,10 +220,28 @@ public sealed class SkeletonManager
             if (total <= 0f)
                 acc = model.FrameRelative(anim.Frame, b); // degenerate weights → just the base frame
             acc = acc.Normalize3();
-            s.Relative[b] = BoneMatrix.Interpolate(acc, s.Relative[b], retainfrac);
+            if (retainfrac > 0f)
+            {
+                // DP lerps the retained pose in blindly — its consumer skins the matrix as-is and never
+                // inverts it. OUR renderer localizes children against parents (Transform3D.AffineInverse in
+                // PushBones), so a ~180°-apart retain blend that lerps a basis column through zero would
+                // throw "determinant is zero". Rescue: when the blend collapses an axis, keep the FRESH pose
+                // for that bone this frame (one bone snaps for one frame of a 0.1s fade — invisible).
+                BoneMatrix blended = BoneMatrix.Interpolate(acc, s.Relative[b], retainfrac);
+                s.Relative[b] = HasCollapsedAxis(blended) ? acc : blended;
+            }
+            else
+            {
+                s.Relative[b] = acc; // Interpolate(acc, old, 0) == acc — skip the blend on the common path
+            }
         }
         return skel;
     }
+
+    /// <summary>A basis column shrunk (near) through zero — the antiparallel-lerp degeneracy. The 0.1 length
+    /// floor also caps how much float error a nearly-singular parent could amplify in the localize step.</summary>
+    private static bool HasCollapsedAxis(in BoneMatrix m)
+        => m.Fwd.LengthSquared() < 0.01f || m.Left.LengthSquared() < 0.01f || m.Up.LengthSquared() < 0.01f;
 
     // --- convenience helpers exposing the v_forward/v_right/v_up boundary (DP negates left into v_right) ---
 

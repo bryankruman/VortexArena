@@ -1321,6 +1321,9 @@ public sealed partial class NetGame : Node3D
         {
             CollisionWorld clientCollision = MapLoader.BuildCollision(_bsp, _assets.Assets);
             _render.Effects.SetCollisionWorld(clientCollision);
+            // Corpse ragdolls sweep the SAME client-only world (their own TraceService instance — no entity
+            // broadphase, no server-tick gate; see ClientWorld.SetClientCollision).
+            _render.SetClientCollision(clientCollision);
             // Splats clip against the RENDER triangles (DP's actual target) — marks roll over visible
             // trim/patch edges the collision brushes don't model.
             _render.Effects.SetDecalGeometry(_bsp);

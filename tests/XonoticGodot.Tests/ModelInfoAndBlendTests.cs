@@ -191,6 +191,190 @@ public class ModelInfoAndBlendTests
             LocomotionBlend.SelectLegsDirectional(fwdLeft, Vector3.Zero, true, true, false));
     }
 
+    // ============================================================================================
+    //  Animation crossfade (Base csqcmodel cl_lerpanim_maxdelta_framegroups)
+    // ============================================================================================
+
+    [Fact]
+    public void Split_TorsoLerpsWithinItsClip()
+    {
+        // The torso used to hold its integer frame (Lerp4 pinned 0 → the upper idle sway was frozen);
+        // now both channels get within-clip interpolation.
+        var legs = new FrameGroup(0, 4, 10f, loop: true);
+        var torso = new FrameGroup(10, 2, 10f, loop: true);
+        SkeletonAnim anim = LocomotionBlend.Split(legs, 0f, torso, 0.05f); // torso phase 0.5
+        Assert.Equal(10, anim.Frame3);
+        Assert.Equal(11, anim.Frame4);
+        Assert.True(System.MathF.Abs(anim.Lerp3 - 0.25f) < 1e-4f); // (1−0.5)·0.5
+        Assert.True(System.MathF.Abs(anim.Lerp4 - 0.25f) < 1e-4f); // 0.5·0.5
+
+        // The action overload is the same math now (kept for its call-site tag).
+        SkeletonAnim viaAction = LocomotionBlend.Split(legs, 0f, torso, 0.05f, _actionTag: true);
+        Assert.Equal(anim.Frame3, viaAction.Frame3);
+        Assert.Equal(anim.Lerp3, viaAction.Lerp3);
+        Assert.Equal(anim.Lerp4, viaAction.Lerp4);
+    }
+
+    [Fact]
+    public void ChannelFade_RampsOldWeightDown_AndAdvancesThePrevPlayhead()
+    {
+        var fade = new AnimChannelFade();
+        Assert.Equal(0f, fade.RetainAndAdvance(0.1f, 0.016f)); // idle by default
+
+        var clip = new FrameGroup(0, 4, 10f, loop: true);
+        fade.Begin(clip, playhead: 0.35f, window: 0.1f, dt: 0.016f, maxStep: 0.25f);
+        Assert.True(fade.Active(0.1f));
+
+        // Switch frame renders the OLD pose at weight 1 (Base: l13 = 0 at the switch instant)…
+        Assert.Equal(1f, fade.RetainAndAdvance(0.1f, 0.025f));
+        Assert.True(System.MathF.Abs(fade.PrevTime - 0.375f) < 1e-5f); // the outgoing clip keeps playing
+        // …then ramps linearly: age 0.025/0.05/0.075 → 0.75/0.5/0.25 — and completes exactly at the window.
+        Assert.True(System.MathF.Abs(fade.RetainAndAdvance(0.1f, 0.025f) - 0.75f) < 1e-4f);
+        Assert.True(System.MathF.Abs(fade.RetainAndAdvance(0.1f, 0.025f) - 0.50f) < 1e-4f);
+        Assert.True(System.MathF.Abs(fade.RetainAndAdvance(0.1f, 0.025f) - 0.25f) < 1e-4f);
+        Assert.Equal(0f, fade.RetainAndAdvance(0.1f, 0.025f));
+        Assert.False(fade.Active(0.1f));
+    }
+
+    [Fact]
+    public void ChannelFade_MidFadeSwitchReplacesHistory_SpikesAndZeroWindowSnap()
+    {
+        var fade = new AnimChannelFade();
+        var clipA = new FrameGroup(0, 4, 10f, loop: true);
+        var clipB = new FrameGroup(10, 4, 10f, loop: true);
+
+        // A switch mid-fade drops the older history (Base keeps ONE previous framegroup per channel).
+        fade.Begin(clipA, 1f, 0.1f, 0.016f, 0.25f);
+        fade.RetainAndAdvance(0.1f, 0.05f);
+        fade.Begin(clipB, 2f, 0.1f, 0.016f, 0.25f);
+        Assert.Equal(10, fade.PrevClip.FirstFrame);
+        Assert.Equal(1f, fade.RetainAndAdvance(0.1f, 0.016f)); // the new fade restarts at full old weight
+
+        // A dt spike (hitch / long cull gap) snaps instead of fading from an ancient pose.
+        fade.Begin(clipA, 0f, 0.1f, dt: 0.5f, maxStep: 0.25f);
+        Assert.False(fade.Active(0.1f));
+        // Window 0 = the Base-faithful hard-snap escape hatch.
+        fade.Begin(clipA, 0f, window: 0f, dt: 0.016f, maxStep: 0.25f);
+        Assert.False(fade.Active(0f));
+        // An empty outgoing clip (nothing was showing yet) never fades.
+        fade.Begin(default, 0f, 0.1f, 0.016f, 0.25f);
+        Assert.False(fade.Active(0.1f));
+        // Cancel kills an active fade (freeze snaps).
+        fade.Begin(clipA, 0f, 0.1f, 0.016f, 0.25f);
+        fade.Cancel();
+        Assert.Equal(0f, fade.RetainAndAdvance(0.1f, 0.016f));
+    }
+
+    [Fact]
+    public void FromFrames_Crossfade_BlendsOldIntoNew_PerChannelIndependently()
+    {
+        var model = new CrossfadeModel();
+        var mgr = new SkeletonManager();
+        var cfg = new PlayerSkeletonConfig { BoneUpperBody = 3 }; // head = upper; root+spine = lower
+        var ps = new PlayerSkeleton(mgr, model, cfg);
+
+        SkeletonAnim cur = LocomotionBlend.Split(model.LegsNew, 0f, model.TorsoNew, 0f);
+        SkeletonAnim prev = LocomotionBlend.Split(model.LegsOld, 0f, model.TorsoOld, 0f);
+
+        // legs half-faded, torso quarter-faded: spine = lerp(17, 7, 0.5) = 12; head = lerp(19, 9, 0.25) = 16.5.
+        ps.FromFrames(cur, prev, legsRetain: 0.5f, torsoRetain: 0.25f, viewPitch: 0f, isDead: true);
+        AssertVec(new Vector3(12f, 0, 0), ps.GetBoneRel(2).Origin, 1e-3f);
+        AssertVec(new Vector3(0, 16.5f, 0), ps.GetBoneRel(3).Origin, 1e-3f);
+
+        // Only the legs fading leaves the torso channel bit-identical to the unfaded pose.
+        ps.FromFrames(cur, prev, legsRetain: 0.5f, torsoRetain: 0f, viewPitch: 0f, isDead: true);
+        AssertVec(new Vector3(12f, 0, 0), ps.GetBoneRel(2).Origin, 1e-3f);
+        AssertVec(new Vector3(0, 19f, 0), ps.GetBoneRel(3).Origin, 1e-3f);
+    }
+
+    [Fact]
+    public void Build_RetainBlend_RescuesAntiparallelCollapse()
+    {
+        // Frame 0 = identity basis; frame 1 = 180° about Z (Fwd/Left both negated). Lerping them 50/50
+        // nulls two basis columns — the exact degeneracy that made PushBones' AffineInverse throw
+        // "determinant is zero" mid-crossfade. The retain path must fall back to the fresh pose instead.
+        var model = new FlipModel();
+        var mgr = new SkeletonManager();
+        int skel = mgr.Create(model);
+
+        mgr.Build(skel, new SkeletonAnim(frame: 1), model, retainfrac: 0f, 1, 1);   // seed the OLD pose (flipped)
+        mgr.Build(skel, new SkeletonAnim(frame: 0), model, retainfrac: 0.5f, 1, 1); // blend in the NEW (identity)
+
+        BoneMatrix m = mgr.GetBoneRel(skel, 1);
+        AssertVec(new Vector3(1, 0, 0), m.Fwd, 1e-4f);  // rescued: the fresh pose, not a zero column
+        AssertVec(new Vector3(0, 1, 0), m.Left, 1e-4f);
+
+        // A healthy retain blend still lerps (identity vs identity-translated: origin midpoint).
+        mgr.Build(skel, new SkeletonAnim(frame: 2), model, retainfrac: 0f, 1, 1);
+        mgr.Build(skel, new SkeletonAnim(frame: 0), model, retainfrac: 0.5f, 1, 1);
+        AssertVec(new Vector3(4, 0, 0), mgr.GetBoneRel(skel, 1).Origin, 1e-4f);
+    }
+
+    private sealed class FlipModel : ISkeletalModel
+    {
+        public int BoneCount => 1;
+        public string BoneName(int b) => "root";
+        public int BoneParent(int b) => -1;
+        public BoneMatrix BindRelative(int b) => BoneMatrix.Identity;
+        public int FrameCount => 3;
+        public BoneMatrix FrameRelative(int frame, int b) => frame switch
+        {
+            1 => new BoneMatrix(new Vector3(-1, 0, 0), new Vector3(0, -1, 0), new Vector3(0, 0, 1), Vector3.Zero),
+            2 => BoneMatrix.FromTRS(new Vector3(8, 0, 0), Quaternion.Identity, Vector3.One),
+            _ => BoneMatrix.Identity,
+        };
+    }
+
+    [Fact]
+    public void FromFrames_Crossfade_RetainZero_IsBitIdenticalToThePlainForm()
+    {
+        var mgr1 = new SkeletonManager();
+        var mgr2 = new SkeletonManager();
+        var model = new CrossfadeModel();
+        var cfg = new PlayerSkeletonConfig { BoneUpperBody = 3 };
+        var a = new PlayerSkeleton(mgr1, model, cfg);
+        var b = new PlayerSkeleton(mgr2, model, cfg);
+
+        SkeletonAnim cur = LocomotionBlend.Split(model.LegsNew, 0f, model.TorsoNew, 0f);
+        SkeletonAnim prev = LocomotionBlend.Split(model.LegsOld, 0f, model.TorsoOld, 0f);
+        a.FromFrames(cur, viewPitch: 15f, isDead: false);
+        b.FromFrames(cur, prev, 0f, 0f, viewPitch: 15f, isDead: false);
+
+        for (int bone = 1; bone <= 3; bone++)
+        {
+            BoneMatrix ma = a.GetBoneRel(bone), mb = b.GetBoneRel(bone);
+            AssertVec(ma.Origin, mb.Origin, 1e-6f);
+            AssertVec(ma.Fwd, mb.Fwd, 1e-6f);
+            AssertVec(ma.Left, mb.Left, 1e-6f);
+            AssertVec(ma.Up, mb.Up, 1e-6f);
+        }
+    }
+
+    // root(0) -> spine(1) -> head(2); frames: 0 spine+x7 (legs OLD), 1 head+y9 (torso OLD),
+    // 2 spine+x17 (legs NEW), 3 head+y19 (torso NEW). One-frame clips per pose for exact expectations.
+    private sealed class CrossfadeModel : ISkeletalModel
+    {
+        public readonly FrameGroup LegsOld = new(0, 1, 10f, true);
+        public readonly FrameGroup TorsoOld = new(1, 1, 10f, true);
+        public readonly FrameGroup LegsNew = new(2, 1, 10f, true);
+        public readonly FrameGroup TorsoNew = new(3, 1, 10f, true);
+        public int BoneCount => 3;
+        public string BoneName(int b) => b switch { 0 => "root", 1 => "spine", 2 => "head", _ => "" };
+        public int BoneParent(int b) => b - 1;
+        public BoneMatrix BindRelative(int b) => BoneMatrix.Identity;
+        public int FrameCount => 4;
+        public BoneMatrix FrameRelative(int frame, int b) => (frame, b) switch
+        {
+            (0, 1) => Trans(7, 0, 0),
+            (1, 2) => Trans(0, 9, 0),
+            (2, 1) => Trans(17, 0, 0),
+            (3, 2) => Trans(0, 19, 0),
+            _ => BoneMatrix.Identity,
+        };
+        private static BoneMatrix Trans(float x, float y, float z)
+            => BoneMatrix.FromTRS(new Vector3(x, y, z), Quaternion.Identity, Vector3.One);
+    }
+
     // root(0) -> spine(1) -> head(2); legs frame (index 0) shifts spine +x7, torso frame (index 1) shifts head +y9.
     private sealed class SplitModel : ISkeletalModel
     {

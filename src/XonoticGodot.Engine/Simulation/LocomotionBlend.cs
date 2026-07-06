@@ -12,14 +12,13 @@ namespace XonoticGodot.Engine.Simulation;
 /// The server networks ONE frame index per entity; the upper/lower-body split needs a four-pose blend (legs +
 /// torso). The CSQC client therefore reconstructs it (in Xonotic the <c>animdecide</c> + CSQCMODEL system).
 /// This helper covers the core: the LEGS play a locomotion clip with smooth inter-frame interpolation
-/// (<c>frame</c>/<c>frame2</c> + <c>lerpfrac</c>), and the TORSO shows its clip's current frame as the upper
-/// body (<c>frame3</c> at full split weight) for the aim bones to bend by view pitch. This reproduces the
-/// Xonotic look — legs run/strafe while the torso holds an aim pose — and is the seam where the full
-/// per-action torso animation (attack/reload overlays, torso inter-frame lerp) can later be layered in.
+/// (<c>frame</c>/<c>frame2</c> + <c>lerpfrac</c>), and the TORSO plays its clip (the idle/aim sway or an
+/// action overlay) as the upper body (<c>frame3</c>/<c>frame4</c> + the split weight), for the aim bones to
+/// bend by view pitch. This reproduces the Xonotic look — legs run/strafe while the torso aims/sways/shoots.
 ///
 /// Encoding note (see <see cref="PlayerSkeleton.FromFrames"/>): the split doubles the input lerpfracs, so the
-/// legs' phase is halved here, and the torso's split weight is 0.5 (→ 1.0 after doubling). <c>lerpfrac4</c> is
-/// kept 0 so the torso's frames never bleed into the lower body.
+/// legs' phase is halved here, and the torso pair (<c>lerpfrac3</c>+<c>lerpfrac4</c>) sums to 0.5 (→ 1.0 after
+/// doubling). The LOWER branch pins its own Lerp4 to 0, so the torso frames never bleed into the legs.
 /// </summary>
 public static class LocomotionBlend
 {
@@ -53,55 +52,35 @@ public static class LocomotionBlend
 
     /// <summary>
     /// Build the split <see cref="SkeletonAnim"/>: <paramref name="legs"/> animates smoothly (frame/frame2),
-    /// <paramref name="torso"/>'s current frame is the upper body (frame3), to be bent by the aim bones.
+    /// the <paramref name="torso"/> clip plays as the upper body (frame3→frame4, blended by its inter-frame
+    /// fraction), to be bent by the aim bones. Both channels get within-clip interpolation — the torso used to
+    /// hold its integer frame (`Lerp4 = 0`), which kept the upper-idle sway frozen; feeding the fraction is safe
+    /// since <see cref="PlayerSkeleton.FromFrames"/>'s LOWER branch pins its own Lerp4 to 0 (LI3).
     /// </summary>
     public static SkeletonAnim Split(in FrameGroup legs, float legsTime, in FrameGroup torso, float torsoTime)
     {
         (int la, int lb, float ll) = SampleClip(legs, legsTime);
-        (int ta, int tb, float _) = SampleClip(torso, torsoTime);
+        (int ta, int tb, float tf) = SampleClip(torso, torsoTime);
         return new SkeletonAnim
         {
             Frame = la,                 // legs current
             Frame2 = lb,                // legs next (lower-body inter-frame lerp)
-            Frame3 = ta,                // torso current (the upper-body pose)
-            Frame4 = tb,                // torso next (reserved; not yet weighted into the upper split)
+            Frame3 = ta,                // torso current
+            Frame4 = tb,                // torso next (upper-body inter-frame lerp)
             Lerp = ll * 0.5f,           // doubled by the lower split → full legs phase
-            Lerp3 = 0.5f,               // doubled by the upper split → upper body == frame3 (torso)
-            Lerp4 = 0f,                 // keep torso out of the lower body
+            Lerp3 = (1f - tf) * 0.5f,   // doubled by the upper split → (1−f) on the torso's current frame
+            Lerp4 = tf * 0.5f,          // doubled by the upper split → f on the torso's next frame
         };
     }
 
     /// <summary>
-    /// [W14b LI3] Build the split <see cref="SkeletonAnim"/> for an ACTIVE upper-body ACTION (SHOOT this wave):
-    /// the legs animate from <paramref name="legs"/>/<paramref name="legsTime"/> exactly as the static
-    /// <see cref="Split(in FrameGroup,float,in FrameGroup,float)"/>, but the torso plays the action clip
-    /// <paramref name="action"/> at <paramref name="actionPhase"/> seconds — its current frame in Frame3, its
-    /// NEXT frame in Frame4, blended by the clip's inter-frame lerp. This is the half-wired 4-pose path the
-    /// design (Risk #1) flags: it feeds a non-zero <c>Lerp4</c> so <see cref="PlayerSkeleton.FromFrames"/>'s
-    /// UPPER branch animates frame3→frame4 — while the static path keeps <c>Lerp4 = 0</c> so a non-action torso
-    /// is bit-identical to today. The legs base (Frame/Frame2) is untouched, so the lower body never sees the
-    /// torso frames (FromFrames' lower branch pins its own Lerp4 to 0 — the fixbone re-anchor keeps the torso
-    /// rooted on the legs so it can't tear).
-    ///
-    /// <para>Encoding: the upper split in <c>FromFrames</c> DOUBLES Lerp3+Lerp4 (so a 0.5/0.5 pair → 1.0 total).
-    /// We therefore halve the torso blend here: <c>Lerp3 = (1−f)·0.5</c> on Frame3 (torso current),
-    /// <c>Lerp4 = f·0.5</c> on Frame4 (torso next), where f is the action clip's inter-frame fraction.</para>
+    /// [W14b LI3] The upper-body ACTION form of <see cref="Split(in FrameGroup,float,in FrameGroup,float)"/> —
+    /// the torso plays the action clip at <paramref name="actionPhase"/> seconds instead of the static aim/idle
+    /// clip. Since the static path gained the same within-clip torso lerp, the two forms are now the same math;
+    /// this overload survives for the call-site tag (<paramref name="_actionTag"/>) and existing tests.
     /// </summary>
     public static SkeletonAnim Split(in FrameGroup legs, float legsTime, in FrameGroup action, float actionPhase, bool _actionTag)
-    {
-        (int la, int lb, float ll) = SampleClip(legs, legsTime);
-        (int ta, int tb, float tf) = SampleClip(action, actionPhase);
-        return new SkeletonAnim
-        {
-            Frame = la,                 // legs current (lower-body base)
-            Frame2 = lb,                // legs next (lower-body inter-frame lerp)
-            Frame3 = ta,                // torso/action current
-            Frame4 = tb,                // torso/action next (now WEIGHTED into the upper body)
-            Lerp = ll * 0.5f,           // doubled by the lower split → full legs phase
-            Lerp3 = (1f - tf) * 0.5f,   // doubled by the upper split → (1−f) on the action's current frame
-            Lerp4 = tf * 0.5f,          // doubled by the upper split → f on the action's next frame
-        };
-    }
+        => Split(legs, legsTime, action, actionPhase);
 
     /// <summary>
     /// [W14b LI3] Port of the upper-body half of <c>animdecide_getupperanim</c> (animdecide.qc:109-153) for the

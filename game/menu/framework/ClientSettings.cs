@@ -180,6 +180,19 @@ public static class ClientSettings
         // Quake units: beyond this an ON-SCREEN remote player refreshes at half rate (a per-model phase stagger
         // spreads the work). 0 disables the distance half-rate, keeping only the off-screen skip.
         c.Register("cl_pose_cull_distance", "1500");
+        // Base csqcmodel crossfade window on a player clip/action switch (qcsrc/lib/csqcmodel/cl_model.qc:29
+        // autocvar, default 0.1): the outgoing framegroup keeps playing and blends out over this many seconds
+        // per channel (legs / torso independently). 0 = hard snap (the pre-crossfade port behavior). Faithful
+        // cvar → no Save flag (the stock tree's set/seta decides archiving).
+        c.Register("cl_lerpanim_maxdelta_framegroups", "0.1");
+        // Corpse ragdolls (PORT DIVERGENCE — Base plays die1/die2 and freezes; grep-verified no ragdoll
+        // support ships in Base/DP). Default OFF per Bryan: 0 = faithful animated deaths, 1 = corpses flop on
+        // a client-side Verlet solver swept against the client trace world (PlayerModel/RagdollSolver).
+        // Genuine port user settings → archived (the cl_vignette precedent).
+        c.Register("cl_ragdoll", "0", save);
+        // Live-ragdoll budget: beyond this many simulating corpses, new deaths keep the animated die1/die2
+        // (slept ragdolls cost nothing and don't count against the budget's spirit — they hold their pose).
+        c.Register("cl_ragdoll_max", "6", save);
         // (§13 flip, 2026-06-12) Default ON: animated MD3s morph in a vertex shader (2 uniforms/frame)
         // instead of re-uploading lerped vertex+normal buffers every frame (the 3.3 Tier-3 item). Eligible
         // models only (StandardMaterial3D surfaces — others keep the CPU path automatically); visual parity

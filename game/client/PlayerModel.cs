@@ -47,6 +47,23 @@ public partial class PlayerModel : Node3D
     private float _legsTime;     // seconds the legs clip has been playing (advances with the active locomotion)
     private LocomotionBlend.DirLocomotion _lastLoco = (LocomotionBlend.DirLocomotion)(-1);
 
+    // --- animation crossfade (Base csqcmodel cl_lerpanim_maxdelta_framegroups) --------------------------
+    // ONE previous clip per channel (the csqcmodel frame3/frame4 history), blending out over FadeSeconds
+    // after a clip/action switch. The bookkeeping lives in AnimChannelFade (pure, unit-tested).
+    private readonly AnimChannelFade _legsFade = new();
+    private readonly AnimChannelFade _torsoFade = new();
+    private byte _torsoLastAction;     // the action id the torso showed last frame (0 = the idle/aim sway)
+    private FrameGroup _torsoLastClip; // the clip the torso actually showed last frame (action or idle)
+    private float _torsoLastPhase;     // and its playhead then
+    private float _torsoIdleTime;      // the torso idle/aim clip's own clock (Base's upper idle loops)
+
+    /// <summary>Crossfade window seconds on a clip/action switch (Base <c>cl_lerpanim_maxdelta_framegroups</c>,
+    /// default 0.1; 0 = snap). Written from the cvar by <c>ClientWorld</c> before each Pose.</summary>
+    public float FadeSeconds { get; set; } = 0.1f;
+
+    // A dt spike (hitch / long cull gap) means the "previous pose" is ancient — snap instead of fading from it.
+    private const float FadeMaxStep = 0.25f;
+
     // 3.3: off-screen / distant pose-cull state (gated by cl_pose_cull at the call site). The notifier tracks
     // whether this model is on-screen; when culling is enabled we skip the interop pose PUSH for an off-screen
     // remote player and refresh distant on-screen players at half rate. The CPU pose (FromFrames) still runs
@@ -206,6 +223,15 @@ public partial class PlayerModel : Node3D
         if (!Active) return;
 
         bool dead = e.DeadState is DeadFlag.Dying or DeadFlag.Dead || (e.Health <= 0f && e.MaxHealth > 0f);
+
+        // --- corpse ragdoll (PORT DIVERGENCE, cl_ragdoll — Base plays die1/die2 and freezes) --------------
+        // When the solver owns the pose, the whole locomotion/action/fade/aim path is bypassed; the shared
+        // interop push below still runs so pose-cull semantics stay identical.
+        if (PoseRagdoll(e, dt, dead))
+        {
+            PushIfDue(cullEnabled, isLocal, distSqToView, cullDistSq);
+            return;
+        }
         // Faithful animdecide locomotion: the 8-direction + duck-variant lower-body clip, inferred client-side
         // from the networked velocity + angles + onground + ducked (Base decides locomotion CSQC-side too — only
         // the upper-body ACTION overlays are networked, and those are still out of scope). Entity.Velocity/Angles
@@ -221,8 +247,17 @@ public partial class PlayerModel : Node3D
         {
             loco = L.Idle;
             _lastLoco = loco; // pin: equal-loco path increments _legsTime, so keep it consistent without advancing
+            _legsFade.Cancel();  // freezing snaps the pose (Base sets the frozen frame outright)
+            _torsoFade.Cancel();
         }
-        else if (loco != _lastLoco) { _legsTime = 0f; _lastLoco = loco; }
+        else if (loco != _lastLoco)
+        {
+            // Start the legs crossfade from the outgoing clip (skipped on the very first pose — no previous;
+            // Begin itself snaps on a 0 window / a dt spike / an empty clip).
+            if ((int)_lastLoco >= 0)
+                _legsFade.Begin(_legClips[(int)_lastLoco], _legsTime, FadeSeconds, dt, FadeMaxStep);
+            _legsTime = 0f; _lastLoco = loco;
+        }
         else _legsTime += dt;
 
         FrameGroup legs = _legClips[(int)loco];
@@ -235,10 +270,13 @@ public partial class PlayerModel : Node3D
         // DIE1/DIE2 (DEAD) outrank live actions and never expire, so a dead player's death torso is NEVER stomped by a
         // late pain (and the server only ever networks DIE on a dead player). Falls back to the static aim path
         // otherwise, which is bit-identical to before this wave (FromFrames' static Lerp4 = 0).
-        // Default to the static aim pose (bit-identical to pre-W14b); the overlay path replaces it when an
-        // action is active. Initialized up front so the compiler sees `anim` definitely assigned regardless
-        // of the action-clip branch (the static Split for an overlaid frame is a rare, brief-window cost).
-        SkeletonAnim anim = LocomotionBlend.Split(legs, _legsTime, _torsoClip, 0f);
+        // Resolve the torso channel: the idle/aim sway by default — on its OWN advancing clock now (Base's
+        // upper idle LOOPS; it used to be pinned to t=0, i.e. a frozen sway) — or the action overlay when the
+        // server has one active (the AnimDecide cascade keeps DIE on top and never expires it).
+        if (!FrozenHold) _torsoIdleTime += dt;
+        FrameGroup torsoClip = _torsoClip;
+        float torsoPhase = _torsoIdleTime;
+        byte torsoAction = 0;
         if (!FrozenHold && !float.IsNaN(serverNow) && e.UpperAction != 0)
         {
             var (active, phase) = LocomotionBlend.SelectTorsoAction(e.UpperAction, e.AnimActionTime, serverNow);
@@ -246,15 +284,57 @@ public partial class PlayerModel : Node3D
             {
                 FrameGroup actionClip = _actionClips[e.UpperAction < _actionClips.Length ? e.UpperAction : 0];
                 if (actionClip.FrameCount > 0)
-                    anim = LocomotionBlend.Split(legs, _legsTime, actionClip, phase, _actionTag: true);
+                {
+                    torsoClip = actionClip;
+                    torsoPhase = phase;
+                    torsoAction = e.UpperAction;
+                }
             }
         }
-        _player.FromFrames(anim, e.Angles.X, dead);
 
-        // 3.3: decide whether to PUSH the posed bones onto the Skeleton3D this frame. The synthesis above always
-        // ran, so the skip never produces a stale logical pose — only a delayed visual refresh. Order matters:
-        // OFF / local / forced always push; an off-screen remote skips (only when the notifier is wired);
-        // a distant on-screen remote pushes on parity-matched frames; near players always push.
+        // Torso crossfade on an action-state flip (idle→action, action→idle, action→action): fade from
+        // whatever the torso actually showed last frame.
+        if (torsoAction != _torsoLastAction)
+        {
+            _torsoFade.Begin(_torsoLastClip, _torsoLastPhase, FadeSeconds, dt, FadeMaxStep);
+            _torsoLastAction = torsoAction;
+        }
+        _torsoLastClip = torsoClip;
+        _torsoLastPhase = torsoPhase;
+
+        // Per-channel old-pose weights (Base: the NEW pose weighs in at age/maxdelta, the old keeps the
+        // complement), aging each fade — a fading clip keeps advancing on its own timeline.
+        float legsRetain = _legsFade.RetainAndAdvance(FadeSeconds, dt);
+        float torsoRetain = _torsoFade.RetainAndAdvance(FadeSeconds, dt);
+
+        SkeletonAnim anim = LocomotionBlend.Split(legs, _legsTime, torsoClip, torsoPhase);
+        if (legsRetain > 0f || torsoRetain > 0f)
+        {
+            // The outgoing blend: each channel contributes its OWN previous clip; a channel not fading just
+            // repeats its current pair (retain 0 ignores it inside FromFrames).
+            SkeletonAnim prevAnim = LocomotionBlend.Split(
+                legsRetain > 0f ? _legsFade.PrevClip : legs,
+                legsRetain > 0f ? _legsFade.PrevTime : _legsTime,
+                torsoRetain > 0f ? _torsoFade.PrevClip : torsoClip,
+                torsoRetain > 0f ? _torsoFade.PrevTime : torsoPhase);
+            _player.FromFrames(anim, prevAnim, legsRetain, torsoRetain, e.Angles.X, dead);
+        }
+        else
+        {
+            _player.FromFrames(anim, e.Angles.X, dead);
+        }
+
+        PushIfDue(cullEnabled, isLocal, distSqToView, cullDistSq);
+    }
+
+    /// <summary>
+    /// 3.3: decide whether to PUSH the posed bones onto the Skeleton3D this frame (shared by the animated and
+    /// ragdoll pose paths). The CPU synthesis always ran, so a skip never produces a stale logical pose — only
+    /// a delayed visual refresh. Order matters: OFF / local / forced always push; an off-screen remote skips
+    /// (only when the notifier is wired); a distant on-screen remote pushes on parity-matched frames.
+    /// </summary>
+    private void PushIfDue(bool cullEnabled, bool isLocal, float distSqToView, float cullDistSq)
+    {
         bool doPush;
         if (!cullEnabled || isLocal) doPush = true;
         else if (_forcePush) doPush = true;
@@ -267,9 +347,149 @@ public partial class PlayerModel : Node3D
         if (doPush) { PushBones(); _forcePush = false; }
     }
 
+    // ================================================================================================
+    //  Corpse ragdoll (PORT DIVERGENCE — Base has no ragdolls; cl_ragdoll 0 keeps the faithful deaths)
+    // ================================================================================================
+
+    /// <summary>Client-world tracer for the ragdoll's particle sweeps, set by <c>ClientWorld</c> each frame
+    /// while cl_ragdoll is on (null = feature off). NEVER the ambient Api.Trace — on a listen host that is
+    /// the SERVER world under the tick gate (the exact hitch the particle fix removed).</summary>
+    public Engine.Collision.TraceService? RagdollTrace { get; set; }
+
+    /// <summary>False when the active-ragdoll budget (cl_ragdoll_max) is spent — new deaths keep the
+    /// animated die1/die2 instead. Set by <c>ClientWorld</c> before each Pose.</summary>
+    public bool RagdollAllowNew { get; set; }
+
+    /// <summary>True while a ragdoll owns this model's pose.</summary>
+    public bool RagdollActive => _ragdollSolver is not null;
+
+    private RagdollSolver? _ragdollSolver;
+    private RagdollRig? _ragdollRig;
+    private bool _ragdollRigTried;
+    private bool _wasDeadPose;
+    private SN.Vector3[]? _ragdollParticles;
+    private Action<int, BoneMatrix>? _ragdollBoneSink;
+
+    /// <summary>
+    /// The ragdoll lifecycle, run at the top of every Pose: activates on the died-this-frame edge (when
+    /// enabled, budgeted, mapped and not gibbed), steps + drives while dead, and frees on respawn (the corpse
+    /// is the SAME entity id — DeadState clearing means the player is back) or on gib (alpha &lt; 0, the body
+    /// is invisible). Returns true when the solver owned the pose this frame.
+    /// </summary>
+    private bool PoseRagdoll(Entity e, float dt, bool dead)
+    {
+        if (_ragdollSolver is null)
+        {
+            if (!dead) { _wasDeadPose = false; return false; }
+            bool edge = !_wasDeadPose;
+            _wasDeadPose = true;
+            if (!edge || RagdollTrace is null || !RagdollAllowNew || e.Alpha < 0f || FrozenHold)
+                return false;
+            if (!TryStartRagdoll(e))
+                return false;
+        }
+        else if (!dead || e.Alpha < 0f || RagdollTrace is null)
+        {
+            // Respawned / gibbed / cl_ragdoll flipped off: back to the animated path — the next FromFrames
+            // rebuilds every bone range, so no ragdoll residue survives.
+            StopRagdoll();
+            _wasDeadPose = dead;
+            return false;
+        }
+        _wasDeadPose = dead;
+
+        using (FrameProfiler.Scope("ragdoll"))
+        {
+            _ragdollSolver!.Step(dt);
+            DriveRagdollBones(e);
+        }
+        return true;
+    }
+
+    /// <summary>Build the solver from the current (death-frame) pose: capture rig seeds in model space,
+    /// place them in Quake world space through the entity transform, wire the constraint network, and seed
+    /// the corpse's toss velocity plus a light asymmetric tumble.</summary>
+    private bool TryStartRagdoll(Entity e)
+    {
+        // Rig resolution is per model — cache the (possibly null) result after the first death.
+        if (!_ragdollRigTried)
+        {
+            _ragdollRigTried = true;
+            _ragdollRig = RagdollRig.TryBuild(_mgr, _skel);
+        }
+        if (_ragdollRig is null)
+            return false;
+        // Scaled players (T48 listen/demo curiosities) keep animated deaths — the world/model conversion
+        // below assumes unit scale.
+        if (e.ScaleFactor > 0f && Mathf.Abs(e.ScaleFactor - 1f) > 0.01f)
+            return false;
+
+        RagdollRig rig = _ragdollRig;
+        rig.CaptureSeed(b => _player.GetBoneAbs(b));
+
+        (float sin, float cos) = MathF.SinCos(Mathf.DegToRad(e.Angles.Y));
+        var worldSeeds = new SN.Vector3[RagdollRig.ParticleCount];
+        for (int i = 0; i < worldSeeds.Length; i++)
+            worldSeeds[i] = e.Origin + RotZ(rig.SeedPositions[i], sin, cos);
+
+        Engine.Collision.TraceService trace = RagdollTrace!;
+        RagdollTraceHit Sweep(SN.Vector3 start, SN.Vector3 end, float half)
+        {
+            var ext = new SN.Vector3(half, half, half);
+            var tr = trace.Trace(start, -ext, ext, end, MoveFilter.WorldOnly, null);
+            if (tr.StartSolid)
+                return new RagdollTraceHit(start, new SN.Vector3(0f, 0f, 1f), true);
+            if (tr.Fraction >= 1f)
+                return new RagdollTraceHit(end, default, false);
+            SN.Vector3 n = tr.PlaneNormal;
+            if (n.LengthSquared() < 0.5f) n = new SN.Vector3(0f, 0f, 1f);
+            return new RagdollTraceHit(tr.EndPos, n, true);
+        }
+
+        _ragdollSolver = new RagdollSolver(worldSeeds, Sweep);
+        rig.Wire(_ragdollSolver);
+        _ragdollSolver.SetVelocity(e.Velocity);
+        // Head + hands get a touch of random tumble so identical deaths don't fold identically.
+        _ragdollSolver.AddParticleVelocity(2, RandVel(60f));
+        _ragdollSolver.AddParticleVelocity(5, RandVel(40f));
+        _ragdollSolver.AddParticleVelocity(6, RandVel(40f));
+
+        _ragdollParticles ??= new SN.Vector3[RagdollRig.ParticleCount];
+        _ragdollBoneSink ??= (bone, abs) => _player.SetBoneAbs(bone, abs);
+        return true;
+    }
+
+    /// <summary>Write the solved pose onto the CPU skeleton: world particles → model space through the
+    /// INVERSE of the CURRENT entity transform (the corpse entity keeps tossing/interpolating server-side;
+    /// per-frame compensation keeps the visual glued to the ground it fell on), then the rig's parents-first
+    /// bone-abs writes. PushBones converts to Godot exactly like the animated path.</summary>
+    private void DriveRagdollBones(Entity e)
+    {
+        (float sin, float cos) = MathF.SinCos(Mathf.DegToRad(e.Angles.Y));
+        for (int i = 0; i < _ragdollParticles!.Length; i++)
+        {
+            SN.Vector3 world = _ragdollSolver!.PositionLerped(i);
+            _ragdollParticles[i] = InvRotZ(world - e.Origin, sin, cos);
+        }
+        _ragdollRig!.DriveBones(_ragdollParticles, _ragdollBoneSink!);
+    }
+
+    private void StopRagdoll() => _ragdollSolver = null;
+
+    /// <summary>Quake yaw rotation about +Z (forward = (cos, sin, 0) at yaw ψ).</summary>
+    private static SN.Vector3 RotZ(SN.Vector3 v, float sin, float cos)
+        => new(v.X * cos - v.Y * sin, v.X * sin + v.Y * cos, v.Z);
+
+    private static SN.Vector3 InvRotZ(SN.Vector3 v, float sin, float cos)
+        => new(v.X * cos + v.Y * sin, -v.X * sin + v.Y * cos, v.Z);
+
+    private static SN.Vector3 RandVel(float scale)
+        => new((GD.Randf() * 2f - 1f) * scale, (GD.Randf() * 2f - 1f) * scale, GD.Randf() * scale * 0.5f);
+
     /// <summary>Release the CPU skeleton handle (QC <c>skel_delete</c>). Call before freeing the node.</summary>
     public void ReleaseSkeleton()
     {
+        StopRagdoll();
         if (Active) { _player.Free(); Active = false; }
     }
 
