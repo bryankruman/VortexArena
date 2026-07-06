@@ -320,10 +320,13 @@ public static class ClientSettings
         // box), so for the "auto" case (the DP-shipped 256) we apply max(144, detected-refresh). Every OTHER
         // explicit choice -- the menu's 128 / 512 / 1024 / 2048 or "Unlimited" (0) -- is the player's, honored as-is.
         int maxFps = (int)c.GetFloat("cl_maxfps");
-        // "Auto" = the DP default (256) or the menu's "Unlimited" (0): neither is an fps target the player chose,
-        // and both let the CPU outrun the swapchain on a fast GPU -> present-jitter hitches. Apply an engaging
-        // ceiling = max(144, refresh). Any EXPLICIT non-default menu value (128 / 512 / 1024 / 2048) is honored.
-        int appliedFps = (maxFps == 0 || maxFps == 256)
+        // "Auto" = the DP-shipped default (256) ONLY: not an fps target anyone chose, and it lets the CPU
+        // outrun the swapchain on a fast GPU -> present-jitter hitches, so it gets the engaging ceiling
+        // max(144, refresh). Every EXPLICIT choice is the player's and is honored as-is — including the
+        // menu's "Unlimited" (0 -> Engine.MaxFps 0, truly uncapped). (2026-07-06: 0 was previously folded
+        // into the auto case, silently capping "Unlimited" at 144 — Bryan's uncap request; the perf harness
+        // also captures uncapped now so peak frame time and its dips are measured, not masked by the cap.)
+        int appliedFps = maxFps == 256
             ? System.Math.Max(144, (int)DisplayServer.ScreenGetRefreshRate())
             : maxFps;
         Godot.Engine.MaxFps = appliedFps;

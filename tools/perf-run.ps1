@@ -78,11 +78,13 @@ $before = Get-ChildItem $logDir -Filter "session-*.log" -ErrorAction SilentlyCon
 # pass "cl_portal_render 1"):
 #   cl_autopause 0      unfocused/agent launches must not pause the sim (and visuals freeze too)
 #   cl_portal_render 0  kills the portal spawn-lottery render-load confound (PERF-DEBUGGING.md)
-#   vid_vsync 2         mailbox = the shipped default present mode
-#   cl_maxfps 0         NOT uncapped: 0/256 = "auto" -> max(144, refresh) (ClientSettings.cs, the
-#                       measured 2026-06-14 present-jitter fix) - i.e. captures measure the SHIPPED
-#                       144-capped experience. Throughput cells: -Cvar "cl_maxfps 1024" (explicit
-#                       values are honored as-is).
+#   vid_vsync 2         mailbox = the shipped default present mode (renders uncapped, presents at vblank)
+#   cl_maxfps 0         truly UNCAPPED since 2026-07-06 (ClientSettings.cs honors the explicit 0; only
+#                       the untouched DP default 256 still auto-caps at max(144, refresh)). Captures
+#                       measure peak frame time and its dips - the campaign goal is minimizing BOTH,
+#                       not hiding variance behind a cap. NOTE: uncapped hitch COUNTS are not
+#                       comparable to capped runs (the hitch threshold rides the median); diff ms/lows.
+#                       For a shipped-cap A/B: -Cvar "cl_maxfps 144".
 $exeArgs += @("--host", $Map, "--gametype", $Gametype, "--bots", "$Bots",
               "--cvar", "cl_frameprofiler", "2",
               "--cvar", "cl_frameprofiler_hitchms", "8",

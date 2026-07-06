@@ -36,7 +36,8 @@ powershell -NoProfile -Command "Get-Process Godot*,XonoticGodot* -ErrorAction Si
 BEFORE=$(ls -t "$LOGDIR"/*.log 2>/dev/null | head -1)
 echo ">>> [$LABEL] $MAP + $BOTS bots, ${SECS}s  extra: $*"
 # Pinned capture profile (later --cvar wins, so caller flags override the pins — see perf-run.ps1
-# for the rationale per pin). PERF_SCENARIO=idle opts out of the demo (spectated-bot gameplay) scenario.
+# for the rationale per pin; cl_maxfps 0 = truly uncapped since 2026-07-06, captures measure peak).
+# PERF_SCENARIO=idle opts out of the demo (spectated-bot gameplay) scenario.
 SCENARIO_ARGS=()
 if [ "${PERF_SCENARIO:-demo}" = "demo" ]; then
     SCENARIO_ARGS=(--cvar cl_bench_spectate 1
