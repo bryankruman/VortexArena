@@ -2953,6 +2953,10 @@ public sealed partial class NetGame : Node3D
         // throttled to 2 Hz). Under the gate — it mutates server-side spectator state.
         BenchSpectateThink();
 
+        // (perf 2.0) ng.feeds: the music/announcer/host-mutator HUD-feed run — sub-scoped so the ng.process
+        // residual shrinks to genuinely-unattributed work (frame-budget decomposition, perf-campaign doc).
+        using (XonoticGodot.Game.Client.FrameProfiler.Scope("ng.feeds"))
+        {
         // QC target_music_kill() at NextLevel: stop the map music at intermission (works on both the listen-server
         // and pure-client paths — the flag is networked via ClientNet.MatchIntermission). QC FixIntermissionClient
         // additionally loops a random sv_intermission_cdtrack word over the scoreboard; feed that value from the
@@ -3081,6 +3085,7 @@ public sealed partial class NetGame : Node3D
 
         // Advance the announcer queue (play the next queued voice if the current one finished).
         _notifications?.ProcessAnnouncerQueue();
+        }   // ng.feeds
 
         // Pump the client transport (handshake + snapshots + event bundles) before reading predicted state.
         if (_client is null)
@@ -3091,7 +3096,8 @@ public sealed partial class NetGame : Node3D
         // observed bug (the spawn-stutter was the ENet throttle) — `set cl_movement_hitch_hold 0` disables it.
         // Rationale + risks: TROUBLESHOOTING.md.
         _client.RecentHitch = _hitchHoldCv && dt > HitchFrameSeconds;
-        _client.Poll();
+        using (XonoticGodot.Game.Client.FrameProfiler.Scope("ng.poll"))
+            _client.Poll();
 
         // Advance the render clock: free-run by this frame's elapsed time, then gently CREEP it toward server time
         // on a fresh snapshot (see _renderClock).
@@ -3261,6 +3267,9 @@ public sealed partial class NetGame : Node3D
             // cl_netimmediatebuttons (DP): fire/jump/weapon-switch bypass the rate gate above so they reach the
             // server immediately at high fps, while steady movement stays gated to cl_netfps.
             _client.ImmediateButtons = _immediateButtonsCv;
+            // (perf 2.0) ng.input: the per-frame prediction + input transmit — the using's embedded
+            // statement is the whole if/else, so both cadence paths are covered by one scope.
+            using (XonoticGodot.Game.Client.FrameProfiler.Scope("ng.input"))
             if (_perFrameInput)
             {
                 // PATH A — BASE-FAITHFUL variable-dt local prediction (Xonotic Base's default, Movetype_Physics_
@@ -3402,7 +3411,8 @@ public sealed partial class NetGame : Node3D
         // lerp + camera placement + eventchase + eye-contents), so it must run BEFORE the ViewEffects feed below
         // (which reads SampleEyeContents = _view.EyeContents).
         if (_cameraReady)
-            UpdateCamera(dt);
+            using (XonoticGodot.Game.Client.FrameProfiler.Scope("ng.camera"))
+                UpdateCamera(dt);
 
         // Camera-trace capture (apparatus A2): once spawned, record the rendered camera origin + predicted state
         // per frame; finish + quit when the scripted input is exhausted. Inert unless --camera-trace was passed.
@@ -3438,9 +3448,12 @@ public sealed partial class NetGame : Node3D
         // Feed the full HUD's player-bound panels (health/ammo/weapons/crosshair) the local server Player on a
         // listen server, so they reflect live local state as the spawn lands (QC the view player). A pure client
         // has no local Player actor — the NetHud crosshair/health covers it. Cheap: SetPlayer no-ops when same.
-        UpdateFullHudPlayer();
-        UpdateCrosshairGate();
-        UpdateInfoMessages();
+        using (XonoticGodot.Game.Client.FrameProfiler.Scope("ng.hud"))
+        {
+            UpdateFullHudPlayer();
+            UpdateCrosshairGate();
+            UpdateInfoMessages();
+        }
 
         // Install / swap the first-person weapon model when the networked active weapon changes (CSQC view.qc:305
         // picks the v_ model from the active weapon, rebuilding only on a swap).
@@ -3533,16 +3546,19 @@ public sealed partial class NetGame : Node3D
         // Scoreboard (QC +showscores): show while the scoreboard key is held, and feed it the networked rows +
         // team totals whenever a fresh LatestScoreboard arrives (the panel only repaints on data/toggle, so this
         // is cheap). BindTable.ShowScores is the held-button state set from the +showscores bind.
-        UpdateScoreboard();
-        UpdateScore();
-        UpdateMatchClock();
-        UpdatePickupFeed();
-        UpdateModIcons();
-        UpdateAccuracy();
-        UpdateVotePanel();
-        UpdateMapVotePanel();
-        UpdateRacePanels();
-        UpdateHudDynamicFollow();
+        using (XonoticGodot.Game.Client.FrameProfiler.Scope("ng.hud"))
+        {
+            UpdateScoreboard();
+            UpdateScore();
+            UpdateMatchClock();
+            UpdatePickupFeed();
+            UpdateModIcons();
+            UpdateAccuracy();
+            UpdateVotePanel();
+            UpdateMapVotePanel();
+            UpdateRacePanels();
+            UpdateHudDynamicFollow();
+        }
 
         // Minigame cursor (QC hud_cursormode): while a minigame board/menu (or quickmenu / maximized radar) owns
         // input, show the cursor so the player can click TTT/C4 tiles + the menu; recapture for play once it's
