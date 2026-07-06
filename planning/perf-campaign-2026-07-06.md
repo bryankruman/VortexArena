@@ -30,8 +30,14 @@ maximize peak performance, and above all reduce variance/dips* (uncapped; the ca
   `_PhysicsProcess` nodes). Empty-map floor 3.7 ms (~270 fps). `vid_vsync 0` measured **−0.5 ms and
   better lows** — default flip pending Bryan's tearing A/B.
 - **Baselines:** `tools/perf-baselines/{catharsis,stormkeep}-release.json` = uncapped demo captures.
-- **In flight next: Phase 2.0** — sub-scope `ng.process`, R30 physics trim (tick rate +
-  `_PhysicsProcess` migration), vsync default decision → then 2.1 bot-AI combat cost.
+- **Phase 2.0 LANDED** — `ng.process` sub-scopes (`ng.feeds`/`ng.poll`/`ng.input`/`ng.camera`/`ng.hud`;
+  hitch trees + watchdog now name the inner owner) and the R30 physics trim (10 Hz + 1-step cap;
+  Godot physics had zero body/query users — `BuildCollisionMesh` is caller-less. Correction learned
+  here: the CSV `phys_ms` is the latched per-tick monitor, so the honest amortized reclaim is
+  ~0.1 ms/frame + the catch-up hitch amplifier). **Open decision for Bryan: `vid_vsync 0` default**
+  (measured −0.5 ms + better lows; costs tearing — eyeball it in real play).
+- **Next: Phase 2.1** — bot-AI combat cost (`bot.rate`/`bot.seed` tails, strategy-interval jitter,
+  walk caps under sustained combat) — the #1 dip source.
 
 ---
 
@@ -227,7 +233,7 @@ Per-frame CSV columns (`proc/rcpu/gpu/phys/rest`) decomposed over post-load fram
 | `rest` | **~2.2 ms** | 1.71 ms | main-loop overhead + present (ms − proc − rcpu; overlaps gpu) | biggest overall; NOT vsync (persists with vsync off) — Godot per-iteration machinery |
 | `rcpu` | 0.95 ms | 0.70 ms | render-thread submit (~405 draws) | R1/R2 worked; June's "rcpu deficit" is closed |
 | `gpu` | 1.01 ms | 0.68 ms | GPU render (overlaps rest) | not the limiter (RTX 3080) |
-| `phys` | 0.39 ms | 0.15 ms | Godot 60 Hz physics phase | ~pure waste: only 5 cosmetic `_PhysicsProcess` nodes; gameplay collision is our TraceService |
+| `phys` | 0.39 ms | 0.15 ms | Godot 60 Hz physics phase — **CAVEAT: the column is the LATCHED per-tick monitor**, so amortized ≈ ×(ticks/fps) ≈ 0.13 ms/frame at 60 Hz/180 fps | waste regardless: zero body/query users (BuildCollisionMesh caller-less; casings/gibs never spawn); trimmed to 10 Hz + 1-step cap in Phase 2.0 (~0.1 ms back + kills the 8-step catch-up hitch amplifier) |
 
 `proc` split (top1 accounting, stormkeep steady state): `ng.process` ~1.2 ms leading 56 % of frames
 (72 Hz server tick + input/prediction + HUD feeds — **one giant scope, needs sub-scopes before it can
