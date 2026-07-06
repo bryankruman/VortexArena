@@ -1148,6 +1148,10 @@ public sealed class BotBrain
         if (targ.IsFreed) return false;
         if (targ.TakeDamage == DamageMode.No) return false;
         if (targ.DeadState != DeadFlag.No) return false;
+        // QC bot_shouldattack (aim.qc:120): spare a player who is TYPING in chat (PHYS_INPUT_BUTTON_CHAT)
+        // unless bot_typefrag allows typefragging (Base default 0). Entity.ButtonChat is the live input
+        // mirror — the same field the monster typefrag spare reads (MonsterAI). (playtest #35b)
+        if (targ.ButtonChat && !Cvars.Bool("bot_typefrag")) return false;
         if ((targ.Flags & EntFlags.NoTarget) != 0) return false;
         if ((targ.Flags & EntFlags.Item) != 0) return false; // only players/monsters
 
