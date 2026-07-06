@@ -165,11 +165,13 @@ public static class MenuState
         // LoadUserConfig below — so they become the locked DEFAULT (persisted only if the player moves them, and a
         // player's own config.cfg value still wins). vid_fullscreen 2 = EXCLUSIVE fullscreen (takes the desktop
         // compositor out of the present path — desktop-fullscreen 1 still composites on Windows, the missed-vblank
-        // double-frames in the hitch logs); vid_vsync 2 = mailbox (no FIFO cascade on a missed present). Either can
-        // be set 0/1 from the console or video menu. (Setting vid_vsync here, before the lock, also makes it a
-        // proper locked default instead of the post-lock "always-save" cvar RegisterEngineVideoDefaults created.)
+        // double-frames in the hitch logs). vid_vsync 0 = OFF (Bryan's 2026-07-06 call after the uncapped
+        // decomposition: vsync off measured −0.5 ms/frame AND better lows vs the previous mailbox default —
+        // perf-campaign doc Phase 1c; DP-style raw present, tearing accepted). 1/2/3 still selectable from the
+        // console or the video menu. (Setting vid_vsync here, before the lock, also makes it a proper locked
+        // default instead of the post-lock "always-save" cvar RegisterEngineVideoDefaults created.)
         _cvars.Set("vid_fullscreen", "2");
-        _cvars.Set("vid_vsync", "2");
+        _cvars.Set("vid_vsync", "0");
 
         // Lock the shipped baseline NOW — the full stock cfg tree is loaded but the user's saved overrides are
         // not yet applied. This is DP's Cvar_LockDefaults: it freezes each cvar's current value as its default so

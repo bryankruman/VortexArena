@@ -78,7 +78,7 @@ $before = Get-ChildItem $logDir -Filter "session-*.log" -ErrorAction SilentlyCon
 # pass "cl_portal_render 1"):
 #   cl_autopause 0      unfocused/agent launches must not pause the sim (and visuals freeze too)
 #   cl_portal_render 0  kills the portal spawn-lottery render-load confound (PERF-DEBUGGING.md)
-#   vid_vsync 2         mailbox = the shipped default present mode (renders uncapped, presents at vblank)
+#   vid_vsync 0         the shipped default since 2026-07-06 (off: -0.5ms/frame + better lows vs mailbox)
 #   cl_maxfps 0         truly UNCAPPED since 2026-07-06 (ClientSettings.cs honors the explicit 0; only
 #                       the untouched DP default 256 still auto-caps at max(144, refresh)). Captures
 #                       measure peak frame time and its dips - the campaign goal is minimizing BOTH,
@@ -90,7 +90,7 @@ $exeArgs += @("--host", $Map, "--gametype", $Gametype, "--bots", "$Bots",
               "--cvar", "cl_frameprofiler_hitchms", "8",
               "--cvar", "cl_autopause", "0",
               "--cvar", "cl_portal_render", "0",
-              "--cvar", "vid_vsync", "2",
+              "--cvar", "vid_vsync", "0",
               "--cvar", "cl_maxfps", "0",
               "--quit-after-seconds", "$Secs")
 if ($Scenario -eq "demo") {

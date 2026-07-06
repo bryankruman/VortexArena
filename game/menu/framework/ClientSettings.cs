@@ -379,10 +379,11 @@ public static class ClientSettings
     {
         const CvarFlags save = CvarFlags.Save;
         // vid_vsync is extended to a mode index (see ApplyVideo): 0 off / 1 on / 2 mailbox / 3 adaptive. The port
-        // default is 2 (mailbox — best frame pacing without a FIFO cascade on a missed present); it's already set
-        // to 2 as a locked default in MenuState.Boot, so this idempotent Register keeps that value and just carries
-        // the archive flag. A player can still set 0 (lowest input latency) / 1 / 3 from the console or video menu.
-        c.Register("vid_vsync", "2", save);
+        // default is 0 (OFF — Bryan's 2026-07-06 call: −0.5 ms/frame AND better lows than the previous mailbox
+        // default, uncapped decomposition in the perf-campaign doc); it's already set as a locked default in
+        // MenuState.Boot, so this idempotent Register keeps that value and just carries the archive flag. A
+        // player can still pick 1 / 2 (mailbox: no tearing, the pre-07-06 default) / 3 from console or menu.
+        c.Register("vid_vsync", "0", save);
         c.Register("vid_borderless", "0", save);
         // (§12.7) AboveNormal process priority by default — see ApplyVideo's priority block. 0 = stock priority.
         c.Register("sys_priority_boost", "1", save);

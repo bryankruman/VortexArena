@@ -144,12 +144,16 @@ public sealed class TraceService : ITraceService
         };
 
         // --- clip to world brushes ---
-        // Broadphase: gather brushes overlapping the swept AABB of the move.
+        // Broadphase: gather brushes along the SWEPT CORRIDOR of the move (perf 2.1: a long diagonal
+        // trace's enclosing AABB used to hand the narrowphase every brush under half the grid — the
+        // catharsis shotgun/true-aim melts; QuerySwept marches cell-sized segments instead). The plain
+        // rectangle bounds are still computed for the ENTITY broadphase below (few entities — the
+        // rectangle is fine there).
         Vector3 sweepMins, sweepMaxs;
         SweptBounds(start, end, mins, maxs, out sweepMins, out sweepMaxs);
 
         _candidates.Clear();
-        _world.Query(sweepMins, sweepMaxs, _candidates);
+        _world.QuerySwept(start, end, mins, maxs, _candidates);
 
         for (int i = 0; i < _candidates.Count; i++)
             TraceBrushVsBrush(ref trace, box, start, end, _candidates[i], worldBrush: true, hitEnt: null);

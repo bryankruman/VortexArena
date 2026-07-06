@@ -612,7 +612,10 @@ public sealed class SoundService : ISoundService
         if (!SoundAllowedGate.IsAllowed(e)) return;
         // SV_StartSound emits from the entity's box center (DP uses ent.origin + 0.5*(mins+maxs)).
         Vector3 origin = e.Origin + (e.Mins + e.Maxs) * 0.5f;
-        Broadcast?.Invoke(new SoundEvent(e, channel, sample, volume, attenuation, origin, Loop: loop, Pitch: pitch));
+        // (perf 2.1) snd.play: the listen host's in-process sound mirror runs INSIDE this event — a cold
+        // sample decode here lands in whatever gameplay scope emitted (the mp.weapon melt hunt).
+        using (Prof.Sample("snd.play"))
+            Broadcast?.Invoke(new SoundEvent(e, channel, sample, volume, attenuation, origin, Loop: loop, Pitch: pitch));
     }
 
     public void PlayAt(Vector3 point, SoundChannel channel, string sample, float volume = 1f, float attenuation = 1f)
