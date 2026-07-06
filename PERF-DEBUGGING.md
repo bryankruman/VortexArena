@@ -15,7 +15,11 @@ tracer: see **NET-DEBUGGING.md** (`net_input_trace`) and **TROUBLESHOOTING.md**.
    tools\perf-run.ps1 -Label repro -Map stormkeep -Secs 60
    ```
    Or in any running game: console → `set cl_frameprofiler 1` (2 = also echo the 5 s snapshots), play,
-   quit. Session files land in `~/XonData/logs/session-<stamp>.{log,csv}` (newest ~50 pairs are kept).
+   quit. Session files land in `<userdir>/logs/session-<stamp>.{log,csv}` (newest ~50 pairs are kept) —
+   `~/XonData` for real play; perf-run captures use an **isolated scratch profile**
+   (`_scratch/perf-userdir`, via `XONOTIC_USERDIR`) with a pinned cvar set (`cl_autopause 0`,
+   `cl_portal_render 0`, `vid_vsync 2`, `cl_maxfps 0` — your `-Cvar` flags override the pins), so runs
+   never mutate the daily config and are config-identical by construction (`-UserDir real` opts out).
 2. **Read the report**:
    ```powershell
    python tools\perf-report.py                # newest session: percentiles, census, clusters, offenders
@@ -68,7 +72,7 @@ session hitch counter; **F11** expands the live scope tree; `set cl_frameprofile
 | Tool | What it does |
 |---|---|
 | `tools/perf-run.ps1` / `.sh` | One-command capture: launches the **release export** (`-DebugBuild` for the project) on a map + bots with the profiler forced, self-quits, runs the report, writes `_scratch/perf_<label>.json`. |
-| `tools/perf-report.py` | Turns a session pair into percentiles/1%-lows, a primaries-vs-recovery census, hitch **clusters**, top offending scopes, alloc storms, GC/pipeline totals. `--diff <session|json>` compares runs; `--json` writes a baseline. Old (pre-2026-07-03) CSVs had a one-frame ms↔scopes skew — the tool detects and corrects it. |
+| `tools/perf-report.py` | Turns a session pair into percentiles/1%-lows, a primaries-vs-recovery census, hitch **clusters**, top offending scopes, alloc storms, GC/pipeline totals — plus a **post-load block** (`t ≥ 20 s`, `--postload SECS`) so steady-state smoothness is readable without load/join noise (trust the `pl` rows for smoothness A/Bs; the full-session 0.1%-low is pinned by load frames). `--diff <session|json>` compares runs; `--json` writes a baseline. Old (pre-2026-07-03) CSVs had a one-frame ms↔scopes skew — the tool detects and corrects it. |
 | `tools/perf-smoke.ps1` | Pre-merge gate: budget-asserting headless benches (`ServerTickPerfBench` fails on a >4-5× tick regression; opt out with `XG_PERF_ASSERT=0`), `-Live` adds a 30 s capture diffed vs `tools/perf-baselines/`. |
 | `cl_frameprofiler_dump 1` | Console: dumps the last ~240 frames (forensic ring) to `frameprofile_ring.csv`. |
 | RenderDoc auto-capture | Run under RenderDoc → sync SURFACE compiles self-capture (≤6/session, after t=28 s) to `<temp>/xonotic_rdoc/`. |
@@ -88,8 +92,9 @@ a hitch must also exceed 1.8× the rolling median), `cl_frameprofiler_watchdog` 
 - **Two A/B confounds found the hard way (2026-07-03):** (a) a parallel `dotnet build`/agent session
   contaminates a capture — check `Get-Process dotnet` is idle first; (b) the idle capture camera sits at a
   RANDOM spawn, and a warpzone-portal-facing spawn re-renders the scene into the portal viewport (~2× draws,
-  +1ms+ p50 on debug) — the report's `draws p50` line + the diff's render-load gate flag it; pin the variable
-  with `-Cvar "cl_portal_render 0"` (or `"wz_portal_lookat 1"` to always face one).
+  +1ms+ p50 on debug) — the report's `draws p50` line + the diff's render-load gate flag it. Since 2026-07-06
+  perf-run **pins `cl_portal_render 0` by default**; portal-cost cells opt back in with
+  `-Cvar "cl_portal_render 1"` + `-Cvar "wz_portal_lookat 1"` (always face one → deterministic load).
 - **New per-frame system ⇒ ships with a `Prof.Sample` scope** (and its name added to
   `FrameProfiler.TopLevelNodeScopes`), or it will surface as `(unscoped)`/`proc:other` in the next hunt.
   The session summary prints a "scope coverage debt" line when that happens.

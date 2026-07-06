@@ -6,9 +6,13 @@
 #   tools\perf-run.ps1 -Label dbg -DebugBuild                 # run the project via the Godot console binary
 #
 # Launches the game with the frame profiler forced on, waits for the self-quit, finds the new
-# ~/XonData/logs/session-*.{log,csv} pair, and runs tools/perf-report.py on it (writing
-# _scratch/perf_<label>.json for later -Baseline use). Release export is the DEFAULT because debug
-# censuses are not representative (the profiler watermarks them too).
+# session-*.{log,csv} pair, and runs tools/perf-report.py on it (writing _scratch/perf_<label>.json
+# for later -Baseline use). Release export is the DEFAULT because debug censuses are not
+# representative (the profiler watermarks them too).
+#
+# Captures run on an ISOLATED scratch profile (_scratch\perf-userdir via XONOTIC_USERDIR), not the
+# daily ~/XonData one: runs used to mutate the real config.cfg and inherit whatever the last playtest
+# left configured (perf-next-steps-2026-07-03 item 21). Pass -UserDir real for the old behavior.
 #
 # NOTE: keep this file pure ASCII - Windows PowerShell 5.1 parses BOM-less scripts as ANSI.
 param(
@@ -19,7 +23,8 @@ param(
     [int]$Bots = 6,
     [switch]$DebugBuild,
     [string]$Baseline = "",
-    [string[]]$Cvar = @()   # extra cvars, each "name value"
+    [string[]]$Cvar = @(),  # extra cvars, each "name value" (these win over the pinned profile below)
+    [string]$UserDir = ""   # capture profile dir; "" = _scratch\perf-userdir, "real" = the daily ~/XonData
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,7 +32,18 @@ $root = Split-Path -Parent $PSScriptRoot   # repo root (this script lives in too
 $outDir = Join-Path $root "_scratch"
 if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }
 $stdout = Join-Path $outDir "perf_$Label.out"
-$logDir = Join-Path $env:USERPROFILE "XonData\logs"
+
+# --- isolated capture profile (XONOTIC_USERDIR, honored by UserPaths.cs) -----------------------
+if ($UserDir -eq "real") {
+    Remove-Item Env:XONOTIC_USERDIR -ErrorAction SilentlyContinue
+    $baseDir = Join-Path $env:USERPROFILE "XonData"
+} else {
+    if ($UserDir -eq "") { $UserDir = Join-Path $outDir "perf-userdir" }
+    if (-not (Test-Path $UserDir)) { New-Item -ItemType Directory -Path $UserDir | Out-Null }
+    $env:XONOTIC_USERDIR = (Resolve-Path $UserDir).Path   # inherited by Start-Process + the report
+    $baseDir = $env:XONOTIC_USERDIR
+}
+$logDir = Join-Path $baseDir "logs"
 
 # --- pick the binary -------------------------------------------------------------------------
 if ($DebugBuild) {
@@ -49,9 +65,21 @@ $before = Get-ChildItem $logDir -Filter "session-*.log" -ErrorAction SilentlyCon
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
 # --- launch ----------------------------------------------------------------------------------
+# Pinned capture profile - the confounds every A/B must hold constant, made explicit so neither the
+# scratch profile's defaults nor a stray config can change what a run measures. Shell.cs applies
+# --cvar args IN ORDER, so a -Cvar duplicate deliberately overrides a pin (e.g. the portal cells
+# pass "cl_portal_render 1"):
+#   cl_autopause 0      unfocused/agent launches must not pause the sim (and visuals freeze too)
+#   cl_portal_render 0  kills the portal spawn-lottery render-load confound (PERF-DEBUGGING.md)
+#   vid_vsync 2         mailbox + uncapped = the documented default present mode - pinned so
+#   cl_maxfps 0         throughput numbers stay comparable across profiles and machines
 $exeArgs += @("--host", $Map, "--gametype", $Gametype, "--bots", "$Bots",
               "--cvar", "cl_frameprofiler", "2",
               "--cvar", "cl_frameprofiler_hitchms", "8",
+              "--cvar", "cl_autopause", "0",
+              "--cvar", "cl_portal_render", "0",
+              "--cvar", "vid_vsync", "2",
+              "--cvar", "cl_maxfps", "0",
               "--quit-after-seconds", "$Secs")
 foreach ($c in $Cvar) {
     $parts = $c -split "\s+", 2
