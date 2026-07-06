@@ -3,8 +3,35 @@
 Supersedes `planning/perf-next-steps-2026-07-03.md` as the active perf plan (that doc's ledger is
 folded in below with per-item status verified against today's main). Goal, per Bryan: **maximum
 smoothness first — remove every removable hitch without compromising fidelity/quality; fps
-optimizations second, and thoroughly reviewed.** The plan starts with a measurement phase because
-every number we have predates the last three weeks of merges.
+optimizations second, and thoroughly reviewed** — sharpened during Phase 1 to: *minimize frame time,
+maximize peak performance, and above all reduce variance/dips* (uncapped; the cap must not mask them).
+
+---
+
+## 0. STATUS (end of 2026-07-06, branch `perf/evaluate-current-status-performance`, local only)
+
+**Done today — Phases 0, 1, 1b, 1c** (sections below hold the details; read top-down for history):
+
+- **Tooling:** perf-report post-load (`pl`) block; perf-run isolated scratch profile + pinned cvars;
+  **demo scenario is the capture default** (spectate-a-bot first-person, all 8 core weapons rotating,
+  forced respawn — built after Bryan rejected the unrepresentative idle camera, and it changed every
+  conclusion); captures run **uncapped** (`cl_maxfps 0` = truly Unlimited since c94b8ae — only the
+  untouched 256 default still auto-caps at max(144, refresh)).
+- **Spectate correctness (shipped with the demo mode):** viewed-entity hidden in first person,
+  SpectateCopy mirrors ammo/weapons (full HUD while following), `cl_spectate_smoothangles`.
+- **Census verdicts:** `ng.process` (bot AI under sustained combat) = the #1 hitch/dip owner on busy
+  maps and the melt-match variance driver; `hud.trueaim` = steady ~1.4 ms tax everywhere + hitch-class
+  on catharsis; weapon-variant PSO warm gap confirmed map-independent (~65 sync compiles/join + 3–6
+  mid-match); stormkeep steady state near-clean; roster-warm load frame 404 MB on catharsis + an
+  unattributed 277 MB storm.
+- **Frame budget (uncapped stormkeep combat, median 5.56 ms):** proc 2.0 (ng.process ~1.2 opaque —
+  Phase 2.0 instruments it) · rest ~2.2 (Godot main-loop/present, NOT vsync — 1.7 ms even on an empty
+  map) · rcpu 0.95 (June's deficit closed) · gpu 1.0 (not limiting) · phys 0.39 (waste; 5 cosmetic
+  `_PhysicsProcess` nodes). Empty-map floor 3.7 ms (~270 fps). `vid_vsync 0` measured **−0.5 ms and
+  better lows** — default flip pending Bryan's tearing A/B.
+- **Baselines:** `tools/perf-baselines/{catharsis,stormkeep}-release.json` = uncapped demo captures.
+- **In flight next: Phase 2.0** — sub-scope `ng.process`, R30 physics trim (tick rate +
+  `_PhysicsProcess` migration), vsync default decision → then 2.1 bot-AI combat cost.
 
 ---
 
