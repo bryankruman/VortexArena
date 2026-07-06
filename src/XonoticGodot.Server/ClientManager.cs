@@ -687,7 +687,23 @@ public sealed class ClientManager
         spectator.ViewOfs = target.ViewOfs;
         spectator.SetResourceExplicit(ResourceType.Health, target.GetResource(ResourceType.Health));
         spectator.SetResourceExplicit(ResourceType.Armor, target.GetResource(ResourceType.Armor));
+        // QC SpectateCopy also mirrors the ammo family + the weapon loadout (server/client.qc:1799 copies
+        // ammo_* / weapons / switchweapon) — the follower's owner block feeds the full HUD's ammo/weapons
+        // panels, so without these the panels would show the observer's EMPTY inventory, not the spectatee's.
+        spectator.SetResourceExplicit(ResourceType.Shells, target.GetResource(ResourceType.Shells));
+        spectator.SetResourceExplicit(ResourceType.Bullets, target.GetResource(ResourceType.Bullets));
+        spectator.SetResourceExplicit(ResourceType.Rockets, target.GetResource(ResourceType.Rockets));
+        spectator.SetResourceExplicit(ResourceType.Cells, target.GetResource(ResourceType.Cells));
+        spectator.SetResourceExplicit(ResourceType.Fuel, target.GetResource(ResourceType.Fuel));
         spectator.ActiveWeaponId = target.ActiveWeaponId;
+        spectator.SwitchWeaponId = target.SwitchWeaponId;
+        spectator.OwnedWeaponSet = target.OwnedWeaponSet;   // WepSet is a bit-struct — plain value copy
+        if (!spectator.OwnedWeapons.SetEquals(target.OwnedWeapons))
+        {
+            spectator.OwnedWeapons.Clear();
+            foreach (string w in target.OwnedWeapons)
+                spectator.OwnedWeapons.Add(w);
+        }
 
         // QC SpectateCopy (server/client.qc:1820): STAT(PRESSED_KEYS, this) = STAT(PRESSED_KEYS, spectatee) — a
         // following observer inherits the watched player's held-key bitset so the pressed-keys / strafe HUD shows

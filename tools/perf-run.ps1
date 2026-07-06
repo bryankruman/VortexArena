@@ -24,7 +24,14 @@ param(
     [switch]$DebugBuild,
     [string]$Baseline = "",
     [string[]]$Cvar = @(),  # extra cvars, each "name value" (these win over the pinned profile below)
-    [string]$UserDir = ""   # capture profile dir; "" = _scratch\perf-userdir, "real" = the daily ~/XonData
+    [string]$UserDir = "",  # capture profile dir; "" = _scratch\perf-userdir, "real" = the daily ~/XonData
+    # demo (default) = the spectated-bot gameplay scenario: the host observes a living bot first-person
+    # (cl_bench_spectate), bots carry all 8 core weapons (g_weaponarena) and rotate through them one by one
+    # (bot_ai_weapon_rotate), forced respawn keeps everyone in the fight - the capture camera experiences
+    # real map traversal + gunplay. idle = the old stand-at-spawn camera (floor measurements / old-baseline
+    # comparisons only; it never leaves the spawn room and exercises almost no gunplay).
+    [ValidateSet("demo", "idle")]
+    [string]$Scenario = "demo"
 )
 
 $ErrorActionPreference = "Stop"
@@ -71,8 +78,11 @@ $before = Get-ChildItem $logDir -Filter "session-*.log" -ErrorAction SilentlyCon
 # pass "cl_portal_render 1"):
 #   cl_autopause 0      unfocused/agent launches must not pause the sim (and visuals freeze too)
 #   cl_portal_render 0  kills the portal spawn-lottery render-load confound (PERF-DEBUGGING.md)
-#   vid_vsync 2         mailbox + uncapped = the documented default present mode - pinned so
-#   cl_maxfps 0         throughput numbers stay comparable across profiles and machines
+#   vid_vsync 2         mailbox = the shipped default present mode
+#   cl_maxfps 0         NOT uncapped: 0/256 = "auto" -> max(144, refresh) (ClientSettings.cs, the
+#                       measured 2026-06-14 present-jitter fix) - i.e. captures measure the SHIPPED
+#                       144-capped experience. Throughput cells: -Cvar "cl_maxfps 1024" (explicit
+#                       values are honored as-is).
 $exeArgs += @("--host", $Map, "--gametype", $Gametype, "--bots", "$Bots",
               "--cvar", "cl_frameprofiler", "2",
               "--cvar", "cl_frameprofiler_hitchms", "8",
@@ -81,6 +91,14 @@ $exeArgs += @("--host", $Map, "--gametype", $Gametype, "--bots", "$Bots",
               "--cvar", "vid_vsync", "2",
               "--cvar", "cl_maxfps", "0",
               "--quit-after-seconds", "$Secs")
+if ($Scenario -eq "demo") {
+    # The spectated-bot gameplay scenario (see param help). The arena list is ONE argv token - embedded
+    # quotes keep Start-Process from splitting it (PS 5.1 does not auto-quote ArgumentList elements).
+    $exeArgs += @("--cvar", "cl_bench_spectate", "1",
+                  "--cvar", "g_weaponarena", "`"blaster shotgun vortex mortar devastator crylink electro hagar`"",
+                  "--cvar", "g_forced_respawn", "1",
+                  "--cvar", "bot_ai_weapon_rotate", "8")
+}
 foreach ($c in $Cvar) {
     $parts = $c -split "\s+", 2
     if ($parts.Count -eq 2) { $exeArgs += @("--cvar", $parts[0], $parts[1]) }

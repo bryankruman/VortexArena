@@ -324,6 +324,10 @@ public static class Cvars
         new("bot_ai_enemydetectioninterval_stickingtoenemy", "4"),
         new("bot_ai_enemydetectionradius", "10000"),
         new("bot_ai_chooseweaponinterval", "0.5"),
+        // Port benchmark/demo knob (NOT a Base cvar): >0 = seconds per weapon; bots step through their
+        // owned loadout one weapon at a time (entity slot phases them apart) instead of range-picking.
+        // Used by the perf-run demo scenario together with g_weaponarena; keep 0 for normal play.
+        new("bot_ai_weapon_rotate", "0"),
         new("bot_ai_dangerdetectioninterval", "0.25"),
         new("bot_ai_dangerdetectionupdates", "64"),
         new("bot_ai_friends_aware_pickup_radius", "500"),

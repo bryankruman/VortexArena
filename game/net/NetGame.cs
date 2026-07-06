@@ -652,7 +652,10 @@ public sealed partial class NetGame : Node3D
         // listen server that left the player a permanent observer at world origin under the black connect overlay.
         // `sv_spectate 0` = "clients spawn as players immediately" (the cvar's own definition) restores the intended
         // ~1s autojoin so Create→Start drops you into the game, like real Xonotic. (Join-on-fire still works.)
-        _serverWorld.Services.Cvars.Set("sv_spectate", "0");
+        // cl_bench_spectate (demo/benchmark captures): the host is a CAMERA, not a player — keep the shipped
+        // sv_spectate 1 so the QC rule holds the host as an observer, and BenchSpectateThink glues it to a bot.
+        _serverWorld.Services.Cvars.Set("sv_spectate",
+            (_sharedCvars?.GetFloat("cl_bench_spectate") ?? 0f) != 0f ? "1" : "0");
 
         // A single-player campaign is "host AND play" too, but g_campaign re-arms the spectator-hold sv_spectate
         // just cleared; opt the local host out so it spawns straight into the loaded level (Create-Game UX).
@@ -1222,6 +1225,56 @@ public sealed partial class NetGame : Node3D
         {
             if (taken)
                 System.Threading.Monitor.Exit(simGate!);
+        }
+    }
+
+    // cl_bench_spectate: next server-time the bench camera re-evaluates (0.5 s cadence — cheap, and the
+    // re-glue after a spectatee death only needs sub-second latency, not per-frame work).
+    private float _benchSpectateNextThink;
+
+    /// <summary>
+    /// <c>cl_bench_spectate</c> (demo/benchmark captures): keep the local listen-server host OBSERVING a
+    /// living bot, so the capture camera experiences real gameplay — map traversal, combat, and first-person
+    /// gunplay via the follow-cam (<see cref="UpdateCamera"/>) + the spectated viewmodel — instead of idling
+    /// at a spawn point. Host-side twin of the manual <c>spectate</c> client command (same ClientManager
+    /// calls). Re-glues after the spectatee dies (the per-tick glue drops a follower whose target died or
+    /// re-observed — ClientManager's SpectateCopy gate) or leaves; if the host somehow joined the match (a
+    /// stray +jump), it is pulled back to observer — bench mode owns the camera by design. Runs inside the
+    /// _Process sim-gate span, so the server-state mutations are safe under sv_threaded too.
+    /// </summary>
+    private void BenchSpectateThink()
+    {
+        if (_serverWorld is null || !_isListenServer)
+            return;
+        float now = _serverWorld.Time;
+        if (now < _benchSpectateNextThink)
+            return;
+        _benchSpectateNextThink = now + 0.5f;
+        if ((_sharedCvars?.GetFloat("cl_bench_spectate") ?? 0f) == 0f)
+            return;
+        if (LocalServerPlayer is not { } host)
+            return;
+        var clients = _serverWorld.Clients;
+        if (!host.IsObserver)
+        {
+            // The real observer transition (model hidden, weapons stripped, non-solid, autojoin disarmed) —
+            // exactly what the spectate command runs. Follow on the next think, once the state settled a tick.
+            clients.PutObserverInServer(host);
+            return;
+        }
+        if (host.Spectatee is not null)
+            return; // glued — SpectateCopy tracks the bot each tick
+        foreach (var p in clients.Players)
+        {
+            // First living bot in roster order = a deterministic pick for captures. After a spectatee death
+            // (which drops the follower to free-fly) this re-attaches — usually to the same bot once its
+            // forced respawn lands, else to the next living one.
+            if (p.IsBot && !p.IsObserver && !p.IsDead)
+            {
+                clients.Spectate(host, p);
+                XonoticGodot.Common.Diagnostics.Log.Info($"[bench] spectating bot '{p.NetName}' (slot {p.Index})");
+                break;
+            }
         }
     }
 
@@ -1804,6 +1857,14 @@ public sealed partial class NetGame : Node3D
         Api.Cvars.Register("cl_eventchase_death", "2");
         Api.Cvars.Register("cl_eventchase_distance", "140");
         Api.Cvars.Register("cl_eventchase_speed", "1.3");
+
+        // Port benchmark/demo knob (NOT a Base cvar; never archived): 1 = on a listen host, stay an observer
+        // and follow a living bot (BenchSpectateThink) so a capture camera experiences real gameplay. The
+        // perf-run demo scenario sets it together with g_weaponarena/g_forced_respawn/bot_ai_weapon_rotate.
+        Api.Cvars.Register("cl_bench_spectate", "0");
+        // Spectator follow-cam angle smoothing half-life in seconds (port quality knob, NOT a Base cvar —
+        // Base renders the spectatee's raw stepped angles). 0 = raw. See SmoothSpectateAngles.
+        Api.Cvars.Register("cl_spectate_smoothangles", "0.05");
         // QC Scoreboard_WouldDraw death-scoreboard gate (_cl_main.qc / scoreboard.qc:1793): force the scoreboard up
         // a short delay after the local player dies, even without holding +showscores.
         Api.Cvars.Register("cl_deathscoreboard", "1");
@@ -2887,6 +2948,10 @@ public sealed partial class NetGame : Node3D
         if (_serverThread is not null)
             using (XonoticGodot.Game.Client.FrameProfiler.Scope("server.tick"))
                 _server?.PumpTransportThreaded(dt);
+
+        // Demo/benchmark camera: keep the host observing a living bot (no-op unless cl_bench_spectate is set;
+        // throttled to 2 Hz). Under the gate — it mutates server-side spectator state.
+        BenchSpectateThink();
 
         // QC target_music_kill() at NextLevel: stop the map music at intermission (works on both the listen-server
         // and pure-client paths — the flag is networked via ClientNet.MatchIntermission). QC FixIntermissionClient
@@ -6123,6 +6188,55 @@ public sealed partial class NetGame : Node3D
     //  Camera (driven by the SHARED FirstPersonView — same component PlayerController uses)
     // =====================================================================================
 
+    // Spectate-angle smoother state: the currently-smoothed quake angles + the netId they belong to
+    // (0 = unseeded; a target change re-seeds so a spectatee switch snaps instead of slewing).
+    private NVec3 _specAngSmoothed;
+    private int _specAngForId;
+
+    /// <summary>
+    /// Exponential shortest-arc smoothing over the followed player's view angles
+    /// (<c>cl_spectate_smoothangles</c> = half-life in seconds, 0 = raw). The spectatee's angles arrive in
+    /// steps — a bot re-aims only every AI think, a human's angles land at the snapshot rate — and the raw
+    /// follow-cam pans in those steps. Smoothing is a spectator-view-only quality deviation from Base (which
+    /// renders the raw angles); it never touches gameplay or the local first-person path. Snaps outright on a
+    /// spectatee change and on any component jump &gt; 90° (respawn / teleport / warp crossing), so it cannot
+    /// slow-slew across a legitimate discontinuity.
+    /// </summary>
+    private NVec3 SmoothSpectateAngles(NVec3 target, float dt)
+    {
+        int id = _client?.SpectatingNetId ?? 0;
+        float halflife = CvarOr(Api.Cvars, "cl_spectate_smoothangles", 0.05f);
+        if (halflife <= 0f || id == 0 || _specAngForId != id)
+        {
+            _specAngForId = id;
+            _specAngSmoothed = target;
+            return target;
+        }
+        float dp = AngleDelta180(target.X - _specAngSmoothed.X);
+        float dy = AngleDelta180(target.Y - _specAngSmoothed.Y);
+        float dr = AngleDelta180(target.Z - _specAngSmoothed.Z);
+        if (System.MathF.Abs(dp) > 90f || System.MathF.Abs(dy) > 90f)
+        {
+            _specAngSmoothed = target;   // discontinuity — snap, don't slew
+            return target;
+        }
+        float k = 1f - System.MathF.Pow(0.5f, dt / halflife);
+        _specAngSmoothed = new NVec3(
+            AngleDelta180(_specAngSmoothed.X + dp * k),
+            AngleDelta180(_specAngSmoothed.Y + dy * k),
+            AngleDelta180(_specAngSmoothed.Z + dr * k));
+        return _specAngSmoothed;
+    }
+
+    /// <summary>Wrap an angle/delta to the shortest-arc (-180, 180] range.</summary>
+    private static float AngleDelta180(float a)
+    {
+        a %= 360f;
+        if (a > 180f) a -= 360f;
+        else if (a < -180f) a += 360f;
+        return a;
+    }
+
     /// <summary>
     /// Drive the shared <see cref="Client.FirstPersonView"/> from the PREDICTED local state: the predicted origin
     /// (with the decaying prediction-error + stair-smooth offsets folded in) + predicted velocity + the dead test
@@ -6156,11 +6270,17 @@ public sealed partial class NetGame : Node3D
             _view.CameraMode = CvarOr(Api.Cvars, "chase_active", 0f) != 0f
                 ? Client.FirstPersonView.ChaseMode.Chase
                 : Client.FirstPersonView.ChaseMode.None;
+            // The camera sits inside the followed player in first person — hide that body exactly like one's
+            // own (which never even reaches the client's entity stream; the spectatee does). Chase shows it.
+            _render?.SetViewedFirstPerson(
+                _view.CameraMode == Client.FirstPersonView.ChaseMode.None ? _client.SpectatingNetId : 0);
             var sst = new Client.FirstPersonView.ViewState
             {
                 OriginQuake = specOrg,
                 VelocityQuake = NVec3.Zero,
-                ViewAnglesQuake = specAng,   // see what the spectated player sees
+                // See what the spectated player sees — through a smoother: a bot only re-aims every AI think
+                // and a human's angles arrive at the tick rate, so the raw follow angles pan in visible steps.
+                ViewAnglesQuake = SmoothSpectateAngles(specAng, dt),
                 IsDead = false,              // following a live player — no death-cam pullback
                 EyeHeightZ = EyeHeight,
             };
@@ -6168,6 +6288,8 @@ public sealed partial class NetGame : Node3D
             return;
         }
         _view.Spectating = false;
+        _render?.SetViewedFirstPerson(0);   // not following → every body draws again
+        _specAngForId = 0;                  // and the spectate-angle smoother re-seeds on the next follow
 
         float now = _renderClock; // the clock the reconciler armed the prediction-error decay with (see _Process)
         NVec3 predicted = _client.PredictedOrigin + _client.PredictionErrorOffset(now);
