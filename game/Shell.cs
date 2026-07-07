@@ -566,7 +566,7 @@ public partial class Shell : Node
             // would otherwise time out and prediction freeze). NetGame gates movement input on the pause itself.
             ProcessMode = ProcessModeEnum.Always,
         };
-        net.ConfigureClient(address, ResolvePlayerName(), MenuState.Vfs, MenuState.Cvars);
+        net.ConfigureClient(address, ResolvePlayerName(), MenuState.Vfs, MenuState.Cvars, MenuState.SharedAssets);
         net.LoadingScreen = _loadingScreen;
         net.DismissLoadingScreen = DismissLoadingScreen;
         WireConsoleToNet(net);
@@ -615,7 +615,8 @@ public partial class Shell : Node
             vfs: MenuState.Vfs,
             cvars: MenuState.Cvars,
             campaignName: config.CampaignId ?? "",   // non-empty → the server boots this as a campaign level
-            campaignIndex: config.CampaignIndex);
+            campaignIndex: config.CampaignIndex,
+            sharedAssets: MenuState.SharedAssets);   // persist the model/sound/material caches across maps & servers
         net.LoadingScreen = _loadingScreen;
         net.DismissLoadingScreen = DismissLoadingScreen;
         WireConsoleToNet(net);

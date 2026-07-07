@@ -126,6 +126,7 @@ public sealed partial class NetGame : Node3D
     private MinigameClient? _minigame;          // client-side minigame coordinator (board overlay + menu + cmd forwarding)
     private ViewEffects _viewEffects = null!;   // SEAM: T4's reusable screen-effects layer, on the net play path
     private AssetLoader? _assets;
+    private AssetLoader? _injectedAssets;        // shared process-lifetime loader from MenuState — persists model/sound/material/texture/shader caches across maps & servers; null (or cl_persist_asset_cache 0) → build a fresh per-match loader
     private ViewModel _viewModel = null!;       // first-person weapon view-model (CSQC viewmodel / wepent)
     private int _equippedWeaponId = int.MinValue; // weapon id currently in the viewmodel; rebuild only on a change
     private string _equippedVmOverride = "";       // per-weapon wr_viewmodel override (Tuba note model); rebuild on change
@@ -367,13 +368,15 @@ public sealed partial class NetGame : Node3D
     /// predictor reads the user's physics cvars); pass null for a standalone/CLI client.
     /// </summary>
     public void ConfigureClient(string address, string playerName = "player",
-        VirtualFileSystem? vfs = null, XonoticGodot.Engine.Simulation.CvarService? cvars = null)
+        VirtualFileSystem? vfs = null, XonoticGodot.Engine.Simulation.CvarService? cvars = null,
+        AssetLoader? sharedAssets = null)
     {
         _isListenServer = false;
         (_host, _port) = ParseAddress(address, DefaultPort);
         _playerName = string.IsNullOrWhiteSpace(playerName) ? "player" : playerName;
         _vfs = vfs;
         _sharedCvars = cvars;
+        _injectedAssets = sharedAssets;
     }
 
     /// <summary>
@@ -385,7 +388,7 @@ public sealed partial class NetGame : Node3D
     public void ConfigureListenServer(string map, string gametype = "dm", int botCount = 0, int botSkill = -1,
         int port = DefaultPort, string playerName = "player", string serverName = "XonoticGodot Listen Server",
         VirtualFileSystem? vfs = null, XonoticGodot.Engine.Simulation.CvarService? cvars = null,
-        string campaignName = "", int campaignIndex = 0)
+        string campaignName = "", int campaignIndex = 0, AssetLoader? sharedAssets = null)
     {
         _isListenServer = true;
         _host = "127.0.0.1";
@@ -400,6 +403,7 @@ public sealed partial class NetGame : Node3D
         _playerName = string.IsNullOrWhiteSpace(playerName) ? "player" : playerName;
         _vfs = vfs;
         _sharedCvars = cvars;
+        _injectedAssets = sharedAssets;
     }
 
     // =====================================================================================
@@ -411,7 +415,14 @@ public sealed partial class NetGame : Node3D
         // The asset loader (models/sounds/maps) over the shared VFS, when the menu mounted one.
         if (_vfs is not null)
         {
-            _assets = new AssetLoader(_vfs);
+            // Reuse MenuState's PROCESS-LIFETIME loader when one was injected (cl_persist_asset_cache 1, default):
+            // its model/sound/material/texture/shader caches then persist across map changes AND server switches,
+            // so the second map load finds the stock assets already parsed + GPU-uploaded instead of rebuilding
+            // them. Map-coupled resources (the lightmap atlas + its surface materials) are NOT in these caches —
+            // they live in the map render tree and are freed with the match — so sharing is safe. A fresh loader
+            // is built only when persistence is off or nothing was injected (bare CLI / tests / model viewer).
+            bool persist = (_sharedCvars?.GetFloat("cl_persist_asset_cache") ?? 1f) != 0f;
+            _assets = (persist && _injectedAssets is not null) ? _injectedAssets : new AssetLoader(_vfs);
             // Wire the per-model player-sound resolver (QC LoadPlayerSounds): parses .sounds manifests so the
             // jump grunt + pain/death voices resolve to real samples instead of the bogus default.sounds/<id>.
             PlayerSoundResolver.Install(_vfs);

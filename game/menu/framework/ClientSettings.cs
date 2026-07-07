@@ -168,6 +168,14 @@ public static class ClientSettings
         // (PERFORMANCE_REPORT.md A3). `set cl_precache_all_weapons 0` restores the smart expected-only warm
         // for memory-constrained machines (NetGame.PrecacheWeaponModelsAsync reads it).
         c.Register("cl_precache_all_weapons", "1");
+        // Persist the shared asset caches (parsed models, decoded sounds, compiled materials/textures, parsed
+        // shaders) across map changes AND server switches (default ON). When ON, every match reuses MenuState's
+        // process-lifetime AssetLoader, so the second map load finds the stock assets already hot instead of
+        // rebuilding them — the whole per-map model/sound/material warm collapses to cache hits. The cost is
+        // that the warmed set stays resident between matches (plus each visited map's external lightmaps
+        // accumulate). `set cl_persist_asset_cache 0` restores per-match loaders for memory-constrained machines
+        // (NetGame._Ready reads it once when choosing its AssetLoader).
+        c.Register("cl_persist_asset_cache", "1");
         // Off-screen / distant pose-cull for skeletal player models (3.3): when ON, PlayerModel.PushBones is
         // skipped for a REMOTE player whose model is off-screen, and distant on-screen players refresh the
         // Skeleton3D at half rate. The CPU locomotion clock keeps running every frame, so a model going

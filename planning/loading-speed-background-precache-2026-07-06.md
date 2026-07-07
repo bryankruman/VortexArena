@@ -1,9 +1,30 @@
 # Loading speed — background / scope-limited precache analysis
 
-**Status: WIP analysis (2026-07-06).** No functional code change yet. This captures the load-path map,
+**Status: IN PROGRESS (2026-07-06).** Phase 1 (persist caches across maps/servers) is **landed + verified**
+(see the implementation log below); Phase 2 (warm at game load) is next. This doc captures the load-path map,
 the reusable infrastructure, the one architectural constraint that governs menu-time precache, and a
 ranked/phased plan. Timings below are from a single **Debug (jit-opt)** capture and are caveated — a clean
 **release-export** baseline is Phase 0 of the plan.
+
+## Implementation log
+
+- **2026-07-06 — Phase 1 (persistent shared asset cache) landed.** `MenuState` now builds ONE process-lifetime
+  `AssetLoader` at boot ([MenuState.cs](game/menu/framework/MenuState.cs) `Boot`, exposed as
+  `MenuState.SharedAssets`), and every match reuses it via a new injected-loader seam in `NetGame`
+  ([NetGame.cs](game/net/NetGame.cs) `_Ready`: `_assets = (persist && _injectedAssets is not null) ? _injectedAssets
+  : new AssetLoader(_vfs)`), threaded through `ConfigureClient`/`ConfigureListenServer` from
+  [Shell.cs](game/Shell.cs). Gated by the new `cl_persist_asset_cache` cvar (default 1; `0` restores per-match
+  loaders) registered in [ClientSettings.cs](game/menu/framework/ClientSettings.cs). Verified: the
+  `scripts/*.shader` parse now runs ONCE at boot (`[AssetSystem] loaded 2439 shaders` appears pre-map, before the
+  config line) and NOT again at map load (parse count = 1 on a `--map stormkeep` boot); menu + map headless smokes
+  clean (0 errors); full suite 2959/2959. The cross-map cache-hit win is true by construction — the same
+  `AssetLoader` instance is reused and teardown (`NetGame.Shutdown`) never clears its caches (only the transient
+  predecode handoff) — with a live menu→match→match / server-switch playtest as the empirical confirmation.
+  **Verified architecture (the design's load-bearing facts):** `ResolveMaterial`/`LoadTexture` cache by
+  name/vpath (map-independent), while `MakeLightmapMaterial` builds per-surface materials bound to the per-map
+  lightmap atlas and never enters `_materialCache` — so no map-specific GPU resource leaks between maps. Known
+  memory note: each visited map's external lightmaps (`maps/<name>/lm_NNNN`) do accumulate in the persistent
+  `_textureCache` by vpath — bounded, opt-out via the cvar, and a candidate for map-scoped eviction later.
 
 Branch: `fix/improve-loading-speed`. Related memories: `bot-join-iqm-modelload-stutter`,
 `debug-smoothness-2026-07-03`, `godot-pipeline-compile-internals`, `client-map-load-implemented`,

@@ -8,6 +8,7 @@ using XonoticGodot.Common.Services;
 using XonoticGodot.Engine.Collision;
 using XonoticGodot.Engine.Simulation;
 using XonoticGodot.Game.Console;
+using XonoticGodot.Game.Loaders;
 using FileAccess = Godot.FileAccess;
 
 namespace XonoticGodot.Game.Menu;
@@ -33,6 +34,7 @@ public static class MenuState
 
     private static CvarService? _cvars;
     private static VirtualFileSystem? _vfs;
+    private static AssetLoader? _sharedAssets;
     private static ConfigInterpreter? _interp;
     private static bool _booted;
 
@@ -44,6 +46,18 @@ public static class MenuState
 
     /// <summary>The mounted asset VFS (maps/models/configs/…), or null if the data dir didn't mount.</summary>
     public static VirtualFileSystem? Vfs => _vfs;
+
+    /// <summary>
+    /// The process-lifetime shared asset loader (parsed models, decoded sounds, compiled materials/textures,
+    /// and the parsed <c>scripts/*.shader</c> dictionary), built once at <see cref="Boot"/> over the shared
+    /// <see cref="Vfs"/>. Every match reuses this instance (injected into its <c>NetGame</c>) so those caches
+    /// persist across map changes and server switches — the stock assets are parsed and GPU-uploaded once per
+    /// session, not once per map. Null when no data dir mounted (matches then build a per-match loader). The
+    /// map-coupled lightmap atlas + its surface materials are deliberately NOT cached here (they live in the
+    /// per-match map render tree), so nothing map-specific leaks between maps. Treat returned resources as
+    /// read-only — they are shared across the whole session.
+    /// </summary>
+    public static AssetLoader? SharedAssets => _sharedAssets;
 
     /// <summary>
     /// The shared DP command interpreter (Cbuf/Cmd) the config tree loaded into — and the SAME buffer the
@@ -111,6 +125,20 @@ public static class MenuState
         catch (Exception ex)
         {
             XonoticGodot.Common.Diagnostics.Log.Severe($"[MenuState] failed to mount data dir '{dataPath}': {ex.Message}");
+        }
+
+        // --- build the PROCESS-LIFETIME asset loader now (parses every scripts/*.shader ONCE, here at boot,
+        //     instead of re-parsing on every map load) so its model/sound/material/texture caches can persist
+        //     across every match this session. Only when a data dir actually mounted; a bare/CI run leaves it
+        //     null and matches fall back to a per-match loader. Construction touches only the VFS (no renderer),
+        //     so it is safe this early in boot. Phase 2 will warm the eager asset set into this loader here. ---
+        if (_vfs is not null)
+        {
+            try { _sharedAssets = new AssetLoader(_vfs); }
+            catch (Exception ex)
+            {
+                XonoticGodot.Common.Diagnostics.Log.Severe($"[MenuState] shared asset loader failed to build: {ex.Message}");
+            }
         }
 
         // --- publish the process-wide facade so Api.Cvars resolves to the shared store at the menu ---
