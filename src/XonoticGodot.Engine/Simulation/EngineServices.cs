@@ -251,6 +251,32 @@ public sealed class EntityService : IEntityService, TraceService.IEntityProvider
         results.RemoveRange(w, results.Count - w);
     }
 
+    /// <summary>
+    /// Allocation-free, area-grid-accelerated <c>findbox</c> (DP <c>VM_findbox</c>/<c>World_EntitiesInBox</c>):
+    /// fills <paramref name="results"/> with every entity whose linked bounds (<c>AbsMin</c>/<c>AbsMax</c>)
+    /// overlap [<paramref name="mins"/>, <paramref name="maxs"/>]. The precise AABB test is applied HERE (DP
+    /// does the same engine-side), so callers replacing the QC findradius(origin, huge-radius) + per-entity
+    /// boxesoverlap pattern (upstream xonotic-data b6e02fe3 — the telefrag loop) need no follow-up box filter.
+    /// </summary>
+    public void FindInBox(Vector3 mins, Vector3 maxs, List<Entity> results)
+    {
+        // Broadphase: the grid cells overlapping the box (conservative superset — XY-partitioned, cleared+filled).
+        _grid.EntitiesInBox(mins, maxs, results);
+
+        int w = 0;
+        for (int i = 0; i < results.Count; i++)
+        {
+            Entity e = results[i];
+            if (e.IsFreed) continue;
+            // Precise: linked AbsMin/AbsMax overlap (QC boxesoverlap semantics — touching counts).
+            if (mins.X <= e.AbsMax.X && maxs.X >= e.AbsMin.X
+                && mins.Y <= e.AbsMax.Y && maxs.Y >= e.AbsMin.Y
+                && mins.Z <= e.AbsMax.Z && maxs.Z >= e.AbsMin.Z)
+                results[w++] = e;
+        }
+        results.RemoveRange(w, results.Count - w);
+    }
+
     // --- TraceService.IEntityProvider ---
 
     public IReadOnlyList<Entity> SolidEntities
