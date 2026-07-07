@@ -243,6 +243,55 @@ public class DemoFormatTests
     }
 
     [Fact]
+    public void Roster_CatchesUp_MidRecording_Joins_Deduplicated()
+    {
+        // The header roster snapshot at record start misses late joiners (sv_autodemo starts recording at
+        // match start, before the bots connect) — AddRosterEntry accumulates them and Finish serializes the
+        // FINAL roster in the trailer, which the reader prefers over the header roster.
+        var header = Header();
+        header.Roster.Add(new DemoRosterEntry(3, "Early", 5, "models/player/erebus.iqm", 5));
+
+        using var ms = new MemoryStream();
+        var rec = new DemoRecorder(ms, header, leaveOpen: true);
+        rec.RecordTick(1f, new Dictionary<int, NetEntityState> { [3] = Player(3, Vector3.Zero) });
+        rec.AddRosterEntry(new DemoRosterEntry(4, "LateBot", 14, "models/player/gak.iqm", 14));
+        rec.AddRosterEntry(new DemoRosterEntry(3, "Early-again", 5, "models/player/erebus.iqm", 5)); // dupe id — ignored
+        rec.AddRosterEntry(new DemoRosterEntry(5, "LaterBot", 14, "models/player/nyx.iqm", 14));
+        rec.Stop();
+
+        ms.Position = 0;
+        using var pb = new DemoPlayback(ms, leaveOpen: true);
+        Assert.Equal(3, pb.Header.Roster.Count);
+        Assert.Equal("Early", pb.Header.Roster[0].Name);   // dedupe kept the original entry for id 3
+        Assert.Equal(4, pb.Header.Roster[1].NetId);
+        Assert.Equal("LateBot", pb.Header.Roster[1].Name);
+        Assert.Equal("LaterBot", pb.Header.Roster[2].Name);
+    }
+
+    [Fact]
+    public void Roster_Truncated_File_Falls_Back_To_Header_Roster()
+    {
+        // A crash before Finish loses the trailer (index + final roster) — the reader rebuilds the index by
+        // scanning and the record-start header roster stands, exactly like the index fallback.
+        var header = Header();
+        header.Roster.Add(new DemoRosterEntry(3, "Early", 5, "models/player/erebus.iqm", 5));
+
+        using var ms = new MemoryStream();
+        var rec = new DemoRecorder(ms, header, leaveOpen: true);
+        rec.RecordTick(1f, new Dictionary<int, NetEntityState> { [3] = Player(3, Vector3.Zero) });
+        rec.RecordTick(1f + TickDt, new Dictionary<int, NetEntityState> { [3] = Player(3, new Vector3(4, 0, 0)) });
+        rec.AddRosterEntry(new DemoRosterEntry(4, "LateBot", 14, "models/player/gak.iqm", 14));
+        byte[] truncated = ms.ToArray(); // snapshot BEFORE Stop — no trailer written
+        rec.Stop();
+
+        using var cut = new MemoryStream(truncated);
+        using var pb = new DemoPlayback(cut, leaveOpen: true);
+        Assert.Single(pb.Header.Roster);                    // the late join is lost with the trailer
+        Assert.Equal("Early", pb.Header.Roster[0].Name);
+        Assert.True(pb.DurationSeconds > 0f);               // frames were still scanned (index rebuilt)
+    }
+
+    [Fact]
     public void Header_RoundTrips_Roster_And_Rejects_Garbage()
     {
         var header = Header();

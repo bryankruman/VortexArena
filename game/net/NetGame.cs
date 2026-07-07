@@ -1038,6 +1038,14 @@ public sealed partial class NetGame : Node3D
         // actual byte recorder it was designed to delegate to (closing that file's "host wires" TODO).
         _serverWorld.Demo.StartRecording = StartDemoRecording;
         _serverWorld.Demo.StopRecording = StopDemoRecording;
+        // Roster catch-up: clients (bots included) who connect after recording started — an sv_autodemo
+        // recording begins at match start, BEFORE the bots join — are appended to the recorder's roster and
+        // serialized as the file's FINAL roster at Finish.
+        _serverWorld.Demo.ClientJoined = p =>
+        {
+            if (_demoRecorder is not null && _server is not null)
+                _demoRecorder.AddRosterEntry(RosterEntryFor(p));
+        };
 
         // GameWorld.Boot already ran this map's OnMatchStart (map-init happens inside Boot, BEFORE these hooks
         // exist), so an sv_autodemo match is flagged Recording with no writer attached — catch up now.
@@ -1135,8 +1143,7 @@ public sealed partial class NetGame : Node3D
             };
             foreach (Player p in _serverWorld.Clients.Players)
                 if (!p.IsObserver)
-                    header.Roster.Add(new XonoticGodot.Net.Demo.DemoRosterEntry(
-                        _server.NetIdForPlayer(p), p.NetName, (int)p.Team, p.Model, (int)p.Team));
+                    header.Roster.Add(RosterEntryFor(p));
             _demoRecorder = XonoticGodot.Net.Demo.DemoRecorder.CreateFile(path, header);
             _server.DemoSink = _demoRecorder;
             GD.Print($"[NetGame] demo recording started: {path}");
@@ -1148,6 +1155,12 @@ public sealed partial class NetGame : Node3D
             _demoRecorder = null;
         }
     }
+
+    /// <summary>One demo roster entry for a live player — shared by the record-start roster snapshot and the
+    /// mid-recording join catch-up so the two can't drift. Colormap mirrors the team code (the same value the
+    /// wire's TEAM byte carries; the FFA packed-colors path doesn't reach the demo roster yet).</summary>
+    private XonoticGodot.Net.Demo.DemoRosterEntry RosterEntryFor(Player p)
+        => new(_server!.NetIdForPlayer(p), p.NetName, (int)p.Team, p.Model, (int)p.Team);
 
     /// <summary>Detach + finalize the active demo recording (writes the seek index and patches the header
     /// duration — the file is now self-contained and playable). Also the <see cref="DemoControl.StopRecording"/>

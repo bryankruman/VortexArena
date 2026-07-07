@@ -21,6 +21,10 @@ public sealed class DemoControl
     /// <summary>Stop the whole-server demo (host wires to the engine recorder).</summary>
     public Action? StopRecording { get; set; }
 
+    /// <summary>A client connected while the whole-server demo is recording (host wires to the recorder's
+    /// roster catch-up — the demo header roster only lists the players present at record start).</summary>
+    public Action<Player>? ClientJoined { get; set; }
+
     /// <summary>Begin a per-client demo (clientId, name). Host wires to the engine per-client recorder.</summary>
     public Action<int, string>? StartClientRecording { get; set; }
 
@@ -94,6 +98,11 @@ public sealed class DemoControl
     public void OnClientConnect(Player p, string mapName, string gametype)
     {
         if (!Recording) return;
+        // Roster catch-up for the whole-server demo: the header roster snapshot at record start misses
+        // everyone who connects after it (an sv_autodemo recording starts at match start, BEFORE the bots
+        // join). Fires for every connect — including bots and not-yet-joined observers — because the eventual
+        // join isn't knowable here; an unused roster entry is harmless, a missing one loses the spectate label.
+        ClientJoined?.Invoke(p);
         int perClient = Cvars.Int("sv_autodemo_perclient");
         if (perClient > 0 && ShouldRecordClient(p, perClient))
             BeginClientDemo(p, mapName, gametype, Cvars.Int("sv_eventlog_files_counter"));

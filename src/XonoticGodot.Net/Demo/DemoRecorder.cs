@@ -38,6 +38,7 @@ public sealed class DemoRecorder : IDemoSink, IDisposable
     public const float DefaultKeyframeIntervalSeconds = 5f;
 
     private readonly DemoFormat.Writer _writer;
+    private readonly DemoHeaderInfo _header; // live: roster catch-up appends here, serialized in the Finish trailer
     private readonly float _keyframeInterval;
     private readonly float _tickRate;
 
@@ -69,8 +70,25 @@ public sealed class DemoRecorder : IDemoSink, IDisposable
         _keyframeInterval = keyframeIntervalSeconds > 0f ? keyframeIntervalSeconds : DefaultKeyframeIntervalSeconds;
         header.KeyframeIntervalSeconds = _keyframeInterval;
         _tickRate = header.TickRate > 0f ? header.TickRate : 72f;
+        _header = header;
         _writer = new DemoFormat.Writer(stream, header, leaveOpen);
         Path = path;
+    }
+
+    /// <summary>
+    /// Roster catch-up (spec §5): add a client who connected AFTER recording started. The header roster was
+    /// written before the first frame and cannot grow, so late entries accumulate here and are serialized as
+    /// the FINAL roster in the file trailer at <see cref="Stop"/> (a crash falls back to the header roster).
+    /// Deduplicated by net id — reconnects and the record-start players are ignored.
+    /// </summary>
+    public void AddRosterEntry(DemoRosterEntry entry)
+    {
+        if (_stopped)
+            return;
+        for (int i = 0; i < _header.Roster.Count; i++)
+            if (_header.Roster[i].NetId == entry.NetId)
+                return;
+        _header.Roster.Add(entry);
     }
 
     /// <summary>Open <paramref name="path"/> for writing (creating its directory) and start a recorder on it.</summary>

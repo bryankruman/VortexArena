@@ -104,6 +104,11 @@ public struct DemoFrame
 ///     Event:    byte flags (bit0 = reliable channel) + the raw wire packet (leading NetControl byte included)
 /// Keyframe index (at indexOffset):
 ///   magic "XGDX", uint count × (float serverTime, uint tick, long frameOffset)
+///   then the FINAL roster (v2): byte count × the header's roster-entry codec. The header roster is only
+///   the players present when recording STARTED (it is written before the first frame and cannot grow);
+///   clients who join mid-recording are appended to the recorder's roster and land here at Finish. The
+///   reader prefers this block when the index is intact; a crash-truncated file falls back to the header
+///   roster, exactly like the index falls back to a frame scan.
 /// </code>
 ///
 /// Strings are the <see cref="BitWriter.WriteString"/> convention (ushort UTF-8 byte length + bytes); all
@@ -113,7 +118,7 @@ public static class DemoFormat
 {
     public const uint Magic = 0x4D444758;      // "XGDM" little-endian
     public const uint IndexMagic = 0x58444758; // "XGDX" little-endian
-    public const ushort FormatVersion = 1;
+    public const ushort FormatVersion = 2;     // v2: Finish appends the FINAL roster after the keyframe index
 
     // Fixed header offsets of the fields Finish patches (see the layout above).
     private const long FrameCountOffset = 18;
@@ -168,6 +173,26 @@ public static class DemoFormat
     {
         int n = r.ReadUInt16();
         return n == 0 ? string.Empty : Encoding.UTF8.GetString(r.ReadBytes(n));
+    }
+
+    // One roster entry on disk (shared by the header blob and the v2 final-roster trailer).
+    private static void WriteRosterEntry(BinaryWriter w, in DemoRosterEntry e)
+    {
+        w.Write((ushort)e.NetId);
+        WriteString(w, e.Name);
+        w.Write((sbyte)e.Team);
+        WriteString(w, e.Model);
+        w.Write((byte)e.Colormap);
+    }
+
+    private static DemoRosterEntry ReadRosterEntry(BinaryReader r)
+    {
+        int netId = r.ReadUInt16();
+        string name = ReadString(r);
+        int team = r.ReadSByte();
+        string model = ReadString(r);
+        int colormap = r.ReadByte();
+        return new DemoRosterEntry(netId, name, team, model, colormap);
     }
 
     // =====================================================================================
@@ -283,6 +308,7 @@ public static class DemoFormat
         private readonly bool _leaveOpen;
         private readonly BitWriter _payload = new(4096);
         private readonly List<KeyframeIndexEntry> _keyframes = new();
+        private readonly DemoHeaderInfo _header; // kept live: joins appended to its Roster land in the Finish trailer
         private uint _frameCount;
         private float _firstServerTime = float.NaN;
         private float _lastServerTime;
@@ -295,6 +321,7 @@ public static class DemoFormat
                 throw new ArgumentException("demo writer needs a seekable stream (Finish patches the header)", nameof(stream));
             _leaveOpen = leaveOpen;
             _out = new BinaryWriter(stream, Encoding.UTF8, leaveOpen: true);
+            _header = header;
             WriteHeader(header);
         }
 
@@ -318,14 +345,7 @@ public static class DemoFormat
                 WriteString(blob, h.Gametype);
                 blob.Write((byte)Math.Min(h.Roster.Count, byte.MaxValue));
                 for (int i = 0; i < h.Roster.Count && i < byte.MaxValue; i++)
-                {
-                    DemoRosterEntry e = h.Roster[i];
-                    blob.Write((ushort)e.NetId);
-                    WriteString(blob, e.Name);
-                    blob.Write((sbyte)e.Team);
-                    WriteString(blob, e.Model);
-                    blob.Write((byte)e.Colormap);
-                }
+                    WriteRosterEntry(blob, h.Roster[i]);
             }
             _out.Write((ushort)blobMs.Length);
             blobMs.WriteTo(_stream);
@@ -400,6 +420,14 @@ public static class DemoFormat
                 _out.Write(_keyframes[i].Tick);
                 _out.Write(_keyframes[i].Offset);
             }
+
+            // v2: the FINAL roster (header roster + everyone who joined mid-recording — the recorder appends
+            // to _header.Roster as clients connect). The header blob was written before the first frame and
+            // cannot grow, so the complete list rides the trailer; a crash loses it and the reader falls back
+            // to the header roster, mirroring the index's fall-back-to-scan.
+            _out.Write((byte)Math.Min(_header.Roster.Count, byte.MaxValue));
+            for (int i = 0; i < _header.Roster.Count && i < byte.MaxValue; i++)
+                WriteRosterEntry(_out, _header.Roster[i]);
 
             _stream.Position = FrameCountOffset;
             _out.Write(_frameCount);
@@ -482,14 +510,7 @@ public static class DemoFormat
             Header.Gametype = ReadString(_in);
             int rosterCount = _in.ReadByte();
             for (int i = 0; i < rosterCount; i++)
-            {
-                int netId = _in.ReadUInt16();
-                string name = ReadString(_in);
-                int team = _in.ReadSByte();
-                string model = ReadString(_in);
-                int colormap = _in.ReadByte();
-                Header.Roster.Add(new DemoRosterEntry(netId, name, team, model, colormap));
-            }
+                Header.Roster.Add(ReadRosterEntry(_in));
             _stream.Position = blobEnd; // tolerate a future-minor header tail
             _framesStart = blobEnd;
 
@@ -521,6 +542,23 @@ public static class DemoFormat
                 uint tick = _in.ReadUInt32();
                 long off = _in.ReadInt64();
                 _keyframes.Add(new KeyframeIndexEntry(t, tick, off));
+            }
+
+            // v2: the FINAL roster follows the index — prefer it over the header roster (which only lists the
+            // players present when recording started). Tolerant of a corrupt tail: any misread keeps the
+            // header roster, the same degrade-don't-fail stance as the index scan fallback.
+            try
+            {
+                int finalCount = _in.ReadByte();
+                var final = new List<DemoRosterEntry>(finalCount);
+                for (int i = 0; i < finalCount; i++)
+                    final.Add(ReadRosterEntry(_in));
+                Header.Roster.Clear();
+                Header.Roster.AddRange(final);
+            }
+            catch (EndOfStreamException)
+            {
+                // trailer roster truncated — the header (record-start) roster stands.
             }
             return true;
         }
