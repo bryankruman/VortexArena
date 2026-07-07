@@ -146,6 +146,31 @@ public partial class Main : Node
             int b = Array.IndexOf(args, "--bots");
             if (b >= 0 && b + 1 < args.Length && int.TryParse(args[b + 1], out int bots))
                 shell.BootBots = bots;
+
+            // `--playdemo <file>` (T63): boot straight into demo replay — the CLI analogue of the console
+            // `playdemo` command (same one-shot PendingReplayDemo handoff, same build-parity gate; the
+            // listen-server boot consumes the path). The demo's own header names the map to load, so no
+            // --map is needed. Lets a headless/CI run verify the replay path end to end.
+            int pd = Array.IndexOf(args, "--playdemo");
+            if (pd >= 0 && pd + 1 < args.Length)
+            {
+                string demoPath = XonoticGodot.Game.Net.NetGame.ResolveDemoPath(args[pd + 1]);
+                try
+                {
+                    // Header read only (map to boot). The build-parity gate runs where it can be computed —
+                    // NetGame.ConfigureReplay, AFTER the config tree fills the effect/notification registries
+                    // BuildParity() hashes; here at raw boot those registries are still empty.
+                    var header = XonoticGodot.Net.Demo.DemoFormat.ReadHeader(demoPath);
+                    XonoticGodot.Game.Net.NetGame.PendingReplayDemo = demoPath;
+                    shell.BootHost = true;
+                    shell.BootMap = header.MapName;
+                    GD.Print($"[Main] --playdemo: replaying '{demoPath}' (map '{header.MapName}', {header.DurationSeconds:0.0}s).");
+                }
+                catch (Exception ex)
+                {
+                    GD.PrintErr($"[Main] --playdemo: cannot read '{demoPath}': {ex.Message}");
+                }
+            }
             AddChild(shell);
         }
 

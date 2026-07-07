@@ -77,6 +77,23 @@ public sealed class ServerNet : IDisposable
     /// <summary>The transport's connection cap — the browser's slots fallback when g_maxplayers is unset.</summary>
     private int _maxClients = 32;
 
+    // --- demo record/replay seams (T62/T63, planning/specs/demo-replay-and-spectator.md §4/§6) ---
+
+    /// <summary>[T62] The optional demo tap: when set, <see cref="BroadcastSnapshots"/> hands it the omniscient
+    /// per-tick entity set right after <see cref="BuildEntitySet"/> (before the per-client encode), and each
+    /// flushed event bundle is recorded verbatim. Null = not recording (the live path pays one null check).</summary>
+    public XonoticGodot.Net.Demo.IDemoSink? DemoSink { get; set; }
+
+    /// <summary>[T63] The replay entity injector: when set, <see cref="BuildEntitySet"/> uses the recorded set
+    /// INSTEAD of the live world scan (a replay host's humans are all observers, which the scan skips anyway),
+    /// and observer join-edges are suppressed so viewers stay free-flying spectators.</summary>
+    public XonoticGodot.Net.Demo.IReplayEntitySource? ReplaySource { get; set; }
+
+    /// <summary>[T63] Re-broadcast a recorded server→client wire packet (an effect/sound/notification bundle,
+    /// leading control byte included) to every viewer — the replay host emits these as the demo playhead
+    /// crosses their recorded timestamps.</summary>
+    public void BroadcastRaw(ReadOnlySpan<byte> packet, bool reliable) => _transport.Broadcast(packet, reliable);
+
     // Reused writers (the networking spec's allocation discipline: one writer per send path, reset+refilled).
     private readonly BitWriter _snapshotWriter = new(2048);
     private readonly BitWriter _eventWriter = new(1024);
@@ -470,7 +487,10 @@ public sealed class ServerNet : IDisposable
         // Observer/join lifecycle: a human connects as an OBSERVER (ClientConnect → TRANSMUTE(Observer)) and only
         // enters the match via Join — on +jump/+attack or the delayed autojoin. The headless world doesn't drive
         // this on the real-client path, so we run it here per accepted peer from its last input. (Bots autojoin.)
-        DriveObserverJoins();
+        // [T63] Suppressed in replay mode: a demo viewer must STAY a free-flying observer — +attack there means
+        // "cycle spectate target", never "join the (recorded) match".
+        if (ReplaySource is null)
+            DriveObserverJoins();
         return ticksRan;
     }
 
@@ -1849,6 +1869,10 @@ public sealed class ServerNet : IDisposable
 
         BuildEntitySet(now);
 
+        // [T62] Demo tap: record the omniscient per-tick entity set (the data free-cam replay needs — spec §4
+        // "record server-side, not in-eye") before any per-client PVS filtering/delta below can narrow it.
+        DemoSink?.RecordTick(now, _entityScratch);
+
         // movevars (the prediction-relevant sv_* set): recomputed once; sent per client only when its hash changes.
         _moveVars = MoveVarsBlock.Capture(_world.Services.Cvars);
         _moveVarsHash = MoveVarsBlock.Hash(_moveVars);
@@ -2008,6 +2032,16 @@ public sealed class ServerNet : IDisposable
     {
         _entityScratch.Clear();
         _entityBounds.Clear();
+
+        // [T63] Replay injection (spec §6): the recorded set REPLACES the live scan — a replay world has no
+        // match players (all humans are observers, skipped below) and its own map entities must not shadow the
+        // recording. No bounds are filled, so the per-client PVS cull conservatively keeps every recorded
+        // entity (RelevantEntitiesFor keeps ids without bounds); antilag rings are pointless here (no shooting).
+        if (ReplaySource is not null)
+        {
+            ReplaySource.CopyEntities(_entityScratch);
+            return;
+        }
 
         // QC world.qc:EndFrame records antilag history at `altime` (time + frametime*(1+g_antilag_nudge)), NOT at
         // the bare current time — so the ring aligns with the time the client will see this frame. Compute it once.
@@ -2775,6 +2809,10 @@ public sealed class ServerNet : IDisposable
         return NetEntityKind.Generic; // monsters, turrets, vehicles, mapobjects with alias models
     }
 
+    /// <summary>[T62] Public forward mapping for the demo header roster: the SAME stable id the snapshot
+    /// networks this player under, so a replay's spectate-target list keys match the recorded entity stream.</summary>
+    public int NetIdForPlayer(Player p) => NetIdFor(p);
+
     /// <summary>Get (or allocate) a player's small stable net id — works for bots (which have no ENet peer).</summary>
     private int NetIdFor(Player p)
     {
@@ -3108,6 +3146,21 @@ public sealed class ServerNet : IDisposable
         if (_effectQueue.Count == 0)
             return;
 
+        // [T62] Demo tap: the demo is omniscient, so record EVERY effect unfiltered (the per-recipient "except"
+        // routing below is a live-shooter courtesy that doesn't apply to a replay viewer).
+        if (DemoSink is not null)
+        {
+            _scratchWriter.Reset();
+            _scratchWriter.WriteByte((byte)NetControl.EventBundle);
+            int dpos = ReserveCount(_scratchWriter);
+            int dn = 0;
+            for (int i = 0; i < _effectQueue.Count; i++)
+                if (WriteEffect(_scratchWriter, _effectQueue[i].Request)) dn++;
+            PatchCount(_scratchWriter, dpos, dn);
+            if (dn > 0)
+                DemoSink.RecordEventPacket(_scratchWriter.WrittenSpan, reliable: false);
+        }
+
         // Build one bundle per recipient only when an exclusion is in play; otherwise broadcast a shared one.
         // Simple + correct: broadcast the bundle to all, but encode each effect once; the rare "except" case
         // is handled by sending that effect only to the non-excluded peers (a per-peer pass).
@@ -3208,7 +3261,11 @@ public sealed class ServerNet : IDisposable
             if (WriteSound(_eventWriter, _soundQueue[i].Event)) n++;
         PatchCount(_eventWriter, countPos, n);
         if (n > 0)
+        {
             _transport.Broadcast(_eventWriter.WrittenSpan, reliable: false);
+            // [T62] Demo tap: DP sound() is a pure broadcast, so the shared bundle IS the omniscient record.
+            DemoSink?.RecordEventPacket(_eventWriter.WrittenSpan, reliable: false);
+        }
 
         _soundQueue.Clear();
     }
@@ -3261,6 +3318,28 @@ public sealed class ServerNet : IDisposable
     {
         if (_notifyQueue.Count == 0)
             return;
+
+        // [T62] Demo tap: record the BROADCAST notifications (kill-feed / captures — NOTIF_ALL/ALL_EXCEPT; a
+        // replay viewer is never the excluded player). Targeted per-player notifications (pickup messages,
+        // private centerprints) are personal to the original recipient and stay out of the demo.
+        if (DemoSink is not null)
+        {
+            _scratchWriter.Reset();
+            _scratchWriter.WriteByte((byte)NetControl.ReliableBundle);
+            int dpos = ReserveCount(_scratchWriter);
+            int dn = 0;
+            for (int i = 0; i < _notifyQueue.Count; i++)
+            {
+                NotificationDispatch d = _notifyQueue[i].Dispatch;
+                if (d.Broadcast is not (NotifBroadcast.All or NotifBroadcast.AllExcept))
+                    continue;
+                WriteNotification(_scratchWriter, d);
+                dn++;
+            }
+            PatchCount(_scratchWriter, dpos, dn);
+            if (dn > 0)
+                DemoSink.RecordEventPacket(_scratchWriter.WrittenSpan, reliable: true);
+        }
 
         foreach (PeerState st in _peers.Values)
         {
