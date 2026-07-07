@@ -259,6 +259,16 @@ public static class Cvars
         new("g_spawn_alloweffects", "3", "spawn FX: 1=particles, 2=sound, 3=both"),
         new("g_spawn_furthest", "0.5", "fraction of spawns biased far from players"),
         new("g_spawn_useallspawns", "0"),
+        // ---- anti-abuse spawn scoring (spawn-system-analysis 2026-07-06). R1 ships ON (a deliberate divergence
+        //      from Base; duel/XPM ruleset presets set g_spawn_avoid_los 0); the rest default off/faithful. ----
+        new("g_spawn_avoid_los", "1", "[R1] avoid spawning where a live enemy has line of sight to the spot (0 = Base)"),
+        new("g_spawn_avoid_los_distance", "1250", "[R1] only enemies within this range (qu) count for the LOS check"),
+        new("g_spawn_avoid_death_radius", "0", "[R2] demote spawns within this radius (qu) of where you just died (0 = off)"),
+        new("g_spawn_avoid_death_time", "8", "[R2] seconds over which the death-point avoidance decays to nothing"),
+        new("g_spawn_furthest_topfraction", "0", "[R3] far pick: 0 = Base dist^5 roulette; >0 = uniform among spots within this fraction of the max weight"),
+        new("g_spawn_distance_enemies_only", "0", "[R4] teamplay: measure spawn distance to the nearest ENEMY only, not teammates (0 = Base)"),
+        new("g_spawn_occupied_repick", "1", "[R5] if the chosen spot is occupied by a live player, re-pick once instead of overlapping"),
+        new("sv_spawn_debug", "0", "log one line per spawn (nearest-enemy distance + enemy LOS) for tuning; NOT Base's spawn_debug"),
         new("sv_gibhealth", "100", Notify, "health below -N gibs the corpse"),
         new("sv_gentle", "0", Notify, "1 = suppress gore + pain/death voices"),
         new("g_forced_respawn", "0", "1 = auto-respawn at g_respawn_delay_max even without pressing fire"),
