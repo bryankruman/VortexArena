@@ -176,6 +176,13 @@ public static class ClientSettings
         // accumulate). `set cl_persist_asset_cache 0` restores per-match loaders for memory-constrained machines
         // (NetGame._Ready reads it once when choosing its AssetLoader).
         c.Register("cl_persist_asset_cache", "1");
+        // Warm the map-independent eager asset set (weapons, stock player models, combat sounds) into the shared
+        // cache at GAME LOAD — in the background while the player sits at the menu — instead of at the first map
+        // load (default ON). With cl_persist_asset_cache, this makes the first match's precache a cache hit so the
+        // map loads fast; the warm is fully budgeted (heavy IQM parse off-thread, small builds on a per-frame main
+        // budget) so the menu never hitches (Shell.StartMenuAssetWarm → MenuAssetWarmer). No effect when
+        // persistence is off (a per-match loader wouldn't see the warmed cache). `set cl_warm_at_boot 0` disables.
+        c.Register("cl_warm_at_boot", "1");
         // Off-screen / distant pose-cull for skeletal player models (3.3): when ON, PlayerModel.PushBones is
         // skipped for a REMOTE player whose model is off-screen, and distant on-screen players refresh the
         // Skeleton3D at half rate. The CPU locomotion clock keeps running every frame, so a model going

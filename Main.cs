@@ -63,6 +63,7 @@ public partial class Main : Node
         Log.Info($"Items:     {Items.All.Count}");
         Log.Info($"Mutators:  {Mutators.All.Count}");
         Log.Info($"GameTypes: {GameTypes.All.Count}");
+        Log.Info($"Sounds:    {XonoticGodot.Common.Gameplay.Sounds.All.Count}");
         foreach (var w in Weapons.All)
             Log.Trace($"  weapon[{w.RegistryId}] {w.RegistryName} — {w.DisplayName}");
 

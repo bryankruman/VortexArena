@@ -1,12 +1,34 @@
 # Loading speed — background / scope-limited precache analysis
 
-**Status: IN PROGRESS (2026-07-06).** Phase 1 (persist caches across maps/servers) is **landed + verified**
-(see the implementation log below); Phase 2 (warm at game load) is next. This doc captures the load-path map,
-the reusable infrastructure, the one architectural constraint that governs menu-time precache, and a
-ranked/phased plan. Timings below are from a single **Debug (jit-opt)** capture and are caveated — a clean
+**Status: IN PROGRESS (2026-07-06).** Phases 1 (persist caches across maps/servers) and 2 (warm the eager set
+at game load, in the background) are **landed + verified** (see the implementation log below). This doc captures
+the load-path map, the reusable infrastructure, the one architectural constraint that governs menu-time precache,
+and a ranked/phased plan. Timings below are from a single **Debug (jit-opt)** capture and are caveated — a clean
 **release-export** baseline is Phase 0 of the plan.
 
 ## Implementation log
+
+- **2026-07-06 — Phase 2 (warm the eager set at game load) landed.** A plain menu boot now warms the
+  MAP-INDEPENDENT eager set — every weapon v_/h_ model, the stock player-model roster (erebus + the 5 idle-warm
+  models + the local pick), and the 36 combat sounds — into `MenuState.SharedAssets` in the background, via a new
+  [MenuAssetWarmer.cs](game/client/MenuAssetWarmer.cs) that Shell starts on the menu-only boot path
+  ([Shell.cs](game/Shell.cs) `StartMenuAssetWarm`, the `else` branch skipped by `--map`/`--host`/`--connect` so a
+  scripted match isn't double-warmed). The heavy skeletal IQM parse runs OFF the main thread on the shared
+  `BackgroundAssetStreamer` lane; weapon builds + sound decodes drain on a 1.5 ms/frame main budget — so the menu
+  never hitches. Gated by `cl_warm_at_boot` (default 1) AND `cl_persist_asset_cache` (a warm is wasted if the match
+  builds its own loader). Combined with Phase 1, the first match's precache then finds these already parsed +
+  GPU-uploaded → cache hits → fast map load. `WeaponVModelPath` was made `internal` so the warmer hits the same
+  cache key. **Latent bug found + fixed en route:** `Sounds.All` was empty at the menu (the sound catalog was
+  registered only at `GameInit`/world boot, not at process boot like the weapon/item/gametype catalogs), so the
+  first cut of the warm saw 0 sounds. Added `Sounds.RegisterAll()` (idempotent, `_done`-guarded) to
+  `GameRegistries.Bootstrap()` ([Registries.cs](src/XonoticGodot.Common/Gameplay/Registries.cs)) and a
+  `Sounds:` line to the boot banner. Verified: menu smoke warms `24 weapon models + 6 player models + 36 combat
+  sounds` to completion with 0 errors and `Sounds: 223` at boot; `--map` boot still runs its own precache and
+  skips the menu warm (no double work); full suite green. The first-map speedup is true by construction (the warm
+  fills the same caches the per-map precache reads) — a live launch→menu→start-map playtest is the empirical
+  confirmation. Follow-ups noted: the warmer keeps running (harmlessly, at Low priority) if a match starts
+  mid-warm — could free it on match start; and pipeline (PSO) warm stays per-match (viewport-specific), so the
+  first map still pays the (cheap) GpuWarmPass, now rendering cache-hit models.
 
 - **2026-07-06 — Phase 1 (persistent shared asset cache) landed.** `MenuState` now builds ONE process-lifetime
   `AssetLoader` at boot ([MenuState.cs](game/menu/framework/MenuState.cs) `Boot`, exposed as

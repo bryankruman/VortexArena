@@ -2161,7 +2161,7 @@ public sealed partial class NetGame : Node3D
     /// <see cref="EquipNetworkedWeapon"/>, <see cref="BuildWeaponWorldModel"/>, and
     /// <see cref="PrecacheWeaponModels"/> so they all hit the SAME asset-cache key.
     /// </summary>
-    private static string WeaponVModelPath(XonoticGodot.Common.Gameplay.Weapon w)
+    internal static string WeaponVModelPath(XonoticGodot.Common.Gameplay.Weapon w)
         => string.IsNullOrEmpty(w.WorldModel) ? "" : "models/weapons/" + w.WorldModel;
 
     /// <summary>

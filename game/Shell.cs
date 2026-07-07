@@ -161,6 +161,34 @@ public partial class Shell : Node
             StartModelViewer(BootModel!);                   // --model: no-net player-model viewer (visual QA)
         else if (!string.IsNullOrWhiteSpace(DebugScreen))
             OpenDebugScreen(DebugScreen!);
+        else
+            // Plain menu boot (the real launch path): warm the map-independent eager asset set into the shared
+            // cache in the background NOW, so the first match's precache is a cache hit and the map loads fast.
+            // Skipped above for a direct --map/--host/--connect boot — that match runs its own precache.
+            StartMenuAssetWarm();
+    }
+
+    /// <summary>
+    /// Phase 2 of the loading-speed work: at a plain menu boot, warm the map-independent eager asset set (weapons,
+    /// stock player models, combat sounds) into MenuState's process-lifetime <see cref="MenuState.SharedAssets"/>
+    /// in the background (<see cref="Client.MenuAssetWarmer"/>), so the first match's precache collapses to cache
+    /// hits and the map loads fast. Gated on <c>cl_persist_asset_cache</c> (the warm is wasted if the match builds
+    /// its own loader) and <c>cl_warm_at_boot</c>, and skipped without a mounted data dir (no shared loader).
+    /// </summary>
+    private void StartMenuAssetWarm()
+    {
+        if (MenuState.SharedAssets is null)
+            return;
+        if (MenuState.Cvars.GetFloat("cl_persist_asset_cache") == 0f
+            || MenuState.Cvars.GetFloat("cl_warm_at_boot") == 0f)
+            return;
+        string localModel = MenuState.Cvars.GetString("_cl_playermodel");
+        var warmer = new Client.MenuAssetWarmer(MenuState.SharedAssets, localModel)
+        {
+            Name = "MenuAssetWarmer",
+            ProcessMode = ProcessModeEnum.Always,   // keep warming even if a match starts + pauses the tree mid-warm
+        };
+        AddChild(warmer);
     }
 
     /// <summary>Dev/CI: push a named sub-screen so a screenshot can capture that one dialog.</summary>
