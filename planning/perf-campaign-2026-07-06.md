@@ -27,17 +27,35 @@ maximize peak performance, and above all reduce variance/dips* (uncapped; the ca
 - **Frame budget (uncapped stormkeep combat, median 5.56 ms):** proc 2.0 (ng.process ~1.2 opaque —
   Phase 2.0 instruments it) · rest ~2.2 (Godot main-loop/present, NOT vsync — 1.7 ms even on an empty
   map) · rcpu 0.95 (June's deficit closed) · gpu 1.0 (not limiting) · phys 0.39 (waste; 5 cosmetic
-  `_PhysicsProcess` nodes). Empty-map floor 3.7 ms (~270 fps). `vid_vsync 0` measured **−0.5 ms and
-  better lows** — default flip pending Bryan's tearing A/B.
-- **Baselines:** `tools/perf-baselines/{catharsis,stormkeep}-release.json` = uncapped demo captures.
-- **Phase 2.0 LANDED** — `ng.process` sub-scopes (`ng.feeds`/`ng.poll`/`ng.input`/`ng.camera`/`ng.hud`;
-  hitch trees + watchdog now name the inner owner) and the R30 physics trim (10 Hz + 1-step cap;
-  Godot physics had zero body/query users — `BuildCollisionMesh` is caller-less. Correction learned
-  here: the CSV `phys_ms` is the latched per-tick monitor, so the honest amortized reclaim is
-  ~0.1 ms/frame + the catch-up hitch amplifier). **Open decision for Bryan: `vid_vsync 0` default**
-  (measured −0.5 ms + better lows; costs tearing — eyeball it in real play).
-- **Next: Phase 2.1** — bot-AI combat cost (`bot.rate`/`bot.seed` tails, strategy-interval jitter,
-  walk caps under sustained combat) — the #1 dip source.
+  `_PhysicsProcess` nodes). Empty-map floor 3.7 ms (~270 fps).
+- **Baselines:** `catharsis-release.json` advanced to the post-2.1 win; `stormkeep-release.json` HELD
+  at the post-2.0 run (the 2.1 stormkeep run is contaminated by the particles.cpu artifact below).
+- **Phase 2.0 LANDED** — `ng.process` sub-scopes (`ng.feeds`/`ng.poll`/`ng.input`/`ng.camera`/`ng.hud`)
+  + R30 physics trim (10 Hz + 1-step cap; Godot physics had zero body/query users). Correction: CSV
+  `phys_ms` is the latched per-tick monitor, so the honest amortized reclaim is ~0.1 ms/frame + the
+  catch-up hitch amplifier. Release: stormkeep p50 5.6→4.9 ms, 0.1%-low 50→116, hitch time −82 %.
+- **`vid_vsync 0` is now the shipped default** (Bryan's call — measured −0.5 ms/frame + better lows;
+  menu/console can restore mailbox `2`). perf-run pins updated to match.
+- **Phase 2.1 LANDED (catharsis) — the long-trace melt is dead.** New `wf.<weapon>`/`snd.play`/
+  `fx.emit` scopes + a first-fire breadcrumb proved the census's 90–340 ms `mp.weapon` monsters were
+  **`wf.shotgun` every time** — 14 penetrating pellet traces at long range. Root cause unified the
+  whole catharsis story: a long diagonal trace's enclosing AABB covers O(len²) grid cells, so the
+  06-14 clamped rectangle still handed the narrowphase every brush under half the map (shotgun
+  70–305 ms, `hud.trueaim`'s box trace, bot LoS). `CollisionWorld.QuerySwept` marches cell-sized
+  segments and unions small rectangle queries (correct by construction; 2959/2959 incl. the
+  differential trace suites). **Release catharsis, two runs vs the pre-2.0 baseline:** pl p50
+  6.1→5.4 ms, avg 145→172/160 fps, 0.1%-low 12→22/40, hitch time 7513→3212/1806 ms, worst frame
+  149→131 ms; `hud.trueaim` gone from the offender table. This is the biggest single lever of the
+  campaign so far.
+- **NEXT / OPEN (WIP): `particles.cpu` is the new #2 offender AND has a profiler-accounting bug.**
+  On the 2.1 stormkeep run it produced 125–200 ms hitches, but the scope total reads an impossible
+  **constant 30005.6 ms identical across three separate hitch trees** (t=30.0/36.2/89.5) with
+  monotonically-growing watchdog counts (267→3948→18968) — a never-reset accumulator, not a real
+  frame (which corrupted that run's hitch/lows, so its baseline is held). Two things to do: (a) fix
+  the `particles.cpu` totaling/watchdog reset in FrameProfiler; (b) once the metric is honest, size
+  the real faithful-particle sim cost (offender table put it #2–3 at 961–1178 ms, likely the
+  catch-up amplifier the backend comment already flags) and clamp/budget it — fidelity-guarded.
+  Then resume the originally-planned 2.1b bot-AI tail work (`bot.rate` strategy-interval jitter).
 
 ---
 
@@ -256,20 +274,24 @@ render model, swapchain depth — engine-level, slowest payoff). Realistic waypo
 combat after the cheap fronts; ~3.5 ms (285 fps) after the proc program; 300+ requires the rest-bucket
 engine work. The "228 fps" June anchor is retired (pre-cap-era, pre-r9 features, idle camera).
 
-**Re-ranked Phase 2 (hitches + frame time) per the census & decomposition:**
-2.0 **instrument `ng.process`** — sub-scopes for input/prediction, server tick already scoped, HUD
-feeds, camera, misc (it leads 56 % of frames as one opaque 1.2 ms blob; nothing inside can be shaved
-until it's named) + quick wins while in there: R30 physics trim (measured ~0.35 ms steady + a hitch
-amplifier; migrate the 5 cosmetic `_PhysicsProcess` nodes) and the vsync-off default decision
-(measured −0.5 ms + better lows; Bryan A/Bs tearing) →
-2.1 bot-AI combat cost (`ng.process`/`bot.rate` — jitter + walk caps + a fresh profile of what melts) →
-2.2 `hud.trueaim` rate-cap + catharsis long-trace investigation (a steady ~1.4 ms tax on 8 % of frames
-everywhere, hitch-class on catharsis) →
-2.3 weapon-variant warm coverage (kills the mid-match PIPE class) →
-2.4 roster-warm frame staggering (+ name the 277 MB `proc:other` storm) →
-2.5 R7 entity pool (gen2 ×6) → 2.6 `particles.cpu` budget review (~0.56 ms on a quarter of combat
-frames — verify against DP's particle CPU before touching; faithful-mode parity constraint).
-Phase 3 (fps) re-frame: BIH (R6) underwrites 2.1 + 2.2; portal half-rate stays; NEW long-pole item —
+**Re-ranked Phase 2 (hitches + frame time) — progress + remaining:**
+- ✅ **2.0 instrument `ng.process`** + R30 physics trim + vsync-0 default — LANDED (see STATUS).
+- ✅ **2.1 the long-trace melt (`wf.shotgun` / `hud.trueaim` / bot LoS)** — LANDED via `QuerySwept`.
+  This ALSO closed the old 2.2 `hud.trueaim` item (same root cause — its box trace was a long trace),
+  so 2.2 is done for free. The BIH item (Phase 3 R6) drops in priority: the swept-corridor broadphase
+  captured most of the algorithmic win BIH would have, without the collision-correctness risk.
+- ◐ **2.1b `particles.cpu`** (PROMOTED to next, WIP) — a two-parter: (a) fix the FrameProfiler
+  accounting artifact (constant 30005.6 ms total + never-reset watchdog counts on the 2.1 stormkeep
+  run — the metric is currently lying); (b) then size + budget the real faithful-particle sim cost
+  (offender table #2–3 at ~1 s/90 s; likely the catch-up amplifier `FaithfulParticleBackend` already
+  flags). Fidelity-guarded — verify against DP's particle CPU before clamping.
+- ☐ **2.1c bot-AI tail** (`bot.rate`/`bot.seed` strategy-interval jitter, walk caps) — deferred behind
+  particles now that the swept fix removed the dominant `ng.process`-attributed melts; re-profile to
+  confirm what remains before touching (the census's ng.process #1 ranking predated the swept fix).
+- ☐ **2.3 weapon-variant warm coverage** (kills the mid-match PIPE class) →
+- ☐ **2.4 roster-warm frame staggering** (+ name the 277 MB `proc:other` storm) →
+- ☐ **2.5 R7 entity pool** (gen2 ×6).
+Phase 3 (fps): portal half-rate stays; BIH (R6) demoted (swept fix banked its win); NEW long-pole —
 **the `rest` bucket (Godot main-loop/present ~1.7 ms at floor): audio/input/server-sync audit,
 threaded render model, swapchain depth** — the gate between ~285 fps and DP-class 300–400.
 
