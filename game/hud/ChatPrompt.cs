@@ -40,6 +40,7 @@ public partial class ChatPrompt : Control
         // Keep processing while the tree is paused (a solo local game auto-pauses when a UI is up) so the
         // prompt still types/closes — same reasoning as the console overlay.
         ProcessMode = ProcessModeEnum.Always;
+        SetProcess(false); // only the caret blink needs _Process, and only while open (Open/Close toggle it)
     }
 
     /// <summary>Open the prompt (QC/DP <c>messagemode</c> = public, <c>messagemode2</c> = team chat).</summary>
@@ -49,6 +50,7 @@ public partial class ChatPrompt : Control
         _text = "";
         Visible = true;
         IsOpen = true;
+        SetProcess(true); // run the caret-blink _Process while open
         QueueRedraw();
     }
 
@@ -57,11 +59,15 @@ public partial class ChatPrompt : Control
         Visible = false;
         IsOpen = false;
         _text = "";
+        SetProcess(false); // stop ticking when closed (the node lives for the whole session)
     }
 
     public override void _Process(double delta)
     {
         if (!Visible) return;
+        // House rule: a per-frame node ships with a Prof scope registered in FrameProfiler.TopLevelNodeScopes
+        // (else it leaks into proc:other). Only runs while open (SetProcess is off otherwise), so it's free idle.
+        using var _prof = XonoticGodot.Game.Client.FrameProfiler.Scope("chat");
         _caretPhase += (float)delta;
         QueueRedraw(); // caret blink (cheap: one small Control)
     }
@@ -71,17 +77,33 @@ public partial class ChatPrompt : Control
         if (!Visible || @event is not InputEventKey key || !key.Pressed)
             return;
 
-        // The prompt owns the keyboard while open (DP key_dest = message): consume EVERYTHING key-shaped so
-        // binds (fire/jump/console) can't fire underneath; mouse events are untouched (mouse-look stays live).
+        // The console takes priority when open (DP opens it OVER messagemode): yield its keystrokes so it can be
+        // typed. We run before it in _input (reverse tree order), so without this we'd eat everything it needs.
+        if (XonoticGodot.Game.Console.ConsoleState.IsOpen)
+            return;
+
+        // Escape cancels the prompt, but the Shell owns the Escape toggle (pause menu / HUD-editor exit) and
+        // closes us from there on the RELEASE edge — the only edge that reliably arrives while the mouse is
+        // captured. So do NOT consume Escape: let both edges flow to Shell._UnhandledKeyInput. Consuming it here
+        // would swallow the release Shell needs (leaving us open under the pause menu with a captured mouse).
+        if (key.Keycode == Key.Escape)
+            return;
+
+        // The console-toggle key opens the console over the prompt (DP behavior): pass it through un-consumed to
+        // ConsoleOverlay._Input instead of typing a literal backtick.
+        if (key.Keycode == Key.Quoteleft)
+            return;
+
+        // The prompt owns the rest of the keyboard while open (DP key_dest = message): consume every other key so
+        // binds (fire/jump) can't fire underneath; mouse events are untouched (mouse-look stays live).
         GetViewport().SetInputAsHandled();
 
         switch (key.Keycode)
         {
-            case Key.Escape:
-                Close();
-                return;
             case Key.Enter:
             case Key.KpEnter:
+                if (key.Echo)
+                    return; // a HELD Enter (the bind that opened us) must not auto-submit/close on its OS repeat
                 string text = _text.Trim();
                 if (text.Length > 0)
                     Submit?.Invoke((_team ? "say_team " : "say ") + text);
@@ -97,15 +119,19 @@ public partial class ChatPrompt : Control
                 if (!string.IsNullOrEmpty(clip))
                 {
                     clip = clip.Replace("\r", "").Replace("\n", " ");
-                    _text = (_text + clip);
+                    _text += clip;
                     if (_text.Length > MaxLength) _text = _text[..MaxLength];
                 }
                 QueueRedraw();
                 return;
         }
 
-        // Printable characters (the engine takes any unicode the OS delivers).
-        if (key.Unicode >= 32 && _text.Length < MaxLength)
+        // Printable characters (the engine takes any unicode the OS delivers). Guard the code point: Godot
+        // normally merges surrogate pairs before delivery, but a lone surrogate / out-of-range value would make
+        // ConvertFromUtf32 throw — skip those rather than crash inside _Input.
+        if (key.Unicode >= 32 && key.Unicode <= 0x10FFFF
+            && !(key.Unicode >= 0xD800 && key.Unicode <= 0xDFFF)
+            && _text.Length < MaxLength)
         {
             _text += char.ConvertFromUtf32((int)key.Unicode);
             QueueRedraw();

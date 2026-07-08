@@ -126,8 +126,19 @@ public sealed partial class ClientEntityView : Node
         // pitches the model — aim pitch belongs to the animdecide upper-body layer, not the entity basis.
         // The port networks the player's full view angles (the aim), which routed players onto EntityNode's
         // pitched full-basis path and tilted the whole body. Zero pitch/roll for player kinds here — the one
-        // choke point both the pure client AND the listen host render players through.
-        e.Angles = s.Kind == NetEntityKind.Player ? new NVec3(0f, angles.Y, 0f) : angles;
+        // choke point both the pure client AND the listen host render players through. The pitch isn't lost: it
+        // rides the separate render-only ViewPitch field, which PlayerModel's aim-bone layer reads (#7), so the
+        // torso/arms still aim up/down while the legs stay upright — the body yaw-only, the aim layer pitched.
+        if (s.Kind == NetEntityKind.Player)
+        {
+            e.Angles = new NVec3(0f, angles.Y, 0f);
+            e.ViewPitch = angles.X;
+        }
+        else
+        {
+            e.Angles = angles;
+            e.ViewPitch = 0f;
+        }
         e.Velocity = s.Velocity;
         e.Frame = s.Frame;
         e.Skin = s.Skin;
@@ -317,6 +328,13 @@ public sealed partial class ClientEntityView : Node
     /// </summary>
     internal static void ApplyStatusEffects(Entity e, byte[]? blob)
     {
+        // The blob is delta-resent only on change, so its reference is stable while unchanged — skip the re-decode
+        // (StatusEffectsCatalog.Read allocates a dictionary) when it's the same blob we last applied. This runs
+        // every render frame per remote entity AND for the pure-client HUD mirror, so the skip is real gen0 relief.
+        if (ReferenceEquals(blob, e.LastStatusBlob))
+            return;
+        e.LastStatusBlob = blob;
+
         List<ActiveStatusEffect> list = e.StatusEffects;
         if (list.Count == 0 && (blob is null || blob.Length == 0))
             return; // common case: no effects either side — nothing to do

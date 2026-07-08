@@ -192,7 +192,8 @@ public sealed partial class NetGame : Node3D
     private float _fireClock;
     private readonly Dictionary<int, float> _weaponReadyTime = new();
     private bool _loggedAccept;
-    private bool _hostJoinRequested;             // [#44] one-shot: the listen host's early_join_requested `join` sent
+    private bool _hostJoinDone;                  // [#44] the listen host's early_join_requested `join` actually spawned it
+    private float _hostJoinNextRetryMsec;        // [#44] next allowed `join` attempt (bounded retry — a blocked spawn no-ops)
     private bool _cameraReady;                   // C5: false until the first snapshot seeds the predicted eye
     private int _prevHealth = -1;               // previous networked local health, for the damage red-flash edge
     private bool _inputActive;                   // tracks the active→inactive edge to release held buttons (pause/console)
@@ -651,18 +652,19 @@ public sealed partial class NetGame : Node3D
         // [#44] sv_spectate stays at Base's shipped `1` (spectating allowed). The old port set it to 0 here to
         // make the host auto-spawn — which as a side effect made spectating impossible for EVERYONE (and armed
         // the sv_spectate=0 spectator-kick). The host's "Create Game and play" UX is now the Base-faithful
-        // `early_join_requested` equivalent instead: NetGame requests a one-shot `join` for the LOCAL player the
-        // moment its observer attaches (see RequestHostAutoJoin in _Process) — remote clients get the real
-        // observer flow (+jump joins, +attack spectates, exactly QC ObserverOrSpectatorThink).
+        // `early_join_requested` equivalent instead: the [#44] block in the accept handler (search _hostJoinDone)
+        // runs `join` for the LOCAL player once its observer attaches, retrying until it spawns — remote clients
+        // get the real observer flow (+jump joins, +attack spectates, exactly QC ObserverOrSpectatorThink).
         //
-        // [#47] Port-default divergence (2026-07-06 playtest): Base ships sv_maxidle_playertospectator 60 (an
-        // idle PLAYER is moved to spectator after 60s — client.qc:2982 arms the block even with sv_maxidle 0).
-        // Bryan wants no idle auto-spectate by default; the shipped cfg tree sets 60, so override it post-load.
-        // Operators can re-enable by setting it back (the Base-faithful machinery in PlayerFrameIdleAll is intact).
-        _serverWorld.Services.Cvars.Set("sv_maxidle_playertospectator", "0");
+        // [#47] Port-default divergence: no idle auto-spectate by default. This now lives in the shipped cfg tree
+        // (xonotic-server.cfg sets sv_maxidle_playertospectator 0, was 60) instead of a post-load code Set — so an
+        // operator's config.cfg/console value actually wins and survives map changes, rather than being clobbered
+        // on every StartListenServer. The Base-faithful machinery in PlayerFrameIdleAll is intact either way.
 
-        // A single-player campaign is "host AND play" too, but g_campaign re-arms the spectator-hold sv_spectate
-        // just cleared; opt the local host out so it spawns straight into the loaded level (Create-Game UX).
+        // A single-player campaign is "host AND play" too: g_campaign arms its own spectator-hold, so opt the
+        // local host out (CampaignHostAutojoin) AND let the [#44] host-join block above spawn it — at the shipped
+        // sv_spectate 1 the passive delayed-autojoin can't fire, so the campaign host rides the same `join` path
+        // (CmdJoin succeeds on stock campaign maps).
         if (!string.IsNullOrEmpty(_campaignName))
         {
             _serverWorld.Clients.CampaignHostAutojoin = true;
@@ -1338,7 +1340,7 @@ public sealed partial class NetGame : Node3D
     /// <see cref="LoadClientMapFromServer"/> (a pure <c>--connect</c> client, once the server's map name arrives).
     /// No-op without a BSP / render world / assets, so it is safe to call before the map is known.
     /// </summary>
-    private void AttachWorldRender()
+    private void AttachWorldRender(CollisionWorld? sharedEffectsWorld = null)
     {
         if (_bsp is null || _render is null || _assets?.Assets is null)
             return;
@@ -1353,21 +1355,33 @@ public sealed partial class NetGame : Node3D
         _render.Pvs = new XonoticGodot.Formats.Bsp.BspPvs(_bsp);
 
         // Client-side collision for the particle systems: decal splats conform to the real brush faces (DP
-        // R_DecalSystem — else marks fall back to flat quads), and the chunked-SDF service builds from the same world.
-        CollisionWorld clientCollision = MapLoader.BuildCollision(_bsp, _assets.Assets);
-        _render.Effects.SetCollisionWorld(clientCollision);
+        // R_DecalSystem — else marks fall back to flat quads). A pure client already built the world for its
+        // prediction collision (LoadClientMapFromServer) and passes it in, so we don't build the same brush world a
+        // SECOND time on the connect frame — both the prediction trace and these effect traces are main-thread, so
+        // sharing one instance is safe. The listen path builds a fresh one (GameWorld owns the server collision).
+        CollisionWorld effectsWorld = sharedEffectsWorld ?? MapLoader.BuildCollision(_bsp, _assets.Assets);
+        _render.Effects.SetCollisionWorld(effectsWorld);
         // Splats clip against the RENDER triangles (DP's actual target) — marks roll over visible trim/patch edges.
         _render.Effects.SetDecalGeometry(_bsp);
 
         // Chunked-SDF collision field for modern particles (planning/particles-dual-system.md §A). Built only in a
-        // modern-collision mode (cl_particles_modern 1/2) — mode 0 (the faithful default) needs no SDF.
+        // modern-collision mode (cl_particles_modern 1/2) — mode 0 (the faithful default) needs no SDF, so the
+        // default connect pays nothing here. The SDF generator queries the world on a background Task, and
+        // CollisionWorld.Query mutates a per-instance mark epoch — so it must NOT share the instance the
+        // main-thread prediction traces use. When we shared the prediction world into effects above, hand the SDF
+        // lane its OWN world (a dedicated build), else reuse the fresh effects world (listen path, as before).
         if (_vfs is not null &&
             XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat(XonoticGodot.Engine.Particles.ParticleCvars.Modern) != 0f)
         {
             string bspVpath = $"maps/{_map}.bsp";
             byte[]? bspBytes = _vfs.Exists(bspVpath) ? _vfs.ReadBytes(bspVpath) : null;
             if (bspBytes is not null)
-                _render.Effects.BuildSdfForMap(_map, bspBytes, clientCollision, _vfs);
+            {
+                CollisionWorld sdfWorld = sharedEffectsWorld is null
+                    ? effectsWorld
+                    : MapLoader.BuildCollision(_bsp, _assets.Assets);
+                _render.Effects.BuildSdfForMap(_map, bspBytes, sdfWorld, _vfs);
+            }
         }
     }
 
@@ -3092,17 +3106,33 @@ public sealed partial class NetGame : Node3D
 
             // [#44] The listen host's "Create Game and play" join — Base's `early_join_requested` arm of the
             // PlayerPreThink autojoin (client.qc:2715): the host explicitly ASKED to start a match, so its own
-            // client requests `join` once, the moment its observer attaches. With sv_spectate back at Base's 1
-            // the passive delayed-autojoin no longer exists (faithful — it only armed when sv_spectate was 0),
-            // so without this the host — and every scripted flow that expects the host to spawn (--map smoke,
+            // client requests `join` the moment its observer attaches. With sv_spectate back at Base's 1 the
+            // passive delayed-autojoin no longer exists (faithful — it only armed when sv_spectate was 0), so
+            // without this the host — and every scripted flow that expects the host to spawn (--map smoke,
             // --camera-trace, perf runs, --screenshot's CaptureGate) — would sit at the observer prompt forever.
-            // Remote clients are NOT auto-joined: they get the real Base observer flow (+jump joins, +attack
-            // spectates). A campaign host already auto-joins via CampaignHostAutojoin; the extra join is a no-op.
-            if (_isListenServer && !_hostJoinRequested && LocalServerPlayer is { IsObserver: true } hostObs
-                && _serverWorld is { } joinWorld)
+            // The `join` can NO-OP (a gated/blocked spawnpoint on assault/onslaught, a team-balance queue), so we
+            // must NOT burn the request on the first attempt: retry on a bounded cadence until the host actually
+            // spawns (IsObserver flips false), then latch done. Remote clients are NOT auto-joined — they get the
+            // real Base observer flow (+jump joins, +attack spectates). A campaign host that CAN'T passive-autojoin
+            // at sv_spectate 1 relies on this same path (its CmdJoin succeeds on stock campaign maps).
+            if (_isListenServer && !_hostJoinDone && _serverWorld is { } joinWorld)
             {
-                _hostJoinRequested = true;
-                joinWorld.Commands.Execute("join", isServerConsole: false, caller: hostObs);
+                if (LocalServerPlayer is not { IsObserver: true })
+                {
+                    _hostJoinDone = true; // spawned (or no host player yet) — nothing to auto-join
+                }
+                else
+                {
+                    float nowMsec = Godot.Time.GetTicksMsec();
+                    if (nowMsec >= _hostJoinNextRetryMsec)
+                    {
+                        _hostJoinNextRetryMsec = nowMsec + 1000f; // bounded: a blocked spawn no-ops, so don't spam
+                        joinWorld.Commands.Execute("join", isServerConsole: false, caller: LocalServerPlayer);
+                        // If the join spawned us this frame, IsObserver is now false → next frame latches done.
+                        if (LocalServerPlayer is not { IsObserver: true })
+                            _hostJoinDone = true;
+                    }
+                }
             }
 
             // LISTEN-SERVER prediction parity: the predicted carrier and the authoritative host Player are TWO
@@ -4686,11 +4716,11 @@ public sealed partial class NetGame : Node3D
 
     /// <summary>
     /// Refresh <see cref="_hudMirror"/> from the networked owner stats (pure client only): health/armor + the
-    /// ammo pools + the owned-weapon bitset + active weapon from the owner block; position/velocity/angles from
+    /// inventory block (ammo pools, owned-weapon bitset, unlimited-ammo, STAT_ITEMS flags) + active weapon from
+    /// the owner block; team + packed colors from the networked own-entity slice; position/velocity/onground from
     /// prediction (the physics/strafe panels); status effects decoded from the owner's own entity slice
-    /// (<see cref="ClientNet.LocalState"/> — the powerups panel timers). Raw field writes
-    /// (<see cref="Resources.SetResourceExplicit"/> semantics), NEVER the hooked SetResource — the mirror is a
-    /// render-side stats holder, not a sim actor, and must not fire mutator resource hooks.
+    /// (<see cref="ClientNet.LocalState"/> — the powerups panel timers). Raw field writes, NEVER the hooked
+    /// SetResource — the mirror is a render-side stats holder, not a sim actor, and must not fire mutator hooks.
     /// </summary>
     private void UpdateHudMirror()
     {
@@ -4698,18 +4728,26 @@ public sealed partial class NetGame : Node3D
             return;
         _hudMirror ??= new Player { NetName = _playerName };
         Player m = _hudMirror;
+        XonoticGodot.Net.OwnerInventory inv = _client.LocalInventory;
 
         m.Health = _client.Health;
         m.ArmorValue = _client.Armor;
-        m.AmmoShells = _client.LocalAmmoShells;
-        m.AmmoBullets = _client.LocalAmmoBullets;
-        m.AmmoRockets = _client.LocalAmmoRockets;
-        m.AmmoCells = _client.LocalAmmoCells;
-        m.AmmoFuel = _client.LocalAmmoFuel;
-        m.OwnedWeaponSet = new WepSet { Bits = _client.LocalOwnedWeaponBits };
-        m.UnlimitedAmmo = _client.LocalUnlimitedAmmo;
+        m.AmmoShells = inv.Shells;
+        m.AmmoBullets = inv.Bullets;
+        m.AmmoRockets = inv.Rockets;
+        m.AmmoCells = inv.Cells;
+        m.AmmoFuel = inv.Fuel;
+        m.OwnedWeaponSet = new WepSet { Bits = inv.WeaponBits };
+        m.UnlimitedAmmo = inv.UnlimitedAmmo;
+        m.Items = inv.ItemFlags; // STAT_ITEMS: the powerups panel's jetpack / fuel-regen / superweapon rows
         m.ActiveWeaponId = _client.ActiveWeaponId;
         m.SwitchWeaponId = _client.ActiveWeaponId;
+
+        // Team + packed clientcolors for the team/shirt/pants-colored HUD elements (dock tint, panel bg_color_team):
+        // the team from the networked scoreboard row, the colors from our own entity slice (now that the server
+        // sends it). Without these the dock/shirt/pants resolve palette-0 white instead of the profile/team color.
+        m.Team = LocalShownamesTeam();
+        m.ClientColors = _client.LocalState?.Colors ?? m.ClientColors;
 
         // Predicted pose for the physics/strafe panels + the crosshair's Player.Origin/Angles reads.
         m.Origin = _client.PredictedOrigin;
@@ -4717,8 +4755,15 @@ public sealed partial class NetGame : Node3D
         m.Angles = _viewAngles;
         m.DeadState = _client.Health <= 0 && _everAlive ? DeadFlag.Dead : DeadFlag.No;
 
+        // Predicted ground state for the physics/strafehud panels' slick / accel-max branches (else they read a
+        // permanently-airborne mirror). The reconciler seeds OnGround from the owner block's onground bool.
+        if (_client.PredictedOnGround)
+            m.Flags |= XonoticGodot.Common.Framework.EntFlags.OnGround;
+        else
+            m.Flags &= ~XonoticGodot.Common.Framework.EntFlags.OnGround;
+
         // Powerup timers (strength/shield/…): the server networks every player's status-effect bitmap in the
-        // entity stream — including our own entity, whose decoded slice ClientNet keeps as LocalState.
+        // entity stream — including our own entity now (v14), whose decoded slice ClientNet keeps as LocalState.
         ClientEntityView.ApplyStatusEffects(m, _client.LocalState?.StatusEffects);
     }
 
@@ -5505,8 +5550,12 @@ public sealed partial class NetGame : Node3D
         // WEAPON-SWITCH / RELOAD binds into a C2S impulse (the QC usercmd.impulse channel — the real way a human
         // switches weapons on the net path) and forwards everything else (kill/say/team/…) to the shared
         // interpreter. Frozen while the console is open or the match is paused (a key the console didn't consume
-        // still reaches here, so the explicit ConsoleState gate is what stops binds firing under the open console).
+        // still reaches here, so the explicit ConsoleState gate is what stops binds firing under the open console),
+        // and while the chat prompt is open (DP key_dest = message swallows ALL input, mouse buttons included —
+        // the prompt only consumes KEY events, so without this gate a MOUSE bind still flips latches / fires the
+        // held +attack the moment the prompt closes).
         if (!ConsoleState.IsOpen && !GetTree().Paused && !MinigameMenuOpen
+            && !XonoticGodot.Game.Hud.ChatPrompt.IsOpen
             && @event is InputEventKey or InputEventMouseButton)
             BindInput.HandleEvent(@event, RunBoundCommand);
 
@@ -5780,6 +5829,13 @@ public sealed partial class NetGame : Node3D
     /// panel — the maximized radar's `m` toggle + Esc/right-click close all route through it.</summary>
     private bool UiOwnsCursor => MinigameMenuOpen || QuickMenuOpen || (_radar?.Maximized ?? false);
 
+    /// <summary>Whether gameplay owns keyboard/mouse input this frame — false whenever a UI owner has it (the DP
+    /// key_dest states): the pause/auto-pause, the console, the messagemode chat prompt (key_dest = message:
+    /// movement/fire suspended while typing), or a cursor-owning HUD UI (minigame/quickmenu/maximized radar). The
+    /// single source of truth for the input-active gate (SampleInput + the fire-feedback edge).</summary>
+    private bool GameplayInputActive =>
+        !GetTree().Paused && !ConsoleState.IsOpen && !XonoticGodot.Game.Hud.ChatPrompt.IsOpen && !UiOwnsCursor;
+
     /// <summary>
     /// Teleporter view-snap (QC player.fixangle): after a prediction tick re-derives the carrier's .fixangle —
     /// true exactly on the tick the local player is predicted through a single-dest teleporter — snap the
@@ -5892,7 +5948,7 @@ public sealed partial class NetGame : Node3D
     {
         _fireClock += dt;
 
-        bool active = !GetTree().Paused && !ConsoleState.IsOpen && !XonoticGodot.Game.Hud.ChatPrompt.IsOpen && !UiOwnsCursor; // chat prompt = DP key_dest message: movement/fire keys suspended while typing
+        bool active = GameplayInputActive;
         if (!active)
         {
             // Input is owned elsewhere (in-game menu / console / minigame / quickmenu): drop the edge state and the
@@ -6124,7 +6180,7 @@ public sealed partial class NetGame : Node3D
         // HUD UI (minigame menu/board or the quick-chat menu) is open. On the edge into inactive, drop all held
         // buttons (DP in_releaseall) so a key held at that moment doesn't stay down once input resumes. The view
         // angles hold their last value, so the camera stays put.
-        bool active = !GetTree().Paused && !ConsoleState.IsOpen && !XonoticGodot.Game.Hud.ChatPrompt.IsOpen && !UiOwnsCursor; // chat prompt = DP key_dest message: movement/fire keys suspended while typing
+        bool active = GameplayInputActive;
         if (active != _inputActive)
         {
             _inputActive = active;
@@ -6910,12 +6966,14 @@ public sealed partial class NetGame : Node3D
     }
 
     /// <summary>Cvars the listen-server boot sequence (or the map's worldspawn) authors itself — a console override
-    /// of these must NOT be backfilled across a map change, or it would clobber the new map's gravity, the host's
-    /// spectate/bot setup, the chosen match limits, or the map name. The limits ride the campaign-guarded
-    /// <see cref="CopyCvarIfSet"/> path above; sv_gravity is owned by each map's worldspawn.</summary>
+    /// of these must NOT be backfilled across a map change, or it would clobber the new map's gravity, the chosen
+    /// match limits, or the map name. The limits ride the campaign-guarded <see cref="CopyCvarIfSet"/> path above;
+    /// sv_gravity is owned by each map's worldspawn. NOTE: sv_spectate is deliberately NOT here anymore — the boot
+    /// no longer authors it (#44 kept Base's shipped 1), so excluding it would have silently reverted an operator's
+    /// runtime override on every map change.</summary>
     private static readonly System.Collections.Generic.HashSet<string> BootAuthoredCvars = new(System.StringComparer.Ordinal)
     {
-        "mapname", "sv_gravity", "sv_spectate", "timelimit", "fraglimit", "bot_number", "skill",
+        "mapname", "sv_gravity", "timelimit", "fraglimit", "bot_number", "skill",
     };
 
     private static CollisionWorld BuildTestFloor()
@@ -7032,14 +7090,18 @@ public sealed partial class NetGame : Node3D
         {
             es.SetCollisionWorld(built.World);
             es.Pvs = new XonoticGodot.Formats.Bsp.BspPvs(bsp);
-            // Register the inline "*N" brush models so a predicted move clips networked doors/plats (QC setmodel
-            // resolves the model bounds + clip brushes from the catalog on the SetModel a snapshot drives).
+            // Register the inline "*N" brush models into the client model catalog. NOTE: this is FORWARD-LOOKING —
+            // no client code currently mirrors snapshot entities into the ambient facade table or calls SetModel
+            // on it (the only facade entity is the prediction carrier), so predicted movement still doesn't clip
+            // networked doors/plats today (the server reconcile corrects it). The registration is cheap + idempotent
+            // and is here so that when a snapshot→facade mover mirror lands, a "*N" setmodel resolves its clip brushes.
             BspCollisionBuilder.RegisterSubmodels(built.Submodels, es.ModelsImpl);
         }
 
         // (2) Render the worldmodel + PVS entity-cull + particle/decal collision (the same path the listen server
-        // runs in SetupRender), now that _bsp is set.
-        AttachWorldRender();
+        // runs in SetupRender), now that _bsp is set. Hand it the prediction world we just built so it doesn't
+        // build the full brush world a SECOND time on this connect frame (both uses are main-thread — safe to share).
+        AttachWorldRender(built.World);
 
         // (3) The map's real skybox / fog / colour tint, replacing the procedural sky AddLight put up pre-map.
         ApplyMapSky();
@@ -7062,9 +7124,12 @@ public sealed partial class NetGame : Node3D
             NVec3 mn = bsp.Models[0].Mins, mx = bsp.Models[0].Maxs;
             _waypointLayer.MapSize = new NVec3(mx.X - mn.X, mx.Y - mn.Y, mx.Z - mn.Z).Length();
         }
-        // — map music: SetupMusic ran with no map name, so resolve the mapinfo cdtrack now. The MusicPlayer
-        //   re-reads CdTrack each frame, so a late set starts the track cleanly. (trigger_music/target_music
-        //   volumes stay listen-host-only — they are server entities and aren't networked.)
+        // — map music: SetupMusic ran with no map name, so resolve the cdtrack now. The MusicPlayer re-reads
+        //   CdTrack each frame, so a late set starts the track cleanly. (trigger_music/target_music volumes stay
+        //   listen-host-only — they are server entities and aren't networked.) Resolve order mirrors SetupMusic:
+        //   the mapinfo cdtrack first, then — for legacy/Q3/Nexuiz-compat maps with no mapinfo — the worldspawn
+        //   "music"/"noise" key (QC world.qc:970), parsed from the BSP we just loaded. Without the worldspawn
+        //   fallback those maps played on the listen host but were silent on a pure client.
         if (_musicPlayer is not null && _vfs is not null)
         {
             string mapinfoPath = $"maps/{_map}.mapinfo";
@@ -7072,7 +7137,15 @@ public sealed partial class NetGame : Node3D
             if (_vfs.Exists(mapinfoPath))
             {
                 try { cdTrack = ParseMapinfoCdTrack(_vfs.ReadText(mapinfoPath)); }
-                catch { /* unreadable mapinfo — no music */ }
+                catch { /* unreadable mapinfo — fall through to worldspawn */ }
+            }
+            if (string.IsNullOrEmpty(cdTrack) && bsp.Entities.Count > 0)
+            {
+                IReadOnlyDictionary<string, string> worldspawn = bsp.Entities[0];
+                if (worldspawn.TryGetValue("music", out string? wsMusic) && !string.IsNullOrEmpty(wsMusic))
+                    cdTrack = wsMusic;
+                else if (worldspawn.TryGetValue("noise", out string? wsNoise) && !string.IsNullOrEmpty(wsNoise))
+                    cdTrack = wsNoise;
             }
             string resolvedTrack = MusicPlayer.ResolveMusicPath(cdTrack);
             if (!string.IsNullOrEmpty(resolvedTrack))

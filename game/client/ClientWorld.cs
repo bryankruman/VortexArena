@@ -1626,10 +1626,20 @@ public partial class ClientWorld : Node3D
         st.ItemTintMeshCount = meshes.Count;
     }
 
-    /// <summary>Cache of tinted material variants keyed by (shared source material, colormod). Bounded by the few
-    /// item materials × the two shipped tints (ghost '-1 -1 -1', stay '2 0.5 0.5'); variants hold their source's
-    /// textures by reference. Main-thread only (built inside the ClientWorld drive).</summary>
+    /// <summary>Cache of tinted BaseMaterial3D variants keyed by (shared source material, colormod). Bounded by the
+    /// few item materials × the shipped tints; variants hold their source's textures by reference. Main-thread only
+    /// (built inside the ClientWorld drive).</summary>
     private static readonly Dictionary<(Material, Godot.Vector3), Material?> _itemTintVariants = new();
+
+    /// <summary>Cache of the flat DARK-ghost substitute materials used for ShaderMaterial surfaces, keyed by
+    /// colormod ALONE — the substitute depends only on the tint, not the source shader, so this stays a handful of
+    /// entries (≈1: the default ghost) instead of pinning a fresh per-match ShaderMaterial (and its compiled shader
+    /// + textures) for the process lifetime the way a (source, colormod) key would.</summary>
+    private static readonly Dictionary<Godot.Vector3, StandardMaterial3D> _itemFlatGhostTints = new();
+
+    /// <summary>Above this per-channel clamped-multiply value a colormod is NOT a dark ghost — a flat substitute
+    /// would erase the shader's texture detail (the stay-weapon '2 0.5 0.5' tint), so we leave the live shader.</summary>
+    private const float GhostDarkMax = 0.5f;
 
     /// <summary>
     /// Get (or build) the tinted duplicate of a shared item surface material. DP applies colormod as a straight
@@ -1642,25 +1652,26 @@ public partial class ClientWorld : Node3D
         if (source is not BaseMaterial3D src)
         {
             // [#54] ShaderMaterial (a compiled Q3/glow/skin shader — the POWERUP models are almost entirely
-            // these): an arbitrary shader's output can't be colormod-multiplied from here, and the old
-            // "leave it live" no-op meant a taken strength/shield never darkened while plain-material items
-            // did. DP applies colormod as a final clamped multiply over the WHOLE surface (fullbright passes
-            // included) — with the shipped default '-1 -1 -1' that lands on flat BLACK — so substitute a
-            // cached flat dark unshaded material (alpha still rides the node transparency, like DP's
-            // alpha *= cl_ghost_items). Faithful for the default; a custom cl_ghost_items_color tints the
-            // silhouette to that color, which matches the clamped-multiply look on a dark base.
+            // these): an arbitrary shader's output can't be colormod-multiplied from here. DP applies colormod as
+            // a final clamped multiply over the WHOLE surface — with the shipped ghost default '-1 -1 -1' that
+            // lands on flat BLACK — so for a DARK tint we substitute a cached flat dark unshaded material (alpha
+            // still rides the node transparency, like DP's alpha *= cl_ghost_items). But a BRIGHT tint (the
+            // g_weapon_stay 'cl_weapon_stay_color 2 0.5 0.5' still-pickable weapon) would be turned into a flat
+            // opaque slab, erasing the model's texture/animation — so leave the live shader for those (return
+            // null = shared material stays live, alpha-only), the least-wrong option for a positive multiply.
             if (source is null)
                 return null;
-            var skey = (source, colormod);
-            if (_itemTintVariants.TryGetValue(skey, out Material? scached))
+            float fr = Mathf.Max(colormod.X, 0f), fg = Mathf.Max(colormod.Y, 0f), fb = Mathf.Max(colormod.Z, 0f);
+            if (MathF.Max(fr, MathF.Max(fg, fb)) > GhostDarkMax)
+                return null; // bright tint (stay-weapon): keep the textured shader, don't flatten it to a slab
+            if (_itemFlatGhostTints.TryGetValue(colormod, out StandardMaterial3D? scached))
                 return scached;
             var flat = new StandardMaterial3D
             {
                 ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-                AlbedoColor = new Color(
-                    Mathf.Max(colormod.X, 0f), Mathf.Max(colormod.Y, 0f), Mathf.Max(colormod.Z, 0f), 1f),
+                AlbedoColor = new Color(fr, fg, fb, 1f),
             };
-            _itemTintVariants[skey] = flat;
+            _itemFlatGhostTints[colormod] = flat;
             return flat;
         }
         var key = (source!, colormod);

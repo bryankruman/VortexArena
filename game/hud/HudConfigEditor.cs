@@ -119,6 +119,22 @@ public partial class HudConfigEditor : Control
     }
 
     /// <summary>
+    /// Safety net for teardown mid-configure: the editor's normal exit edge (<see cref="Update"/>'s
+    /// <c>else if (_wasConfiguring)</c> branch) only runs while the node is alive and ticking, so disconnecting /
+    /// quitting to the menu while <c>_hud_configure</c> is 1 would free this node with the process-global side
+    /// effects still latched — leaving the OS pointer freed forever (mouse-look dead in the next match) and the
+    /// next match booting straight into the editor. Clear all of them here when the node leaves the tree.
+    /// </summary>
+    public override void _ExitTree()
+    {
+        MouseCapture.HudEditorWantsCursor = false; // re-applies capture (the setter calls MouseCapture.Apply)
+        SetCursorShape(CursorNormal);              // drop the Move/diagonal OS cursor shape
+        // Don't let the transient configure flag survive the match, or the next one boots into the editor.
+        if (MenuState.Cvars.GetFloat("_hud_configure") != 0f)
+            MenuState.Cvars.Set("_hud_configure", "0");
+    }
+
+    /// <summary>
     /// Register the HUD-editor console verbs on the shared interpreter (idempotent — RegisterCommand overwrites
     /// by name, so re-registration on a later match's Hud is harmless). Base ships these as commands.cfg
     /// aliases (<c>menu_showhudexit "menu_cmd directmenu HUDExit"</c>, <c>menu_showhudoptions "menu_cmd
@@ -1133,6 +1149,20 @@ public partial class HudConfigEditor : Control
             sb.Append("seta ").Append(name).Append(" \"").Append(cvars.GetString(name)).Append("\"\n");
     }
 
+    /// <summary>Reduce a user/cvar-supplied string to a safe filename token: keep only letters, digits, '-' and
+    /// '_' (dropping path separators, '.', and everything else), falling back to <paramref name="fallback"/> when
+    /// nothing safe remains. Prevents a `hud save ../../evil` (or a poisoned hud_skin) from escaping the data dir.</summary>
+    private static string SanitizeToken(string? raw, string fallback)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return fallback;
+        var sb = new System.Text.StringBuilder(raw.Length);
+        foreach (char c in raw)
+            if (char.IsAsciiLetterOrDigit(c) || c == '-' || c == '_')
+                sb.Append(c);
+        return sb.Length > 0 ? sb.ToString() : fallback;
+    }
+
     /// <summary>
     /// Port of <c>HUD_Panel_ExportCfg</c> (hud_config.qc:10): dump the live HUD tuning — skin + global panel-bg
     /// defaults, dock, progressbar colors, panel order, grid — then every panel's cvar block, as <c>seta</c>
@@ -1148,9 +1178,13 @@ public partial class HudConfigEditor : Control
     public static void ExportCfg(string cfgname)
     {
         CvarService cvars = MenuState.Cvars;
-        string skin = cvars.GetString("hud_skin");
-        if (string.IsNullOrWhiteSpace(skin)) skin = "luma";
-        string filename = $"hud_{skin}_{cfgname}.cfg";
+        // Sanitize BOTH the user-supplied config name AND the skin cvar into safe filename tokens: the file goes
+        // to `data/hud_<skin>_<name>.cfg` and is written with a raw System.IO path, so an unsanitized `..` / path
+        // separator (from the console `hud save`, the menu save box, or an exec'd cfg) would escape the user data
+        // dir (UserPaths.Resolve canonicalizes '..' and creates the tree). Keep only filename-safe characters.
+        string skin = SanitizeToken(cvars.GetString("hud_skin"), "luma");
+        string cfgToken = SanitizeToken(cfgname, "myconfig");
+        string filename = $"hud_{skin}_{cfgToken}.cfg";
 
         var sb = new System.Text.StringBuilder();
         sb.Append("//title \n//author \n\n");
