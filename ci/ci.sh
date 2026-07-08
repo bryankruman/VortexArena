@@ -65,6 +65,11 @@ dotnet test "$ROOT/tests/XonoticGodot.Tests/XonoticGodot.Tests.csproj" -c Debug 
 step "build the Godot host (XonoticGodot.csproj)"
 dotnet build "$ROOT/XonoticGodot.csproj" -c Debug --nologo
 
+# ── 3b. the launcher app + its tests (plain .NET, no Godot — ADR-0015) ────────
+step "build + test the launcher (launcher/)"
+dotnet build "$ROOT/launcher/XonoticGodot.Launcher.Tests/XonoticGodot.Launcher.Tests.csproj" -c Debug --nologo
+dotnet test  "$ROOT/launcher/XonoticGodot.Launcher.Tests/XonoticGodot.Launcher.Tests.csproj" -c Debug --no-build --nologo
+
 # ── 4. headless boot smoke (RUNNING.md 'Run headless') ────────────────────────
 if $do_smoke; then
     if [ -x "$GODOT" ] || [ -f "$GODOT" ]; then

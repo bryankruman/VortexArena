@@ -20,8 +20,9 @@ creates no Release.
 
 ## What ships
 
-Each target is a **"fat" zip** — game binary + the Godot runtime + **all** Xonotic data in one download.
-Unzip and play; nothing else to fetch.
+Each target ships as a **"fat" zip** — game binary + the Godot runtime + **all** Xonotic data in one
+download (unzip and play; nothing else to fetch) — plus, since ADR-0015 (the launcher), a small
+**`-core` zip** (binary + runtime, no game data) and a shared, content-addressed **assets pack**.
 
 | Zip | Contents | Run |
 |---|---|---|
@@ -29,6 +30,9 @@ Unzip and play; nothing else to fetch.
 | `XonoticGodot-<ver>-linux-x86_64.zip` | `XonoticGodot.x86_64`, `run-client.sh`, `assets/data/` | `./run-client.sh` |
 | `XonoticGodot-<ver>-linux-dedicated-x86_64.zip` | `xonoticgodot-dedicated.x86_64`, `run-dedicated.sh`, `assets/data/` | `./run-dedicated.sh [map]` |
 | `XonoticGodot-<ver>-macos-universal.zip` | `XonoticGodot.app` (data inside `Contents/Resources/`) | double-click — see macOS note below |
+| `XonoticGodot-<ver>-<platform>-core.zip` (×4) | binary + runtime only — the launcher payload (ADR-0015) | via the launcher (supplies `--data`) |
+| `XonoticGodot-assets-<hash12>.zip` | the full `assets/data` tree; `<hash12>` = `download-assets.sh` content hash. **Only re-uploaded when that hash changes** — otherwise `latest.json` points at the previous release's copy | — |
+| `latest.json` | the launcher's machine-readable manifest (`tools/make-manifest.py`) | — |
 | `SHA256SUMS-<ver>.txt` | checksums for the above | — |
 
 The game finds its data **relative to the executable** (`DataPaths.Resolve`), so the zips work no
@@ -40,9 +44,10 @@ all resolve `assets/data` correctly. Keep the files together when you unzip.
 ```
 push tag v* ─┬─ assets   download-assets.sh → tar → artifact (cached on download-assets.sh hash)
              ├─ windows  export windows-client                  ─┐
-             ├─ linux    export linux-client + linux-dedicated  ─┤→ each: unpack assets, package.sh, upload zip
-             ├─ macos    export macos-client (continue-on-error)─┘
-             └─ release  collect zips, checksum, softprops/action-gh-release  (tag pushes only)
+             ├─ linux    export linux-client + linux-dedicated  ─┤→ each: unpack assets, package.sh
+             ├─ macos    export macos-client (continue-on-error)─┘        (core + fat zips), upload
+             └─ release  collect zips, build/dedupe the assets pack, checksum,
+                         make-manifest.py → latest.json, softprops/action-gh-release  (tag pushes only)
 ```
 
 - Assets are downloaded **once** and fanned out as a single-file tar artifact — the three build jobs don't

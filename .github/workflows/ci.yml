@@ -7,6 +7,7 @@
 #   build-host — always: compile the Godot host project (XonoticGodot.csproj) from a clean clone with
 #                NO Godot editor installed — proves the Godot.NET.Sdk/GodotSharp 4.6.3 restore works
 #                purely from nuget.org.
+#   launcher   — always: build + test the launcher app (launcher/ — ADR-0015; plain .NET, no Godot).
 # Export + packaging + GitHub Releases live in a SEPARATE workflow (.github/workflows/release.yml),
 # triggered on `v*` tags (and workflow_dispatch). Keeping the heavy Godot export off this per-push gate is
 # deliberate (ADR-0014): the mono export templates are ~1 GB and the data is ~1.5 GB.
@@ -79,3 +80,19 @@ jobs:
 
       - name: Build the Godot host project
         run: dotnet build XonoticGodot.csproj -c Debug
+
+  launcher:
+    name: Launcher (build + tests, no Godot)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "9.0.x"
+
+      - name: Drop the Windows-only Godot editor NuGet source
+        run: dotnet nuget remove source godot-editor --configfile nuget.config
+
+      - name: Build + test the launcher (ADR-0015)
+        run: dotnet test launcher/XonoticGodot.Launcher.Tests/XonoticGodot.Launcher.Tests.csproj -c Debug

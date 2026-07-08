@@ -1,0 +1,23 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- The XonoticGodot launcher/updater (ADR-0015): Avalonia shell, Velopack self-update (of the
+       launcher ONLY — game installs are launcher-managed plain zips from GitHub Releases).
+       Plain .NET project, never referenced by the game or src/ libraries. -->
+  <PropertyGroup>
+    <!-- Console subsystem for Debug so the smoke-mode flag prints to the terminal; windowed for Release. -->
+    <OutputType Condition="'$(Configuration)' == 'Release'">WinExe</OutputType>
+    <OutputType Condition="'$(Configuration)' != 'Release'">Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>XonoticGodot.Launcher</RootNamespace>
+    <AssemblyName>XonoticGodotLauncher</AssemblyName>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.18" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.18" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.18" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.18" />
+    <PackageReference Include="Avalonia.Diagnostics" Version="11.3.18" Condition="'$(Configuration)' == 'Debug'" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <PackageReference Include="Velopack" Version="1.2.0" />
+  </ItemGroup>
+</Project>

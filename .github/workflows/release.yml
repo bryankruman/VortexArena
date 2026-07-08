@@ -13,10 +13,17 @@ name: Release
 # single-file tar artifact so the three build jobs don't each pull ~1.5 GB from gitlab/dl.xonotic.org.
 #
 #   assets  → download-assets.sh → tar → artifact (cached across runs)
-#   windows → export windows-client                     → fat zip
-#   linux   → export linux-client + linux-dedicated     → 2 fat zips
-#   macos   → export macos-client (continue-on-error)   → fat zip   [BEST-EFFORT: see ADR-0014 §macOS]
-#   release → collect all zips, checksum, publish to GitHub Releases (tag pushes only)
+#   windows → export windows-client                     → fat + -core zips
+#   linux   → export linux-client + linux-dedicated     → 2× (fat + -core) zips
+#   macos   → export macos-client (continue-on-error)   → fat + -core zips  [BEST-EFFORT: ADR-0014 §macOS]
+#   release → collect all zips, build/dedupe the assets pack, checksum, emit latest.json,
+#             publish to GitHub Releases (tag pushes only)
+#
+# ADR-0015 (launcher/updater) additions: every target also ships a "-core" zip (binary + runtime,
+# no game data), the release carries a content-addressed assets pack XonoticGodot-assets-<hash12>.zip
+# (hash12 = first 12 chars of hashFiles('download-assets.sh'), the same key as the asset cache;
+# re-uploaded ONLY when the hash changes — otherwise the manifest points at the previous release's
+# copy), and a machine-readable latest.json manifest (tools/make-manifest.py) for the launcher.
 
 on:
   push:
@@ -125,7 +132,7 @@ jobs:
         shell: bash
 
       - uses: actions/upload-artifact@v4
-        with: { name: zip-windows, path: "dist/XonoticGodot-*-windows-x86_64.zip", if-no-files-found: error }
+        with: { name: zip-windows, path: "dist/XonoticGodot-*-windows-x86_64*.zip", if-no-files-found: error }
 
   # ── Linux desktop client + headless dedicated server ─────────────────────────
   linux:
@@ -202,11 +209,14 @@ jobs:
       - uses: actions/upload-artifact@v4
         with: { name: zip-macos, path: "dist/XonoticGodot-*-macos-*.zip", if-no-files-found: warn }
 
-  # ── Collect every zip, checksum, and publish the GitHub Release ──────────────
+  # ── Collect every zip, build/dedupe the assets pack, checksum, emit the launcher
+  #    manifest, and publish the GitHub Release ─────────────────────────────────
   release:
     needs: [prep, windows, linux, macos]
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4   # for hashFiles(download-assets.sh) + tools/make-manifest.py
+
       - name: Collect all zip artifacts
         uses: actions/download-artifact@v4
         with:
@@ -214,16 +224,72 @@ jobs:
           path: out
           merge-multiple: true
 
+      - name: Fetch the assets tar
+        uses: actions/download-artifact@v4
+        with: { name: assets-data }
+
+      # The assets pack is content-addressed by download-assets.sh's hash (the same key the assets
+      # job's cache uses). If ANY previous release already carries a pack with this exact name, we
+      # skip the ~1.5 GB re-upload and point latest.json at that release's copy (its sha256 comes
+      # from the GitHub asset digest). New hash (download-assets.sh changed) → build + ship it here.
+      # NOTE: no `-y` on zip — pk3dir symlinks are materialized as plain files so the pack extracts
+      # cleanly everywhere (Windows extraction of symlinked entries is not dependable).
+      - name: Build or dedupe the assets pack (ADR-0015 §4)
+        id: assetspack
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          full='${{ hashFiles('download-assets.sh') }}'
+          name="XonoticGodot-assets-${full:0:12}.zip"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          # NB: --paginate + --jq filters PER PAGE (one output line per matching page) — head -n1.
+          existing=$(gh api "repos/${{ github.repository }}/releases" --paginate \
+            --jq "[.[].assets[] | select(.name == \"$name\")][0] // empty | @json" 2>/dev/null \
+            | head -n1 || true)
+          digest=$(jq -r 'fromjson | .digest // empty' <<<"$existing" 2>/dev/null || true)
+          mkdir -p final
+          if [ -n "$existing" ] && [ -n "$digest" ]; then
+            echo "found existing pack — reusing (no re-upload)"
+            echo "url=$(jq -r 'fromjson | .browser_download_url' <<<"$existing")"   >> "$GITHUB_OUTPUT"
+            echo "sha256=${digest#sha256:}"                                          >> "$GITHUB_OUTPUT"
+            echo "size=$(jq -r 'fromjson | .size' <<<"$existing")"                   >> "$GITHUB_OUTPUT"
+          else
+            echo "no previous pack named $name (or no digest) — building it"
+            tar -xf assets-data.tar
+            zip -qr "final/$name" assets/data
+            ls -lh "final/$name"
+          fi
+
       - name: Flatten + checksum
         run: |
           mkdir -p final
-          # Flatten whatever nesting upload-artifact produced into one dir, then checksum.
+          # Flatten whatever nesting upload-artifact produced into one dir, then checksum
+          # (the freshly built assets pack, if any, is already in final/ and gets checksummed too).
           find out -name 'XonoticGodot-*.zip' -exec mv {} final/ \;
           cd final
           sha256sum XonoticGodot-*.zip > "SHA256SUMS-${{ needs.prep.outputs.version }}.txt"
           echo "── release contents ──"; ls -lh
 
+      - name: Emit the launcher manifest (latest.json)
+        run: |
+          assets_args=(--assets-name '${{ steps.assetspack.outputs.name }}')
+          if [ -n '${{ steps.assetspack.outputs.url }}' ]; then
+            assets_args+=(--assets-url    '${{ steps.assetspack.outputs.url }}'
+                          --assets-sha256 '${{ steps.assetspack.outputs.sha256 }}'
+                          --assets-size   '${{ steps.assetspack.outputs.size }}')
+          fi
+          python3 tools/make-manifest.py \
+            --tag '${{ needs.prep.outputs.version }}' \
+            --repo '${{ github.repository }}' \
+            --dir final \
+            --sums 'final/SHA256SUMS-${{ needs.prep.outputs.version }}.txt' \
+            --out final/latest.json \
+            "${assets_args[@]}"
+          cat final/latest.json
+
       # Tag pushes publish a real Release; workflow_dispatch runs stop here (artifacts only).
+      # Semver-prerelease tags (v0.2.0-beta1) are marked Pre-release: /releases/latest — where the
+      # launcher's stable channel reads latest.json from — then keeps pointing at the last stable.
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
@@ -232,6 +298,8 @@ jobs:
           name: XonoticGodot ${{ github.ref_name }}
           generate_release_notes: true
           fail_on_unmatched_files: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             final/XonoticGodot-*.zip
             final/SHA256SUMS-*.txt
+            final/latest.json

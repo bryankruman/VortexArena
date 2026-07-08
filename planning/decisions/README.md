@@ -22,5 +22,7 @@ Status values: `Proposed` · `Accepted` · `Superseded by ADR-NNNN` · `Deprecat
 | [0011](ADR-0011-protocol-ecosystem-boundary.md) | XonoticGodot is its own network ecosystem (no DP wire interop) | Accepted | Own protocol; enforce build parity on connect; drop d0_blind_id. |
 | [0012](ADR-0012-platform-scope.md) | Platform scope: desktop + dedicated server first; web deferred | Accepted | No stable C#→WASM; target desktop and a headless server. |
 | [0013](ADR-0013-modding-untrusted-client-code.md) | Sandboxed WebAssembly for server-pushed client mods (client code only) | Proposed | Restore the `csprogs.dat`-style download as sandboxed `client.wasm` via Wasmtime .NET; server stays compiled; reject→reconcile handshake. See [`specs/modding.md`](../specs/modding.md). |
+| [0014](ADR-0014-ci-packaging-distribution.md) | CI, perf baselines, packaging & dedicated-server distribution | Accepted | Per-push test/build gate (no Godot, no assets); native per-runner exports; fat per-platform zips to GitHub Releases on `v*` tags; assets-beside-binary contract. |
+| [0015](ADR-0015-launcher-updater.md) | Launcher/updater: Avalonia shell, Velopack self-update, split game payload | Accepted | Standalone Avalonia launcher; Velopack self-updates the launcher only; game installs stay launcher-managed plain zips; `-core` zips + content-addressed assets pack + `latest.json` manifest per release; never gate Play on the network. |
 
 New decisions: copy an existing ADR as a template, take the next number, set status `Proposed`, and add a row here.

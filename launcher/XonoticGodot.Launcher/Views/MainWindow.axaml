@@ -1,0 +1,67 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:XonoticGodot.Launcher.ViewModels"
+        x:Class="XonoticGodot.Launcher.Views.MainWindow"
+        x:DataType="vm:MainWindowViewModel"
+        Title="XonoticGodot Launcher"
+        Width="760" Height="480" MinWidth="620" MinHeight="400"
+        WindowStartupLocation="CenterScreen"
+        Background="#0d1017">
+
+  <Grid RowDefinitions="Auto,*,Auto,Auto" Margin="24">
+
+    <!-- header -->
+    <StackPanel Grid.Row="0" Orientation="Horizontal" Spacing="12" Margin="0,0,0,16">
+      <TextBlock Text="XONOTICGODOT" FontSize="28" FontWeight="Black" Foreground="#7fd4ff"/>
+      <TextBlock Text="launcher" FontSize="28" FontWeight="Thin" Foreground="#5a6478"/>
+    </StackPanel>
+
+    <!-- body: install state | release notes -->
+    <Grid Grid.Row="1" ColumnDefinitions="260,16,*">
+      <StackPanel Grid.Column="0" Spacing="10">
+        <Border Background="#161b26" CornerRadius="8" Padding="14">
+          <StackPanel Spacing="4">
+            <TextBlock Text="INSTALLED" FontSize="11" Foreground="#5a6478" FontWeight="Bold"/>
+            <TextBlock Text="{Binding InstalledText}" FontSize="18" Foreground="#e8ecf4"/>
+          </StackPanel>
+        </Border>
+        <Border Background="#161b26" CornerRadius="8" Padding="14">
+          <StackPanel Spacing="4">
+            <TextBlock Text="LATEST" FontSize="11" Foreground="#5a6478" FontWeight="Bold"/>
+            <TextBlock Text="{Binding LatestText}" FontSize="18" Foreground="#e8ecf4"/>
+          </StackPanel>
+        </Border>
+      </StackPanel>
+
+      <Border Grid.Column="2" Background="#161b26" CornerRadius="8" Padding="14">
+        <Grid RowDefinitions="Auto,*">
+          <TextBlock Grid.Row="0" Text="{Binding NotesTitle}" FontSize="11"
+                     Foreground="#5a6478" FontWeight="Bold" Margin="0,0,0,8"/>
+          <ScrollViewer Grid.Row="1">
+            <TextBlock Text="{Binding NotesText}" TextWrapping="Wrap"
+                       Foreground="#aeb7c6" FontSize="13"/>
+          </ScrollViewer>
+        </Grid>
+      </Border>
+    </Grid>
+
+    <!-- progress + status -->
+    <StackPanel Grid.Row="2" Spacing="6" Margin="0,14,0,10">
+      <ProgressBar Value="{Binding Progress}" Maximum="100"
+                   IsVisible="{Binding ProgressVisible}" Height="6" CornerRadius="3"/>
+      <TextBlock Text="{Binding StatusText}" Foreground="#8892a6" FontSize="12"
+                 TextWrapping="Wrap"/>
+    </StackPanel>
+
+    <!-- actions -->
+    <StackPanel Grid.Row="3" Orientation="Horizontal" Spacing="10" HorizontalAlignment="Right">
+      <Button Content="Check again" Command="{Binding RefreshCommand}" Padding="16,8"/>
+      <Button Content="Cancel" Command="{Binding CancelCommand}" Padding="16,8"
+              IsVisible="{Binding Busy}"/>
+      <Button Content="Update" Command="{Binding UpdateCommand}" Padding="16,8"
+              Background="#2a72b5" Foreground="White"/>
+      <Button Content="PLAY" Command="{Binding PlayCommand}" Padding="28,8"
+              FontWeight="Bold" Background="#2f9e44" Foreground="White"/>
+    </StackPanel>
+  </Grid>
+</Window>
