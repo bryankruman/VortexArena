@@ -16,7 +16,10 @@ Treat **XonoticGodot as its own ecosystem** with its own (cleaner) protocol:
 - Design our own wire format in `XonoticGodot.Net` (we control both ends), reusing the *design* and field
   quantizations from Xonotic's message registry but not the DP byte layout.
 - **Enforce client/server build parity on connect** via a protocol-version + content-hash gate (the analogue of
-  the existing registry-hash handshake).
+  the existing registry-hash handshake). *(Evolves under [ADR-0013](ADR-0013-modding-untrusted-client-code.md)
+  + its 2026-07-08 addendum: the single gate splits into a hard `BaseProtocolHash` — framing + core entity
+  block + codec format + host ABI — and a provisionable mod manifest carrying the game-content identity; demos
+  pin the same identities, [`specs/demo-replay-and-spectator.md`](../specs/demo-replay-and-spectator.md) §16.)*
 - **Drop `d0_blind_id`**; adopt a modern auth scheme or platform identity (see
   [OPEN-QUESTIONS](../OPEN-QUESTIONS.md) Q8) — it was only needed for DP interop.
 

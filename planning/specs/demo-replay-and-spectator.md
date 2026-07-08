@@ -562,10 +562,13 @@ nothing is re-simulated — §1 non-goals), which is why demos are the *easy* co
    `DemoFormat` container code must never grow semantic knowledge of payload internals.
 2. **Never a silent misrender:** each gate failure has its own honest message ("needs a newer engine" /
    "missing assets: …" / provisioning failed).
-3. **Sandbox contract is ADR-0013's, unchanged** — a shared demo is executable content: zero ambient
+3. **Guest outputs are untrusted data** (ADR-0013 addendum security §): everything the host reads back from
+   module memory — presentation intents, decoded fields, physics outputs — is validated/clamped (NaN/Inf,
+   range) before reaching native math. A malicious *demo* is the same threat as a malicious server mod.
+4. **Sandbox contract is ADR-0013's, unchanged** — a shared demo is executable content: zero ambient
    authority, curated host imports, epoch/memory caps, hash-pinned downloads. Nothing demo-specific.
-4. **Cinematic scripts (`.xgcs`, T66)** reference a demo and inherit its pinning — valid iff the demo plays.
-5. **CI regression corpus:** once packaging exists, replay golden demos from past versions headless under
+5. **Cinematic scripts (`.xgcs`, T66)** reference a demo and inherit its pinning — valid iff the demo plays.
+6. **CI regression corpus:** once packaging exists, replay golden demos from past versions headless under
    every new build — compatibility becomes a *tested* promise; the corpus doubles as a renderer/HUD
    regression harness.
 

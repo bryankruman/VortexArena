@@ -38,7 +38,8 @@ only**, hosted by **Wasmtime .NET**.
    UI panels, sound-cue/announcer selection, client-mod cvars/commands). The **authoritative simulation and
    client-side prediction stay compiled C#** in the engine and server. Mods change gameplay by **recompiling the
    server**; changes to *predicted* gameplay (movement physics) additionally require a matching **client build**
-   — an explicit, documented limitation (see Consequences).
+   — an explicit, documented limitation (see Consequences). *(Scope widened by the 2026-07-08 addendum below:
+   movement physics and the game entity extension schema join the module.)*
 
 2. **Client-only wasm; no `server.wasm`.** The server runs trusted, operator-compiled code. Only the client
    instantiates untrusted wasm. Server-side mod logic is plain C# in the mod's server build.
@@ -73,13 +74,15 @@ Wire format, builtin API, security model, and phasing live in [`specs/modding.md
 - No GDExtension interop; Wasmtime is an ordinary managed dependency.
 - **Determinism is *not* required of the wasm.** Because it is presentation-only and never in the
   predict/reconcile loop ([specs/networking.md](../specs/networking.md)), we avoid making wasm bit-identical to
-  C#. A significant simplification versus the rejected "gameplay in wasm" path.
+  C#. A significant simplification versus the rejected "gameplay in wasm" path. *(Superseded for movement
+  physics by the 2026-07-08 addendum — and the objection dissolves rather than being overridden: both sides run
+  the SAME module, so no cross-language determinism is ever needed. See the addendum.)*
 
 **Negative / limitations**
 
-- **Physics/predicted gameplay mods are not carried by the wasm.** Prediction is compiled C# on both ends, so a
-  movement-physics mod needs a matching *compiled client*, not just a download. This is the one class of mod that
-  is not drop-in.
+- ~~**Physics/predicted gameplay mods are not carried by the wasm.**~~ *(Superseded by the 2026-07-08
+  addendum: movement physics becomes a module function executed by both server sim and client prediction, so
+  physics mods ARE drop-in — the full DP/CSQC property.)*
 - **Server mods require a recompiled server binary** (no stock-server-hosts-a-mod drop-in) — a direct
   consequence of the client-only-wasm constraint. Revisitable later via a `server.wasm` (out of scope now).
 - New subsystem to build and maintain: download pipeline, sandbox host, and a **security-critical builtin API**
@@ -95,8 +98,11 @@ Wire format, builtin API, security model, and phasing live in [`specs/modding.md
 - **Also sandbox `server.wasm` (stock server hosts mods, no recompile).** Rejected per the client-only-wasm
   constraint; it is the most "moddable" end state but a larger surface. Reconsider if drop-in *server* mods
   become a goal.
-- **Gameplay/prediction in wasm.** Rejected: forces cross-language determinism (wasm ≡ C#) and enlarges the
-  predicted/trusted surface. Presentation-only keeps the sim in compiled C#.
+- **Gameplay/prediction in wasm.** Originally rejected: "forces cross-language determinism (wasm ≡ C#) and
+  enlarges the predicted/trusted surface." *(Partially reversed by the 2026-07-08 addendum for MOVEMENT
+  PHYSICS specifically — the determinism objection dissolves when both sides run the same module, and the
+  security surface is analyzed there. The broader "all gameplay in wasm" path stays rejected; the
+  authoritative sim beyond player movement remains compiled C#.)*
 - **Runtime-compiled C# / load a downloaded assembly.** Rejected: no sandbox, full-trust RCE, AOT-hostile. Legit
   only for *trusted/first-party* hot-reload via a collectible `AssemblyLoadContext` — a different (trust-gated)
   use case.
@@ -161,3 +167,40 @@ gameplay identity — registries, entity schema, physics, presentation — moves
 into content that travels with a connection or a demo. This is the durable-demos boundary
 (`demo-replay-and-spectator.md` §16) and the join-newer-server boundary, and they are the same boundary by
 construction.
+
+### Security under the widened scope (prediction in the sandbox — analyzed 2026-07-08)
+
+Moving movement physics into the module does **not** weaken the sandbox — the capability model is unchanged —
+but it adds two concrete requirements and deserves the explicit argument:
+
+**Why the capability story is unchanged.** Sandboxing is per-instance and capability-based, not per-content:
+the module can only do what its host imports allow, regardless of what code runs inside. Physics adds imports
+that are all **pure queries or in-place state math**: trace-line/trace-box against the native collision world,
+movevars reads, player state in shared memory. None grants I/O, none reaches data the client doesn't already
+possess (a trace result is derived from the map the client has loaded). There is still nothing to exfiltrate
+*through* and nowhere to exfiltrate *to*.
+
+**Why a hostile physics module can't cheat.** The server stays authoritative: client prediction is cosmetic
+(reconcile overwrites it), and on the server the module executing player movement is the module **the operator
+themselves shipped** — trusted exactly like their own server binary ("no untrusted server wasm" holds; the
+constraint was always about trust, not about which machine runs wasm). A malicious module on the CLIENT can
+mispredict (self-inflicted rubber-banding on that server only) — and anything it could "gain" by lying about
+movement is already available to a modified client today, because client input is untrusted by design
+(`specs/networking.md`). Prediction-in-wasm adds **zero** cheat capability beyond the existing threat model.
+
+**Requirement 1 — tight epoch deadline + quarantine, because physics is in the per-frame hot loop.** A module
+that spins in a presentation call ruins a frame; one that spins in the prediction loop would freeze *gameplay*
+every frame. The epoch deadline on hot-path calls must be milliseconds-scale, and tripping it repeatedly
+**quarantines the module**: disable it, surface an honest error (disconnect from the modded server / abort the
+demo with a message), never a frozen client limping at 3 fps.
+
+**Requirement 2 — guest outputs are untrusted data; validate at the boundary.** Shared linear-memory structs
+mean the host reads state the guest wrote. Every value read back crosses a trust boundary: **clamp/reject
+NaN/Inf origins, velocities, and angles, and out-of-range magnitudes** before they reach interpolation, the
+renderer, or the input encoder — NaN-poisoning must die at the boundary, not propagate into native math. (This
+rule applies to ALL module outputs — presentation intents included — but physics outputs feed the most native
+consumers, so it is load-bearing here.)
+
+**Determinism bonus.** Wasm float semantics are deterministic IEEE-754 across platforms; with both ends running
+the same module, server/client movement agrees bit-exactly even across OS/CPU differences — strictly better
+than today's "same C# on both ends, probably identical JIT output" position.

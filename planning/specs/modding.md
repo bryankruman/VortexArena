@@ -16,8 +16,13 @@ ships a custom server binary + a downloadable `client.wasm` + asset packs).
 **In scope:** mod-manifest negotiation; download + verify + mount of `client.wasm` and asset packs; the Wasmtime
 sandbox host; the curated builtin API; mod lifecycle; player consent; the guest SDK.
 
-**Out of scope:** `server.wasm` (server logic stays compiled C#); wasm in the predict/reconcile loop; carrying
-*physics/predicted* gameplay changes via download (those need a matching compiled client — documented limitation).
+**Out of scope:** `server.wasm` (server logic stays compiled C#). *(2026-07-08 scope change — see the
+[ADR-0013 addendum](../decisions/ADR-0013-modding-untrusted-client-code.md) and
+[demo-replay-and-spectator.md §16](demo-replay-and-spectator.md): wasm in the predict/reconcile loop and
+downloadable physics changes are now IN scope — movement physics ships as one module function executed by both
+the server sim and client prediction, and per-entity game fields ride a module-published schema encoded by a
+generic native codec. The §2 boundary table and drop-in matrix below carry supersession notes; this spec's §2/§7
+should be reworked around the addendum when the wasm track starts.)*
 
 ## 2. The presentation / simulation boundary
 
@@ -35,7 +40,7 @@ is networked to the client as state the mod merely renders.
 | Announcer / sound-cue selection | **wasm guest** | `play_sound(assetId,…)` |
 | Mod cvars + console commands | **wasm guest** | mod-scoped, registered via builtins |
 | Mod UI panels / menus | **wasm guest** | contributed into the HUD/menu |
-| Movement physics + **prediction/reconciliation** | **compiled C#** | stays bit-compatible server↔client |
+| Movement physics + prediction step | **wasm guest** *(2026-07-08 addendum; was compiled C#)* | ONE module function run by both sides — bit-identical by construction; reconcile MACHINERY stays engine |
 | Collision / trace | **compiled C#** | engine service |
 | Weapon firing, damage, items, rules, scoring, spawns | **compiled C#** | server-authoritative; networked |
 | Entity simulation / think / triggers | **compiled C#** | server |
@@ -46,7 +51,7 @@ is networked to the client as state the mod merely renders.
 - Presentation mod (HUD/effects/UI) → **drop-in**: stock client downloads wasm + assets, runs.
 - Server-rules mod (mutators, gametypes, balance, scoring — *not predicted*) → **drop-in**: server is
   authoritative and networks state; the stock client renders it (optionally with mod presentation wasm).
-- Movement-physics mod (*predicted*) → **not drop-in**: needs a matching compiled client. Out of scope here.
+- Movement-physics mod (*predicted*) → **drop-in** *(2026-07-08 addendum; previously “needs a matching compiled client”)*: the module carries the physics function both sides execute.
 
 ## 3. Architecture & components
 
