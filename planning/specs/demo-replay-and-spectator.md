@@ -5,9 +5,11 @@ Implements / extends [ADR-0005](../decisions/ADR-0005-custom-netcode.md) (custom
 record/playback), `qcsrc/server/demo` glue, `qcsrc/client/main.qc` + `view.qc` (chase/spectate cam,
 `spectatee_status`), `qcsrc/menu/xonotic/dialog_media_demo.qc`.
 
-> **Status:** ☐ not started — design approved (refined 2026-06-10: always-on auto-record by default on both client
-> and server; menu = playback + video export). Implementation phased below. **Video capture** (the fixed-FPS
-> "perfect" render-to-file) is a companion spec: [`video-capture.md`](video-capture.md).
+> **Status:** ◐ core LANDED (2026-07-08, merge `f0d555e` on `feature/demo-merge` — this branch's implementation
+> merged with PR #9's; see **§15** for what shipped, the confirmed forward direction, and the deliberate
+> deviations from the sections below). Design approved (refined 2026-06-10: always-on auto-record by default on
+> both client and server; menu = playback + video export). **Video capture** (the fixed-FPS "perfect"
+> render-to-file) is a companion spec: [`video-capture.md`](video-capture.md).
 
 ---
 
@@ -408,3 +410,68 @@ enum SpectatorMode { FreeFly, Follow, Director }
 - **Promote to an ADR?** The two load-bearing decisions — *record server-side full-state* and *replay-as-listen-server
   with direct entity injection* — are arguably ADR-worthy. Capture as an ADR if/when accepted.
 ```
+
+---
+
+## 15. Post-merge state & confirmed direction (2026-07-08)
+
+Two independent implementations of this spec (this branch's T62/T63 WIP and Dropgunner's PR #9) were merged
+best-of-both on `feature/demo-merge` (`f0d555e`). What shipped, what deliberately deviates from the sections
+above, and the direction Bryan confirmed for the remaining work:
+
+### Shipped (matches the spec)
+
+Replay-as-listen-server with `GameWorld.ReplayMode` (§2/§6); the two-clock model with pause / slow / fast /
+seek / **smooth rewind** (§3 — rewind re-derives state from the keyframe at-or-before the playhead, no
+teleport snap); server-side omniscient recording with `sv_autodemo 1` + `demo_keyframe_interval` (§4);
+versioned/seekable/crash-tolerant `.xgd` with roster trailer + parity gate (§5); forward-only event windowing
+with seek-skip (§7 first half); FreeFly + chase Follow cameras (§8 partial); `ReplayControlBar`
+scrub/speed/step (§9); Demos menu list/filter/Play (§10); `record`/`stop`/`playdemo`/`demo_*` commands;
+`--playdemo` CLI.
+
+### Deliberate deviation: events are recorded as WIRE PACKETS, decoded at read time (amends §5)
+
+§5's frame layout described typed event lists (`effects[]`/`sounds[]`/`notifications[]`). The landed format
+instead records the already-encoded server→client event packets **verbatim** (`DemoFrameType.Event`, raw bytes
++ channel) and re-broadcasts them on playback. This is equivalent, not lesser: the packets are these game
+events, serialized by the same codecs — a typed store would only move decoding from read time to record time
+while adding a second serialization that can drift from the wire, and `buildParity` already orphans demos
+across builds, so the typed store's robustness advantage never materializes. **Direction (confirmed): keep
+packet storage as the source of truth + a typed MARKER SIDECAR** — a small trailer index of high-level moments
+(kills, captures, round edges) captured at record time from the typed `CapturedNotification`s ServerNet holds
+*before* encoding (no decode round-trip), powering timeline markers and menu previews. Anything deeper
+(loop-sound reconstruction, Director subject scoring) reads the packet stream through a decode layer
+(`DemoEventIndex`) when needed.
+
+### Format v3 — ONE batched bump when the track resumes (do these together, not dribbled)
+
+Each pending gap below needs a format addition; each bump orphans older demos, so they land as a single
+version:
+
+1. **Score/scoreinfo blocks** (when-changed, a new frame type) — the replay HUD currently has NO scoreboard/
+   timer/score state (the most user-visible gap; kill feed re-fires but nothing accumulates).
+2. **Per-player view angles** (§8's fidelity note) — required for faithful first-person Follow; body yaw is
+   networked, view pitch is not.
+3. **Loop-sound index trailer** (§7) — enables reconstruction of active loops after a seek.
+4. **`DemoKind` (server/client) + recording-player netId** in the header — the client-demo design (2026-06-13
+   decision: PVS-limited, non-blocking warning, all view modes).
+5. **Marker sidecar trailer** (above).
+
+### Confirmed roadmap (Bryan, 2026-07-08) — after the merge playtest
+
+1. **Format v3** (the batch above).
+2. **T62b client-side recording — EARLY** (right after v3, before video capture): tap the client's decoded
+   snapshot stream under `cl_autodemo` (checkbox already binds the cvar; nothing reads it yet), write
+   `DemoKind=Client`, surface the PVS-limited flag in the menu.
+3. **T63 polish**: seek transient-clear (`ClearTransients` seam, §7) + loop-sound reconstruction; replay
+   scoreboard fed from recorded blocks; first-person Follow + target cycling; Director cam; timeline event
+   markers from the sidecar; jump-to-keyframe; free-cursor toggle for the scrub bar.
+4. **T64/T65 video capture**, then **T66 cinematic scripts** (unchanged).
+
+### Known implementation notes
+
+- Rewind re-decodes from the last keyframe every rendered frame (~72 delta frames avg at the 144-tick
+  cadence). Fine headless; if the playtest shows CPU cost, add a decoded-keyframe cache — do NOT revert to
+  all-in-RAM decoded frames (~400–600 MB + gen2 GC pressure for a 10-min match; the raw FILE is only ~3 MB
+  and the OS cache keeps it hot).
+- Shared-replay (multi-viewer) time control stays deferred per §9 — local single-viewer first.
