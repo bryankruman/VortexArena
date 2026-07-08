@@ -55,3 +55,11 @@ assets/*
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# Dev launch log artifacts: redirected stdout from scripted game runs (_play_session*.log,
+# _portaldbg*.log, _botperf*.log, …). Prefer _scratch/ for new ones; the underscore prefix keeps
+# strays out of the repo either way. (The profiler's own session logs go to ~/XonData/logs.)
+_*.log
+
+# Local agent/design memory notes — kept on disk, never versioned
+/memory/

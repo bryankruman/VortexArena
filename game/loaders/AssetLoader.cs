@@ -6,6 +6,7 @@ using XonoticGodot.Formats.Bsp;
 using XonoticGodot.Formats.Dpm;
 using XonoticGodot.Formats.Iqm;
 using XonoticGodot.Formats.Md3;
+using XonoticGodot.Formats.Mdl;
 using XonoticGodot.Formats.Sidecars;
 using XonoticGodot.Formats.Sprites;
 using XonoticGodot.Formats.Vfs;
@@ -40,10 +41,11 @@ namespace XonoticGodot.Game.Loaders;
 /// </summary>
 public sealed class AssetLoader
 {
-    // Model file magics (first bytes). MD3 is a 4-byte tag; IQM/DPM are 16-byte (NUL-padded) tags.
+    // Model file magics (first bytes). MD3/MDL are 4-byte tags; IQM/DPM are 16-byte (NUL-padded) tags.
     private const string MagicIqm = "INTERQUAKEMODEL";
     private const string MagicDpm = "DARKPLACESMODEL";
     private const string MagicMd3 = "IDP3";
+    private const string MagicMdl = "IDPO"; // Quake1 MDL (alias) — casings, gib chunk, legacy projectile props
 
     private readonly VirtualFileSystem _vfs;
     private readonly AssetSystem _assets;
@@ -68,6 +70,34 @@ public sealed class AssetLoader
     // Resolved sample -> decoded AudioStream (or null when the sample resolves to nothing). The stream is
     // immutable and safe to share across many AudioStreamPlayer3D, so unlike models we cache the built resource.
     private readonly Dictionary<string, AudioStream?> _soundCache = new(StringComparer.Ordinal);
+
+    // (perf 2026-07-03) Grow-only per-thread FILE buffer for model reads — the same pooling AssetSystem's
+    // texture path uses (LoadImageFromVpath). Every LoadModel/ParseSkeletalModel/LoadMd3 used to allocate a
+    // fresh full-file byte[] (player IQMs ~0.5-1.2 MB, all > the 85 KB LOH threshold), which at the bot-join
+    // window meant one LOH array per roster model inside a single frame. The parsed output never aliases the
+    // input (every reader copies into its own arrays), so the buffer is safe to reuse across reads on the
+    // same thread. Touched from the main thread and the streamer's dedicated lane workers (a small FIXED
+    // thread set — see BackgroundAssetStreamer — so per-thread growth is bounded and converges).
+    [ThreadStatic] private static byte[]? _fileScratch;
+
+    /// <summary>Read a model file into the per-thread scratch and return the valid window. The span is only
+    /// valid until the next read on this thread — parse it fully before reading anything else.</summary>
+    private ReadOnlySpan<byte> ReadModelBytes(string key)
+    {
+        int length = _vfs.ReadBytesInto(key, ref _fileScratch);
+        return new ReadOnlySpan<byte>(_fileScratch, 0, length);
+    }
+
+    // (hitch-fix 2026-06-14) Skeletal-IQM parse cache keyed by normalized vpath (model only — none of these
+    // depend on skinIndex; the skin only selects materials, loaded separately per call). The AnimationLibrary
+    // build is the 100-360 ms / ~50-100 MB worker burst behind the bot-spawn hitch storm (PERFORMANCE_REPORT
+    // §13.3 backlog #1): every bot wearing the same model re-ran it. The parsed IqmData is immutable post-read and
+    // the AnimationLibrary is attached verbatim (IqmBuilder.Build -> AddAnimationLibrary, no per-instance
+    // mutation; bone tracks are "Skeleton3D:bone" paths identical across instances), so both are safe to share.
+    // Touched from BackgroundAssetStreamer worker threads -> guarded by _skeletalCacheGate.
+    private readonly Dictionary<string, (IqmData Iqm, IReadOnlyList<FrameGroup>? Groups, AnimationLibrary Anims, string? DefaultClip)>
+        _skeletalParseCache = new(StringComparer.Ordinal);
+    private readonly object _skeletalCacheGate = new();
 
     /// <summary>The virtual filesystem this loader reads from (mounted gamedirs/pk3s).</summary>
     public VirtualFileSystem Vfs => _vfs;
@@ -141,7 +171,7 @@ public sealed class AssetLoader
         Md3Data? data = null;
         try
         {
-            byte[] bytes = _vfs.ReadBytes(key);
+            ReadOnlySpan<byte> bytes = ReadModelBytes(key);
             if (ReadMagic(bytes).StartsWith(MagicMd3, StringComparison.Ordinal))
                 data = Md3Reader.Read(bytes);
         }
@@ -241,7 +271,7 @@ public sealed class AssetLoader
     /// (or the empty model on a missing/unknown file). Extensions lie, so dispatch is by on-disk magic.</summary>
     private XonoticGodot.Formats.MuzzleTag.Model LoadMuzzleModel(string key)
     {
-        byte[] bytes = _vfs.ReadBytes(key);
+        ReadOnlySpan<byte> bytes = ReadModelBytes(key);
         string magic = ReadMagic(bytes);
         if (magic.StartsWith(MagicIqm, StringComparison.Ordinal))
             return XonoticGodot.Formats.MuzzleTag.Model.Of(IqmReader.Read(bytes));
@@ -258,10 +288,10 @@ public sealed class AssetLoader
     /// </summary>
     private Func<Node3D?>? BuildModelFactory(string key, int skinIndex)
     {
-        byte[] bytes;
+        ReadOnlySpan<byte> bytes;
         try
         {
-            bytes = _vfs.ReadBytes(key);
+            bytes = ReadModelBytes(key);
         }
         catch (Exception ex)
         {
@@ -292,6 +322,17 @@ public sealed class AssetLoader
                 IReadOnlyList<FrameGroup>? groups = LoadFrameGroups(key);
                 return () => Md3Builder.Build(md3, _assets, skin, groups);
             }
+            if (magic.StartsWith(MagicMdl, StringComparison.Ordinal))
+            {
+                // Quake1 MDL ("IDPO"). The files that actually reach here are static single-frame props
+                // (models/casing_shell.mdl + casing_steel.mdl for the shotgun casing, models/gibs/chunk.mdl for
+                // the fast gib chunk). Build the shared geometry + palette-decoded skin material ONCE, then hand
+                // out cheap MeshInstance3D instances — the same "cache the parse, rebuild the node" contract the
+                // IQM/DPM/MD3 factories use, so a per-casing/per-gib spawn is a node alloc, not a re-decode.
+                MdlData mdl = MdlReader.Read(bytes);
+                MdlBuilder.Prepared prep = MdlBuilder.Prepare(mdl, 0);
+                return () => MdlBuilder.Instantiate(prep);
+            }
         }
         catch (Exception ex)
         {
@@ -299,26 +340,18 @@ public sealed class AssetLoader
             return null;
         }
 
-        // ── FORMAL CUT: MDL / MD2 / ZYM / PSK importers (Wave A4 T24) ───────────────────────────────
-        // Darkplaces dispatches model loads by leading magic (model_shared.c:45-65): "IDPO"→MDL,
-        // "IDP2"→MD2, "ZYMOTICMODEL"→ZYM, "ACTRHEAD"→PSK, plus "IDP3"→MD3 and "INTERQUAKEMODEL"→IQM and
-        // "DARKPLACESMODEL"→DPM. This port deliberately implements ONLY the last three (the magic chain
-        // above); the other four are intentionally NOT ported. Audit of the shipped Base content:
-        //   • MDL ("IDPO"): 19 files ship (xonotic-data.pk3dir/models, common/models/all.inc), but only
-        //     TWO ever reach THIS loader, and both already render via a deliberate fallback that needs
-        //     no MDL importer: casing_shell.mdl → ShellCasings.GeneratedCasing (ShellCasings.cs:84, which
-        //     relies on this method returning null), and gibs/chunk.mdl → ModelGibs.GeneratedChunk
-        //     (ModelGibs.cs:107, which skips .mdl by extension). The other 17 MDL entries in all.inc are
-        //     projectile/effect/waypoint models drawn by the particle/effect/sprite systems (generated or
-        //     glow-sprite bodies), not by AssetLoader.LoadModel — they never hit this path.
-        //   • ZYM ("ZYMOTICMODEL"): the only 2 shipped (pomp.zym, train.zym) live in xonotic-maps.pk3dir
-        //     as map-exclusive addon geometry, absent from the shipped base game and unreferenced by QC.
-        //   • MD2 ("IDP2") and PSK ("ACTRHEAD"): ZERO shipped content of either format.
-        // An MDL clause would slot here as `if (magic.StartsWith("IDPO", ...))`; implementing all four
-        // (~2000 LOC, ≈500/format) buys nothing for shipped content, so they are cut. Any such file (or
-        // any future custom ZYM/PSK map) falls through to the null+log below and the caller's placeholder
-        // — the same gib-splash fallback precedent QC already follows. Re-add an importer only if real
-        // shipped content in that format appears.
+        // ── Not-yet-implemented importers: MD2 / ZYM / PSK  (TODO T72 — NOT a deliberate cut) ──────────
+        // Darkplaces dispatches model loads by leading magic (model_shared.c:45-65): "IDPO"→MDL, "IDP2"→MD2,
+        // "ZYMOTICMODEL"→ZYM, "ACTRHEAD"→PSK, plus "IDP3"→MD3 / "INTERQUAKEMODEL"→IQM / "DARKPLACESMODEL"→DPM.
+        // This port implements IQM, DPM, MD3 and MDL (the clause above; MdlReader/MdlBuilder, added 2026-07 —
+        // casing_shell/casing_steel/gibs-chunk are genuine Quake1 MDLs that used to spam "not a known model"
+        // every boot). MD2/ZYM/PSK are simply NOT PORTED YET (tracked as TODO T72); a file in one of them falls
+        // through to the null+log below and the caller's placeholder. Content impact:
+        //   • ZYM ("ZYMOTICMODEL", DP Mod_ZYMOTICMODEL_Load): 2 real map props (models/pomp/pomp.zym,
+        //     models/train.zym in xonotic-maps.pk3dir) render as placeholders until a reader lands.
+        //   • MD2 ("IDP2", Mod_IDP2_Load) / PSK ("ACTRHEAD", Mod_PSKMODEL_Load): no shipped Base content today —
+        //     mod / custom-map compat only.
+        // Implement any of them by mirroring the MDL importer (src/XonoticGodot.Formats/Mdl + models/MdlBuilder).
         GD.PrintErr($"[AssetLoader] '{key}' is not a known model (magic \"{Printable(magic)}\").");
         return null;
     }
@@ -377,8 +410,22 @@ public sealed class AssetLoader
     {
         string key = AssetPaths.Normalize(vpath);
         if (key.Length == 0) return null;
-        byte[] bytes;
-        try { bytes = _vfs.ReadBytes(key); }
+
+        // (hitch-fix) Cache hit: reuse the shared parsed IqmData + AnimationLibrary (the expensive ~360 ms /
+        // ~96 MB build); only the per-skin sidecars (Info, Skin) are loaded fresh. This is what collapses the
+        // bot-spawn storm — N bots on one model now pay the build ONCE, not N times.
+        lock (_skeletalCacheGate)
+        {
+            if (_skeletalParseCache.TryGetValue(key, out var hit))
+            {
+                Prof.Event($"anim cache HIT {key}");
+                return new SkeletalModelParse(hit.Iqm, hit.Groups, LoadModelInfo(vpath, skinIndex),
+                    LoadSkin(key, skinIndex), hit.Anims, hit.DefaultClip);
+            }
+        }
+
+        ReadOnlySpan<byte> bytes;
+        try { bytes = ReadModelBytes(key); }
         catch (Exception ex) { GD.PrintErr($"[AssetLoader] skeletal model '{key}' read failed: {ex.Message}"); return null; }
 
         if (!ReadMagic(bytes).StartsWith(MagicIqm, StringComparison.Ordinal))
@@ -391,6 +438,17 @@ public sealed class AssetLoader
             string? defaultClip;
             using (Prof.Sample("iqm.anims"))   // attribution: this now costs the WORKER, not the frame
                 anims = IqmBuilder.BuildAnimationLibrary(iqm, groups, out defaultClip);
+
+            // Publish to the cache (double-build race is harmless — last writer wins, all readers get a valid
+            // shared library). Build happened OUTSIDE the lock so a slow build never blocks other models' parses.
+            lock (_skeletalCacheGate)
+            {
+                if (_skeletalParseCache.TryGetValue(key, out var raced))
+                    (iqm, groups, anims, defaultClip) = (raced.Iqm, raced.Groups, raced.Anims, raced.DefaultClip);
+                else
+                    _skeletalParseCache[key] = (iqm, groups, anims, defaultClip);
+            }
+            Prof.Event($"anim cache MISS {key}");
             return new SkeletalModelParse(iqm, groups, LoadModelInfo(vpath, skinIndex), LoadSkin(key, skinIndex),
                 anims, defaultClip);
         }
@@ -511,8 +569,7 @@ public sealed class AssetLoader
         SpriteData spr;
         try
         {
-            byte[] bytes = _vfs.ReadBytes(key);
-            spr = SpriteReader.Read(bytes);
+            spr = SpriteReader.Read(ReadModelBytes(key));
         }
         catch (Exception ex)
         {
@@ -759,13 +816,13 @@ public sealed class AssetLoader
     // =============================================================================================
 
     /// <summary>Read up to the first 16 bytes as an ASCII tag (trimming at the first NUL) for magic dispatch.</summary>
-    private static string ReadMagic(byte[] data)
+    private static string ReadMagic(ReadOnlySpan<byte> data)
     {
         int n = Math.Min(16, data.Length);
         int end = 0;
         while (end < n && data[end] != 0)
             end++;
-        return System.Text.Encoding.ASCII.GetString(data, 0, end);
+        return System.Text.Encoding.ASCII.GetString(data.Slice(0, end));
     }
 
     private static string Printable(string magic)

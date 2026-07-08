@@ -146,13 +146,43 @@ public static class MapVolumes
             held.Add(it);
         }
 
-        // QC: non-client carried ents are advanced by movedir*frametime (clients move via velocity in physics).
+        // QC: non-client carried ents are advanced by movedir*frametime (clients move via velocity in physics),
+        // then move_out_of_solid nudges anything the nudge embedded back out of a wall/floor.
         float dt = MapMover.FrameTime();
         foreach (Entity it in held)
         {
             if ((it.Flags & EntFlags.Client) != 0)
                 continue; // done in SV_PlayerPhysics
             MapMover.SetOrigin(it, it.Origin + self.MoveDir * dt);
+            MoveOutOfSolid(it); // QC: move_out_of_solid(it) after the conveyor nudge
+        }
+    }
+
+    /// <summary>
+    /// Minimal port of QC <c>move_out_of_solid(entity this)</c> (no port builtin; mirrors the inline version in
+    /// NadeTranslocateBoom): if the entity's box isn't embedded in solid, leave it; otherwise nudge it straight
+    /// up in small steps (the common rest-on-a-moved-floor case). No-op without a live trace world.
+    /// </summary>
+    private static void MoveOutOfSolid(Entity e)
+    {
+        if (Api.Services is null)
+            return;
+        Vector3 origin = e.Origin;
+        TraceResult tr = Api.Trace.Trace(origin, e.Mins, e.Maxs, origin, MoveFilter.NoMonsters, e);
+        if (!tr.StartSolid)
+            return;
+
+        float step = 2f;
+        float maxRise = (e.Maxs.Z - e.Mins.Z) + 16f;
+        for (float dz = step; dz <= maxRise; dz += step)
+        {
+            Vector3 p = origin + new Vector3(0f, 0f, dz);
+            TraceResult t = Api.Trace.Trace(p, e.Mins, e.Maxs, p, MoveFilter.NoMonsters, e);
+            if (!t.StartSolid)
+            {
+                MapMover.SetOrigin(e, p);
+                return;
+            }
         }
     }
 

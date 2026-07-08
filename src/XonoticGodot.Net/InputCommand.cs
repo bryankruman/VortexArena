@@ -17,6 +17,12 @@ public enum InputButtons
     Zoom = 1 << 3,     // BIT(3)
     Crouch = 1 << 4,   // BIT(4)
     Use = 1 << 5,      // BIT(5)
+    Hook = 1 << 6,     // BIT(6) — PHYS_INPUT_BUTTON_HOOK (the +hook / offhand-fire button). Drives the
+                       // offhand-weapon think (grapple hook, offhand blaster, nade prime/throw).
+    Chat = 1 << 7,     // PHYS_INPUT_BUTTON_CHAT — the player is typing (chat prompt / console open). Carried
+                       // so the server knows to exempt the typist from camp-check / type-frag etc. The client
+                       // sets it even while ordinary input is suppressed (movement keys are zeroed while typing,
+                       // but the typing FLAG itself must still reach the server). Fits the existing 1-byte field.
 }
 
 /// <summary>

@@ -120,9 +120,11 @@ public sealed class ConfigInterpreter
 
     /// <summary>
     /// Optional host callback fired after a <c>seta</c>/<c>seta_temp</c> assignment with the cvar name — the C#
-    /// successor to DP's <c>CVAR_SAVE</c> archive flag that <c>seta</c> sets. The console wires this to mark the
-    /// cvar archived in the store so it persists to <c>user://config.cfg</c> (a plain <c>set</c> does not). Null
-    /// during config load (the archive bit is carried by the registered <see cref="CvarFlags.Save"/> instead).
+    /// successor to DP's <c>CVAR_SAVE</c> archive flag that <c>seta</c> sets (a plain <c>set</c> does not).
+    /// Wired BOTH at boot config load (ConfigLoader → MenuState, so the shipped tree's <c>seta</c>-vs-<c>set</c>
+    /// choice decides which cvars may persist to <c>user://config.cfg</c> — DP's CF_ARCHIVE provenance) and by
+    /// the console (a typed <c>seta</c> archives, like DP's <c>Cvar_SetA_f</c>). Null on stores that are never
+    /// saved (a private world store), where archiving would be meaningless.
     /// </summary>
     public Action<string>? CvarArchiveHook { get; set; }
 

@@ -43,6 +43,10 @@ public sealed class Seeker : Weapon
         public float SpeedMax;         // missile_speed_max
         public float SpeedUp;          // missile_speed_up
         public float TurnRate;         // missile_turnrate
+        public bool  Smart;            // missile_smart (world-avoidance steering, default ON)
+        public float SmartMinDist;     // missile_smart_mindist
+        public float SmartTraceMin;    // missile_smart_trace_min
+        public float SmartTraceMax;    // missile_smart_trace_max
     }
 
     /// <summary>FLAC (secondary in type 0) balance — QC WEP_CVAR(WEP_SEEKER, flac_*).</summary>
@@ -118,6 +122,10 @@ public sealed class Seeker : Weapon
         Missile.SpeedMax = Bal("g_balance_seeker_missile_speed_max", 1300f);
         Missile.SpeedUp = Bal("g_balance_seeker_missile_speed_up", 300f);
         Missile.TurnRate = Bal("g_balance_seeker_missile_turnrate", 0.65f);
+        Missile.Smart = Bal("g_balance_seeker_missile_smart", 1f) != 0f;
+        Missile.SmartMinDist = Bal("g_balance_seeker_missile_smart_mindist", 800f);
+        Missile.SmartTraceMin = Bal("g_balance_seeker_missile_smart_trace_min", 1000f);
+        Missile.SmartTraceMax = Bal("g_balance_seeker_missile_smart_trace_max", 2500f);
 
         Flac.Ammo = Bal("g_balance_seeker_flac_ammo", 1f);
         Flac.Animtime = Bal("g_balance_seeker_flac_animtime", 0.1f);
@@ -211,9 +219,16 @@ public sealed class Seeker : Weapon
         missile.Velocity = WeaponFiring.ProjectileVelocity(shot.Dir, up, Missile.Speed, Missile.SpeedUp);
         missile.Angles = QMath.VecToAngles(missile.Velocity);
 
+        // QC seeker.qc:178-179 — flag the seeker missile as a dodgeable hazard (rating = missile damage).
+        missile.BotDodge = true;
+        missile.BotDodgeRating = Missile.Damage;
+
         float deathTime = Api.Clock.Time + Missile.Lifetime;
+        // QC this.wait — the per-missile adaptive smart-trace length (seeded at trace_max), kept in a closure
+        // cell so it persists between this missile's MissileThink calls (the C# successor to the QC .wait field).
+        float[] waitCell = { Missile.SmartTraceMax };
         missile.Touch = (self, other) => ExplodeMissile(self);
-        missile.Think = self => MissileThink(self, deathTime);
+        missile.Think = self => MissileThink(self, deathTime, waitCell);
         missile.ProjectileDamage = (self, attacker) => ExplodeMissile(self);
         missile.NextThink = Api.Clock.Time;
 
@@ -221,12 +236,24 @@ public sealed class Seeker : Weapon
         var ep = new MutatorHooks.EditProjectileArgs(actor, missile);
         MutatorHooks.EditProjectile.Call(ref ep);
 
+        // W_Seeker_Missile_Damage shoot-down (W1-projectile-net): route RadiusDamage onto ProjectileDamage so a
+        // player can shoot the missile out of the air. No exception (W_CheckProjectileDamage(...,-1)), per Base.
+        // Self-damage scaling: if the firer shoots their own missile, damage is multiplied by 0.25 (QC base:
+        // "if (this.realowner == attacker) TakeResource(this, RES_HEALTH, (damage * 0.25))").
+        Projectiles.MakeShootable(missile, exception: -1f,
+            damageScale: (self, attacker, damage) =>
+            {
+                if (attacker is not null && ReferenceEquals(self.Owner, attacker))
+                    return damage * 0.25f;
+                return damage;
+            });
+
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/seeker_fire.wav");
         EffectEmitter.Emit("SEEKER_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
     // W_Seeker_Missile_Think — accel/decel speed clamp + turnrate homing toward the tagged enemy. seeker.qc
-    private void MissileThink(Entity self, float deathTime)
+    private void MissileThink(Entity self, float deathTime, float[] waitCell)
     {
         if (Api.Clock.Time > deathTime)
         {
@@ -252,6 +279,29 @@ public sealed class Seeker : Weapon
             if (eorg == Vector3.Zero) eorg = enemy.Origin + (enemy.Mins + enemy.Maxs) * 0.5f;
             Vector3 desiredDir = QMath.Normalize(eorg - self.Origin);
             Vector3 oldDir = QMath.Normalize(self.Velocity);
+            float dist = (eorg - self.Origin).Length();
+
+            // Smart world-avoidance (missile_smart, default ON): trace ahead and blend the obstacle's surface
+            // normal into the desired direction so the missile curves around walls/corners instead of clipping
+            // them. QC W_Seeker_Missile_Think evasive-maneuvers block (seeker.qc).
+            if (Missile.Smart && dist > Missile.SmartMinDist)
+            {
+                // Trace the shorter of: ahead by the adaptive trace length, or straight to the target.
+                Vector3 traceEnd = (self.Origin + oldDir * waitCell[0] - self.Origin).Length() < dist
+                    ? self.Origin + oldDir * waitCell[0]
+                    : eorg;
+                TraceResult tr = Api.Trace.Trace(self.Origin, Vector3.Zero, Vector3.Zero, traceEnd,
+                    MoveFilter.Normal, self);
+
+                // Adaptive trace length: bound(trace_min, dist-to-hit, trace_max).
+                waitCell[0] = QMath.Bound(Missile.SmartTraceMin, (self.Origin - tr.EndPos).Length(),
+                    Missile.SmartTraceMax);
+
+                // Weight the turn by how close/imminent the obstacle is (1 - fraction), blended with the enemy dir.
+                desiredDir = QMath.Normalize(
+                    (tr.PlaneNormal * (1f - tr.Fraction) + desiredDir * tr.Fraction) * 0.5f);
+            }
+
             Vector3 newDir = QMath.Normalize(oldDir + desiredDir * Missile.TurnRate);
             self.Velocity = newDir * spd;
         }
@@ -270,10 +320,16 @@ public sealed class Seeker : Weapon
         self.TakeDamage = DamageMode.No;
         WeaponSplash.RadiusDamage(self, self.Origin, Missile.Damage, Missile.EdgeDamage, Missile.Radius,
             self.Owner, RegistryId, Missile.Force);
-        WeaponSplash.ImpactSound(self, "weapons/tag_impact.wav"); // QC SND_TAG_IMPACT (wr_impacteffect)
+        // QC wr_impacteffect: a missile explosion has no HITTYPE_BOUNCE, so it takes the else branch and plays
+        // SND_SEEKEREXP_RANDOM (seekerexp1/2/3) — NOT tag_impact (which is reserved for the tag dart's strike).
+        WeaponSplash.ImpactSound(self, SeekerExpSample());
         EffectEmitter.Emit("HAGAR_EXPLODE", self.Origin);
         Api.Entities.Remove(self);
     }
+
+    // SND_SEEKEREXP_RANDOM — seekerexp1/2/3 (the missile/FLAC explosion cue; no SEEKEREXP group is registered in
+    // the sound system yet, so pick the random variant by name here, matching the QC m_id+floor(prandom()*3)).
+    private static string SeekerExpSample() => $"weapons/seekerexp{Prandom.RangeInt(0, 3) + 1}.wav";
 
     // W_Seeker_Fire_Flac — a single short-lived scattered explosive (the burst comes from rapid refire). seeker.qc
     private void FireFlac(Entity actor, WeaponSlot slot)
@@ -309,6 +365,10 @@ public sealed class Seeker : Weapon
         missile.Velocity = WeaponFiring.ProjectileVelocity(shot.Dir, up, Flac.Speed, Flac.SpeedUp, 0f, Flac.Spread);
         missile.Angles = QMath.VecToAngles(missile.Velocity);
 
+        // QC seeker.qc:281-282 — flag the flac projectile as a dodgeable hazard (rating = flac damage).
+        missile.BotDodge = true;
+        missile.BotDodgeRating = Flac.Damage;
+
         float deathTime = Api.Clock.Time + Flac.Lifetime + Prandom.Float() * Flac.LifetimeRand;
         missile.Touch = (self, other) => ExplodeFlac(self);
         missile.Think = self => ExplodeFlac(self); // adaptor_think2use_hittype_splash at lifetime
@@ -319,7 +379,8 @@ public sealed class Seeker : Weapon
         MutatorHooks.EditProjectile.Call(ref ep);
 
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/flac_fire.wav");
-        EffectEmitter.Emit("SEEKER_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
+        // QC W_Seeker_Fire_Flac: "uses hagar effects!" — W_MuzzleFlash(WEP_HAGAR,...), not the seeker flash.
+        EffectEmitter.Emit("HAGAR_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
     }
 
     // W_Seeker_Flac_Explode — radius damage + knockback, then remove. seeker.qc
@@ -330,13 +391,32 @@ public sealed class Seeker : Weapon
         self.TakeDamage = DamageMode.No;
         WeaponSplash.RadiusDamage(self, self.Origin, Flac.Damage, Flac.EdgeDamage, Flac.Radius,
             self.Owner, RegistryId, Flac.Force);
-        WeaponSplash.ImpactSound(self, "weapons/tag_impact.wav"); // QC SND_TAG_IMPACT (wr_impacteffect)
+        // QC wr_impacteffect: the FLAC explode deathtype is HITTYPE_SECONDARY with NO HITTYPE_BOUNCE, so it falls
+        // to the else branch and plays SND_SEEKEREXP_RANDOM (seekerexp1/2/3), not tag_impact.
+        WeaponSplash.ImpactSound(self, SeekerExpSample());
         EffectEmitter.Emit("HAGAR_EXPLODE", self.Origin);
         Api.Entities.Remove(self);
     }
 
     // Active tag trackers (the C# successor to the QC g_seeker_trackers intrusive list).
     private readonly List<Entity> _trackers = new();
+
+    // Per-tagged-player waypoint sprites (type-1 only) — the C# successor to the QC toucher.wps_tag_tracker field.
+    // Key = the tagged player; value = the live WP_Seeker sprite following them. Entries are removed when the tracker
+    // suicides (target died / owner switched away / lifetime expired) or when the tag refreshes (old sprite killed,
+    // new one spawned). Only populated in g_balance_seeker_type=1 layouts.
+    private readonly Dictionary<Entity, Waypoints.WaypointSprite> _tagWaypoints = new();
+
+    // W_Seeker_Tagged_Info — the tracker (volley controller in type 0 / lifetime tracker in type 1) by which
+    // <paramref name="owner"/> already tags <paramref name="target"/>, or null. Both tracker kinds store the
+    // tagged target in .Enemy (QC keys on it.tag_target == istarget && it.realowner == isowner).
+    private Entity? FindTaggedInfo(Entity owner, Entity target)
+    {
+        foreach (var t in _trackers)
+            if (!t.IsFreed && ReferenceEquals(t.Owner, owner) && ReferenceEquals(t.Enemy, target))
+                return t;
+        return null;
+    }
 
     // W_Seeker_Fire_Tag — fire a tag dart that marks the player it hits for a homing-missile volley. seeker.qc
     private void FireTag(Entity actor, WeaponSlot slot)
@@ -364,14 +444,28 @@ public sealed class Seeker : Weapon
         missile.Velocity = WeaponFiring.ProjectileVelocity(shot.Dir, Vector3.UnitZ, Tag.Speed, 0f, 0f, Tag.Spread);
         missile.Angles = QMath.VecToAngles(missile.Velocity);
 
+        // QC seeker.qc:498-499 — flag the tag missile as a dodgeable hazard (rating = hardcoded 50).
+        missile.BotDodge = true;
+        missile.BotDodgeRating = 50f;
+
         missile.Touch = (self, other) => TagTouch(self, other, slot);
         missile.Think = self => Api.Entities.Remove(self);     // SUB_Remove at lifetime
-        missile.ProjectileDamage = (self, attacker) => Api.Entities.Remove(self); // W_Seeker_Tag_Damage shoot-down
+        // W_Seeker_Tag_Damage -> W_Seeker_Tag_Explode: the shot-down dart plays the HITTYPE_BOUNCE tag_impact cue
+        // (the CSQC wr_impacteffect bounce branch) then deletes.
+        missile.ProjectileDamage = (self, attacker) =>
+        {
+            WeaponSplash.ImpactSound(self, "weapons/tag_impact.wav"); // SND_TAG_IMPACT (wr_impacteffect bounce)
+            Api.Entities.Remove(self);
+        };
         missile.NextThink = Api.Clock.Time + Tag.Lifetime;
 
         // MUTATOR_CALLHOOK(EditProjectile, actor, missile) (seeker.qc W_Seeker_Fire_Tag).
         var ep = new MutatorHooks.EditProjectileArgs(actor, missile);
         MutatorHooks.EditProjectile.Call(ref ep);
+
+        // W_Seeker_Tag_Damage shoot-down (W1-projectile-net): route RadiusDamage onto ProjectileDamage so a
+        // player can shoot the dart down. No exception, matching Base W_CheckProjectileDamage (implicit -1).
+        Projectiles.MakeShootable(missile, exception: -1f);
 
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/tag_fire.wav");
     }
@@ -380,14 +474,63 @@ public sealed class Seeker : Weapon
     // homing missiles at the tagged target over time (missile_delay between shots). seeker.qc
     private void TagTouch(Entity self, Entity other, WeaponSlot slot)
     {
+        // W_Seeker_Tag_Touch: emit the tag-strike cue (the CSQC wr_impacteffect HITTYPE_BOUNCE|SECONDARY tag_impact
+        // sound) and the te_knightspike point-effect spark (Base: te_knightspike(findbetterlocation(this.origin,8));
+        // the port emits at self.Origin — findbetterlocation's nudge is cosmetic, not ported separately).
+        WeaponSplash.ImpactSound(self, "weapons/tag_impact.wav");
+        // QC te_knightspike(org2): a DP builtin that fires the TE_KNIGHTSPIKE point-effect (a decal + a shower of
+        // 128 reddish-orange sparks; effectinfo.txt). This is a DISTINCT effect from the TR_KNIGHTSPIKE *trail*
+        // (a moving-entity particle trail) — emit the point burst, not the trail. Base nudges the origin via
+        // findbetterlocation(this.origin, 8) (push 8u off the nearest surface); that nudge is cosmetic and not
+        // ported separately, so the burst is emitted at the touch origin.
+        EffectEmitter.Emit("TE_KNIGHTSPIKE", self.Origin);
+
         bool hitPlayer = other.TakeDamage == DamageMode.Aim || (other.Flags & EntFlags.Client) != 0;
         if (hitPlayer && self.Owner is not null && other.DeadState == DeadFlag.No)
         {
             Entity owner = self.Owner;
 
+            // W_Seeker_Tagged_Info: if this owner already tags this target, refresh the existing tracker's expiry
+            // instead of spawning a second volley controller / tracker (which would double the barrage).
+            Entity? existing = FindTaggedInfo(owner, other);
+            if (existing is not null)
+            {
+                if (Type == 1)
+                {
+                    existing.MaxHealth = Api.Clock.Time + Tag.TrackerLifetime; // refresh tag_time
+                    // type 1: kill the old WP_Seeker sprite and re-spawn a fresh one with a new lifetime
+                    // (QC seeker.qc:449: "don't attach another waypointsprite without killing the old one first").
+                    if (_tagWaypoints.TryGetValue(other, out Waypoints.WaypointSprite? oldSprite))
+                    {
+                        Waypoints.WaypointSprites.Kill(oldSprite);
+                        _tagWaypoints.Remove(other);
+                    }
+                    Waypoints.WaypointSprite refreshed = Waypoints.WaypointSprites.Spawn(
+                        "Seeker", Tag.TrackerLifetime, 0f,
+                        other, new Vector3(0f, 0f, 64f), Vector3.Zero,
+                        0, Waypoints.WaypointRegistry.Get("Seeker").Color,
+                        1 /* RADARICON_TAGGED */, Waypoints.SpriteRule.Default, hideable: true);
+                    Waypoints.WaypointSprites.UpdateRule(refreshed, 0, Waypoints.SpriteRule.Default);
+                    _tagWaypoints[other] = refreshed;
+                }
+                Api.Entities.Remove(self);
+                return;
+            }
+
             if (Type == 1)
             {
                 // type 1: the tag just registers a tracker the primary fires missiles at (no auto-volley).
+                // Spawn a WP_Seeker waypoint sprite that follows the tagged player (RADARICON_TAGGED, tag_tracker_lifetime).
+                // QC: WaypointSprite_Spawn(WP_Seeker, tag_tracker_lifetime, 0, toucher, '0 0 64', realowner, 0,
+                //       toucher, wps_tag_tracker, true, RADARICON_TAGGED) + WaypointSprite_UpdateRule(…, SPRITERULE_DEFAULT).
+                Waypoints.WaypointSprite wp = Waypoints.WaypointSprites.Spawn(
+                    "Seeker", Tag.TrackerLifetime, 0f,
+                    other, new Vector3(0f, 0f, 64f), Vector3.Zero,
+                    0, Waypoints.WaypointRegistry.Get("Seeker").Color,
+                    1 /* RADARICON_TAGGED */, Waypoints.SpriteRule.Default, hideable: true);
+                Waypoints.WaypointSprites.UpdateRule(wp, 0, Waypoints.SpriteRule.Default);
+                _tagWaypoints[other] = wp;
+
                 Entity tracker = Api.Entities.Spawn();
                 tracker.ClassName = "tag_tracker";
                 tracker.Owner = owner;
@@ -396,8 +539,19 @@ public sealed class Seeker : Weapon
                 _trackers.Add(tracker);
                 tracker.Think = t =>
                 {
-                    if (t.Enemy is null || t.Enemy.DeadState != DeadFlag.No || Api.Clock.Time > t.MaxHealth)
+                    // W_Seeker_Tracker_Think (seeker.qc:388-405): suicide if the owner dies, the tagged target
+                    // dies, the owner switches away from the seeker, OR the tracker lifetime is up. QC also kills
+                    // toucher.wps_tag_tracker (the sprite); the port kills via _tagWaypoints.
+                    Entity? own = t.Owner;
+                    if (t.Enemy is null || t.Enemy.DeadState != DeadFlag.No
+                        || own is null || own.DeadState != DeadFlag.No || own.ActiveWeaponId != RegistryId
+                        || Api.Clock.Time > t.MaxHealth)
                     {
+                        if (t.Enemy is not null && _tagWaypoints.TryGetValue(t.Enemy, out Waypoints.WaypointSprite? spr))
+                        {
+                            Waypoints.WaypointSprites.Kill(spr);
+                            _tagWaypoints.Remove(t.Enemy);
+                        }
                         _trackers.Remove(t);
                         Api.Entities.Remove(t);
                         return;
@@ -426,8 +580,14 @@ public sealed class Seeker : Weapon
     private void VolleyControllerThink(Entity ctrl, WeaponSlot slot)
     {
         --ctrl.Count;
-        if (ctrl.Owner is null || ctrl.Owner.DeadState != DeadFlag.No || ctrl.Count < 0
-            || ctrl.Enemy is null || ctrl.Enemy.DeadState != DeadFlag.No)
+        Entity? owner = ctrl.Owner;
+        // QC self-destruct: out-of-ammo (unless IT_UNLIMITED_AMMO) OR count<=-1 OR owner dead OR owner switched
+        // away from the seeker. (Base does NOT stop if the tagged target dies mid-barrage, and does NOT require a
+        // live target — the missiles just coast; so there is intentionally no enemy-dead/null gate here.)
+        bool unlimited = owner is not null && (owner.UnlimitedAmmo || (owner.Items & (1 << 0)) != 0);
+        bool outOfAmmo = owner is not null && !unlimited && owner.GetResource(AmmoType) < Missile.Ammo;
+        if (owner is null || ctrl.Count < 0 || owner.DeadState != DeadFlag.No
+            || outOfAmmo || owner.ActiveWeaponId != RegistryId)
         {
             _trackers.Remove(ctrl);
             Api.Entities.Remove(ctrl);
@@ -441,8 +601,9 @@ public sealed class Seeker : Weapon
             2 => new Vector3(-1.25f, 3.75f, 0f),
             _ => new Vector3(1.25f, 3.75f, 0f),
         };
-        FireMissile(ctrl.Owner, slot, fdiff, ctrl.Enemy);
-        ctrl.NextThink = Api.Clock.Time + Missile.Delay;
+        FireMissile(owner, slot, fdiff, ctrl.Enemy);
+        // QC nextthink = time + missile_delay * W_WeaponRateFactor(realowner).
+        ctrl.NextThink = Api.Clock.Time + Missile.Delay * WeaponRateFactor(owner);
     }
 
     // QC the Seeker refire/animtime are sub-weapon-specific (missile/tag/flac), and which sub-weapon a mode
@@ -468,4 +629,12 @@ public sealed class Seeker : Weapon
     // METHOD(Seeker, wr_checkammo2) — seeker.qc (type 0: flac; type 1: tag).
     public bool CheckAmmoSecondary(Entity actor)
         => actor.GetResource(AmmoType) >= (Type == 1 ? Tag.Ammo : Flac.Ammo);
+
+    // METHOD(Seeker, wr_aim) — common/weapons/weapon/seeker.qc:wr_aim. The bot presses PRIMARY: in the default
+    // type 0 that is the tag dart (lead at tag_speed) which paints the enemy and auto-launches the homing missiles;
+    // in type 1 the missiles ARE the primary (lead at missile_speed). The flac/secondary is not bot-driven (the
+    // homing missiles do the work), so the default primary-only press stands; this hook only supplies the per-type
+    // lead speed. Non-lobbed, so the brain's straight-line lead applies.
+    public override float BotAimShotSpeed(float defaultSpeed)
+        => Type == 1 ? Missile.Speed : Tag.Speed;
 }

@@ -42,7 +42,8 @@ public static class TurretSpawn
     /// </summary>
     public static TurretState Init(Turret def, Entity e, Vector3 mins, Vector3 maxs,
         float ammoMax, float ammoRecharge, int shotVolly,
-        float respawnTime = 60f, bool noRespawn = false, bool movable = false)
+        float respawnTime = 60f, bool noRespawn = false, bool movable = false, bool energyAmmo = true,
+        bool headShake = false)
     {
         e.ClassName = "turret_" + def.NetName;
         e.NetName = def.NetName;
@@ -68,23 +69,45 @@ public static class TurretSpawn
         st.AmmoMax = ammoMax;
         st.AmmoRecharge = ammoRecharge;
         st.Ammo = ammoMax;
+        st.AmmoIsEnergy = energyAmmo;   // QC ammo_flags & TFL_AMMO_ENERGY (fusion reactor only feeds energy recipients)
         st.VollyCounter = shotVolly > 1 ? shotVolly : 1;
         st.AttackFinished = 0f;
         st.Active = true;
         st.RespawnTime = respawnTime;
         st.NoRespawn = noRespawn;
         st.Movable = movable;
+        st.HeadShake = headShake;   // QC damage_flags & TFL_DMG_HEADSHAKE
         st.IdleAim = Vector3.Zero;
         st.HeadAngles = Vector3.Zero;
         st.HeadAVelocity = Vector3.Zero;
         st.ShotOrg = TurretAI.ShotOrigin(e);
 
         // Lifecycle hooks (QC turret_use / turret_damage / turret_die). turret_use swaps the team+active state
-        // on trigger. The headless DamageSystem has no per-entity event_damage hook, so death+respawn is driven
-        // off the shared Combat.Death subscription (TurretAI.EnsureDeathHook); the pre-damage gating
-        // (inactive/friendly-fire) + retaliation live in TurretAI.Damage, the entrypoint the server damage
-        // router calls for turrets.
+        // on trigger. The turret carries its OWN .event_damage (QC turret_damage) as a GtEventDamage shim:
+        // DamageSystem.EventDamage routes a non-player edict with a GtEventDamage to it and returns, so a turret
+        // victim runs the pre-damage gate (inactive immunity / friendly-fire scaling / MOVE shove)
+        // in TurretAI.Damage and its own health subtract — instead of being treated as a player. Lethal hits fire
+        // the shared Combat.Death bus, which the EnsureDeathHook subscription (OnAnyDeath -> Die) turns into the
+        // death blast + respawn schedule.
         e.Use = (self, activator) => TurretAI.Use(self, activator);
+        e.GtEventDamage = TurretAI.EventDamage;
+
+        // QC turret_initialize: this.event_heal = turret_heal (sv_turrets.qc:1338) — the framework heal SINK.
+        // A friendly heal source (Arc heal-beam / heal nade / mage / bumblebee healgun) dispatches through
+        // Combat.Heal -> target.GtEventHeal, so a damaged-but-alive turret can be repaired by its team toward its
+        // max_health. turret_die clears this (event_heal = func_null) so a dead turret cannot be healed back up;
+        // turret_respawn re-installs it (the port's Respawn re-runs Spawn-equivalent setup via this Init path).
+        e.GtEventHeal = TurretAI.Heal;
+
+        // QC turret_initialize: this.reset = turret_reset (sv_turrets.qc:1342), which runs turret_respawn — the
+        // round-restart hook the round handler fires on every map entity (GameWorld.ResetMapObjects ->
+        // Entity.Reset). It restores a damaged/dead turret to full setup (health/ammo/volley/head, re-active) at
+        // the start of each round in round-based gametypes (CA/LMS/Freezetag/etc.) so turret state never carries
+        // across rounds. (Respawn re-installs the per-frame think it recorded above, so a reset turret keeps
+        // thinking.) Skip restoring turrets the descriptor marks permanent-death (TSL_NO_RESPAWN) — Base's
+        // turret_reset always resets, but those are deleted on death so the question never arises.
+        e.Reset = TurretAI.Respawn;
+
         TurretAI.EnsureDeathHook();
 
         return st;
@@ -96,13 +119,24 @@ public static class TurretSpawn
     /// (<see cref="Prandom"/>), a touch-explode that does radius damage, and (if <paramref name="health"/> &gt; 0)
     /// a shootable hull that explodes when destroyed (turret_projectile_damage). Used by the plasma / MLRS /
     /// flac / hellion / hk / ewheel turrets (each tweaks the result). Returns the projectile entity.
+    ///
+    /// <paramref name="projType"/> is the client trail/render type (QC's <c>_proj_type</c> arg, applied inside
+    /// the helper by <c>CSQCProjectile(proj, _cli_anim, _proj_type, _cull)</c>, sv_turrets.qc:487). The port has
+    /// no CSQC turret edict, so the bolt is classified by its networked <see cref="Entity.NetName"/> via the
+    /// shared <c>ProjectileCatalog</c>; stamping that name IN the helper (just as Base stamps the proj_type in
+    /// <c>turret_projectile</c> itself) is what gives the bolt its real trail. A turret that doesn't pass a type
+    /// gets the empty Generic trail — matching Base, where a missing <c>_proj_type</c> is the generic fallback.
     /// </summary>
     public static Entity Projectile(Entity turret, Vector3 origin, Vector3 dir, float speed, float size,
-        float health, float damage, float edgeDamage, float radius, float force, int deathType,
-        float spread = 0f)
+        float health, float damage, float edgeDamage, float radius, float force, string deathType,
+        float spread = 0f, string projType = "")
     {
         Entity proj = Api.Entities.Spawn();
         proj.ClassName = "turret_projectile";
+        // QC turret_projectile stamps the client render/trail type itself (CSQCProjectile(.., _proj_type, ..),
+        // sv_turrets.qc:487). In the port the networked NetName is the catalog key, so stamp it here — the helper
+        // owns the trail, not the callers. Empty -> the Generic trail (matches a missing QC _proj_type).
+        if (projType.Length != 0) proj.NetName = projType;
         proj.Owner = turret;
         proj.Enemy = turret.Enemy;
         proj.MoveType = MoveType.FlyMissile;     // QC MOVETYPE_FLYMISSILE
@@ -128,7 +162,7 @@ public static class TurretSpawn
             self.Touch = null;
             self.Think = null;
             self.TakeDamage = DamageMode.No;
-            WeaponSplash.RadiusDamage(self, self.Origin, damage, edgeDamage, radius, self.Owner, deathType, force);
+            WeaponSplash.RadiusDamage(self, self.Origin, damage, edgeDamage, radius, self.Owner, 0, force, deathTag: deathType);
             _shootdown.Remove(self);
             Api.Entities.Remove(self);
             TurretAI.Forget(self);

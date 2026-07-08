@@ -15,20 +15,16 @@ namespace XonoticGodot.Game.Client;
 ///   <item>Mode 2: decreasing pitch with more damage (high pitch = low damage, low pitch = high damage).</item>
 ///   <item>Mode 3: increasing pitch with more damage (higher pitch = more damage).</item>
 /// </list>
-/// The pitch formulas mirror the QC reference (cl_hitsound_nom_pitch / min_pitch / max_pitch).
+/// Pitch for modes 2/3 uses the QC asymptotic gradient function from <c>view.qc:937-949</c>:
+/// a customizable curve crossing (0,a), (c,1) and approaching b asymptotically, then mirrored for mode 3.
 /// </summary>
 public sealed class HitSound
 {
-    // QC defaults: cl_hitsound_nom_pitch, cl_hitsound_min_pitch, cl_hitsound_max_pitch
-    private const float NomPitch = 1.0f;
-    private const float MinPitch = 0.75f;
-    private const float MaxPitch = 1.5f;
-
-    /// <summary>Nominal damage for pitch scaling (QC approximation). Damage above this clips to max/min pitch.</summary>
-    private const float NomDamage = 25f;
-
-    /// <summary>Maximum damage for the pitch ramp (approx one Devastator direct).</summary>
-    private const float MaxDamage = 100f;
+    // QC defaults (view.qh:82-84): cl_hitsound_max_pitch=1.5, cl_hitsound_min_pitch=0.75, cl_hitsound_nom_damage=25.
+    // These are read as cvars at play time so the player can override them.
+    private const float DefaultMaxPitch  = 1.5f;
+    private const float DefaultMinPitch  = 0.75f;
+    private const float DefaultNomDamage = 25f;
 
     /// <summary>Anti-spam interval in seconds (QC cl_hitsound_antispam_time default 0.05).</summary>
     private const float AntiSpamInterval = 0.05f;
@@ -69,7 +65,11 @@ public sealed class HitSound
             return;
         _lastPlayTime = now;
 
-        float pitch = ComputePitch(mode, damage);
+        // Read the pitch curve cvars (QC view.qh:82-84 autocvar_ defaults).
+        float maxPitch  = _cvars?.GetFloat("cl_hitsound_max_pitch")  ?? DefaultMaxPitch;
+        float minPitch  = _cvars?.GetFloat("cl_hitsound_min_pitch")  ?? DefaultMinPitch;
+        float nomDamage = _cvars?.GetFloat("cl_hitsound_nom_damage") ?? DefaultNomDamage;
+        float pitch = ComputePitch(mode, damage, maxPitch, minPitch, nomDamage);
 
         EnsurePlayer();
         if (_player is null)
@@ -79,29 +79,53 @@ public sealed class HitSound
         _player.Play();
     }
 
-    /// <summary>Compute the pitch for the given mode and damage amount.</summary>
-    private static float ComputePitch(int mode, float damage)
+    /// <summary>
+    /// Compute the playback pitch for the given mode and accumulated damage, using the QC asymptotic gradient
+    /// function (view.qc:937-949).
+    /// <para>
+    /// QC formula (mode 2, the base curve):
+    /// <c>pitch = (b*d*(a-1) + a*c*(1-b)) / (d*(a-1) + c*(1-b))</c>
+    /// where a=max_pitch, b=min_pitch, c=nom_damage, d=damage.
+    /// This is a hyperbolic curve crossing (0, a), (c, 1) and asymptotically approaching b as d→∞.
+    /// </para>
+    /// <para>
+    /// Mode 3 mirrors the result around the midpoint <c>(a-b)/2 + b</c>:
+    /// <c>pitch = mirror + (mirror - pitch_mode2)</c> — so low damage → lower pitch, high → higher.
+    /// </para>
+    /// </summary>
+    internal static float ComputePitch(int mode, float damage, float maxPitch, float minPitch, float nomDamage)
     {
-        // Clamp damage into [0, MaxDamage] for the ramp.
-        float d = Mathf.Clamp(damage, 0f, MaxDamage);
-        float frac = d / MaxDamage; // 0..1
+        if (mode != 2 && mode != 3)
+            return 1.0f; // Mode 1 fixed, or unknown.
 
-        switch (mode)
+        // Guard against degenerate cvar values (division by zero).
+        float a = maxPitch;
+        float b = minPitch;
+        float c = nomDamage;
+        float d = damage;
+
+        float denom = d * (a - 1f) + c * (1f - b);
+        float pitch;
+        if (System.MathF.Abs(denom) < 1e-6f)
         {
-            case 2:
-                // Decreasing: more damage = lower pitch. QC formula:
-                // pitch = bound(min, nom + (nom - min) * (1 - damage/maxdamage), max)
-                return Mathf.Clamp(NomPitch + (NomPitch - MinPitch) * (1f - frac), MinPitch, MaxPitch);
-
-            case 3:
-                // Increasing: more damage = higher pitch. QC formula:
-                // pitch = bound(min, nom + (max - nom) * (damage/maxdamage), max)
-                return Mathf.Clamp(NomPitch + (MaxPitch - NomPitch) * frac, MinPitch, MaxPitch);
-
-            default:
-                // Mode 1 (fixed) or any unknown mode: always 1.0.
-                return NomPitch;
+            // Degenerate: a==1 and b==1, or c==0. Fall back to nominal pitch.
+            pitch = 1.0f;
         }
+        else
+        {
+            // QC view.qc:942: pitch = (b*d*(a-1) + a*c*(1-b)) / (d*(a-1) + c*(1-b))
+            pitch = (b * d * (a - 1f) + a * c * (1f - b)) / denom;
+        }
+
+        if (mode == 3)
+        {
+            // QC view.qc:946-949: mirror in (a-b)/2 + b to reverse the curve direction.
+            float mirror = (a - b) * 0.5f + b;
+            pitch = mirror + (mirror - pitch);
+        }
+
+        // Clamp to [min, max] to match QC's implied bound() (the function approaches but never crosses).
+        return Mathf.Clamp(pitch, b, a);
     }
 
     private void EnsurePlayer()
@@ -111,14 +135,15 @@ public sealed class HitSound
         if (_parent is null || !GodotObject.IsInstanceValid(_parent))
             return;
 
-        // Load the hitsound sample (the stock Xonotic hitsound lives at sound/misc/hitconfirm.ogg).
+        // QC all.inc:219 registers SND(HIT, "misc/hit"); the shipped file is sound/misc/hit.wav.
+        // Load the hitsound sample from that path.
         if (_stream is null)
         {
-            _stream = AudioLoader?.Invoke("misc/hitconfirm");
+            _stream = AudioLoader?.Invoke("misc/hit");
             if (_stream is null)
             {
                 // Fallback: try the res:// path convention.
-                const string resPath = "res://sound/misc/hitconfirm.ogg";
+                const string resPath = "res://sound/misc/hit.wav";
                 if (ResourceLoader.Exists(resPath))
                 {
                     try { _stream = ResourceLoader.Load<AudioStream>(resPath); }

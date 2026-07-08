@@ -49,6 +49,16 @@ public sealed class SimulationLoop
 
     private float _accumulator;
 
+    /// <summary>
+    /// Global time scale (Darkplaces <c>host_timescale</c> / Xonotic <c>slowmo</c>): real seconds are multiplied by
+    /// this before being accumulated into fixed ticks, so the WHOLE simulation runs slower (&lt;1) or faster (&gt;1)
+    /// in real time while each tick stays a fixed <see cref="TicRate"/> of SIM time. 1 = real time; 0 = paused.
+    /// Set from the <c>slowmo</c> cvar each frame. Because the client's input cadence is scaled by the SAME factor
+    /// (NetGame), the player's command rate and the server's tick rate slow together, so prediction stays in
+    /// lockstep — this is the same time-mapping that makes the movement frame-rate-independent.
+    /// </summary>
+    public float TimeScale { get; set; } = 1f;
+
     /// <summary>Current simulation time in seconds (sv.time). Advances by <see cref="FrameTime"/> each tick.</summary>
     public float Time { get; private set; }
 
@@ -143,7 +153,10 @@ public sealed class SimulationLoop
         // clamp a single huge delta (DP caps the per-call timer at 100ms before sub-stepping)
         if (realDelta > 0.25f) realDelta = 0.25f;
 
-        _accumulator += realDelta;
+        // slowmo / host_timescale: scale REAL time into SIM time before accumulating (fewer/more fixed ticks per
+        // real second; each tick is still TicRate of sim time). Clamp negatives to 0 (paused). The client scales
+        // its input cadence by the same factor so prediction and authority stay in lockstep.
+        _accumulator += realDelta * MathF.Max(0f, TimeScale);
 
         // SOFT cap (B3): run at most MaxTicksPerFrame ticks this render frame, but DON'T drop the remainder —
         // it drains over the next frames (clamped to the hard MaxTicksPerAdvance so a stale-default can't exceed
@@ -238,15 +251,12 @@ public sealed class SimulationLoop
         Time += FrameTime;
     }
 
-    private bool IsClient(Entity e)
-    {
-        if ((e.Flags & EntFlags.Client) != 0) return true;
-        // also treat anything in the Clients list as a client
-        var clients = Clients;
-        for (int i = 0; i < clients.Count; i++)
-            if (clients[i] == e) return true;
-        return false;
-    }
+    // Every entity in the Clients list carries EntFlags.Client — the flag is set with the list insert and cleared
+    // with the removal, both atomically in ClientManager (RegisterClient sets Flags|=Client then Clients.Add;
+    // Disconnect does Clients.Remove then Flags&=~Client, in one synchronous method with no tick between). So the
+    // flag test alone is exact. The old fallback `Clients` scan ran O(clients) for EVERY non-client entity every
+    // tick (sim.integrate) and was provably dead — an in-Clients entity always passed the flag check first.
+    private bool IsClient(Entity e) => (e.Flags & EntFlags.Client) != 0;
 
     // =============================================================================================
     // SV_RunThink (sv_phys.c:1015) — fire the entity's think when due; allow multiple thinks/frame.

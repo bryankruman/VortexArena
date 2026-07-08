@@ -353,8 +353,21 @@ public sealed class EffectInfoOverlay
                 info.StainAlphaMax = F(argv, 2);
                 break;
 
-            // Recognised-but-unmodelled (coronas/cubemaps/shadows/nearest) — accepted, no visual analogue.
+            // `stainless` DISABLES the stain (DP cl_particles.c:468) — identical semantics to EffectInfo.ApplyKeyword:
+            // staintex[0]=staintex[1]=-2 and staincolor/stainalpha/stainsize reset to baseline. Kept in lockstep with
+            // the main parser so an overlay block can suppress an inherited stain exactly as the base catalog does.
             case "stainless":
+                info.StainTex0 = -2;
+                info.StainTex1 = -2;
+                info.StainColor0 = 0xFFFFFFFF;
+                info.StainColor1 = 0xFFFFFFFF;
+                info.StainAlphaMin = 1f;
+                info.StainAlphaMax = 1f;
+                info.StainSizeMin = 2f;
+                info.StainSizeMax = 2f;
+                break;
+
+            // Recognised-but-unmodelled (coronas/cubemaps/shadows/nearest) — accepted, no visual analogue.
             case "lightshadow":
             case "lightcubemapnum":
             case "lightcorona":

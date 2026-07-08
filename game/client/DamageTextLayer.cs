@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using Godot;
 using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Services;
+using XonoticGodot.Game.Hud;   // HudText (drawcolorcodedstring2) + HudPanel.HudFont (Xonotic HUD font)
 
 namespace XonoticGodot.Game.Client;
 
@@ -23,11 +24,15 @@ namespace XonoticGodot.Game.Client;
 ///
 /// Faithful to QC: the friendlyfire filter (cl_damagetext_friendlyfire 0/1/2), grouping/accumulation by
 /// server target index (DTFLAG_STOP_ACCUMULATION + the accumulate alpha/lifetime gates), the
-/// <c>cl_damagetext_format</c> token replacement, the size mapping (map_bound_ranges over potential), and the
-/// per-frame fade (alpha_lifetime), shrink (2d_size_lifetime) and move (velocity_world / velocity_screen).
-/// Trimmed (documented): the 2D-vs-3D placement heuristics (close-range / out-of-view) reduce to "world when a
-/// camera projects the point in front of you, else screen-center"; the per-weapon color and the verbose/
-/// hide-redundant format variants are honoured via cvars.
+/// <c>cl_damagetext_format</c> token replacement, the size mapping (map_bound_ranges over potential), the
+/// per-frame fade (alpha_lifetime), shrink (2d_size_lifetime) and move (velocity_world placed along the view
+/// basis forward/right/up like QC, plus velocity_screen), and the 2D-vs-3D placement heuristics: a number
+/// switches to a fixed 2D screen position (with the <c>cl_damagetext_2d_overlap_offset</c> stagger and the 2D
+/// fade/shrink lifetimes) when the local view is playing/following a player and the victim is either within
+/// <c>cl_damagetext_2d_close_range</c> of the view origin or off-screen (<c>cl_damagetext_2d_out_of_view</c>),
+/// otherwise it's a world number projected through the camera. The label is drawn with color codes honoured
+/// (<see cref="HudText.Parse"/> = QC <c>drawcolorcodedstring2</c>) in the Xonotic HUD font
+/// (<see cref="HudPanel.HudFont"/>); per-weapon color and the verbose/hide-redundant format variants via cvars.
 /// </summary>
 public partial class DamageTextLayer : Control
 {
@@ -65,6 +70,7 @@ public partial class DamageTextLayer : Control
 
     public override void _Process(double delta)
     {
+        using var _scope = FrameProfiler.Scope("damagetext"); // [profiling] §18: out of proc:other
         // Prune dead items (alpha/size/lifetime expired) and request a redraw each frame (animated).
         float now = Now();
         var cfg = DamageTextConfig.Read();
@@ -74,7 +80,9 @@ public partial class DamageTextLayer : Control
             float a = it.Alpha - since * it.FadeRate;
             float s = it.Size - since * it.ShrinkRate * it.Size;
             bool hasLifetime = cfg.Lifetime < 0f || since < cfg.Lifetime;
-            return a <= 0f || s <= 0f || !hasLifetime;
+            bool dead = a <= 0f || s <= 0f || !hasLifetime;
+            if (dead && _screenCount > 0) --_screenCount; // QC DESTRUCTOR: --DamageText_screen_count
+            return dead;
         });
         QueueRedraw();
     }
@@ -82,10 +90,13 @@ public partial class DamageTextLayer : Control
     /// <summary>
     /// Add a floating damage number from a drained server event (QC NET_HANDLE(damagetext) → NEW(DamageText)).
     /// <paramref name="worldPos"/> is the victim's world location; <paramref name="deathTypeColorKey"/> is the
-    /// weapon RegistryId for per-weapon color (or -1). Applies the friendlyfire filter and groups/accumulates
-    /// onto an existing number for the same target when the accumulation gates allow.
+    /// weapon RegistryId for per-weapon color (or -1). <paramref name="canUse2d"/> mirrors QC
+    /// <c>spectatee_status != -1</c> (the local view is playing or following a player, so it has a meaningful
+    /// view origin); when false the 2D heuristics are skipped (a free-fly observer always gets a world number).
+    /// Applies the friendlyfire filter, the 2D-vs-3D placement heuristics (close-range / out-of-view), and
+    /// groups/accumulates onto an existing number for the same target when the accumulation gates allow.
     /// </summary>
-    public void Add(in DamageTextEvent ev, Vector3 worldPos, int deathTypeColorKey)
+    public void Add(in DamageTextEvent ev, Vector3 worldPos, int deathTypeColorKey, bool canUse2d = false)
     {
         var cfg = DamageTextConfig.Read();
         if (cfg.Enabled == 0) return;
@@ -110,6 +121,25 @@ public partial class DamageTextLayer : Control
         float now = Now();
         float alphaThreshold = cfg.AccumulateAlphaRel * cfg.AlphaStart;
 
+        // 2D-vs-3D placement heuristic (QC cl_damagetext.qc:253-256). can_use_3d is true whenever we know the
+        // victim's world origin (we always do here). too_close: the victim is within close_range of the view
+        // origin (numbers right in your face read better pinned to the screen). prefer_in_view: out_of_view is
+        // enabled and the victim doesn't project onto the visible screen rect. prefer_2d requires a meaningful
+        // view origin (canUse2d == QC spectatee_status != -1) AND 2d enabled AND (too_close || prefer_in_view).
+        bool tooClose = false, preferInView = false;
+        if (Camera is not null)
+        {
+            Vector3 victimG = ToGodot(worldPos);
+            Vector3 viewOrigin = Camera.GlobalPosition;
+            // QC close_range is in Quake units; the view-origin delta here is in Godot metres, so compare against
+            // the converted range (Coords inch→metre is the engine-wide 0.0254 used throughout this layer).
+            float closeRangeM = cfg.CloseRange2d * 0.0254f;
+            tooClose = victimG.DistanceTo(viewOrigin) < closeRangeM;
+            if (cfg.OutOfView2d)
+                preferInView = !ProjectedOnScreen(victimG);
+        }
+        bool prefer2d = canUse2d && cfg.Use2d && (tooClose || preferInView);
+
         // Accumulate onto an existing number for this target if the gates allow (QC IL_EACH g_damagetext).
         Item? acc = null;
         foreach (Item it in _items)
@@ -130,9 +160,29 @@ public partial class DamageTextLayer : Control
             break;
         }
 
+        // QC: if can_use_3d && !prefer_2d → world coords; else if 2d && spectatee_status != -1 → screen coords
+        // (with the overlap stagger); else no number at all (a free-fly observer with 2d off and an off-screen
+        // hit). can_use_3d is always true here (we have worldPos), so the only "return nothing" case is
+        // prefer_2d-but-2d-disabled, which prefer_2d already excludes — so we only bail when !canUse2d forces the
+        // 2D branch off. Concretely: 3D unless prefer_2d.
+        bool is2d;
+        Vector2 screenPos = default;
+        if (!prefer2d)
+        {
+            is2d = false; // world coords
+        }
+        else
+        {
+            is2d = true; // screen coords (QC vid_conwidth/height * 2d_pos)
+            Vector2 vp = ViewportSize();
+            screenPos = new Vector2(vp.X * cfg.Pos2d.X, vp.Y * cfg.Pos2d.Y);
+        }
+
         if (acc is not null)
         {
-            Update(acc, worldPos, acc.ScreenCoords, health, armor, potential, deathTypeColorKey, cfg);
+            // QC updateDT calls DamageText_update only — it does NOT re-run the CONSTRUCTOR, so the existing
+            // number keeps its original fade/shrink rates; only its position/amounts/alpha are refreshed.
+            Update(acc, worldPos, screenPos, is2d, health, armor, potential, deathTypeColorKey, cfg);
             return;
         }
 
@@ -140,19 +190,47 @@ public partial class DamageTextLayer : Control
         {
             Group = group,
             FriendlyFire = friendlyFire,
-            ScreenCoords = false, // world placement when we have a position; screen fallback handled at draw
         };
-        // fade/shrink rates (QC CONSTRUCTOR): world uses alpha_lifetime; the 2D path uses 2d_* (only when screen).
-        item.FadeRate = cfg.AlphaLifetime > 0f ? 1f / cfg.AlphaLifetime : 0f;
-        item.ShrinkRate = 0f;
-        item.Alpha = cfg.AlphaStart;
-        Update(item, worldPos, screenCoords: false, health, armor, potential, deathTypeColorKey, cfg);
-        _items.Add(item);
+        // QC spawnnewDT: a 2D number gets an overlap stagger so simultaneous hits don't stack on one another.
+        if (is2d)
+            screenPos += new Vector2(cfg.OverlapOffset2d.X, cfg.OverlapOffset2d.Y) * _screenCount;
         ++_screenCount;
+        ApplyPlacement(item, is2d, cfg);
+        Update(item, worldPos, screenPos, is2d, health, armor, potential, deathTypeColorKey, cfg);
+        _items.Add(item);
     }
 
-    // DamageText_update — refresh the amounts, rebuild the label + size, restamp the hit time.
-    private void Update(Item it, Vector3 worldPos, bool screenCoords, float health, float armor,
+    // QC CONSTRUCTOR fade/shrink rate selection: a 2D (screen-coords) number fades over 2d_alpha_lifetime and
+    // shrinks over 2d_size_lifetime; a 3D (world) number fades over alpha_lifetime and never shrinks.
+    private static void ApplyPlacement(Item it, bool screenCoords, in DamageTextConfig cfg)
+    {
+        if (screenCoords)
+        {
+            it.FadeRate = cfg.Alpha2dLifetime > 0f ? 1f / cfg.Alpha2dLifetime : 0f;
+            it.ShrinkRate = cfg.Size2dLifetime > 0f ? 1f / cfg.Size2dLifetime : 0f;
+        }
+        else
+        {
+            it.FadeRate = cfg.AlphaLifetime > 0f ? 1f / cfg.AlphaLifetime : 0f;
+            it.ShrinkRate = 0f;
+        }
+    }
+
+    // QC projected_on_screen: the world point projects to a 2D point inside the visible screen rect (and in
+    // front of the camera). Used by the out-of-view heuristic to prefer a 2D number when the victim is off-screen.
+    private bool ProjectedOnScreen(Vector3 worldG)
+    {
+        if (Camera is null || Camera.IsPositionBehind(worldG)) return false;
+        Vector2 p = Camera.UnprojectPosition(worldG);
+        Vector2 v = ViewportSize();
+        return p.X >= 0f && p.Y >= 0f && p.X <= v.X && p.Y <= v.Y;
+    }
+
+    private Vector2 ViewportSize() => GetViewportRect().Size;
+
+    // DamageText_update — refresh the amounts, rebuild the label + size, restamp the hit time. The position is
+    // world-space (worldPos) for a 3D number or screen-space (screenPos) for a 2D one (QC setorigin to whichever).
+    private void Update(Item it, Vector3 worldPos, Vector2 screenPos, bool screenCoords, float health, float armor,
         float potential, int deathTypeColorKey, in DamageTextConfig cfg)
     {
         it.Health = health;
@@ -161,6 +239,7 @@ public partial class DamageTextLayer : Control
         it.DeathTypeColorKey = deathTypeColorKey;
         it.HitTime = Now();
         it.WorldPos = worldPos;
+        it.ScreenPos = screenPos;
         it.ScreenCoords = screenCoords;
         it.Alpha = screenCoords ? cfg.Alpha2dStart : cfg.AlphaStart;
         it.Text = DamageTextFormat.Build(cfg.Format, cfg.FormatVerbose, cfg.FormatHideRedundant,
@@ -186,17 +265,27 @@ public partial class DamageTextLayer : Control
             Vector2 pos;
             if (it.ScreenCoords || Camera is null)
             {
-                // Screen-centered fallback (QC cl_damagetext_2d_pos), drifting by 2d_velocity.
-                pos = new Vector2(viewport.X * cfg.Pos2d.X, viewport.Y * cfg.Pos2d.Y)
-                    + new Vector2(cfg.Velocity2d.X, cfg.Velocity2d.Y) * since;
+                // QC m_screen_coords path: the stored screen origin (cl_damagetext_2d_pos + overlap stagger),
+                // drifting by 2d_velocity over its lifetime. A null camera still falls back to screen-center.
+                Vector2 origin = it.ScreenCoords
+                    ? it.ScreenPos
+                    : new Vector2(viewport.X * cfg.Pos2d.X, viewport.Y * cfg.Pos2d.Y);
+                pos = origin + new Vector2(cfg.Velocity2d.X, cfg.Velocity2d.Y) * since;
             }
             else
             {
-                if (Camera.IsPositionBehind(ToGodot(it.WorldPos))) continue;
-                // world_offset moves the number up over time (velocity_world) + a fixed offset_world; QC adds
-                // these along the view basis, approximated here as a world-Z rise (the dominant component).
-                Vector3 worldOffset = new(0f, 0f, cfg.OffsetWorld.Z + cfg.VelocityWorld.Z * since);
-                Vector2 projected = Camera.UnprojectPosition(ToGodot(it.WorldPos) + new Vector3(0f, worldOffset.Z * 0.0254f, 0f));
+                // QC world_offset = since*velocity_world + offset_world, then placed along the VIEW BASIS:
+                //   world_pos = origin + world_offset.x*forward + world_offset.y*right + world_offset.z*up
+                // (cl_damagetext.qc:42-50). velocity_world/offset_world are in Quake units, so convert QU→m
+                // (0.0254) when building the metre-space offset. The camera basis gives the same forward/right/up
+                // QC reads from view_angles: -Z is forward, +X is right, +Y is up.
+                Vector3 wo = cfg.OffsetWorld + cfg.VelocityWorld * since;
+                Basis b = Camera.GlobalTransform.Basis;
+                Vector3 forward = -b.Z, right = b.X, up = b.Y;
+                Vector3 worldPosM = ToGodot(it.WorldPos)
+                    + (wo.X * forward + wo.Y * right + wo.Z * up) * 0.0254f;
+                if (Camera.IsPositionBehind(worldPosM)) continue;
+                Vector2 projected = Camera.UnprojectPosition(worldPosM);
                 pos = projected + new Vector2(cfg.VelocityScreen.X, cfg.VelocityScreen.Y) * since
                     + new Vector2(cfg.OffsetScreen.X, cfg.OffsetScreen.Y);
             }
@@ -209,10 +298,46 @@ public partial class DamageTextLayer : Control
             }
             rgb.A = alpha;
 
-            int isize = Mathf.Max(1, (int)size);
-            float width = ThemeDB.FallbackFont.GetStringSize(it.Text, HorizontalAlignment.Left, -1f, isize).X;
-            DrawString(ThemeDB.FallbackFont, new Vector2(pos.X - width * 0.5f, pos.Y), it.Text,
-                HorizontalAlignment.Left, -1f, isize, rgb);
+            // QC drawcolorcodedstring2(screen_pos, text, ..., rgb, alpha): the base color (per-weapon / friendly-
+            // fire / cl_damagetext_color) tints the leading uncolored run and supplies alpha, while inline ^N /
+            // ^xRGB codes in cl_damagetext_format override the RGB of the runs that follow. Render in the Xonotic
+            // HUD font (Xolonium), not the Godot fallback, matching the QC hud font cell. Center horizontally by
+            // the full (decolorized) string width, as QC does (screen_pos.x -= stringwidth*0.5).
+            //
+            // QC drawfontscale crisp-cell scaling (cl_damagetext.qc:56,91-97): the string is rendered into a FIXED
+            // size_max-sized font cell and the whole cell is scaled by drawfontscale = size/size_max (a continuous,
+            // sub-pixel factor), anchored at the cell's TOP-LEFT. The y is offset by
+            //   screen_pos.y += size/2;                  (line 56, both 2D and 3D)
+            //   screen_pos.y -= drawfontscale.x*size/2;  (line 93, = (size/size_max)*size/2)
+            // -> net y += (size/2)*(1 - size/size_max). Reproduce this faithfully: rasterize each run at the constant
+            // integer size_max cell, then apply a continuous size/size_max scale about the text's top-left anchor via
+            // a draw transform. This keeps the shrink animation smooth (the prior direct (int)size draw stair-stepped
+            // the font size by whole pixels and never had a real size_max cell). The cell-top anchor is converted to
+            // Godot's DrawString baseline anchor by adding the cell ascent (same as the ShowNamesLayer sibling).
+            Font font = HudPanel.HudFont ?? ThemeDB.FallbackFont;
+            float sizeMax = cfg.SizeMax > 0f ? cfg.SizeMax : 1f;
+            int cell = Mathf.Max(1, Mathf.RoundToInt(sizeMax)); // QC size_max font cell (constant rasterization size)
+            float scale = size / sizeMax;                       // QC drawfontscale.x (continuous)
+            float topY = pos.Y + (size * 0.5f) * (1f - scale);  // QC screen_pos.y after lines 56+93
+            var runs = HudText.Parse(it.Text, rgb);
+            // QC centers by the rendered (scaled) width: stringwidth at the cell, times drawfontscale.
+            float cellWidth = 0f;
+            foreach (HudText.Run run in runs)
+                cellWidth += font.GetStringSize(run.Text, HorizontalAlignment.Left, -1f, cell).X;
+            float anchorX = pos.X - (cellWidth * scale) * 0.5f; // QC screen_pos.x -= stringwidth*0.5 (scaled)
+            // Scale the size_max cell about (anchorX, topY) so the visible glyphs are `size` px (= cell*scale) and the
+            // shrink is continuous — the QC drawfontscale path, not a per-frame integer re-rasterize.
+            DrawSetTransformMatrix(new Transform2D(
+                new Vector2(scale, 0f), new Vector2(0f, scale), new Vector2(anchorX, topY)));
+            float rx = 0f;                          // local cell-space x (anchorX is in the transform origin)
+            float baselineY = font.GetAscent(cell); // QC cell-top -> Godot baseline, in cell space
+            foreach (HudText.Run run in runs)
+            {
+                var rc = new Color(run.Color.R, run.Color.G, run.Color.B, alpha);
+                DrawString(font, new Vector2(rx, baselineY), run.Text, HorizontalAlignment.Left, -1f, cell, rc);
+                rx += font.GetStringSize(run.Text, HorizontalAlignment.Left, -1f, cell).X;
+            }
+            DrawSetTransform(Vector2.Zero, 0f, Vector2.One); // reset (QC drawfontscale = drawfontscale_save)
         }
     }
 

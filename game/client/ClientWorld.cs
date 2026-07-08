@@ -41,17 +41,41 @@ public partial class ClientWorld : Node3D
     /// <summary>Networked projectile visual renderer.</summary>
     public ProjectileRenderer Projectiles { get; private set; } = null!;
 
+    /// <summary>Networked nade-orb (heal/ammo/entrap/veil/darkness) effect renderer. Created and owned by
+    /// <see cref="XonoticGodot.Game.Net.NetGame"/> (next to the ProjectileRenderer) and assigned here, so the
+    /// entity-stream consumer (<c>ClientEntityView</c>) and the per-frame view-effects feed share the one
+    /// instance. Null until NetGame wires it.</summary>
+    public NadeOrbRenderer NadeOrbs { get; set; } = null!;
+
+    /// <summary>The shared Draw_CylindricLine primitive (cross-ribbon segment pool) injected into every beam/rope/line
+    /// renderer (Lasers, PortoPreview, the hook rope) so they all draw through one pooled node.</summary>
+    public CylindricLine CylindricLines { get; private set; } = null!;
+
     /// <summary>Lightning-arc / beam renderer (te_csqc_lightningarc: electro combo, Golem zaps, Tesla arcs).</summary>
     public BeamRenderer Beams { get; private set; } = null!;
 
     /// <summary>misc_laser beam renderer (T48 — the Draw_Laser successor; ambient-facade scan).</summary>
     public LaserRenderer Lasers { get; private set; } = null!;
 
+    /// <summary>dynlight realtime-light renderer (the DP engine-driven light; ambient-facade scan).</summary>
+    public DynamicLightRenderer DynamicLights { get; private set; } = null!;
+
     /// <summary>func_pointparticles / func_sparks persistent emitters (T48; ambient-facade scan).</summary>
     public MapParticleEmitters MapEmitters { get; private set; } = null!;
 
     /// <summary>func_rain / func_snow weather volumes (T48; ambient-facade scan).</summary>
     public WeatherSystem Weather { get; private set; } = null!;
+
+    /// <summary>The Port-O-Launch aim-trajectory preview (Porto_Draw red/blue reflecting polyline). Idle unless
+    /// the local player holds the porto in the non-default combined-shot mode; the host wires its providers.</summary>
+    public PortoTrajectoryPreview PortoPreview { get; private set; } = null!;
+
+    /// <summary>The grappling-hook rope renderer (QC <c>Draw_GrapplingHook</c>): draws the segmented hook beam from
+    /// the firing player to the hook anchor, leasing its cross-ribbon segments from the shared
+    /// <see cref="CylindricLines"/> pool (it idles on a null <c>Lines</c>, so the host MUST inject the shared node —
+    /// mirroring <see cref="LaserRenderer"/>/<see cref="PortoPreview"/>). Self-driving off the ambient entity facade,
+    /// so LIVE on a listen host / demo and IDLE on a pure --connect client (the established ambient-renderer seam).</summary>
+    public HookRopeRenderer HookRope { get; private set; } = null!;
 
     /// <summary>The local player's first-person weapon view-model (optional; set by the host).</summary>
     public ViewModel? ViewModel { get; set; }
@@ -69,6 +93,12 @@ public partial class ClientWorld : Node3D
     /// <summary>Per-entity render nodes for non-projectile networked entities (players/monsters/items).</summary>
     private readonly Dictionary<int, EntityNode> _entityNodes = new();
 
+    /// <summary>(§12.8) The map's compiled PVS, wired by the host after the BSP loads (null on a non-BSP/demo
+    /// scene → entity PVS culling is inert). Drives <see cref="DriveEntityNodes"/>: DP-faithful render culling
+    /// of remote entities whose bounds fall outside the camera's potentially-visible set. When the cvar is off,
+    /// the same loop simply marks every node visible each frame (no separate disable-reset bookkeeping needed).</summary>
+    public XonoticGodot.Formats.Bsp.BspPvs? Pvs { get; set; }
+
     /// <summary>Per-entity model animators (players/monsters/vehicles with MD3 anim).</summary>
     private readonly Dictionary<int, ModelAnimator> _animators = new();
 
@@ -78,8 +108,33 @@ public partial class ClientWorld : Node3D
     /// <summary>Per-player floating nameplates (ent_cs): a billboarded health/id label above the head.</summary>
     private readonly Dictionary<int, Label3D> _nameplates = new();
 
+    /// <summary>
+    /// Crosshair-chase local-body fade targets keyed by local net id (QC <c>crosshair_chase_playeralpha</c>): the
+    /// third-person crosshair-chase view fades the LOCAL player's own body so it doesn't block the aim. Maps a net
+    /// id to the desired RENDER alpha in (0,1] (1 = opaque; caller passes 1 − crosshair_chase_playeralpha, e.g. the
+    /// 0.25 default → 0.75). Populated/cleared by <see cref="SetLocalBodyAlpha"/>; the per-frame model pass eases
+    /// the matching <see cref="PlayerModel"/> toward it. Empty on a non-chase frame, so that path pays nothing.
+    /// </summary>
+    private readonly Dictionary<int, float> _bodyAlphaTarget = new();
+
+    /// <summary>The currently-EASED body-fade render alpha per local net id (1 = opaque), driven toward
+    /// <see cref="_bodyAlphaTarget"/> each frame so the fade-in/out is smooth (and so a cleared target eases back to
+    /// opaque before the entry is dropped). Removed once the model is opaque again with no live target.</summary>
+    private readonly Dictionary<int, float> _bodyAlphaCurrent = new();
+    private readonly List<int> _bodyAlphaScratch = new(); // reused: ids to drop after they reach opaque
+
     /// <summary>Per-entity vehicle visual drivers (rotors/barrels/engine sound/gibs/heal-beam) for vehicle entities.</summary>
     private readonly Dictionary<int, VehicleVisuals> _vehicles = new();
+
+    /// <summary>
+    /// Owns the cosmetic add-on models that hang off a networked entity each frame (the QC
+    /// <c>csqcmodel_hooks.qc</c> add-on layer): the ice block on a Frozen player, the held <c>buff_*</c> glow, and
+    /// the nade spawn-loc marker. It networks nothing new — it reads the already-decoded StatusEffects blob + the
+    /// standard entity delta (Origin/Angles/Effects/EF_STARDUST) and attaches/updates/removes the cosmetic child
+    /// nodes off the supplied attach root. Driven from the per-frame entity + player-model passes; keyed by
+    /// entity index for teardown on removal.
+    /// </summary>
+    private CosmeticModelLayer _cosmetics = null!;
 
     /// <summary>Entity indices whose animation frame is networked (CSQCMODEL_AUTOUPDATE): their
     /// <see cref="ModelAnimator"/> follows <see cref="Entity.Frame"/> directly instead of the local
@@ -101,8 +156,12 @@ public partial class ClientWorld : Node3D
         public bool IsPlayerModel;    // a skeletal/MD3 player model (gets the appearance/deathglow pass)
         public ItemDespawnFx? Despawn; // loot despawn animation (lazily created when ITS_EXPIRING first seen)
         public bool ItemFaded;        // a despawn/ghost transparency is currently applied (reset to opaque on the way back)
+        public NVec3 TrailTail;       // Quake-space tail of the last emitted CSQC-model trail segment (EF_BRIGHTFIELD / jetpack MF_ROCKET) — csqcmodel_hooks.qc trailparticles continuation
+        public bool HasTrailTail;     // false until the first frame a trail is active, so the first segment starts at the model origin (no spurious long streak on spawn)
         public float ItemFadeApplied; // last transparency pushed (§11 R9 change gate; 0 = opaque, the node default)
         public int ItemFadeMeshCount; // mesh-list size at last push (re-push after a cache rebuild)
+        public Godot.Vector3 ItemTintApplied = Godot.Vector3.One; // last item colormod pushed (One = untinted; change gate like ItemFadeApplied)
+        public int ItemTintMeshCount; // mesh-list size at last tint push (re-push after a cache rebuild)
     }
     private readonly Dictionary<int, CsqcState> _csqc = new();
 
@@ -225,6 +284,19 @@ public partial class ClientWorld : Node3D
     public Func<Entity, Node3D?>? EntityModelFactory { get; set; }
 
     /// <summary>
+    /// Host-wired raw-MD3 reader for the cosmetic add-on layer (<c>AssetLoader.LoadMd3</c>, cached). Used by the
+    /// freezetag ice block / buff-carrier glow (<see cref="AttachedCosmeticModel"/>) to parse their <c>.md3</c>
+    /// files. Null in headless/teardown → no cosmetic models resolve.
+    /// </summary>
+    public Func<string, Md3Data?>? CosmeticMd3Loader { get; set; }
+
+    /// <summary>
+    /// Host-wired format-agnostic model reader for the cosmetic add-on layer (<c>AssetLoader.LoadModel</c>,
+    /// cached) — the IQM/DPM path for a non-MD3 cosmetic. Null in headless/teardown → those cosmetics don't draw.
+    /// </summary>
+    public Func<string, int, Node3D?>? CosmeticModelLoader { get; set; }
+
+    /// <summary>
     /// Resolves a player entity to a skeletal <see cref="PlayerModel"/> (an IQM with the CPU upper/lower-body
     /// split + view-pitch aim). Tried before <see cref="ModelResolver"/>: when it returns non-null the entity
     /// renders as a posed skeleton; null falls through to the MD3 morph path / placeholder. The host wires it
@@ -271,11 +343,29 @@ public partial class ClientWorld : Node3D
         public bool Is1v1;           // QC gametype.m_1v1 (Duel)
         public int TeamCount;        // QC team_count (2 for the 2-team force-color gate)
         public int PlayerLocalNum;   // QC player_localnum (the FFA forced colormap = player_localnum+1)
+
+        // QC cl_survival.qc NET_HANDLE(ENT_CLIENT_SURVIVALSTATUSES) + MUTATOR_HOOKFUNCTION(cl_surv,
+        // ForcePlayercolors_Skip, CBC_ORDER_LAST): in Survival, once the client has received a status block (round
+        // live/over), EVERY known player is recolored to the hardcoded survival palette — green prey / red hunter
+        // — overriding scoreboard + player-model colors AND any cl_forceplayercolors (the hook runs LAST).
+        public bool SurvivalActive;  // a Survival status block has been received (a round is live or just resolved)
+        public System.Collections.Generic.HashSet<int>? SurvivalHunterIds; // net ids the client knows are hunters
     }
+
+    // QC survival.qh: hardcoded survival colormap palette indices (the colormap is 1024 + index).
+    private const int SurvColorPrey = 51;   // green
+    private const int SurvColorHunter = 68; // red
 
     /// <summary>Host-set provider for the live <see cref="AppearanceContext"/> (read each frame). Null = no force
     /// model/colors (overrides inert). NetGame wires it; a pure demo leaves it null.</summary>
     public Func<AppearanceContext?>? AppearanceProvider { get; set; }
+
+    /// <summary>[W14b LI3] Host-set accessor for the current SERVER clock time (<see cref="ClientNet.LatestServerTime"/>)
+    /// — the clock the networked <c>Entity.AnimActionTime</c> (the upper-body action start) is stamped on, so the
+    /// torso-action overlay computes the right play phase (<c>now − start</c>). NetGame wires it; null (a pure demo /
+    /// the --skeleton-smoke harness) disables the action overlay (PlayerModel.Pose falls back to the static aim pose),
+    /// keeping those paths bit-identical to before this wave.</summary>
+    public Func<float>? ServerTimeProvider { get; set; }
 
     /// <summary>
     /// Resolve a FORCED player model (QC <c>cl_forcemyplayermodel</c> / the <c>cl_forceplayermodels</c> →
@@ -307,6 +397,20 @@ public partial class ClientWorld : Node3D
         // exists, push the particlefont/effectinfo loaders into it so the real sprites/decals are used.
         WireEffectAssets();
 
+        // The cosmetic add-on layer (frozen ice block, held buff_* glow, nade spawn-loc marker). It builds its
+        // models through the asset pipeline, which the host may set before OR after _Ready — so hand it a late-
+        // bound accessor (() => _assets) rather than the current (possibly-null) value.
+        _cosmetics = new CosmeticModelLayer(
+            () => _assets,
+            path => CosmeticMd3Loader?.Invoke(path),
+            (path, skin) => CosmeticModelLoader?.Invoke(path, skin));
+
+        // Casing bounce sounds (Base Casing_Touch: brass*/casings* on touch at speed): route them through the
+        // positional sound path at VOL_BASE on CH_SHOTS with ATTEN_LARGE (the DP atten value 1 → quieter/closer
+        // falloff, since gain = (1 - min(1, dist*atten/radius))^exp). Matches sound(this, CH_SHOTS, s, VOL_BASE,
+        // ATTEN_LARGE) in Casing_Touch.
+        Effects.Casings.SoundHook = (sample, origin) => OnSound(sample, origin, 0.7f, 1f, /*CH_SHOTS auto*/ -4);
+
         Projectiles = new ProjectileRenderer { Name = "Projectiles", Effects = Effects };
         // Share the client's sound resolution so projectile fly-loops (rocket/electro/fireball) resolve the
         // same way positional sounds do (QC loopsound on the CSQC projectile).
@@ -315,6 +419,13 @@ public partial class ClientWorld : Node3D
         // (late-bound: the host sets AudioLoader after _Ready; ProjectileRenderer keeps the res:// fallback).
         Projectiles.AudioLoader = s => AudioLoader?.Invoke(s);
         AddChild(Projectiles);
+
+        // The one shared Draw_CylindricLine primitive (cross-ribbon segment pool). Every beam/rope/line renderer
+        // leases its segments from this single node, so the host MUST inject it into each consumer below — without
+        // it Lasers/PortoPreview/the hook rope idle (they gate on a null Lines). Added first so the consumers can
+        // reference it as they're built.
+        CylindricLines = new CylindricLine { Name = "CylindricLines" };
+        AddChild(CylindricLines);
 
         Beams = new BeamRenderer { Name = "Beams" };
         AddChild(Beams);
@@ -326,10 +437,13 @@ public partial class ClientWorld : Node3D
         // emitters, func_rain/func_snow weather. All self-driving ambient-facade scanners (the
         // TriggerTouch.Predict*Ambient pattern) — live on the listen-server/demo paths; a pure --connect
         // client has no entity facade (or BSP) yet, so they idle there (the established seam).
-        Lasers = new LaserRenderer { Name = "Lasers", Effects = Effects };
+        Lasers = new LaserRenderer { Name = "Lasers", Effects = Effects, Lines = CylindricLines };
         if (_assets is not null)
             Lasers.TextureLoader = _assets.LoadTexture;
         AddChild(Lasers);
+        // dynlight realtime light — the consumer DarkPlaces drives from the engine reading light_lev/color.
+        DynamicLights = new DynamicLightRenderer { Name = "DynamicLights" };
+        AddChild(DynamicLights);
         MapEmitters = new MapParticleEmitters { Name = "MapEmitters", Effects = Effects };
         AddChild(MapEmitters);
 
@@ -337,6 +451,17 @@ public partial class ClientWorld : Node3D
         AddChild(new SpawnPointParticles { Name = "SpawnPointFx", Effects = Effects });
         Weather = new WeatherSystem { Name = "Weather", ViewOriginProvider = () => ViewOrigin() };
         AddChild(Weather);
+
+        // Porto aim-trajectory preview (Porto_Draw). Self-driving; idle until the host wires its providers and
+        // the local player holds the porto in the non-default combined-shot mode (g_balance_porto_secondary 0).
+        PortoPreview = new PortoTrajectoryPreview { Name = "PortoPreview", Lines = CylindricLines };
+        AddChild(PortoPreview);
+
+        // Grappling-hook rope (Draw_GrapplingHook). Inject the SAME shared CylindricLine pool the beam/line
+        // renderers lease from — without it HookRopeRenderer gates on the null Lines and idles. Self-driving off
+        // the ambient entity facade, exactly like Lasers/PortoPreview above (live on a listen host/demo).
+        HookRope = new HookRopeRenderer { Name = "HookRope", Lines = CylindricLines };
+        AddChild(HookRope);
 
         // Mirror in-process effect emissions (server/local gameplay calling EffectEmitter.Emit) onto the
         // renderer. This is what makes a single-process demo show effects with no network layer present.
@@ -354,6 +479,9 @@ public partial class ClientWorld : Node3D
         // Detach our sink so a torn-down client doesn't keep mirroring into freed nodes.
         if (EffectEmitter.Sink is RenderSink rs)
             EffectEmitter.Sink = rs.Inner;
+
+        // Free every cosmetic add-on node the layer is still holding (ice blocks / buff glows / spawn-loc markers).
+        _cosmetics?.Clear();
     }
 
     // =================================================================================================
@@ -419,6 +547,7 @@ public partial class ClientWorld : Node3D
         {
             node = new EntityNode { Name = $"ent#{entity.Index}_{Safe(entity.ClassName)}" };
             AddChild(node);
+            node.SetProcess(false); // R1: ClientWorld drives DriveSync centrally; kill the per-node _Process callback
             node.Bind(entity);
             _entityNodes[entity.Index] = node;
 
@@ -492,6 +621,8 @@ public partial class ClientWorld : Node3D
         if (Projectiles.IsTracking(index))
             Projectiles.OnRemove(index, lastOrigin, impactEffect);
 
+        _cosmetics?.Remove(index); // free any cosmetic add-on (ice block / buff glow / spawn-loc marker) for this entity
+
         if (_animators.Remove(index, out ModelAnimator? anim) && GodotObject.IsInstanceValid(anim))
             anim.QueueFree();
 
@@ -520,6 +651,16 @@ public partial class ClientWorld : Node3D
     /// </summary>
     public Node3D? GetAttachmentMarker(int ownerIndex, string tagName)
     {
+        // QW1: a skeletal player (the primary player path) exposes the resolved weapon bone as a tracked
+        // "tag_weapon" marker — return it FIRST so the held weapon attaches to the HAND bone, not the body root.
+        // When the weapon bone is unresolved (TagWeaponMarker null) fall through to the old animator/entity-root
+        // behavior below.
+        if (_playerModels.TryGetValue(ownerIndex, out PlayerModel? pm) && GodotObject.IsInstanceValid(pm))
+        {
+            Node3D? tag = pm.TagWeaponMarker;
+            if (tag is not null && GodotObject.IsInstanceValid(tag))
+                return tag;
+        }
         if (_animators.TryGetValue(ownerIndex, out ModelAnimator? anim) && GodotObject.IsInstanceValid(anim))
         {
             Marker3D? m = string.IsNullOrEmpty(tagName) ? null : anim.GetTag(tagName);
@@ -645,12 +786,30 @@ public partial class ClientWorld : Node3D
         return player;
     }
 
+    // (R18) Cache the active Camera3D per process-frame. ListenerPos + ViewOrigin each resolve it (and ListenerPos
+    // is called again per looping sound), and GetViewport().GetCamera3D() is two marshalled crossings each call.
+    // Keyed on the frame counter so a camera from a prior frame is never returned stale.
+    private ulong _camFrame = ulong.MaxValue;
+    private Camera3D? _camThisFrame;
+
+    private Camera3D? FrameCamera()
+    {
+        ulong f = Godot.Engine.GetProcessFrames();
+        if (f != _camFrame)
+        {
+            Camera3D? cam = GetViewport()?.GetCamera3D();
+            _camThisFrame = cam is not null && GodotObject.IsInstanceValid(cam) ? cam : null;
+            _camFrame = f;
+        }
+        return _camThisFrame;
+    }
+
     /// <summary>The current listener position (the active <see cref="Camera3D"/>, which IS Godot's audio listener)
     /// in Godot space; falls back to the last known position when no camera is available this frame.</summary>
     private Godot.Vector3 ListenerPos()
     {
-        Camera3D? cam = GetViewport()?.GetCamera3D();
-        if (cam is not null && GodotObject.IsInstanceValid(cam))
+        Camera3D? cam = FrameCamera();
+        if (cam is not null)
             _lastListener = cam.GlobalPosition;
         return _lastListener;
     }
@@ -887,6 +1046,24 @@ public partial class ClientWorld : Node3D
     /// <summary>The local player fired — drive the view-model muzzle flash (CSQC W_MuzzleFlash).</summary>
     public void OnMuzzleFlash(string? effectOverride = null) => ViewModel?.Fire(effectOverride);
 
+    /// <summary>
+    /// Set / clear the crosshair-chase body fade target for the local player model (QC
+    /// <c>crosshair_chase_playeralpha</c>): in the third-person crosshair-chase view the local body is faded so it
+    /// doesn't block the aim. <paramref name="alpha"/> is the desired RENDER alpha in (0,1]; the caller passes
+    /// <c>1 − crosshair_chase_playeralpha</c> (the 0.25 default → 0.75). Pass <c>alpha &lt;= 0</c> to CLEAR the fade
+    /// (the model eases back to opaque). A non-positive <paramref name="localNetId"/> is ignored. The per-frame
+    /// model pass eases the matching <see cref="PlayerModel"/> toward this each frame; with no target set it no-ops.
+    /// </summary>
+    public void SetLocalBodyAlpha(int localNetId, float alpha)
+    {
+        if (localNetId <= 0)
+            return;
+        if (alpha <= 0f)
+            _bodyAlphaTarget.Remove(localNetId);
+        else
+            _bodyAlphaTarget[localNetId] = Mathf.Clamp(alpha, 0f, 1f);
+    }
+
     // =================================================================================================
     //  Per-frame drive
     // =================================================================================================
@@ -894,6 +1071,10 @@ public partial class ClientWorld : Node3D
     public override void _Process(double delta)
     {
         using var _cwScope = FrameProfiler.Scope("cw.process"); // [profiling] whole ClientWorld._Process
+        // #30 slowmo/pause: every VISUAL animation in this drive advances by the slowmo-scaled delta (the port
+        // of DP's cl.time — all CSQC animation freezes/slows with the sim). Audio spatialization below stays on
+        // the raw delta (DP doesn't timescale sound envelopes).
+        float dtAnim = ClientRenderTime.ScaleDelta((float)delta);
         // The EffectSystem nodes and projectile trails advance themselves (they're Godot particle nodes);
         // ProjectileRenderer and the ModelAnimators also self-advance via their own _Process. We still poll
         // here for entity-bound animators that need their clip re-selected from movement each frame.
@@ -901,10 +1082,14 @@ public partial class ClientWorld : Node3D
         foreach (var kv in _animators)
         {
             ModelAnimator anim = kv.Value;
-            if (anim.FollowEntityFrame) continue; // networked frame drives it (CSQCMODEL_AUTOUPDATE)
             Entity? e = anim.Entity;
-            if (e is not null && !e.IsFreed)
+            // Movement-derived clip pick is only for non-networked (demo/local) animators; networked entities
+            // play their server frame directly (CSQCMODEL_AUTOUPDATE).
+            if (!anim.FollowEntityFrame && e is not null && !e.IsFreed)
                 SelectClipFromMovement(e, anim);
+            // R1: Advance() relocated here from the (now-disabled) ModelAnimator._Process so the morph still
+            // rebuilds once per frame without paying a per-node native->managed callback.
+            anim.Advance(dtAnim);
         }
 
         // Skeletal player models: synthesize the four-pose split + aim each frame and push the CPU bones.
@@ -912,10 +1097,18 @@ public partial class ClientWorld : Node3D
         // the camera position, so off-screen / distant REMOTE models can skip the interop bone push. Coords is
         // 1:1 (no meter scale) so Godot-space distance == Quake-unit distance; cl_pose_cull_distance is squared
         // once here. ListenerPos() never returns null (it falls back to _lastListener), so distSq is NRE-safe.
-        bool poseCull = CvarF("cl_pose_cull", 0f) != 0f;
+        // The pose-cull's on-screen test (VisibleOnScreenNotifier3D) only reflects the MAIN camera — a player
+        // visible ONLY through a warpzone portal would keep an unpushed (rest/degenerate-AABB) skeleton and
+        // never render in the portal view. While any portal is actively rendering, pose everyone (portals are
+        // occasional; the cost reverts to the pre-cull baseline only while one is on screen).
+        bool poseCull = CvarF("cl_pose_cull", 0f) != 0f
+            && XonoticGodot.Game.Client.PortalRenderer.ActiveExitViewsQuake.Count == 0;
         float cullDist = CvarF("cl_pose_cull_distance", 1500f);
         float cullDistSq = poseCull ? cullDist * cullDist : 0f;
         int localId = AppearanceProvider?.Invoke()?.LocalNetId ?? -1;
+        // [W14b LI3] the server clock the networked anim-action start is stamped on; NaN (no provider) disables the
+        // torso-action overlay so a pure demo / the smoke harness keeps the static aim pose unchanged.
+        float serverNow = ServerTimeProvider?.Invoke() ?? float.NaN;
         Godot.Vector3 viewG = ListenerPos();
         using (FrameProfiler.Scope("cw.players"))
         foreach (PlayerModel pm in _playerModels.Values)
@@ -925,12 +1118,26 @@ public partial class ClientWorld : Node3D
             {
                 bool isLocal = e.Index == localId;
                 float distSq = poseCull ? (pm.GlobalPosition - viewG).LengthSquared() : 0f;
-                pm.Pose(e, (float)delta, poseCull, isLocal, distSq, cullDistSq);
+                // QC ENT_CLIENT_STATUSEFFECTS frozen: hold the skeletal pose static while encased (the ice block
+                // freezes the animation, not just the tint). Set from the networked StatusEffects bitmap before posing.
+                pm.FrozenHold = HasStatusEffect(e, StatusEffectsCatalog.Frozen);
+                pm.Pose(e, dtAnim, poseCull, isLocal, distSq, cullDistSq, serverNow);
+                // Cosmetic add-on layer also attaches to the skeletal player node (it follows origin/yaw like the
+                // EntityNode path) so the ice block / held buff glow ride the posed body too.
+                _cosmetics.Drive(e, pm);
             }
         }
 
-        using (FrameProfiler.Scope("cw.csqc")) DriveCsqcModelHooks((float)delta);
-        using (FrameProfiler.Scope("cw.vehicles")) DriveVehicles((float)delta);
+        // Crosshair-chase local-body fade: ease each targeted local model toward its desired alpha (and back to
+        // opaque once the target clears). No-op while no chase target is set (the common case pays a single
+        // dictionary-count check).
+        DriveBodyAlpha(dtAnim);
+
+        // (R1/R2) central entity-node drive — folds the DP-faithful entity PVS cull into the same pass, so this
+        // one call replaces the old separate ApplyEntityPvsCull. See DriveEntityNodes.
+        using (FrameProfiler.Scope("entitynode")) DriveEntityNodes(localId);
+        using (FrameProfiler.Scope("cw.csqc")) DriveCsqcModelHooks(dtAnim);
+        using (FrameProfiler.Scope("cw.vehicles")) DriveVehicles(dtAnim);
         // Live-poll the dynamic map/scene tint cvars so a console `set r_map_tint*` re-tints instantly (the
         // testing path); when the strength cvars are 0 this is a couple of cheap reads and leaves the map/code
         // baseline in place. See XonoticGodot.Game.WorldTint.
@@ -952,6 +1159,143 @@ public partial class ClientWorld : Node3D
         }
     }
 
+    /// <summary>cl_rollkillspeed-style ease per second toward the body-fade target — fast enough to feel responsive
+    /// on a chase toggle, slow enough to not pop.</summary>
+    private const float BodyAlphaEaseRate = 8f;
+
+    /// <summary>
+    /// Ease each targeted local <see cref="PlayerModel"/>'s render alpha toward its crosshair-chase
+    /// <see cref="_bodyAlphaTarget"/> (QC <c>crosshair_chase_playeralpha</c>) and push it through
+    /// <see cref="PlayerModel.ApplyAlpha"/> (per-instance <c>GeometryInstance3D.Transparency</c> — never a shared
+    /// material edit, the same knob the alpha-net seam uses). A cleared target eases the model back to opaque (1)
+    /// and is then dropped, so a chase exit restores the body smoothly. Whole-method no-op when no fade is active —
+    /// non-chase frames pay only the two empty-dictionary checks.
+    /// </summary>
+    private void DriveBodyAlpha(float delta)
+    {
+        if (_bodyAlphaTarget.Count == 0 && _bodyAlphaCurrent.Count == 0)
+            return;
+
+        float step = Mathf.Clamp(delta * BodyAlphaEaseRate, 0f, 1f);
+        _bodyAlphaScratch.Clear();
+
+        // Walk every model that currently has an eased value OR a fresh target.
+        foreach (int netId in _bodyAlphaCurrent.Keys)
+            _bodyAlphaScratch.Add(netId);
+        foreach (int netId in _bodyAlphaTarget.Keys)
+            if (!_bodyAlphaCurrent.ContainsKey(netId))
+                _bodyAlphaScratch.Add(netId);
+
+        for (int i = 0; i < _bodyAlphaScratch.Count; i++)
+        {
+            int netId = _bodyAlphaScratch[i];
+            // Target render alpha: the stored fade while a chase is active, else 1 (opaque) so a cleared target
+            // eases the body back in.
+            float target = _bodyAlphaTarget.TryGetValue(netId, out float t) ? t : 1f;
+            float current = _bodyAlphaCurrent.TryGetValue(netId, out float c) ? c : 1f;
+            current = Mathf.Lerp(current, target, step);
+            // Snap when within a hair so we converge (and can drop a fully-restored entry instead of easing forever).
+            if (Mathf.Abs(current - target) < 0.002f)
+                current = target;
+
+            if (_playerModels.TryGetValue(netId, out PlayerModel? pm) && GodotObject.IsInstanceValid(pm))
+            {
+                // PlayerModel.Pose already pushed the networked Entity.Alpha (Cloaked / fades) this frame; COMPOSE the
+                // chase fade on top of it (multiply) so a cloaked-in-chase body honors the lower of the two instead
+                // of overwriting the networked alpha. Bound is the model's entity; missing → treat as opaque (1).
+                float netAlpha = pm.Bound is { IsFreed: false } be ? be.Alpha : 1f;
+                if (netAlpha < 0f) netAlpha = 0f; // a hidden/gib alpha clamps like PlayerModel.ApplyAlpha does
+                pm.ApplyAlpha(current * Mathf.Min(1f, netAlpha));
+            }
+
+            // Once opaque again with no live target, forget the model (back to the model's own networked alpha).
+            if (target >= 0.999f && current >= 0.999f && !_bodyAlphaTarget.ContainsKey(netId))
+                _bodyAlphaCurrent.Remove(netId);
+            else
+                _bodyAlphaCurrent[netId] = current;
+        }
+    }
+
+    /// <summary>
+    /// (R1+R2) Central per-frame drive for every entity node — replaces the per-node <see cref="EntityNode"/>
+    /// <c>_Process</c> callback (the dominant render-submission / interop tax at ~150 entities × high fps). One
+    /// pass over <see cref="_entityNodes"/> that:
+    /// <list type="bullet">
+    /// <item>(§12.8) computes the DP-faithful PVS visibility — the entity's BOUNDS (origin ±
+    ///       <c>r_pvs_cull_entities_margin</c>) vs the camera's visible cluster set — and routes it through
+    ///       <see cref="EntityNode.SetPvsVisible"/> so it ANDs with the gameplay ghost/fade flag (neither owner
+    ///       clobbers the other). DP draws an entity only when its leaf cluster is in the view's visible set;</item>
+    /// <item>(R2) skips the transform sync entirely for an effectively-hidden node — Godot does NOT gate
+    ///       processing on <c>Visible</c>, so a culled entity behind a wall would otherwise still pay the full
+    ///       marshalled transform write every frame. A hidden→visible regain force-re-syncs (see
+    ///       <see cref="EntityNode.DriveSync"/> / <see cref="EntityNode.ForceSync"/>);</item>
+    /// <item>(R1) for a visible node, drives the dirty-gated <see cref="EntityNode.DriveSync"/> — which itself
+    ///       skips the interop writes when nothing the sync reads (origin/yaw/pitch/roll/scale, or the bob clock
+    ///       while <c>ItemAnimate != 0</c>) changed.</item>
+    /// </list>
+    /// PVS culling is gated behind <c>r_pvs_cull_entities</c> (default 1); when off, every node is visible and
+    /// simply syncs. Conservative: the LOCAL player and an unvised map / camera-in-solid keep everything visible
+    /// (wrongly culling a visible enemy is far worse than under-culling one solidly behind a wall).
+    /// </summary>
+    private void DriveEntityNodes(int localId)
+    {
+        bool pvsEnabled = CvarF("r_pvs_cull_entities", 1f) != 0f && Pvs is { HasVis: true };
+
+        int viewerCluster = -1;
+        bool showAll = true;
+        NVec3 margin = default;
+        if (pvsEnabled)
+        {
+            NVec3? view = ViewOrigin();
+            viewerCluster = view is { } v ? Pvs!.LeafCluster(Pvs.FindLeaf(v)) : -1;
+            showAll = viewerCluster < 0; // camera in solid / outside the tree → show everything
+            float m = Mathf.Max(CvarF("r_pvs_cull_entities_margin", 64f), 0f);
+            margin = new NVec3(m, m, m);
+        }
+
+        // ACTIVE portal exit viewpoints (PortalRenderer.ActiveExitViewsQuake): SetPvsVisible(false) hides the
+        // node from EVERY viewport sharing the World3D, so an entity standing at a portal's exit must stay
+        // visible while that portal renders — union its cluster in, exactly like WorldPvsCuller's cell pass.
+        _entityPvsExtraClusters.Clear();
+        var portalViews = XonoticGodot.Game.Client.PortalRenderer.ActiveExitViewsQuake;
+        for (int i = 0; i < portalViews.Count; i++)
+        {
+            int pc = Pvs!.LeafCluster(Pvs.FindLeaf(portalViews[i]));
+            if (pc >= 0 && !_entityPvsExtraClusters.Contains(pc))
+                _entityPvsExtraClusters.Add(pc);
+        }
+
+        foreach (var kv in _entityNodes)
+        {
+            EntityNode node = kv.Value;
+            Entity? e = node.Entity;
+            if (e is null || e.IsFreed || !GodotObject.IsInstanceValid(node))
+                continue;
+            // DP-faithful PVS visibility. Local player + unvised map / camera-in-solid stay visible (wrongly
+            // culling a visible enemy is far worse than under-culling one solidly behind a wall). Bounds are a
+            // generous symmetric box around the networked origin; an active warpzone exit unions its extra
+            // clusters in (main) so an entity standing at a portal's exit isn't hidden from the portal view.
+            bool pvsVis = true;
+            if (pvsEnabled && !showAll && e.Index != localId)
+            {
+                NVec3 o = e.Origin;
+                pvsVis = Pvs!.BoxAnyClusterVisibleFrom(viewerCluster, o - margin, o + margin);
+                for (int i = 0; i < _entityPvsExtraClusters.Count && !pvsVis; i++)
+                    pvsVis = Pvs!.BoxAnyClusterVisibleFrom(_entityPvsExtraClusters[i], o - margin, o + margin);
+            }
+            node.SetPvsVisible(pvsVis);
+
+            // R1/R2: only an effectively-visible node pays the transform sync; a hidden one re-syncs on regain.
+            if (node.EffectiveVisible)
+                node.DriveSync();
+            else
+                node.ForceSync();
+        }
+    }
+
+    // Scratch for ApplyEntityPvsCull's portal-exit cluster union (rebuilt per frame; empty when no portal renders).
+    private readonly List<int> _entityPvsExtraClusters = new();
+
     /// <summary>
     /// Port of the per-frame CSQCModel PreDraw hooks (<c>CSQCModel_Hook_PreDraw</c>, csqcmodel_hooks.qc:674) for
     /// every rendered entity: the appearance/glowmod + death-fade pass on player models (<see cref="ModelTint"/>),
@@ -965,6 +1309,14 @@ public partial class ClientWorld : Node3D
 
         float frameTime = Mathf.Clamp(delta, 0f, 0.1f); // QC bound(0, frametime, 0.1) used for the particle bursts
         NVec3? viewOrigin = ViewOrigin();
+
+        // LOD cvars are frame-invariant — read them ONCE here instead of per entity inside ApplyLod (it ran
+        // ~4 cvar lookups × every entity × every frame, all for a result the port currently discards). cfg seta
+        // overrides the qh inline defaults (768/2304) with 1024/3072 at runtime.
+        int lodPlayerDR = (int)CvarF("cl_playerdetailreduction", 4f);
+        int lodModelDR = (int)CvarF("cl_modeldetailreduction", 1f);
+        float lodDist1 = CvarF("cl_loddistance1", 1024f);
+        float lodDist2 = CvarF("cl_loddistance2", 3072f);
 
         foreach (var kv in _entityNodes)
         {
@@ -997,62 +1349,160 @@ public partial class ClientWorld : Node3D
                 // Change-gated (§11 R8): the uniform pushes only happen when the computed colors or the mesh
                 // list changed (colors only move while dead-fading or on a rainbow palette nibble).
                 ModelTint.ApplyAppearance(meshes, colormap, dead, st.DeathTime, ghost, ref st.Effects.Tint);
+
+                // QC ENT_CLIENT_STATUSEFFECTS frozen overlay: a frozen player renders icy-blue (the remote analogue
+                // of the freeze tint). Multiply the model's colormod toward ice ON TOP of the team appearance just
+                // applied, and invalidate the appearance change-gate so the model repaints its real colormod the
+                // first frame after it thaws (otherwise the blue would stick, since ApplyAppearance would see its
+                // cached White == computed White and skip the push). The status effects are decoded onto the proxy
+                // by ClientEntityView from the networked bitmap.
+                if (HasStatusEffect(e, StatusEffectsCatalog.Frozen))
+                {
+                    ModelTint.SetColormod(meshes, FrozenColormod);
+                    st.Effects.Tint.Valid = false;
+                }
+            }
+            else if (IsCtfFlagModel(e))
+            {
+                // playtest-bugs #8: the CTF flag banner (banner.tga + banner_shirt.tga) auto-compiles to the
+                // team-colorable PlayerSkinShader with shirt_color defaulting to black (→ the flag reads gray).
+                // Drive the team colormap onto it exactly like a player so the banner shirt-tints red/blue/yellow/
+                // pink (and the glow picks up the team glowmod). Base: flag.colormap |= RENDER_COLORMAPPED
+                // (sv_ctf.qc:1387-1389); the networked team rides Entity.Team (ClientEntityView). NOTE: Entity.Team
+                // is the NUM_TEAM_* color CODE (Red=4/Blue=13/…), but ModelTint.TeamColor wants the colormap low
+                // nibble (1=red..4=pink) — passing the raw code rendered a red flag PINK (TeamColor(4)=pink).
+                ModelTint.ApplyColormap(node, NormalizeTeamColormap((int)e.Team));
             }
 
+            // Cosmetic add-on layer (csqcmodel_hooks.qc add-ons): the Frozen ice block, the held buff_* glow, and
+            // the nade spawn-loc marker. Attach off the EntityNode — it already syncs origin/yaw each frame, so the
+            // ice/glow inherit the model's pose for free. The blue freeze tint + the ice block both render in Base,
+            // so the SetColormod above stays; this only adds the ice geometry.
+            _cosmetics.Drive(e, node);
+
             // (2) LOD: compute the index (faithful math) — see ApplyLod for the swap caveat.
-            ApplyLod(e, node, st, viewOrigin);
+            ApplyLod(e, st, viewOrigin, lodPlayerDR, lodModelDR, lodDist1, lodDist2);
 
             // (3) EFFECTS: EF_* lights/particles/render-flags from the networked Effects bitfield. MF_* model
-            //     flags aren't networked, so 0 here for remote entities (EF_BRIGHTFIELD trail still applies).
+            //     flags aren't networked, so 0 here for remote entities (EF_BRIGHTFIELD trail still applies) —
+            //     EXCEPT MF_ROCKET, which the client re-derives from the networked IT_USING_JETPACK bit (QC
+            //     common/physics/player.qc:879) and passes via ComposeForcedAppearance below to drive the rocket
+            //     trail + looping jetpack-fly sound (csqcmodel_hooks.qc:611/645).
             //     Skip the per-frame material reset for the common no-effects prop UNLESS state is still active
             //     (so the frame effects turn off, we still run once to clear the light/render-flags) — QC sets a
             //     cheap int flag every frame; the port's reset walks meshes, so guard it to avoid churn.
             bool ghostBit = (e.Effects & CsqcModelEffectFlags.CSQCMODEL_EF_RESPAWNGHOST) != 0;
+            // QC IT_USING_JETPACK → csqcmodel_modelflags |= MF_ROCKET. Re-derived per player on the client (the
+            // Wave-3 ComposeForcedAppearance seam) since MF_* isn't networked. Drives the jetpack-fly loop + trail.
+            CsqcModelAppearance.ForcedAppearance forced = e.UsingJetpack
+                ? CsqcModelAppearance.ComposeForcedAppearance(strength: false, shield: false, jetpackActive: true, forcedGlowmod: (-1f, -1f, -1f))
+                : default;
             bool effectsActive = e.Effects != 0 || ghostBit || st.Effects.LoopChannel != 0
+                                 || e.UsingJetpack          // start the jetpack loop the frame the bit turns on
                                  || st.Effects.LastEffects != 0; // re-run ONE frame after effects clear so the
                                                                  // render-flags/visibility/light all reset (no stick)
             if (effectsActive)
-                // Trail return is unused here: entities in _entityNodes are non-projectiles (players/items/
-                // monsters); projectiles own their trail via ProjectileRenderer. EF_BRIGHTFIELD on a player
-                // model (rare) is the only dropped case — flagged as a known parity gap.
-                _ = CsqcModelEffects.Apply(Effects, node, e, st.Effects, modelFlags: 0, frameTime, Api.Services?.Sound, ghostBit);
+            {
+                // CSQCModel_Effects_Apply returns the trail-effect name for this model (csqcmodel_hooks.qc:611/554):
+                // EF_BRIGHTFIELD -> TR_NEXUIZPLASMA, and the client-re-derived jetpack MF_ROCKET -> TR_ROCKET. Entities
+                // in _entityNodes are non-projectiles (players/items/monsters) — projectiles own their trail via
+                // ProjectileRenderer — but a player MODEL with EF_BRIGHTFIELD (and a jetpacking player's rocket plume)
+                // DOES trail in Base, so route the return through the faithful per-segment trail like the projectile path.
+                string? tref = CsqcModelEffects.Apply(Effects, node, e, st.Effects, modelFlags: 0, frameTime, Api.Services?.Sound, ghostBit, forced);
+                DriveModelTrail(e, st, tref, frameTime);
+            }
 
             // (4) ITEM VISIBILITY FX (item-only — these flags are never set on players/monsters): QC ItemDraw's
-            //     alpha pass (client/items/items.qc:163-210). Priority matches QC (availability, then the expiring
-            //     fade layered on top): an unavailable picked-up item is the cl_ghost_items "ghost"; an expiring
-            //     loot item fades + emits despawn puffs; an available, non-expiring item resets to opaque once.
-            if (e.ItemExpiringFx)
+            //     alpha pass (client/items/items.qc:144-210). QC sets a base alpha from the DISTANCE fade
+            //     (g_items_maxdist/cl_items_fadedist) FIRST, then multiplies the availability (ghost) / weapon-stay /
+            //     expiring (despawn) factors on top. The port composes the same way: distFade is the base, the
+            //     ghost/despawn fade multiplies onto it. An available, non-expiring item that is also un-faded by
+            //     distance resets to opaque once (no per-frame churn).
+            if (IsItemEntity(e))
             {
-                DriveItemDespawnFx(e, node, st);
-                st.ItemFaded = true;
+                float distAlpha = ItemDistanceAlpha(e, viewOrigin); // QC lines 144-158 base alpha
+                if (e.ItemExpiringFx)
+                {
+                    DriveItemDespawnFx(e, node, st, distAlpha);
+                    st.ItemFaded = true;
+                }
+                else if (!e.ItemAvailable)
+                {
+                    DriveItemGhostFx(node, st, distAlpha);
+                    st.ItemFaded = true;
+                }
+                else if (e.ClassName.StartsWith("weapon_", System.StringComparison.OrdinalIgnoreCase)
+                         && (e.Effects & CsqcModelEffectFlags.EF_STARDUST) != 0)
+                {
+                    // QC ItemDraw weapon-stay branch (client/items/items.qc): a still-pickable g_weapon_stay
+                    // ghost (Item_Show mode 0 set EF_STARDUST + cleared the live marker server-side; it stays
+                    // AVAILABLE so it falls through the ghost branch above) renders translucent at
+                    // cl_weapon_stay_alpha (0.75) tinted by the cl_weapon_stay_color ('2 0.5 0.5') colormod
+                    // (playtest #29). The stay-marker isn't networked, so we infer it from the weapon_ classname
+                    // + the server-set EF_STARDUST that ONLY a weapon-stay ghost carries (Item_Show ll.531).
+                    DriveItemStayFx(node, st, distAlpha);
+                    st.ItemFaded = true;
+                }
+                else if (distAlpha < 0.999f)
+                {
+                    // Available but distance-faded: apply only the distance alpha (QC's available branch keeps the
+                    // base alpha, colormod 1, no ghost/stay multiply). Hidden once fully faded out past fade_end.
+                    SetTreeTransparency(node, st, 1f - distAlpha);
+                    SetTreeColormod(node, st, Godot.Vector3.One); // QC available branch: colormod = '1 1 1'
+                    node.SetGameplayVisible(distAlpha > 0.001f);
+                    st.ItemFaded = true;
+                }
+                else if (st.ItemFaded)
+                {
+                    // Back to available + in-range — undo the prior ghost/despawn/distance fade exactly once.
+                    SetTreeTransparency(node, st, 0f);
+                    SetTreeColormod(node, st, Godot.Vector3.One);
+                    node.SetGameplayVisible(true);
+                    st.ItemFaded = false;
+                }
             }
-            else if (!e.ItemAvailable)
-            {
-                DriveItemGhostFx(node, st);
-                st.ItemFaded = true;
-            }
-            else if (st.ItemFaded)
-            {
-                // Back to available (respawned) — undo the prior ghost/despawn fade exactly once (no per-frame churn).
-                SetTreeTransparency(node, st, 0f);
-                node.Visible = true;
-                st.ItemFaded = false;
-            }
+
+            // (5) STATUS-EFFECT BURNING: the flame visual is now driven by the networked EF_FLAME .effects bit
+            //     that BurningTick ORs in server-side (burning.qc:21) and CsqcModelEffects.Apply renders (the
+            //     orange light + the EF_FLAME particle burst, step 3 above) — exactly like spawnshield/stunned.
+            //     The former per-frame client-side EF_FLAME stand-in here was removed so the burst isn't emitted
+            //     twice; the frozen tint still rides the appearance pass above.
         }
     }
 
     /// <summary>
-    /// Render a picked-up item awaiting respawn as the faded "ghost" — QC ItemDraw's <c>!ITS_AVAILABLE</c> branch
-    /// (client/items/items.qc:182-186): <c>alpha *= cl_ghost_items</c> (default 0.45). <c>cl_ghost_items</c> 0
-    /// hides it entirely (QC <c>alpha 0 → drawmask 0</c>). The optional tint (<c>cl_ghost_items_color</c>, default
-    /// <c>'-1 -1 -1'</c> = no tint) is left for a follow-up. Reuses the per-instance transparency the despawn fade
-    /// uses (never touches the shared/cached item materials); the bob+spin keeps running (driven in EntityNode).
+    /// Render a still-pickable <c>g_weapon_stay</c> ghost as the translucent stay-weapon -- QC <c>ItemDraw</c>'s
+    /// weapon-stay branch (client/items/items.qc): <c>alpha *= cl_weapon_stay_alpha</c> (default 0.75) and
+    /// <c>colormod = cl_weapon_stay_color</c> ('2 0.5 0.5', the reddish overbright tint) while the item stays
+    /// AVAILABLE (a stay weapon is pickable, just gives no ammo). Composed multiplicatively with the distance
+    /// fade, exactly like <see cref="DriveItemGhostFx"/> does for the unavailable ghost. (playtest #29)
     /// </summary>
-    private void DriveItemGhostFx(EntityNode node, CsqcState st)
+    private void DriveItemStayFx(EntityNode node, CsqcState st, float distAlpha = 1f)
+    {
+        float stay = Mathf.Clamp(CvarF("cl_weapon_stay_alpha", 0.75f), 0f, 1f); // xonotic-client.cfg default 0.75
+        float alpha = stay * Mathf.Clamp(distAlpha, 0f, 1f); // QC: alpha = distFade; then alpha *= cl_weapon_stay_alpha
+        SetTreeTransparency(node, st, 1f - alpha);
+        SetTreeColormod(node, st, CvarColormod("cl_weapon_stay_color", new Godot.Vector3(2f, 0.5f, 0.5f)));
+        node.SetGameplayVisible(alpha > 0.001f);
+    }
+
+    /// <summary>
+    /// Render a picked-up item awaiting respawn as the faded "ghost" — QC ItemDraw's <c>!ITS_AVAILABLE</c> branch
+    /// (client/items/items.qc:182-186): <c>alpha *= cl_ghost_items</c> (default 0.45) and
+    /// <c>colormod = glowmod = cl_ghost_items_color</c> (default <c>'-1 -1 -1'</c> — a REAL negative colormod:
+    /// DP multiplies the surface color and clamps, so the shipped default renders the ghost as a translucent
+    /// near-BLACK silhouette; '0 0 0' is the "leave color unchanged" sentinel, per the cfg description).
+    /// <c>cl_ghost_items</c> 0 hides it entirely (QC <c>alpha 0 → drawmask 0</c>). Alpha rides the per-instance
+    /// transparency, the tint a per-surface override variant (<see cref="SetTreeColormod"/>) — neither touches
+    /// the shared/cached item materials; the bob+spin keeps running (driven in EntityNode). (playtest #29)
+    /// </summary>
+    private void DriveItemGhostFx(EntityNode node, CsqcState st, float distAlpha = 1f)
     {
         float ghost = Mathf.Clamp(CvarF("cl_ghost_items", 0.45f), 0f, 1f); // QC autocvar_cl_ghost_items default 0.45
-        SetTreeTransparency(node, st, 1f - ghost);
-        node.Visible = ghost > 0.001f;
+        float alpha = ghost * Mathf.Clamp(distAlpha, 0f, 1f); // QC: alpha = distFade; then alpha *= cl_ghost_items
+        SetTreeTransparency(node, st, 1f - alpha);
+        SetTreeColormod(node, st, CvarColormod("cl_ghost_items_color", new Godot.Vector3(-1f, -1f, -1f)));
+        node.SetGameplayVisible(alpha > 0.001f);
     }
 
     /// <summary>
@@ -1061,21 +1511,65 @@ public partial class ClientWorld : Node3D
     /// <c>EFFECT_ITEM_DESPAWN</c> puffs at <c>origin + (0,0,16)</c>. Honors <c>cl_items_animate</c> bit 2 (fade)
     /// and bit 4 (particles); the pure timing/bit logic lives in <see cref="ItemDespawnFx"/> so it's unit-tested.
     /// </summary>
-    private void DriveItemDespawnFx(Entity e, EntityNode node, CsqcState st)
+    private void DriveItemDespawnFx(Entity e, EntityNode node, CsqcState st, float distAlpha = 1f)
     {
         ItemDespawnFx fx = st.Despawn ??= new ItemDespawnFx();
         int animate = (int)CvarF("cl_items_animate", 7f); // xonotic-client.cfg default 7 (bob+fade+particles)
-        fx.Tick(Now(), animate, out float alpha, out bool emitPuff);
+        fx.Tick(Now(), animate, out float despawnAlpha, out bool emitPuff);
 
-        // QC: this.alpha *= (wait - time)/IT_DESPAWNFX_TIME — apply as a per-instance transparency on the model
-        // (bit 2). Bit 2 clear → Tick returns 1, so this is a no-op (item stays opaque, just particles).
+        // QC: alpha = distFade (base); then alpha *= (wait - time)/IT_DESPAWNFX_TIME — apply as a per-instance
+        // transparency on the model (animate bit 2). Bit 2 clear → Tick returns 1, so only the distance fade
+        // (if any) applies; both clear → opaque, just particles.
+        float alpha = despawnAlpha * Mathf.Clamp(distAlpha, 0f, 1f);
         SetTreeTransparency(node, st, 1f - alpha);
-        node.Visible = alpha > 0.001f; // hidden once fully faded (QC drawmask 0); transparency handles the gradient
+        node.SetGameplayVisible(alpha > 0.001f); // hidden once fully faded (QC drawmask 0); transparency handles the gradient
 
         // QC: pointparticles(EFFECT_ITEM_DESPAWN, this.origin + '0 0 16', '0 0 0', 1) — same client path the
         // pickup/respawn bursts take (EffectSystem.Spawn); item_despawn resolves from effectinfo.txt.
         if (emitPuff)
             Effects.Spawn("ITEM_DESPAWN", e.Origin + new NVec3(0f, 0f, 16f));
+    }
+
+    /// <summary>
+    /// QC ItemDraw's distance alpha-fade (client/items/items.qc:144-158): an item past the server's
+    /// <c>g_items_maxdist</c> (the per-item networked <c>fade_end</c>; default 4500) is fully hidden, and within the
+    /// last <c>cl_items_fadedist</c> (default 500) units before that it linearly fades to zero. The port doesn't
+    /// network the per-item <c>fade_end</c>, so we read <c>g_items_maxdist</c> as the effective value (matching the
+    /// server's <c>if(!fade_end) fade_end = autocvar_g_items_maxdist</c>, items.qc:1051) — uniform across items, the
+    /// stock case. Returns the fade alpha in [0,1] (1 = no fade / disabled), to be composed multiplicatively with
+    /// the availability (ghost) and expiring (despawn) fades — exactly as QC sets <c>this.alpha</c> here FIRST and
+    /// then multiplies the ghost/stay/despawn factors on top. Returns 1 when the fade is disabled
+    /// (<c>fade_end &lt;= 0</c>) or no view origin is available. The bbox-centre offset matches QC's
+    /// <c>vlen(org - this.origin - 0.5*(mins+maxs))</c>.
+    /// </summary>
+    private float ItemDistanceAlpha(Entity e, NVec3? viewOrigin)
+    {
+        // fade_end: the per-item networked value isn't carried on the port wire, so use g_items_maxdist (the
+        // server's fallback when fade_end is 0). 0 / unset → no distance fade (QC: `if(this.fade_end ...)`).
+        float fadeEnd = CvarF("g_items_maxdist", 4500f);
+        if (fadeEnd <= 0f || viewOrigin is not { } org)
+            return 1f;
+
+        // QC vdist(org - this.origin, >, fade_end): a cheap reject on the raw origin distance.
+        float originDist = (org - e.Origin).Length();
+        if (originDist > fadeEnd)
+            return 0f; // fully past the draw distance → hidden (QC alpha = 0)
+
+        float fadeDist = CvarF("cl_items_fadedist", 500f); // xonotic-client.cfg default 500; 0 disables fading
+        if (fadeDist <= 0f)
+            return 1f;
+
+        float fadeStart = Mathf.Max(500f, fadeEnd - fadeDist); // QC: max(500, fade_end - cl_items_fadedist)
+        if (originDist <= fadeStart)
+            return 1f; // inside the solid-draw radius
+
+        // QC: bound(0, (fade_end - vlen(org - origin - 0.5*(mins+maxs))) / (fade_end - fade_start), 1).
+        NVec3 bboxCentre = e.Origin + 0.5f * (e.Mins + e.Maxs);
+        float centreDist = (org - bboxCentre).Length();
+        float denom = fadeEnd - fadeStart;
+        if (denom <= 0f)
+            return 1f; // degenerate band → no gradient (treat as solid; the > fade_end reject already hid the far ones)
+        return Mathf.Clamp((fadeEnd - centreDist) / denom, 0f, 1f);
     }
 
     /// <summary>
@@ -1100,6 +1594,91 @@ public partial class ClientWorld : Node3D
     }
 
     /// <summary>
+    /// Apply a whole-model colormod multiply to every mesh surface of an item node — the render-side analogue of
+    /// QC's per-entity <c>.colormod</c>/<c>.glowmod</c> for items (ghost tint / weapon-stay tint, playtest #29).
+    /// Mechanism: a per-SURFACE override material (<see cref="MeshInstance3D.SetSurfaceOverrideMaterial"/>) whose
+    /// albedo/emission are pre-multiplied by the (0-clamped) colormod — a cached DUPLICATE per (material, tint),
+    /// so the shared/cached item materials (AssetSystem SurfaceSetMaterial) are never mutated, mirroring
+    /// <see cref="SetTreeTransparency"/>'s never-touch-shared rule. Restoring to identity clears the overrides,
+    /// exposing the original shared surface material again. DP semantics: a ZERO colormod vector means "unset"
+    /// (identity — csprogs CSQC_AddRenderEdict only copies a non-zero colormod); negatives clamp to 0 (black).
+    /// Non-BaseMaterial3D surfaces (animated ShaderMaterials) are left untinted (alpha still applies).
+    /// Change-gated like the transparency push: one walk per state change, not per frame.
+    /// </summary>
+    private static void SetTreeColormod(EntityNode node, CsqcState st, Godot.Vector3 colormod)
+    {
+        if (colormod == Godot.Vector3.Zero)
+            colormod = Godot.Vector3.One; // QC/DP: '0 0 0' = leave the color unchanged
+        List<MeshInstance3D> meshes = CsqcModelEffects.GetCachedMeshes(st.Effects, node);
+        if (st.ItemTintApplied == colormod && st.ItemTintMeshCount == meshes.Count)
+            return;
+        bool clear = colormod == Godot.Vector3.One;
+        for (int i = 0; i < meshes.Count; i++)
+        {
+            MeshInstance3D mi = meshes[i];
+            if (mi.Mesh is not Mesh mesh)
+                continue;
+            int surfaces = mesh.GetSurfaceCount();
+            for (int s = 0; s < surfaces; s++)
+                mi.SetSurfaceOverrideMaterial(s, clear ? null : TintVariant(mesh.SurfaceGetMaterial(s), colormod));
+        }
+        st.ItemTintApplied = colormod;
+        st.ItemTintMeshCount = meshes.Count;
+    }
+
+    /// <summary>Cache of tinted material variants keyed by (shared source material, colormod). Bounded by the few
+    /// item materials × the two shipped tints (ghost '-1 -1 -1', stay '2 0.5 0.5'); variants hold their source's
+    /// textures by reference. Main-thread only (built inside the ClientWorld drive).</summary>
+    private static readonly Dictionary<(Material, Godot.Vector3), Material?> _itemTintVariants = new();
+
+    /// <summary>
+    /// Get (or build) the tinted duplicate of a shared item surface material. DP applies colormod as a straight
+    /// color multiply clamped at 0 — so albedo AND emission (QC sets <c>glowmod</c> to the same vector in the
+    /// item branches) are multiplied by <c>max(colormod, 0)</c> per channel; '-1 -1 -1' therefore lands on black.
+    /// Returns null (→ no override, shared material stays live) for non-BaseMaterial3D surfaces.
+    /// </summary>
+    private static Material? TintVariant(Material? source, Godot.Vector3 colormod)
+    {
+        if (source is not BaseMaterial3D src)
+            return null; // ShaderMaterial (animated shader) — leave the shared material in place, alpha-only
+        var key = (source!, colormod);
+        if (_itemTintVariants.TryGetValue(key, out Material? cached))
+            return cached;
+        float mr = Mathf.Max(colormod.X, 0f), mg = Mathf.Max(colormod.Y, 0f), mb = Mathf.Max(colormod.Z, 0f);
+        var variant = (BaseMaterial3D)src.Duplicate();
+        Color a = src.AlbedoColor;
+        variant.AlbedoColor = new Color(a.R * mr, a.G * mg, a.B * mb, a.A);
+        if (variant.EmissionEnabled)
+        {
+            Color em = src.Emission;
+            variant.Emission = new Color(em.R * mr, em.G * mg, em.B * mb, em.A);
+        }
+        _itemTintVariants[key] = variant;
+        return variant;
+    }
+
+    /// <summary>
+    /// Read an "r g b" vector cvar as a colormod <see cref="Godot.Vector3"/> (QC <c>stov(autocvar_…)</c>) —
+    /// negatives preserved (they're meaningful: DP clamps them to black at render time). Falls back to
+    /// <paramref name="fallback"/> when unset/unparseable.
+    /// </summary>
+    private Godot.Vector3 CvarColormod(string name, Godot.Vector3 fallback)
+    {
+        if (Api.Services is null)
+            return fallback;
+        string s = Api.Cvars.GetString(name);
+        if (string.IsNullOrWhiteSpace(s))
+            return fallback;
+        string[] parts = s.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length < 3
+            || !float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float r)
+            || !float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float g)
+            || !float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float b))
+            return fallback;
+        return new Godot.Vector3(r, g, b);
+    }
+
+    /// <summary>
     /// QC <c>CSQCModel_LOD_Apply</c> index pick for an entity. The port renders a single resolved model node
     /// (not an engine modelindex it can swap by integer), and stock Xonotic ships <c>_lodN</c> variants for only
     /// some models; faithfully resolving + hot-swapping the alternate model file mid-render is out of this task's
@@ -1107,26 +1686,48 @@ public partial class ClientWorld : Node3D
     /// testable) but, lacking a resolved alternate model, keeps lod0 — mirroring the QC fexists guard that keeps
     /// the base model when no <c>_lodN</c> file exists. Documented as a known parity gap in the T58 report.
     /// </summary>
-    private void ApplyLod(Entity e, EntityNode node, CsqcState st, NVec3? viewOrigin)
+    private void ApplyLod(Entity e, CsqcState st, NVec3? viewOrigin, int playerDetailReduction,
+        int modelDetailReduction, float dist1, float dist2)
     {
         if (viewOrigin is not { } vo)
             return;
-        int detailReduction = st.IsPlayerModel
-            ? (int)CvarF("cl_playerdetailreduction", 4f)
-            : (int)CvarF("cl_modeldetailreduction", 1f);
-        float dist1 = CvarF("cl_loddistance1", 1024f); // cfg seta 1024 overrides the qh inline 768 at runtime
-        float dist2 = CvarF("cl_loddistance2", 3072f); // cfg seta 3072
+        int detailReduction = st.IsPlayerModel ? playerDetailReduction : modelDetailReduction;
         float distance = (e.Origin - vo).Length();
         // view_quality has no port equivalent (renderer LOD-quality global) → 1; current_viewzoom → 1 here.
         _ = CsqcModelLod.SelectLodIndex(detailReduction, distance, viewZoom: 1f, viewQuality: 1f, dist1, dist2);
         // No alternate LOD model resolved → keep lod0 (the QC fexists-miss path). See doc comment.
     }
 
+    /// <summary>
+    /// Emit one frame of a CSQC-model trail (QC <c>CSQCModel_Effects_Apply</c>'s <c>trailparticles</c> continuation,
+    /// csqcmodel_hooks.qc:554/611): when the effects pass returned a trail name (EF_BRIGHTFIELD -> TR_NEXUIZPLASMA, or
+    /// the client-re-derived jetpack MF_ROCKET -> TR_ROCKET on this player/monster MODEL), spawn a faithful per-segment
+    /// trail from the model's previous position to its current one — the same <see cref="EffectSystem.SpawnTrailSegment"/>
+    /// path the projectile renderer uses (DP <c>CL_ParticleTrail</c>). The tail anchor is kept per-entity on
+    /// <see cref="CsqcState"/> so successive frames join up; it resets the first frame the trail (re)activates so a
+    /// spawn or a teleport doesn't draw one long streak. A null/empty trail clears the anchor (the trail stops cleanly).
+    /// </summary>
+    private void DriveModelTrail(Entity e, CsqcState st, string? tref, float frameTime)
+    {
+        if (string.IsNullOrEmpty(tref) || frameTime <= 0f)
+        {
+            st.HasTrailTail = false; // trail off this frame → next activation restarts the tail at the origin
+            return;
+        }
+        NVec3 cur = e.Origin;
+        // First active frame (or after a clear): start the segment at the current origin so we don't streak across
+        // the whole map from a stale tail (DP seeds trail_pos at the first emission too).
+        NVec3 from = st.HasTrailTail ? st.TrailTail : cur;
+        Effects.SpawnTrailSegment(tref!, from, cur, e.Velocity);
+        st.TrailTail = cur;
+        st.HasTrailTail = true;
+    }
+
     /// <summary>The active camera's Quake-space origin (CSQC <c>view_origin</c>) for LOD distance, or null.</summary>
     private NVec3? ViewOrigin()
     {
-        Camera3D? cam = GetViewport()?.GetCamera3D();
-        if (cam is null || !GodotObject.IsInstanceValid(cam))
+        Camera3D? cam = FrameCamera();
+        if (cam is null)
             return null;
         return Coords.ToQuake(cam.GlobalPosition);
     }
@@ -1166,12 +1767,35 @@ public partial class ClientWorld : Node3D
     /// id (<see cref="Entity.Team"/>). With no <see cref="AppearanceProvider"/> wired (a pure demo) the override is
     /// inert and the entity keeps its own colormap. The pure decision is <see cref="CsqcModelAppearance.ResolveForcedColormap"/>.
     /// </summary>
+    /// <summary>
+    /// The colormap a player's HELD WEAPON should be tinted with — the same resolved value the player BODY
+    /// gets (forcecolors + team normalization), because Base's weaponentity inherits its owner's colormap
+    /// verbatim (<c>this.colormap = this.owner.colormap</c>, weaponsystem.qc:180). Public for the weapon
+    /// view-entity renderer + the first-person viewmodel (playtest #36: the weapon _shirt/_pants panels sat
+    /// at the black no-colormap default forever — desaturated gun panels).
+    /// </summary>
+    public int PlayerColormap(Entity e) => ResolveForcedColormap(e);
+
     private int ResolveForcedColormap(Entity e)
     {
         int own = (int)e.Team;
+        // [r15 #43] the networked packed clientcolors (16*shirt+pants — FFA profile colors, or the team-forced
+        // 17*teamcode). When present, the UNFORCED colormap is the QC-form 1024+colors so ModelTint paints the
+        // real shirt/pants palette (Base: .colormap follows .clientcolors); 0 falls back to the team path.
+        int packed = e.Colors != 0 ? 1024 + (e.Colors & 0xFF) : 0;
         AppearanceContext? ctx = AppearanceProvider?.Invoke();
         if (ctx is null)
-            return own;
+            return packed != 0 ? packed : NormalizeTeamColormap(own);
+
+        // QC cl_survival.qc NET_HANDLE colormap override + ForcePlayercolors_Skip (CBC_ORDER_LAST): once a Survival
+        // round is live/resolved, every known player wears the hardcoded survival palette — red if the client knows
+        // them to be a hunter (own side mid-round; everyone at round end), green otherwise. This runs LAST in QC so
+        // it overrides cl_forceplayercolors; we honor that here by returning BEFORE the force-color resolution.
+        if (ctx.SurvivalActive)
+        {
+            bool hunter = ctx.SurvivalHunterIds is { } ids && ids.Contains(e.Index);
+            return 1024 + (hunter ? SurvColorHunter : SurvColorPrey);
+        }
 
         int fpc = (int)CvarF("cl_forceplayercolors", 0f);
         bool enabled = CsqcModelAppearance.ForcePlayerColorsEnabled(fpc, ctx.Is1v1, ctx.Teamplay, ctx.TeamCount, ctx.MyTeam);
@@ -1184,11 +1808,24 @@ public partial class ClientWorld : Node3D
         int cm = 1024 + 17 * own;
         int forced = CsqcModelAppearance.ResolveForcedColormap(
             enabled, forceMyColors, clColor, forceUnique, isLocal, ctx.Is1v1, ctx.Teamplay, ctx.MyTeam,
-            cm, ctx.PlayerLocalNum, e.Index);
-        return forced != 0 ? forced : own;
+            cm, ctx.PlayerLocalNum, e.Index, ctx.TeamCount);
+        // playtest-bugs #8: `own` is Entity.Team = the NUM_TEAM_* color CODE (4/13/12/9), but ModelTint wants the
+        // colormap nibble — normalize it (team codes → 1..4) so team PLAYERS tint the right color, not pink. A
+        // forced (packed >=1024) colormap is already in colormap form, so it flows through untouched. Unforced,
+        // the networked clientcolors (packed) win over the plain team nibble (#43 — FFA profile colors paint).
+        return forced != 0 ? forced : (packed != 0 ? packed : NormalizeTeamColormap(own));
     }
 
     private static float Now() => Api.Services?.Clock?.Time ?? 0f;
+
+    /// <summary>Icy-blue colormod for the frozen overlay (QC ENT_CLIENT_STATUSEFFECTS frozen tint): tilts the whole
+    /// model toward cold blue (blue &gt; 1 so it reads bright/frosted, red+green pulled down).</summary>
+    private static readonly Color FrozenColormod = new(0.45f, 0.65f, 1.15f);
+
+    /// <summary>True when <paramref name="e"/> currently carries the given networked status effect (decoded onto the
+    /// proxy by ClientEntityView). Null-def safe — returns false if the effect isn't registered on this client.</summary>
+    private static bool HasStatusEffect(Entity e, StatusEffectDef? def)
+        => def is not null && StatusEffectsCatalog.Has(e, def);
 
     private static float CvarF(string name, float fallback)
     {
@@ -1216,7 +1853,21 @@ public partial class ClientWorld : Node3D
 
             // Follow the entity transform (Quake → Godot), like EntityNode.
             vis.Position = Coords.ToGodot(e.Origin);
-            vis.Rotation = new Vector3(0f, -Mathf.DegToRad(e.Angles.Y), 0f);
+            // The raptor flight controller (Raptor.Frame) writes the full nose-down/up PITCH (Angles.X) +
+            // bank-on-strafe ROLL (Angles.Z) into the entity Angles, not just yaw — so for a pitched/rolled
+            // airframe build the full orientation the SAME way EntityNode does (AngleVectors → Coords.ToGodot
+            // columns basis: X=fwd, Y=up, Z=right). Gated to entities that actually carry pitch/roll so the
+            // long-standing yaw-only path stays byte-identical for every other vehicle (racer/spiderbot/
+            // bumblebee read flat).
+            if (e.Angles.X != 0f || e.Angles.Z != 0f)
+            {
+                XonoticGodot.Common.Math.QMath.AngleVectors(e.Angles, out NVec3 fwd, out NVec3 right, out NVec3 up);
+                vis.Basis = new Basis(Coords.ToGodot(fwd), Coords.ToGodot(up), Coords.ToGodot(right));
+            }
+            else
+            {
+                vis.Rotation = new Vector3(0f, -Mathf.DegToRad(e.Angles.Y), 0f);
+            }
 
             float speed01 = Mathf.Clamp(
                 Mathf.Sqrt(e.Velocity.X * e.Velocity.X + e.Velocity.Y * e.Velocity.Y) / speedRef, 0f, 1f);
@@ -1244,23 +1895,52 @@ public partial class ClientWorld : Node3D
 
     private static bool IsProjectile(Entity e)
     {
-        string cn = e.ClassName.ToLowerInvariant();
+        // Compare classname/model case-insensitively WITHOUT allocating a lowercased+concatenated scratch string
+        // every frame — this runs per-entity per-frame in the CSQC render pass.
+        string cn = e.ClassName;
         // A pickup (item/weapon/ammo box, or dropped-loot "item") is NEVER a projectile — even though its MODEL
         // name carries a weapon stem (a_rockets.md3, g_crylink.md3, g_rl.md3, …) that the substring test below
         // would otherwise match, routing the pickup to the ProjectileRenderer instead of showing its model. The
         // server's NetEntityKind already separated them; this keeps the client render routing consistent.
-        if (cn == "item" || cn.StartsWith("item_") || cn.StartsWith("weapon_") || cn.StartsWith("ammo_"))
+        if (cn.Equals("item", System.StringComparison.OrdinalIgnoreCase)
+            || cn.StartsWith("item_", System.StringComparison.OrdinalIgnoreCase)
+            || cn.StartsWith("weapon_", System.StringComparison.OrdinalIgnoreCase)
+            || cn.StartsWith("ammo_", System.StringComparison.OrdinalIgnoreCase))
             return false;
-        string s = cn + " " + e.Model.ToLowerInvariant();
         // QC projectiles share these classname/model stems (the server also sends a projectile's classname+netname
-        // as its "model" so the catalog can type it); movetype FLY/TOSS/BOUNCE w/ owner is the deeper server test.
-        if (s.Contains("projectile") || s.Contains("rocket") || s.Contains("grenade") || s.Contains("nade")
-            || s.Contains("plasma") || s.Contains("electro") || s.Contains("crylink")
-            || s.Contains("hagar") || s.Contains("seeker") || s.Contains("fireball") || s.Contains("blaster")
-            || s.Contains("spike") || s.Contains("mine") || s.Contains("hook") || s.Contains("mortar")
-            || s.Contains("devastator") || s.Contains("arc") || s.Contains("porto") || s.Contains("vaporizer"))
-            return true;
+        // as its "model" so the catalog can type it). The old code concatenated classname+" "+model and substring-
+        // tested; a per-field scan is equivalent (the space separator never let a stem match across the seam) and
+        // allocation-free. (movetype FLY/TOSS/BOUNCE w/ owner is the deeper server test.)
+        return HasProjectileStem(cn) || HasProjectileStem(e.Model);
+    }
+
+    private static readonly string[] ProjectileStems =
+        { "projectile", "rocket", "grenade", "nade", "plasma", "electro", "crylink", "hagar", "seeker", "fireball",
+          "blaster", "spike", "mine", "hook", "mortar", "devastator", "arc", "porto", "vaporizer" };
+
+    private static bool HasProjectileStem(string s)
+    {
+        foreach (string stem in ProjectileStems)
+            if (s.Contains(stem, System.StringComparison.OrdinalIgnoreCase))
+                return true;
         return false;
+    }
+
+    /// <summary>
+    /// True when <paramref name="e"/> is a world pickup (the QC <c>ENT_CLIENT_ITEM</c> the client ItemDraw alpha
+    /// pass runs for) — a spawned <c>item</c>/<c>item_*</c>/<c>weapon_*</c>/<c>ammo_*</c> classname (the same set
+    /// <see cref="IsProjectile"/> excludes from projectile routing), or any entity already carrying a networked
+    /// item render status (animate class / not-available / expiring). Gates the item-only ghost/despawn/distance
+    /// fade so it never touches players or monsters (which would wrongly hide a distant enemy under the distance
+    /// fade — QC ItemDraw runs only for the item entity class).
+    /// </summary>
+    private static bool IsItemEntity(Entity e)
+    {
+        string cn = e.ClassName.ToLowerInvariant();
+        if (cn == "item" || cn.StartsWith("item_") || cn.StartsWith("weapon_") || cn.StartsWith("ammo_"))
+            return true;
+        // A networked item that arrived as the generic proxy classname still carries item render status.
+        return e.ItemAnimate != 0 || e.ItemExpiringFx || !e.ItemAvailable;
     }
 
     // =================================================================================================
@@ -1394,6 +2074,15 @@ public partial class ClientWorld : Node3D
             if (EntityModelFactory?.Invoke(entity) is { } built)
             {
                 node.AddChild(built);
+                // CSQCMODEL_AUTOUPDATE for skeletal DPM monsters (golem/spider/mage/zombie/wyvern): a networked
+                // frame-driven entity plays the frame GROUP its server brain stamped onto Entity.Frame (QC mr_anim
+                // → MonsterAI.DriveAnimFrame). DpmBuilder bakes the .framegroups ranges into AnimationPlayer clips
+                // in group order; this binds the driver so the model actually plays idle/walk/run/melee/pain/spawn/
+                // die clips through their real .dpm fps timeline instead of holding the bind pose. The attach is
+                // inert for a DPM that carries no framegroup metadata (a single-clip prop) or a non-frame-driven
+                // (local/demo) entity, mirroring the MD3 ModelAnimator.FollowEntityFrame gate just below.
+                if (_frameDriven.Contains(entity.Index))
+                    DpmFrameDriver.TryAttach(built, entity);
                 return;
             }
 
@@ -1422,6 +2111,7 @@ public partial class ClientWorld : Node3D
             if (isPlayer)
                 CsqcStateFor(entity).IsPlayerModel = true;
             node.AddChild(anim);
+            anim.SetProcess(false); // R1: ClientWorld's cw.anim loop drives Advance(); kill the per-node callback
             _animators[entity.Index] = anim;
         }
         else
@@ -1429,6 +2119,36 @@ public partial class ClientWorld : Node3D
             node.AddChild(ModelLoader.BuildModel(md3, 0, Assets));
         }
     }
+
+    /// <summary>
+    /// True when this networked entity is a CTF flag (its resolved model lives under models/ctf/flag*). Its banner
+    /// texture (banner.tga) carries a <c>banner_shirt.tga</c> companion, so AssetSystem auto-compiles it to the
+    /// team-colorable <see cref="XonoticGodot.Game.Loaders.PlayerSkinShader"/> — the flag just needs the team
+    /// colormap driven onto it like a player (playtest-bugs #8).
+    /// </summary>
+    private static bool IsCtfFlagModel(Entity e) =>
+        e.Model is { } m && m.Contains("ctf/flag", System.StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Normalize a networked colormap / <see cref="Entity.Team"/> for <see cref="ModelTint"/>: it holds Xonotic's
+    /// NUM_TEAM_* color CODE (<see cref="XonoticGodot.Common.Gameplay.Teams"/>: Red=4/Blue=13/Yellow=12/Pink=9),
+    /// but <c>ModelTint.ColormapColors</c>/<c>TeamColor</c> were written for the colormap LOW NIBBLE (1=red..4=pink).
+    /// Map the four team codes to their nibble so a team entity (player OR flag) tints the RIGHT team color; leave
+    /// everything else unchanged — 0 (FFA/none) and a packed FORCECOLORS value (&gt;=1024) both flow through as-is.
+    /// (playtest-bugs #8: a red flag/player rendered PINK because code 4 hit TeamColor(4)=pink.)
+    /// </summary>
+    /// <summary>Map a NUM_TEAM_* color CODE (Red=4/Blue=13/Yellow=12/Pink=9 — what <c>Entity.Team</c> carries)
+    /// onto the colormap low NIBBLE (1..4) <see cref="ModelTint.TeamColor"/> expects; pass-through for values
+    /// already in nibble/colormap form. Public: NetGame's viewmodel team tint needs the same mapping
+    /// (playtest r9: the raw BLUE code 13 is no valid nibble → the first-person gun never team-tinted).</summary>
+    public static int NormalizeTeamColormap(int cm) => cm switch
+    {
+        XonoticGodot.Common.Gameplay.Teams.Red => 1,    // 4  → 1 red
+        XonoticGodot.Common.Gameplay.Teams.Blue => 2,   // 13 → 2 blue
+        XonoticGodot.Common.Gameplay.Teams.Yellow => 3, // 12 → 3 yellow
+        XonoticGodot.Common.Gameplay.Teams.Pink => 4,   // 9  → 4 pink
+        _ => cm,
+    };
 
     private void UpdateAnimatorState(Entity entity)
     {

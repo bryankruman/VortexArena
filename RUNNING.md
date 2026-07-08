@@ -2,6 +2,8 @@
 
 Operational reference for building, running, and smoke-testing the port. A scratchpad for tricks — **add to the
 "Tricks & techniques" section as we learn more** (visual tests, profiling, dedicated server, etc.).
+Performance capture + hitch diagnosis has its own playbook: **[PERF-DEBUGGING.md](PERF-DEBUGGING.md)**
+(`tools/perf-run.ps1` → `tools/perf-report.py`).
 
 ---
 
@@ -88,7 +90,9 @@ A healthy boot prints `[MapLoader] '<map>' surfaces: …`, `[bots] waypoints for
 bot fill kicks in at sim time 2.5 s), and `handshake accepted`. For scripted/CI runs add
 `--quit-after-seconds <s>` so the host exits on its own — Windows `timeout` does NOT kill the Godot child,
 and an orphaned host keeps UDP 26000 bound (the next run then fails with "Couldn't create an ENet host";
-clean up strays with `powershell "Get-Process Godot* | Stop-Process -Force"`).
+clean up strays with `powershell "Get-Process Godot* | Stop-Process -Force"`). A `--quit-after-seconds`
+(or explicit `--no-save-config`) run also **never writes `~/XonData/config.cfg`** — DP's `-benchmark`
+rule — so scripted runs and their `--cvar`/`--bots` pins can't pollute the player's saved settings.
 
 For a packaged install, `tools/run-dedicated.sh` (shipped beside the exported `linux-dedicated`
 binary by `tools/package.sh`) `cd`s to its own directory first, matching upstream's
@@ -211,11 +215,20 @@ ToS/welcome/team-select, tools, confirms). Architecture:
 - **Shared cvar store.** Every menu widget binds an engine cvar via the toolkit in `game/menu/framework/`
   (`Widgets.CheckBox/Slider/TextSlider/RadioButton/InputBox/CommandButton`, `Dependent.Bind`/`BindNot` =
   QC `setDependent`). `MenuState` (boot) mounts the VFS once, loads `xonotic-client.cfg`+`xonotic-server.cfg`
-  into one process-wide `CvarService`, layers `user://config.cfg` on top, and hands that store + VFS to each
+  into one process-wide `CvarService`, layers `~/XonData/config.cfg` on top, and hands that store + VFS to each
   match (so a setting changed in the menu is live in-game and persists). Apply/restart buttons route through
   `MenuCommand`.
 - **Dialogs** live in `game/menu/dialogs/` (one C# file per QC `dialog_*.qc`); `DialogSettingsAudio.cs` is the
-  reference pattern. Settings persist to `user://config.cfg` on Back/Apply.
+  reference pattern. Settings persist to `~/XonData/config.cfg` on Back/Apply — but only cvars the shipped cfg
+  tree declares `seta` (or DP-archived engine cvars / explicit user `seta`s), and only when moved off the
+  shipped default (the DP `Cvar_WriteVariables` rule; see CVARS.md "Persistence"). Automation runs
+  (`--quit-after-seconds` / `--no-save-config`) skip the save entirely.
+- **User data dir.** All writable per-user data — `config.cfg` (cvars + keybinds), `settings.cfg`,
+  `favorites.cfg`, the `sdfcache/`, and the profiler dumps — lives under **`~/XonData/`** (resolved by
+  `game/UserPaths.cs`, the writable-side counterpart to `DataPaths`), *not* Godot's hidden `user://` dir. Set
+  the `XONOTIC_USERDIR` env var to an absolute path to override it (tests/CI use this to keep `~` clean).
+  `MenuState.Boot` does a one-time copy of an existing `user://` `config.cfg`/`settings.cfg`/`favorites.cfg`
+  into `~/XonData` on first run, so an upgrade keeps the player's saved prefs.
 - **In-game:** Escape opens the pause menu (`Shell` pauses the tree; Disconnect returns to the main menu).
 
 **Boot / capture flags** (on the windowed run):
@@ -330,18 +343,37 @@ ToS/welcome/team-select, tools, confirms). Architecture:
   *Allocation Rate* / *% Time in GC* / gen0 counts while playing. **Do not** flip GC modes
   (`ServerGarbageCollection` etc.) in `XonoticGodot.csproj` without counter evidence — client frame-pauses
   trade against dedicated throughput.
-- **Hitch forensics (FrameProfiler, 2026-06-12):** `cl_frameprofiler 1` = overlay graph + hitch log,
-  `2` = also a per-second breakdown + the file sink `user://frameprofile.log`. Every frame is recorded into a
-  240-frame forensic ring (full per-scope ms+alloc table, GC counts + **pause ms**, draw calls, **pipeline-compile
-  deltas** — a nonzero `pipe +N` mid-play is a first-use shader compile slipping past the warm pass), and a hitch
-  emits a multi-line dump: `[hitch] scopes:` (top 12 with per-scope KB), `gpu:`, `gc:`, `events:`, and `prev:`
-  (the 8-frame run-up). **Events** are one-shot forensic markers any layer can raise via
-  `Prof.Event("...")` — wired today: streamer main-thread builds (with ms), GPU warm-pass completion, sim
-  backlog drops, server input-queue trims, faithful-particle capacity changes. Read a hitch as: events name the
-  culprit; `scopes` attribute the C# time; `pipe/gpu` attribute the GPU; `gc pause` the GC.
-  `set cl_frameprofiler_dump 1` (console, mid-play, after a stutter) writes the whole ring to
-  `user://frameprofile_ring.csv` (Excel/pandas-ready) and re-arms. Add new `Prof.Event` call sites freely —
-  they're free when the profiler is off, bounded when on, thread-safe everywhere.
+- **Hitch forensics (FrameProfiler, reworked 2026-06-14):** `cl_frameprofiler 1` = overlay graph + hitch log +
+  **session recording**; `2` = also the periodic snapshot on the console. Every frame is recorded into a
+  240-frame forensic ring (per-scope ms + **self-time** + alloc, GC counts + **pause ms**, draw calls,
+  **pipeline-compile deltas**).
+  - **Classified hitches (5).** Each hitch is tagged with what dominated it — `GC-PAUSE`, `PIPELINE-COMPILE`,
+    `ASSET-BUILD`, `CPU-LOGIC`, `GPU-BOUND`, `VSYNC/PRESENT`, `EXTERNAL` — followed by a one-line reason, the
+    frames-dropped count, the engine split, and human-readable byte sizes. Steady-state repeats of the same
+    class **collapse** into one `[hitch CLASS ×N] min–max over Δs` line instead of spamming.
+  - **Call tree (16, file only).** The forensic block in `session-*.log` (NOT the console — kept clean) prints a
+    box-drawing call tree with right-aligned columns: inclusive `ms`, `%fr` (share of frame), `×n` (open count),
+    `max` (longest single open when n>1), `alloc`, and `typ` (rolling-baseline multiplier when abnormal, §9).
+    Self-time is implicit (a node's ms minus its children); an `(other)` row carries any level's significant
+    unattributed remainder, so a fat `proc:other` self-attributes.
+  - **Sampling watchdog (17, `cl_frameprofiler_watchdog` default 1).** A background thread samples the main
+    thread's innermost open scope during an over-budget frame, so a stall inside un-scoped code is attributed
+    (`watchdog: 38/41 samples in 'sim.move'`). Near-zero main-thread cost; reports `(unscoped)` when stuck
+    outside any scope (⇒ a candidate for a new `Prof.Sample`).
+  - **Overlay (1–4).** Stacked category bars (proc/rcpu/rest, GPU marker, red cap on a pipe/GC frame), a header
+    with fps + 1%-low + session hitch count, a pinned last-hitch verdict, and **`F11`** to toggle an expanded
+    panel showing the top live scopes vs their baselines.
+  - **Recording (14).** Whenever the profiler is active it writes a per-launch `~/XonData/logs/session-<stamp>.log`
+    (classified hitches + periodic `p50/p95/p99/p99.9` snapshots + an end-of-session summary with 1%/0.1% lows,
+    hitch breakdown, top worst frames, GC + alloc totals) and a parallel `.csv` (the per-frame numeric timeline).
+    A **background writer thread** does all formatting + I/O + periodic flush; the game thread only enqueues, so
+    recording never causes a hitch. Logs are kept per session (no pruning); under disk backpressure the CSV rows
+    drop first (counted in the summary), never the game's frame time.
+  - **Events** are one-shot forensic markers any layer raises via `Prof.Event("...")` — streamer builds, GPU
+    warm-pass completion, sim backlog drops, input-queue trims, particle capacity changes.
+  `set cl_frameprofiler_dump 1` (console, after a stutter) still writes the whole ring to
+  `~/XonData/frameprofile_ring.csv` and re-arms. Add new `Prof.Sample`/`Prof.Event` call sites freely — they're
+  free when the profiler is off, cheap (per-thread, no shared lock) when on, thread-safe everywhere.
 - **Dedicated/headless server:** v1 is the headless listen server (`--headless --host`, see the section
   above + `tools/run-dedicated.sh`); the `linux-dedicated` export preset uses Godot's "export as dedicated
   server" mode (`OS.HasFeature("dedicated_server")` is the feature-tag branch point). The

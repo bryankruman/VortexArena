@@ -3,6 +3,7 @@ using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
+using XonoticGodot.Game.Client;
 using NVec3 = System.Numerics.Vector3;
 
 namespace XonoticGodot.Game.Hud;
@@ -52,6 +53,10 @@ namespace XonoticGodot.Game.Hud;
 /// </summary>
 public partial class CrosshairPanel : HudPanel
 {
+    /// <summary>(R8) The crosshair draws with its own <c>crosshair_alpha</c>, independent of the scoreboard
+    /// panel-fade, so the HUD manager must keep updating it even while the scoreboard is up.</summary>
+    public override bool DrawsWithOwnAlpha => true;
+
     // Port of crosshair.qc: SHOTTYPE_* — the true-aim hit classification.
     /// <summary>Classification of what the aim ray would hit (QC <c>SHOTTYPE_*</c>).</summary>
     public enum ShotType
@@ -75,6 +80,8 @@ public partial class CrosshairPanel : HudPanel
         Weapon = 1,
         /// <summary>QC 2: tint by health + armor (<c>HUD_Get_Num_Color</c>).</summary>
         Health = 2,
+        /// <summary>QC 3: rainbow — a random colour re-rolled every <c>crosshair_color_special_rainbow_delay</c>.</summary>
+        Rainbow = 3,
     }
 
     /// <summary>The local player (set by <see cref="Hud"/>); drives per-weapon crosshair color + charge ring + true-aim.</summary>
@@ -206,10 +213,12 @@ public partial class CrosshairPanel : HudPanel
     public bool HitTest { get; set; } = true;
 
     /// <summary>
-    /// QC <c>autocvar_crosshair_hittest</c> as the teammate-shrink divisor: a value &gt; 1 shrinks the crosshair
-    /// over a teammate (QC <c>wcross_scale /= autocvar_crosshair_hittest</c>). 1 leaves the size unchanged.
+    /// Legacy property fallback for the teammate-shrink divisor. The live path now divides by the
+    /// <c>crosshair_hittest</c> cvar itself (QC <c>wcross_scale /= autocvar_crosshair_hittest</c>), which defaults
+    /// to 1 (NO shrink) exactly like Base; this property is retained only as a public API surface and defaults to 1
+    /// to match. A value &gt; 1 shrinks the crosshair over a teammate.
     /// </summary>
-    public float HitTestTeammateShrink { get; set; } = 1.25f;
+    public float HitTestTeammateShrink { get; set; } = 1f;
 
     /// <summary>QC <c>autocvar_crosshair_hittest_blur_wall</c>: dim the crosshair over an obstruction.</summary>
     public bool BlurWall { get; set; } = true;
@@ -237,6 +246,22 @@ public partial class CrosshairPanel : HudPanel
     /// <summary>The latest true-aim classification (QC <c>shottype</c>), recomputed each <see cref="_Process"/>.</summary>
     public ShotType ShotResult { get; private set; } = ShotType.HitWorld;
 
+    // ---- crosshair_chase: third-person crosshair re-projection (QC crosshair.qc HUD_Crosshair chase block) ----
+
+    /// <summary>
+    /// QC <c>chase_active</c>: true while the third-person chase camera is live. Fed by the view layer (NetGame).
+    /// When set (and <see cref="ChaseCamera3D"/> + <see cref="Player"/> are present and <c>crosshair_chase</c> is on)
+    /// the crosshair is drawn at the screen-projection of the chase impact point rather than the geometric panel
+    /// centre, so it tracks where the shot would actually land from the offset chase eye.
+    /// </summary>
+    public bool ChaseActive { get; set; }
+
+    /// <summary>
+    /// The live render camera used to re-project the chase impact point to screen space (QC <c>project_3d_to_2d</c>).
+    /// Fed by the view layer (NetGame) alongside <see cref="ChaseActive"/>; <c>null</c> = no chase re-projection.
+    /// </summary>
+    public Camera3D? ChaseCamera3D { get; set; }
+
     // ---- T21: weapon-switch cross-fade (QC wcross_name_changestarttime / changedonetime) ----
 
     /// <summary>
@@ -255,6 +280,16 @@ public partial class CrosshairPanel : HudPanel
     private double _localClock;
     private double _lastDelta = 1.0 / 60.0;
 
+    // (perf 2026-06-14) The two forward world traces in ComputeShotType are a full max_shot_distance (32768 qu)
+    // ray + a box trace. The TRUE root-cause fix is in the collision broadphase (Brush.cs: a long ray no longer
+    // brute-forces every brush in the map), which made each trace ~negligible. This cache is a cheap, always-
+    // correct secondary guard: a static aim ray cannot change the true-aim classification, so we skip the traces
+    // entirely while standing still (the user's "slowest at the spawn" case). An optional cl_crosshair_trueaim_rate
+    // (default 0 = off) can additionally cap the re-trace rate while turning on pathologically dense content.
+    private NVec3 _trueAimLastOrigin, _trueAimLastForward;
+    private bool _trueAimHaveCache;
+    private double _trueAimNextAt;
+
     // Weapon-switch cross-fade state — the port of QC's wcross_name_* "goal_prev" persisted globals. We key
     // the transition on the resolved crosshair texture changing (QC keys on wcross_name/resolution changing).
     private Texture2D? _crossPrev;       // the outgoing crosshair texture (QC wcross_name_goal_prev_prev)
@@ -266,9 +301,11 @@ public partial class CrosshairPanel : HudPanel
     private float _pickupSize;           // QC pickup_crosshair_size (counts down from 1; sin() drives the bump)
     private float _hitIndSize;           // QC hitindication_crosshair_size (counts down from 1)
 
-    // ---- goal-based smooth scale/alpha (QC wcross_changedonetime block) ----
+    // ---- goal-based smooth scale/alpha/color (QC wcross_changedonetime block) ----
     private float _scalePrev = 1f, _alphaPrev = 1f;        // value last frame (QC *_prev)
     private float _scaleGoalPrev = 1f, _alphaGoalPrev = 1f; // goal last frame (QC *_goal_prev)
+    private Vector3 _colorPrev = Vector3.One;               // RGB last frame (QC wcross_color_prev)
+    private Vector3 _colorGoalPrev = Vector3.One;           // RGB goal last frame (QC wcross_color_goal_prev)
     private float _changeDoneTimeGoal;                      // QC wcross_changedonetime
     private bool _smoothSeeded;
 
@@ -278,6 +315,11 @@ public partial class CrosshairPanel : HudPanel
 
     // ---- weapon-switch ring fade memory (QC wcross_ring_prev) ----
     private bool _ringPrev;
+
+    // ---- rainbow color (QC crosshair_getcolor case 3: rainbow_last_flicker / rainbow_prev_color statics) ----
+    private float _rainbowNextFlicker;        // QC rainbow_last_flicker (next re-roll time)
+    private Vector3 _rainbowColor;            // QC rainbow_prev_color (the latched random color, may exceed [0,1])
+    private bool _rainbowSeeded;
 
     /// <summary>
     /// Register the panel's behaviour-cvar defaults (the stock <c>crosshair*</c> values from crosshairs.cfg).
@@ -295,6 +337,13 @@ public partial class CrosshairPanel : HudPanel
         c.Register("crosshair_alpha", "0.8", save);
         c.Register("crosshair_size", "0.4", save);
         c.Register("crosshair_per_weapon", "1", save);
+        // crosshairs.cfg:48,51,52 — registered for parity/config faithfulness. crosshair_2d selects the
+        // side-scroller (FREEAIM viewloc) crosshair; crosshair_chase/_playeralpha drive the third-person chase
+        // crosshair re-projection + body-alpha fade. The side-scroller view-state and chase trace are not yet
+        // wired in this port, so these cvars are settable but their special behaviour is inert here.
+        c.Register("crosshair_2d", "54", save);
+        c.Register("crosshair_chase", "1", save);
+        c.Register("crosshair_chase_playeralpha", "0.25", save);
 
         // dot
         c.Register("crosshair_dot", "0", save);
@@ -483,8 +532,10 @@ public partial class CrosshairPanel : HudPanel
         if (NadeTimer > 0f || CaptureProgress > 0f || ReviveProgress > 0f)
             dirty = true;
 
-        // Health-based color animates (over-100 flash / low-health pulse) so keep painting in that mode.
-        if (ColorModeCvar() == ColorMode.Health)
+        // Health-based color animates (over-100 flash / low-health pulse), and rainbow re-rolls on a timer, so
+        // keep painting in those modes.
+        ColorMode cmode = ColorModeCvar();
+        if (cmode == ColorMode.Health || cmode == ColorMode.Rainbow)
             dirty = true;
 
         if (dirty) QueueRedraw();
@@ -528,12 +579,28 @@ public partial class CrosshairPanel : HudPanel
     {
         EnsureCvarCache();
         int v = (int)_cvColorSpecial;
-        return v switch { 1 => ColorMode.Weapon, 2 => ColorMode.Health, _ => ColorMode.Fixed };
+        return v switch { 1 => ColorMode.Weapon, 2 => ColorMode.Health, 3 => ColorMode.Rainbow, _ => ColorMode.Fixed };
     }
 
     protected override void DrawPanel()
     {
         Vector2 center = Size2 * 0.5f;
+
+        // crosshair_chase (QC crosshair.qc HUD_Crosshair, the chase_active block + crosshairs.cfg:51): in third
+        // person the geometric panel centre no longer matches where the shot lands, so re-project. Trace forward
+        // from the player origin (CrosshairTrace.ChaseImpact does the eye-height + max_shot_distance worldonly
+        // trace) and project the impact through the live chase camera; draw the crosshair there instead of dead
+        // centre. Falls back to the geometric centre when chase is off, the cvar disables it, no camera is fed, or
+        // the impact projects off-screen (behind the camera). This closes registry cl-crosshair.core.origin_chase.
+        // DEFERRED (Phase 2 third-person wiring): the crosshair_chase_playeralpha 0.25 body-alpha fade while the
+        // chase view is obstructed needs a player-model alpha hook that does not exist on this path yet.
+        if (GlobalF("crosshair_chase", 1f) != 0f && ChaseActive && ChaseCamera3D is not null && Player is not null
+            && TryGetChaseForward(out NVec3 chaseForward))
+        {
+            NVec3 impact = CrosshairTrace.ChaseImpact(Player.Origin, ViewHeight, chaseForward);
+            if (CrosshairTrace.ProjectToScreen(ChaseCamera3D, impact, out Vector2 sp))
+                center = sp;
+        }
 
         // [T41] objective rings (QC view.qc HUD_Draw 1006-1022): NADE_TIMER > CAPTURE_PROGRESS > REVIVE_PROGRESS,
         // drawn FIRST so they're independent of the crosshair master toggle below — in QC these live in HUD_Draw,
@@ -586,26 +653,33 @@ public partial class CrosshairPanel : HudPanel
         bool blur = false;
         if (HitTestCvar())
         {
-            if (ShotResult == ShotType.HitTeam && HitTestTeammateShrink > 0f)
-                scale /= HitTestTeammateShrink; // QC wcross_scale /= autocvar_crosshair_hittest
+            // QC: wcross_scale /= autocvar_crosshair_hittest — the SAME cvar that gates the hit-test is the shrink
+            // divisor. At the stock default (crosshair_hittest 1) this is a no-op (no shrink); a user who sets
+            // crosshair_hittest > 1 gets the teammate shrink. (Falls back to 1 = no shrink, like Base, when the
+            // cvar store is unavailable.)
+            float hittestDiv = GlobalF("crosshair_hittest", 1f);
+            if (ShotResult == ShotType.HitTeam && hittestDiv > 0f)
+                scale /= hittestDiv;
             if ((ShotResult == ShotType.HitTeam && BlurTeammateCvar())
                 || (ShotResult == ShotType.HitObstruction && BlurWallCvar()))
                 blur = true;
         }
         float goalAlpha = baseAlpha * (blur ? 0.75f : 1f); // QC wcross_alpha *= 0.75 on a blurred target
 
-        // ---- goal-based smooth scale/alpha lerp (QC wcross_changedonetime block) ----
-        SmoothGoal(ref scale, ref goalAlpha);
+        // ---- goal-based smooth scale/alpha/color lerp (QC wcross_changedonetime block) ----
+        SmoothGoal(ref scale, ref goalAlpha, ref c);
 
         c = new Color(c.R, c.G, c.B, goalAlpha);
 
-        // Numbered crosshair art (QC gfx/crosshair<N>), per-weapon number when configured; else the vector
-        // crosshair. The real Xonotic art resolves from the mounted game data via TextureCache's VFS resolver.
+        // Numbered crosshair art (QC gfx/crosshair<N>), or the active weapon's own pic when crosshair_per_weapon
+        // is on (QC wcross_name = e.w_crosshair); else the vector crosshair. The real Xonotic art resolves from
+        // the mounted game data via TextureCache's VFS resolver.
         Texture2D? pic = ResolveCrosshair(weapon);
 
-        // Resolution: QC scales the pic by crosshair_size (the per-weapon size multiplier folds in via the
-        // resolved number). With scalefade the size lives in wcross_scale; we always fold it into the draw scale.
-        float resolution = GlobalF("crosshair_size", 0.4f) * BasePicScale();
+        // Resolution: QC scales the pic by crosshair_size, then by the per-weapon size multiplier in per-weapon
+        // mode (QC wcross_resolution *= e.w_crosshair_size). With scalefade the size lives in wcross_scale; we
+        // always fold it into the draw scale.
+        float resolution = GlobalF("crosshair_size", 0.4f) * BasePicScale() * PerWeaponSizeMult(weapon);
         float drawScale = scale * resolution;
         // QC: skip when scale/alpha collapse. Also reject non-finite values (a NaN drawScale/alpha would slip past
         // a `< 0.001f` test — NaN compares false — and feed NaN-sized rects into the draw calls / off-panel garbage).
@@ -663,6 +737,8 @@ public partial class CrosshairPanel : HudPanel
                     return HealthArmorColor(h, a, alpha);
                 }
                 break;
+            case ColorMode.Rainbow:
+                return RainbowColor(alpha);
         }
         // QC default: stov(autocvar_crosshair_color), else the property fallback.
         if (TryParseRgb(GlobalStr("crosshair_color"), out Color cc))
@@ -708,32 +784,71 @@ public partial class CrosshairPanel : HudPanel
     private static Vector3 Between(Vector3 lo, Vector3 hi, float pct, float min, float max)
         => lo + (hi - lo) * ((pct - min) / (max - min));
 
+    /// <summary>
+    /// QC <c>crosshair_color_special == 3</c> (rainbow): a random colour re-rolled every
+    /// <c>crosshair_color_special_rainbow_delay</c> seconds (QC <c>randomvec() * ..._rainbow_brightness</c>),
+    /// latched between re-rolls. QC <c>randomvec()</c> returns a vector with each component in [-1,1]; scaled by
+    /// the brightness and clamped to [0,1] at draw, this gives the bright flickering rainbow crosshair.
+    /// </summary>
+    private Color RainbowColor(float alpha)
+    {
+        float now = CurrentTime();
+        float brightness = GlobalF("crosshair_color_special_rainbow_brightness", 20f);
+        float delay = GlobalF("crosshair_color_special_rainbow_delay", 0.1f);
+
+        // QC: if (time >= rainbow_last_flicker) re-roll and schedule the next flicker. Seed on first use so the
+        // first frame already has a colour (QC's statics start at 0, which also re-rolls on the first frame).
+        if (!_rainbowSeeded || now >= _rainbowNextFlicker)
+        {
+            _rainbowColor = RandomVec() * brightness;
+            _rainbowNextFlicker = now + delay;
+            _rainbowSeeded = true;
+        }
+
+        return new Color(
+            Mathf.Clamp(_rainbowColor.X, 0f, 1f),
+            Mathf.Clamp(_rainbowColor.Y, 0f, 1f),
+            Mathf.Clamp(_rainbowColor.Z, 0f, 1f),
+            alpha);
+    }
+
+    /// <summary>QC <c>randomvec()</c>: a random vector with each component uniform in [-1,1].</summary>
+    private static Vector3 RandomVec() => new(
+        (float)GD.RandRange(-1.0, 1.0),
+        (float)GD.RandRange(-1.0, 1.0),
+        (float)GD.RandRange(-1.0, 1.0));
+
     // -------------------------------------------------------------------------------------------------
     //  Goal-based smooth scale/alpha (QC wcross_changedonetime block)
     // -------------------------------------------------------------------------------------------------
 
     /// <summary>
-    /// Port of the QC <c>wcross_changedonetime</c> easing: when the goal scale/alpha changes, ease the displayed
-    /// value toward it over <see cref="EffectTime"/> (frame-rate-independent exponential approach, QC
-    /// <c>f = frametime / (changedonetime - time + frametime)</c>).
+    /// Port of the QC <c>wcross_changedonetime</c> easing: when the goal scale/alpha/color changes, ease the
+    /// displayed value toward it over <see cref="EffectTime"/> (frame-rate-independent exponential approach, QC
+    /// <c>f = frametime / (changedonetime - time + frametime)</c>). The colour (RGB) is eased exactly like the
+    /// scale and alpha (QC crosshair.qc:444 <c>wcross_color = f*wcross_color + (1-f)*wcross_color_prev</c>); the
+    /// raw RGB may exceed [0,1] (rainbow brightness / hit-indication channel adds) — it is eased un-clamped and
+    /// clamped only at draw, matching QC. Alpha is carried through <paramref name="alpha"/> (QC wcross_alpha).
     /// </summary>
-    private void SmoothGoal(ref float scale, ref float alpha)
+    private void SmoothGoal(ref float scale, ref float alpha, ref Color color)
     {
         float effectTime = EffectTimeCvar();
         float now = CurrentTime();
+        var rgb = new Vector3(color.R, color.G, color.B);
 
         if (!_smoothSeeded)
         {
-            _scalePrev = scale; _alphaPrev = alpha;
-            _scaleGoalPrev = scale; _alphaGoalPrev = alpha;
+            _scalePrev = scale; _alphaPrev = alpha; _colorPrev = rgb;
+            _scaleGoalPrev = scale; _alphaGoalPrev = alpha; _colorGoalPrev = rgb;
             _smoothSeeded = true;
         }
 
-        // A changed goal (re)arms the ease window (QC: if goal changed, changedonetime = time + f).
-        if (scale != _scaleGoalPrev || alpha != _alphaGoalPrev)
+        // A changed goal (re)arms the ease window (QC: if scale/alpha/color goal changed, changedonetime = time + f).
+        if (scale != _scaleGoalPrev || alpha != _alphaGoalPrev || rgb != _colorGoalPrev)
             _changeDoneTimeGoal = now + effectTime;
         _scaleGoalPrev = scale;
         _alphaGoalPrev = alpha;
+        _colorGoalPrev = rgb;
 
         if (effectTime > 0f && now < _changeDoneTimeGoal)
         {
@@ -741,10 +856,14 @@ public partial class CrosshairPanel : HudPanel
             float f = dt / Mathf.Max(0.0001f, _changeDoneTimeGoal - now + dt);
             scale = f * scale + (1f - f) * _scalePrev;
             alpha = f * alpha + (1f - f) * _alphaPrev;
+            rgb = f * rgb + (1f - f) * _colorPrev;
         }
 
         _scalePrev = scale;
         _alphaPrev = alpha;
+        _colorPrev = rgb;
+
+        color = new Color(rgb.X, rgb.Y, rgb.Z, color.A);
     }
 
     // -------------------------------------------------------------------------------------------------
@@ -1001,6 +1120,11 @@ public partial class CrosshairPanel : HudPanel
         if (!IsFinite(origin) || !IsFinite(forward))
             return ShotType.HitWorld;
 
+        // (perf) Reuse the last classification when the aim ray is effectively unchanged (standing still) or we
+        // traced very recently — the two world traces below are ~6 ms on big maps and only drive a cosmetic tint.
+        if (TrueAimCanReuse(origin, forward))
+            return ShotResult;
+
         // QC: the rail family (Vortex/Vaporizer; QC also Overkill-Nex, not present in this port) traces against
         // players too (MOVE_NORMAL); everything else uses MOVE_NOMONSTERS for the aim line. Projectile-size
         // weapons additionally get a non-zero trace box.
@@ -1009,16 +1133,19 @@ public partial class CrosshairPanel : HudPanel
         (NVec3 mins, NVec3 maxs) = ProjectileBox(weapon);
 
         float range = WeaponFiring.MaxShotDistance; // QC max_shot_distance
-        NVec3 end = origin + forward * range;
 
         // The two forward traces reach into the live engine trace service. A failure there must NOT escape into
         // _Process (it runs every frame — an unhandled throw would spam the log and stall HUD repaint); degrade
         // to HitWorld (the QC default) so the crosshair stays at full strength.
+        // (perf) scope the two world traces so they are never invisible in proc:other again.
+        using var _trueAimScope = XonoticGodot.Game.Client.FrameProfiler.Scope("hud.trueaim");
         try
         {
             // 1) Aim line: where is the player pointing? (QC traceline(traceorigin, ... view_forward * max_shot_distance)).
-            TraceResult aim = Api.Trace.Trace(origin, NVec3.Zero, NVec3.Zero, end, aimFilter, Player);
-            NVec3 trueAimPoint = aim.EndPos + forward; // QC nudges the point a little forward for the final box trace
+            // Routed through the shared CrosshairTrace primitive (dedup of the zero-box forward trace) — same eye,
+            // forward, range, filter and ignore-self as the direct Api.Trace.Trace it replaces.
+            CrosshairTrace.Hit aim = CrosshairTrace.TraceForward(origin, forward, range, aimFilter, Player);
+            NVec3 trueAimPoint = aim.PointQuake + forward; // QC nudges the point a little forward for the final box trace
 
             // QC g_trueaim_minrange: keep the aim point at least a short distance ahead so close-range tracing is stable.
             const float trueAimMinRange = 44f; // Xonotic g_trueaim_minrange default
@@ -1039,6 +1166,39 @@ public partial class CrosshairPanel : HudPanel
         {
             return ShotType.HitWorld;
         }
+    }
+
+    /// <summary>
+    /// (perf) True-aim trace gate. Returns true when the caller should REUSE the last <see cref="ShotResult"/>
+    /// instead of running the two expensive world traces: either the aim ray is effectively unchanged since the
+    /// last trace (standing still / negligible aim drift — the common case, and exactly the user's "slowest while
+    /// standing at the spawn" scenario), or we traced within the last <c>1/cl_crosshair_trueaim_rate</c> seconds
+    /// while turning. When it returns false it records the ray + schedules the next allowed trace. Set the cvar to
+    /// 0 to disable throttling and trace every frame (the faithful QC cadence, only viable on cheap-trace maps).
+    /// </summary>
+    private bool TrueAimCanReuse(NVec3 origin, NVec3 forward)
+    {
+        bool viewSame = _trueAimHaveCache
+            && NVec3.DistanceSquared(origin, _trueAimLastOrigin) < 0.25f   // < 0.5 qu of eye movement
+            && NVec3.Dot(forward, _trueAimLastForward) > 0.99985f;         // < ~1 degree of aim change
+        if (viewSame)
+            return true;   // standing still / negligible change → the classification can't have changed
+
+        // Cap the re-trace rate while turning. The true-aim tint is a coarse cosmetic hint that does not need to
+        // update every frame, so we hold it to cl_crosshair_trueaim_rate Hz (default 30; 0 = per-frame, which the
+        // Brush.cs broadphase fix also made cheap). The view-unchanged cache above is the always-on, always-correct
+        // part (a static aim ray can't change the classification), so standing still costs zero traces regardless.
+        float rate = GlobalF("cl_crosshair_trueaim_rate", 30f);
+        if (rate > 0f && _trueAimHaveCache && _localClock < _trueAimNextAt)
+            return true;   // turning, but we traced recently → hold the last result until the next slot
+
+        // We are about to trace: record this ray as the cache key and schedule the next permitted trace.
+        _trueAimLastOrigin = origin;
+        _trueAimLastForward = forward;
+        _trueAimHaveCache = true;
+        if (rate > 0f)
+            _trueAimNextAt = _localClock + 1.0 / rate;
+        return false;
     }
 
     /// <summary>
@@ -1064,6 +1224,29 @@ public partial class CrosshairPanel : HudPanel
     }
 
     /// <summary>
+    /// Resolve the look direction used to re-project the chase crosshair (QC <c>view_forward</c>). Prefers the
+    /// view-layer-fed <see cref="AimForward"/> (the authoritative render look direction); otherwise derives it from
+    /// the <see cref="Player"/>'s view angles (QC <c>AngleVectors(view_angles)</c>). Returns false when neither a
+    /// fed forward nor a player is available (the caller then keeps the geometric centre).
+    /// </summary>
+    private bool TryGetChaseForward(out NVec3 forward)
+    {
+        if (AimForward is { } f && f != NVec3.Zero)
+        {
+            forward = System.Numerics.Vector3.Normalize(f);
+            return true;
+        }
+        if (Player is null)
+        {
+            forward = default;
+            return false;
+        }
+        QMath.AngleVectors(Player.Angles, out NVec3 fq, out _, out _);
+        forward = fq;
+        return forward != NVec3.Zero;
+    }
+
+    /// <summary>
     /// Classify a completed trace by the entity it hit (QC <c>EnemyHitCheck</c>): a same-team player is HITTEAM,
     /// any other player is HITENEMY, anything else (world / no entity / spectator) is HITWORLD.
     /// </summary>
@@ -1072,10 +1255,14 @@ public partial class CrosshairPanel : HudPanel
         if (tr.Ent is not Player hit || ReferenceEquals(hit, Player))
             return ShotType.HitWorld;
 
-        // QC: a spectator-team player is not a valid target (treated as world). Team 0 = no team.
-        // QC: teamplay && entcs_GetTeam == myteam → teammate (an invalid target). SAME_TEAM semantics:
-        // both players on the same nonzero team (only true in a team game, where teams are assigned).
-        if (Player is not null && hit.Team != 0f && hit.Team == Player.Team)
+        // QC EnemyHitCheck (crosshair.qc:64-67): a spectator-team player is HITWORLD; otherwise a same-team
+        // player (only when teamplay is on) is HITTEAM, any other player is HITENEMY. The port detects "teamplay
+        // on" the same way the rest of the client does — both players carry a real (nonzero) team only in a team
+        // game — so the `hit.Team != 0` guard doubles as the teamplay gate (in a non-team game everyone is team 0
+        // and 0 != 0 is false, i.e. no teammates, matching Base where the `teamplay &&` branch is never taken).
+        // A spectator is never a live Player trace-target here, so the QC NUM_SPECTATOR->HITWORLD branch is
+        // covered by the `tr.Ent is not Player` early-out above.
+        if (Player is not null && hit.Team > 0f && Player.Team > 0f && hit.Team == Player.Team)
             return ShotType.HitTeam;
 
         return ShotType.HitEnemy;
@@ -1127,15 +1314,87 @@ public partial class CrosshairPanel : HudPanel
     //  Drawing
     // -------------------------------------------------------------------------------------------------
 
-    /// <summary>Resolve the numbered crosshair texture (per-weapon number when configured), or null → vector.</summary>
+    /// <summary>
+    /// QC per-weapon crosshair table (the weapon <c>w_crosshair</c> / <c>w_crosshair_size</c> ATTRIBs, mirrored
+    /// from common/weapons/weapon/*.qh): NetName → (pic name, size multiplier). When <c>crosshair_per_weapon</c>
+    /// is on, the active weapon draws its own named pic at <c>crosshair_size * mult</c> instead of the numbered
+    /// <c>gfx/crosshair&lt;N&gt;</c>. Weapons absent from the table (or with a commented-out size in Base) fall
+    /// back to a 1.0 multiplier. Keyed by the port's NetName.
+    /// </summary>
+    private static readonly System.Collections.Generic.Dictionary<string, (string pic, float size)> PerWeaponPics = new()
+    {
+        ["arc"] = ("gfx/crosshairhlac", 0.7f),
+        ["blaster"] = ("gfx/crosshairlaser", 0.5f),
+        ["crylink"] = ("gfx/crosshaircrylink", 0.5f),
+        ["devastator"] = ("gfx/crosshairrocketlauncher", 0.7f),
+        ["electro"] = ("gfx/crosshairelectro", 0.6f),
+        ["fireball"] = ("gfx/crosshairfireball", 1f),   // Base w_crosshair_size commented out → 1.0
+        ["hagar"] = ("gfx/crosshairhagar", 0.8f),
+        ["hlac"] = ("gfx/crosshairhlac", 0.6f),
+        ["hook"] = ("gfx/crosshairhook", 0.5f),
+        ["machinegun"] = ("gfx/crosshairuzi", 0.6f),
+        ["minelayer"] = ("gfx/crosshairminelayer", 0.9f),
+        ["mortar"] = ("gfx/crosshairgrenadelauncher", 0.7f),
+        ["porto"] = ("gfx/crosshairporto", 0.6f),
+        ["rifle"] = ("gfx/crosshairrifle", 0.6f),
+        ["seeker"] = ("gfx/crosshairseeker", 0.8f),
+        ["shotgun"] = ("gfx/crosshairshotgun", 0.65f),
+        ["tuba"] = ("gfx/crosshairtuba", 1f),           // Base w_crosshair_size commented out → 1.0
+        ["vaporizer"] = ("gfx/crosshairminstanex", 0.6f),
+        ["vortex"] = ("gfx/crosshairnex", 0.65f),
+    };
+
+    private bool PerWeaponEnabled() => GlobalF("crosshair_per_weapon", PerWeaponColor ? 1f : 0f) != 0f;
+
+    /// <summary>QC <c>wcross_resolution *= e.w_crosshair_size</c>: the per-weapon size multiplier when
+    /// <c>crosshair_per_weapon</c> is on, else 1.</summary>
+    private float PerWeaponSizeMult(Weapon? weapon)
+    {
+        if (weapon is not null && PerWeaponEnabled())
+        {
+            // QC e.w_crosshair_size — prefer the size carried on the weapon itself (its ATTRIB); fall back to the
+            // mirrored table for weapons that don't override it.
+            if (weapon.Crosshair is not null)
+                return weapon.CrosshairSize;
+            if (PerWeaponPics.TryGetValue(weapon.NetName, out var e))
+                return e.size;
+        }
+        return 1f;
+    }
+
+    /// <summary>
+    /// Resolve the crosshair texture. In per-weapon mode (QC <c>crosshair_per_weapon</c>) the active weapon's own
+    /// <c>w_crosshair</c> pic wins (QC <c>wcross_name = e.w_crosshair</c>); a per-weapon-number override still
+    /// applies if one was injected via <see cref="PerWeaponNumber"/>; otherwise the numbered <c>gfx/crosshair&lt;N&gt;</c>
+    /// art. Returns null (→ vector crosshair) when the number is 0.
+    /// </summary>
     private Texture2D? ResolveCrosshair(Weapon? weapon)
     {
         int number = (int)GlobalF("crosshair", CrosshairNumber);
+
+        // QC: an explicit per-weapon number override (config-injected) takes precedence over everything.
         if (weapon is not null && PerWeaponNumber is not null
             && PerWeaponNumber.TryGetValue(weapon.NetName, out int n))
-            number = n;
-        if (number <= 0) return null;
+        {
+            if (n <= 0) return null;
+            return TextureCache.GetFirst($"gfx/crosshair{n}", $"res://art/hud/crosshairs/crosshair{n}.png");
+        }
 
+        // QC: crosshair_per_weapon — use the active weapon's own named crosshair pic (e.w_crosshair). Prefer the
+        // pic carried on the weapon itself (its ATTRIB); fall back to the mirrored table by NetName.
+        if (weapon is not null && PerWeaponEnabled())
+        {
+            string? picName = weapon.Crosshair
+                ?? (PerWeaponPics.TryGetValue(weapon.NetName, out var e) ? e.pic : null);
+            if (picName is not null)
+            {
+                Texture2D? wp = TextureCache.GetFirst(picName, $"res://art/hud/crosshairs/{System.IO.Path.GetFileName(picName)}.png");
+                if (wp is not null) return wp;
+                // Fall through to the numbered art if the per-weapon pic isn't in the mounted data.
+            }
+        }
+
+        if (number <= 0) return null;
         // VFS art first (gfx/crosshair<N>), then a project override under res://.
         return TextureCache.GetFirst($"gfx/crosshair{number}", $"res://art/hud/crosshairs/crosshair{number}.png");
     }

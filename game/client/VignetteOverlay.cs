@@ -96,6 +96,7 @@ public partial class VignetteOverlay : CanvasLayer
 
     public override void _Process(double delta)
     {
+        using var _prof = FrameProfiler.Scope("clientmisc");
         Sig s = ReadSig();
         if (!_hasLast || !s.Equals(_last))
             Apply(s);

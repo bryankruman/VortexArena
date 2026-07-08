@@ -1,6 +1,7 @@
 using System.Numerics;
 using XonoticGodot.Common.Diagnostics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Common.Services;
 using XonoticGodot.Engine.Collision;
 
@@ -329,6 +330,15 @@ public sealed class CvarService : ICvarService
         public string Default = "";
         public bool HasDefault;
         public bool Archived;
+        // DP CF_DEFAULTSET: the Default has been snapshotted as the authoritative shipped baseline (LockDefaults).
+        public bool DefaultLocked;
+        // DP CF_ALLOCATED: this cvar was CREATED by a bare set/seta (a cfg line, the console, or user-config) —
+        // NOT declared by a code Register. Only an allocated cvar with no locked default is force-saved (the
+        // persist escape); a Register clears this, so a code-declared cvar (even one that registers after
+        // LockDefaults, like ClientSettings.ApplyAll's cl_*/hud_*/snd_* set) is saved only when it differs from
+        // its registered default — never force-dumped. This is the half my first cut dropped (it gated the escape
+        // on !DefaultLocked alone), which is why every late-registered-but-unchanged cvar bloated config.cfg.
+        public bool Allocated;
     }
 
     private readonly Dictionary<string, Var> _vars = new(StringComparer.Ordinal);
@@ -389,7 +399,10 @@ public sealed class CvarService : ICvarService
     {
         if (!_vars.TryGetValue(name, out var v))
         {
-            v = new Var { Default = value, HasDefault = true }; // first value seen is the baseline default
+            // First value seen is the (inferred) baseline default, and the cvar is "allocated" (DP CF_ALLOCATED) —
+            // created by a set, not a code Register. A later Register promotes it (clears Allocated + adopts the
+            // real default), so an inferred default never masquerades as authoritative once code declares one.
+            v = new Var { Default = value, HasDefault = true, Allocated = true };
             _vars[name] = v;
         }
         if ((v.Flags & CvarFlags.ReadOnly) != 0)
@@ -405,10 +418,15 @@ public sealed class CvarService : ICvarService
     {
         if (_vars.TryGetValue(name, out var existing))
         {
-            // registration is idempotent; keep the existing value but fold in the registered default + flags
-            // (a cvar first seen via `set` in a cfg keeps that cfg value as its default until a real Register).
+            // Idempotent for the VALUE (keep whatever a cfg/user already set), but a Register DECLARES the cvar:
+            // fold in the flags and clear Allocated (it's no longer a bare set). Adopt the registered default as the
+            // authoritative baseline UNLESS LockDefaults already fixed one from the packaged cfg tree — the packaged
+            // default wins over a code fallback (DP keeps the allocated cvar's defstring). This promotion is what
+            // lets a client cvar that registers AFTER LockDefaults (ClientSettings.ApplyAll) be saved only when it
+            // differs from its real default, instead of being force-written by the allocated escape.
             existing.Flags |= flags;
-            if (!existing.HasDefault) { existing.Default = defaultValue; existing.HasDefault = true; }
+            existing.Allocated = false;
+            if (!existing.DefaultLocked) { existing.Default = defaultValue; existing.HasDefault = true; }
             return;
         }
         _vars[name] = new Var
@@ -418,6 +436,8 @@ public sealed class CvarService : ICvarService
             Flags = flags,
             Default = defaultValue,
             HasDefault = true,
+            // Allocated stays false: a Register-declared cvar has an authoritative default (its registered value),
+            // so it is persisted only when changed — never force-saved by the allocated escape.
         };
     }
 
@@ -500,6 +520,48 @@ public sealed class CvarService : ICvarService
         }
     }
 
+    /// <summary>
+    /// DP <c>Cvar_LockDefaults</c>: snapshot every cvar's CURRENT value as its authoritative default. Call this
+    /// once after the stock cfg tree has loaded but BEFORE layering the user's saved overrides, so
+    /// <see cref="IsModified"/> and <see cref="ArchivedNamesToPersist"/> measure deltas against the shipped
+    /// baseline rather than against whatever value the user happened to set last session.
+    /// </summary>
+    public void LockDefaults()
+    {
+        foreach (var v in _vars.Values)
+        {
+            v.Default = v.Value;
+            v.HasDefault = true;
+            v.DefaultLocked = true;
+        }
+    }
+
+    /// <summary>
+    /// The archived cvars to write to <c>user://config.cfg</c> — DP <c>Cvar_WriteVariables</c>'s EXACT rule
+    /// (cvar.c:992): <c>archive AND (value != defstring OR (CF_ALLOCATED AND !CF_DEFAULTSET))</c>. So a cvar is
+    /// written when it differs from its default, OR when it is an <em>allocated</em> cvar (created by a bare
+    /// set/seta, not a code Register) whose default was never locked — the genuinely user-created cvar we can't
+    /// prove is at any default, so we keep it. A code-declared cvar (<see cref="Register"/> → not allocated) is
+    /// written ONLY when changed, even if it registered after <see cref="LockDefaults"/>. The net effect: settings
+    /// the user moved off the shipped default are saved; everything left at default is omitted — a lean diff, not
+    /// a dump of every touched-or-registered cvar.
+    /// </summary>
+    public IEnumerable<string> ArchivedNamesToPersist
+    {
+        get
+        {
+            foreach (var kv in _vars)
+            {
+                var v = kv.Value;
+                if (!(v.Archived || (v.Flags & CvarFlags.Save) != 0))
+                    continue;
+                bool modified = v.HasDefault && !string.Equals(v.Value, v.Default, StringComparison.Ordinal);
+                if (modified || (v.Allocated && !v.DefaultLocked))
+                    yield return kv.Key;
+            }
+        }
+    }
+
     private static float ParseFloat(string s)
         => float.TryParse(s, System.Globalization.NumberStyles.Float,
             System.Globalization.CultureInfo.InvariantCulture, out float f) ? f : 0f;
@@ -539,6 +601,15 @@ public sealed class SoundService : ISoundService
 
     public void Play(Entity e, SoundChannel channel, string sample, float volume = 1f, float attenuation = 1f, bool loop = false, float pitch = 1f)
     {
+        // QC sound() macro wraps EVERY positional emit in sound_allowed(MSG_BROADCAST, e) (common/sounds/sound.qh:43,
+        // all.qc:9-25): when bot_sound_monopoly=1 a real-client-sourced sound is suppressed (and the owner-walk
+        // re-homes a corpse/projectile emit to its originating player first). Most port emits already pass through
+        // SoundSystem.PlayOn/SpamSound (which gate), but a handful of call sites hit Api.Sound.Play DIRECTLY (weapon
+        // UNAVAILABLE, monster/turret/map-object cues) and would otherwise bypass the gate. Applying it here — the
+        // single SV_StartSound chokepoint every Api.Sound.Play flows through — closes that bypass with one check.
+        // IsAllowed early-returns true when bot_sound_monopoly==0 (the default) so this is a no-op in normal play,
+        // and is idempotent for the SoundSystem family (re-checking returns the same answer). A null emitter passes.
+        if (!SoundAllowedGate.IsAllowed(e)) return;
         // SV_StartSound emits from the entity's box center (DP uses ent.origin + 0.5*(mins+maxs)).
         Vector3 origin = e.Origin + (e.Mins + e.Maxs) * 0.5f;
         Broadcast?.Invoke(new SoundEvent(e, channel, sample, volume, attenuation, origin, Loop: loop, Pitch: pitch));

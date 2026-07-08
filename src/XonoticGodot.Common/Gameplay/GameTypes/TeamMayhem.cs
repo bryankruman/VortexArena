@@ -33,8 +33,8 @@ namespace XonoticGodot.Common.Gameplay;
 ///  - the point-limit + lead-limit end-of-match check;
 ///  - reset_map_players (clear GtTotalDamageDealt).
 ///
-/// Deferred (NOTE — cross-boundary): score networking/HUD, skill-weighted team balance, the
-/// Scores_CountFragsRemaining announcer suppression, the tmayhem_team map-entity team colors, and warmup.
+/// Deferred (NOTE — cross-boundary): score networking/HUD, skill-weighted team balance,
+/// the tmayhem_team map-entity team colors, and warmup.
 /// </summary>
 [GameType]
 public sealed class TeamMayhem : GameType
@@ -49,6 +49,10 @@ public sealed class TeamMayhem : GameType
     private const string CvarLeadLimit     = "g_tmayhem_point_leadlimit";
     private const float  DefaultPointLimit = 1500f; // tmayhem.qh gametype_init pointlimit=1500
     private const float  DefaultLeadLimit  = 0f;    // tmayhem.qh gametype_init leadlimit=0
+
+    // ----- timelimit (tmayhem.qh gametype_init "timelimit=20"; the generic Cvars.cs default is also 20) -----
+    private const string CvarTimeLimit          = "timelimit";
+    private const float  DefaultTimeLimitMinutes = 20f; // tmayhem.qh gametype_init timelimit=20
 
     // ----- team count cvars (sv_tmayhem.qc: g_tmayhem_teams_override >= 2 ? override : g_tmayhem_teams), 2..4 -----
     private const string CvarTeamsOverride = "g_tmayhem_teams_override";
@@ -81,6 +85,28 @@ public sealed class TeamMayhem : GameType
     {
         // QC INIT(tmayhem): identity (TeamGame) is set in the ctor; team count is read on demand (TeamCount).
         // GameRules_teams(true) / GameRules_spawning_teams + tmayhem_team map-entity colors are engine-side.
+        //
+        // QC tmayhem.qh gametype_init applies "timelimit=20 pointlimit=1500 teams=2 leadlimit=0" at gametype
+        // registration. The point/lead limits are read on demand (PointLimit/LeadLimit fall back to 1500/0), but
+        // the timelimit is a generic engine cvar, so we seed the gametype default here exactly as Tdm/Mayhem do.
+        SeedTimeLimit(DefaultTimeLimitMinutes);
+    }
+
+    /// <summary>
+    /// Apply tmayhem's gametype-default timelimit (gametype_init "timelimit=20") if the host has not overridden it.
+    /// QC's _MapInfo_Map_ApplyGametypeEx resets timelimit to its defstring then applies the gametype default string;
+    /// the port's generic <c>timelimit</c> default is itself 20 (== tmayhem's default), so for stock play this is a
+    /// no-op. We only seed when the live value still equals the generic default — an explicit host/server.cfg
+    /// timelimit (including 0 = "no time limit") is a deliberate choice that wins, matching the guarded Tdm/Mayhem
+    /// sibling pattern (Tdm.SeedTimeLimit).
+    /// </summary>
+    private static void SeedTimeLimit(float minutes)
+    {
+        if (Api.Services is null)
+            return;
+        const float genericDefault = 20f; // Cvars.cs generic timelimit default
+        if (Api.Cvars.GetFloat(CvarTimeLimit) == genericDefault)
+            Api.Cvars.Set(CvarTimeLimit, minutes.ToString(System.Globalization.CultureInfo.InvariantCulture));
     }
 
     /// <summary>
@@ -166,7 +192,7 @@ public sealed class TeamMayhem : GameType
         MutatorHooks.ForbidThrowCurrentWeapon.Add(_forbidThrowHandler);
     }
 
-    public void Deactivate()
+    public override void Deactivate()
     {
         if (_deathHandler is null)
             return;
@@ -386,6 +412,11 @@ public sealed class TeamMayhem : GameType
         float leadLimit = LeadLimit;
         if (leadLimit > 0f && secondTeam != Teams.None && (bestScore - GetTeamScore(secondTeam)) >= leadLimit)
             MatchEnded = true;
+
+        // QC MUTATOR_HOOKFUNCTION(tmayhem, Scores_CountFragsRemaining) is commented out (disabled): Team Mayhem's
+        // upscaled score (damage-weight + frag-weight, often 1000+ limit) doesn't play well with per-frag
+        // announcements; a single shot (~40-80 dmg = 2-3 score) would trigger "2/3 frags left" as the match ends,
+        // leaving no time for the cue to process. The port matches this by not calling CountFragsRemaining.
     }
 
     // ----- cvar helpers (the gametype TryCvar idiom) ---------------------------------------------------

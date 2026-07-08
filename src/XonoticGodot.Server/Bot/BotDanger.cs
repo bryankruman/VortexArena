@@ -64,9 +64,9 @@ public static class BotDanger
                 return 3;
 
             // 4) a trigger_hurt volume in the fall column (QC tracebox_hits_trigger_hurt(dst_ahead, mins, maxs,
-            //    trace_endpos)). QC optimizes with a line test then a tracebox confirm; the port does ONE swept-
-            //    AABB overlap of the fall column against each trigger_hurt's box — same accept set, no second
-            //    trace (the tracebox in QC only tightens the endpoint, which the swept box already covers).
+            //    trace_endpos)). QC optimizes with a line test then re-runs the same test after a confirming
+            //    tracebox down to dst_down (which only tightens trace_endpos); the port runs the exact swept-box
+            //    slab test once against the already-resolved fall endpoint — same accept set, no second trace.
             if (HitsTriggerHurt(dstAhead, mins, maxs, down.EndPos))
                 return 4;
         }
@@ -77,26 +77,64 @@ public static class BotDanger
     private const int Q3SurfaceFlagSky = 0x4;
 
     /// <summary>
-    /// QC <c>tracebox_hits_trigger_hurt(start, mins, maxs, end)</c>: does the box swept from
-    /// <paramref name="start"/> to <paramref name="end"/> overlap any <c>trigger_hurt</c> volume? QC walks the
-    /// g_hurttriggers list doing a box-vs-absbox overlap; the port finds them by classname (trigger_hurt brushes
-    /// keep their edicts + brush bounds — MapObjectsRegistry registers the spawnfunc).
+    /// QC <c>tracebox_hits_trigger_hurt(start, mins, maxs, end)</c> (common/mapobjects/trigger/hurt.qc:78): does
+    /// the box <paramref name="mins"/>/<paramref name="maxs"/> swept from <paramref name="start"/> to
+    /// <paramref name="end"/> overlap any <c>trigger_hurt</c> volume? QC walks the trigger_hurt linked list calling
+    /// <c>tracebox_hits_box</c> (a swept-AABB vs box slab test); the port finds them by classname (trigger_hurt
+    /// brushes keep their edicts + brush bounds — MapObjectsRegistry registers the spawnfunc) and runs the exact
+    /// same slab math, so a sweep that only clips a trigger's bounding box corner diagonally is correctly rejected.
     /// </summary>
     public static bool HitsTriggerHurt(Vector3 start, Vector3 mins, Vector3 maxs, Vector3 end)
     {
         if (Api.Services is null)
             return false;
-        Vector3 lo = Vector3.Min(start, end) + mins;
-        Vector3 hi = Vector3.Max(start, end) + maxs;
         foreach (Entity e in Api.Entities.FindByClass("trigger_hurt"))
         {
             if (e.IsFreed) continue;
             if (e.AbsMin == e.AbsMax) continue; // unlinked/degenerate volume
-            if (lo.X <= e.AbsMax.X && hi.X >= e.AbsMin.X
-                && lo.Y <= e.AbsMax.Y && hi.Y >= e.AbsMin.Y
-                && lo.Z <= e.AbsMax.Z && hi.Z >= e.AbsMin.Z)
+            // QC tracebox_hits_box(start, mins, maxs, end, absmin, absmax)
+            //   = trace_hits_box(start, end, absmin - maxs, absmax - mins)
+            // (Minkowski-expand the trigger box by our own box, then do a swept-ray-vs-box slab test).
+            if (TraceHitsBox(start, end, e.AbsMin - maxs, e.AbsMax - mins))
                 return true;
         }
         return false;
+    }
+
+    /// <summary>
+    /// QC <c>trace_hits_box(start, end, thmi, thma)</c> (common/util.qc:2219): does the ray start→end cross the
+    /// axis-aligned box [thmi, thma]? A standard slab clip — the port mirrors QC's per-axis
+    /// <c>trace_hits_box_1d</c> exactly, including its degenerate-axis (end component == 0) early-out.
+    /// </summary>
+    private static bool TraceHitsBox(Vector3 start, Vector3 end, Vector3 thmi, Vector3 thma)
+    {
+        end -= start;
+        thmi -= start;
+        thma -= start;
+        // now it is a trace from 0 to end
+        float a0 = 0f, a1 = 1f;
+        if (!HitsBox1D(end.X, thmi.X, thma.X, ref a0, ref a1)) return false;
+        if (!HitsBox1D(end.Y, thmi.Y, thma.Y, ref a0, ref a1)) return false;
+        if (!HitsBox1D(end.Z, thmi.Z, thma.Z, ref a0, ref a1)) return false;
+        return true;
+    }
+
+    /// <summary>QC <c>trace_hits_box_1d</c> (common/util.qc:2197): one-axis slab clamp of the [a0,a1] interval.</summary>
+    private static bool HitsBox1D(float end, float thmi, float thma, ref float a0, ref float a1)
+    {
+        if (end == 0f)
+        {
+            // just check if 0 is in range
+            if (0f < thmi) return false;
+            if (0f > thma) return false;
+        }
+        else
+        {
+            // 0 -> end has to stay in thmi -> thma
+            a0 = MathF.Max(a0, MathF.Min(thmi / end, thma / end));
+            a1 = MathF.Min(a1, MathF.Max(thmi / end, thma / end));
+            if (a0 > a1) return false;
+        }
+        return true;
     }
 }

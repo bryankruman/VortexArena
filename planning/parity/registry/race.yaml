@@ -1,0 +1,583 @@
+unit: race
+category: gametype
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 19
+  worst_gaps:
+    - "race_place START GRID ordering + trigger_race_checkpoint_verify map-load validation still missing. This wave SET cl_movecliptokeyboard=2 at activation (Race.cs:540) but the cvar has NO reader in the port, so the client input clip is still not forced (write live, effect dead). This wave also seeded the Base timelimit=20 default at activation (GameWorld.cs:3106-3107) — an unconfigured race map now times out at 20 min."
+    - "FIXED since 2026-06-27: the cl_allow_uid* consent gate on the record DB is now LIVE — Race.UidConsentProvider (Race.cs:269) is wired at activation (GameWorld.cs:3015-3017) to Commands.GetClientCvarFloat(cl_allow_uidtracking)==1 && (cl_allow_uid2name)==1 (uid2name default -1 = NOT consenting, exactly as Base). A record-worthy time without consent fires INFO_RACE_NEW_MISSING_NAME and is NOT stored (Race.cs:844-852, RaceRecords.WouldBeNewRecord gate). The 9th notification (RACE_NEW_MISSING_NAME) is now declared + wired. The baseline's record-DB / notifications consent gap is closed for the finish-time record; the SpeedAwardFrame all-time-best still keys on a non-empty PersistentId (no consent gate) — residual."
+    - "FIXED since 2026-06-25: the Race force-keyboard movement quantization is now LIVE for Race itself — Race.Activate registers OnPlayerPhysics on MutatorHooks.PlayerPhysics (Race.cs:491-492), which runs all 3 QC rc PlayerPhysics slices every physics frame: (1) the deterministic .race_movetime lap-clock accumulator (frac/count split), (2) the race_penalty freeze, (3) the M_SQRT1_2 octant snap. Lap timing now reads the deterministic accumulator (RaceMoveTime) rather than the wall clock on the live path. Residual: cl_movecliptokeyboard 2 stuffcmd (FixClientCvars) is not sent; disableclientprediction=2 during freeze has no port mechanism."
+    - "FIXED since 2026-06-25: the bot race role IS now ported + LIVE — BotObjectiveRoles.RoleRace (havocbot_role_race) routes the bot to its next expected trigger_race_checkpoint at QC's 1000000/5000 routerating, wired via BotRoles.ChooseRole (\"rc\"/\"race\" => RoleRace, BotRoles.cs:103). A bot-filled race now navigates the track."
+    - "FIXED since 2026-06-22: speed awards (race_SpeedAwardFrame) are now fully ported + LIVE — Race.SpeedAwardFrame is driven each frame (GameWorld.cs:3421), round-best + persisted all-time-best planar speed are networked (ScoreboardBlock.SpeedAward) + rendered (ScoreboardPanel.DrawSpeedAward), and the RaceTimerPanel speed-at-CP readout is fed (NetGame.cs:3725 (RaceCheckpointSpeed))."
+    - "FIXED since 2026-06-22: the HUD_Mod_Race MOD-ICON (floating PB + server-best + medal flash) IS now ported — ModIconsPanel has a Race case (DrawRace) fed via NetGame.cs:4075-4104; the rankings display cap now reads g_cts_send_rankings_cnt (Base default 15, capped at RANKINGS_CNT 99) instead of a hardcoded 15. Both the mod-icon and the split panels remain host-side feeds (no TE_CSQC_RACE net path), so they are listen-server only; the RANKINGS scoreboard column is the one genuinely-networked piece."
+    - "Lap-limit default (port 7) differs from Base (-1 = consult mapinfo). cl_allow_uid* consent gate on the record DB still absent (RaceRecords only checks for a non-empty uid; the cvars exist in the menu but are not consulted)."
+    - "Carried: the spawnflag-4 wrong-way kill AND spawnflag-8 timed-finish are both armed from the BSP lump (WireObjectiveSpawns GameWorld.cs:3032-3043); the wrong-way kill still uses DeathTypes.Void not Base DEATH_HURTTRIGGER (cosmetic deathtype only). The g_race_qualifying_timelimit SOURCE is wired at activation (GameWorld.cs:2960-2978) and respawn-at-last-checkpoint is LIVE (RespawnSpot/ApplyRespawnSpot via Clients.OnPreSpawn → SpawnSystem SpawnPointTarg)."
+features:
+  - id: race.mode.setup_limits
+    name: "Mode setup + limits (teams, qualifying, lap/frag/time limits)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/race/sv_race.qc:rc_SetLimits"
+      - "common/gametypes/gametype/race/sv_race.qc:race_Initialize"
+      - "common/gametypes/gametype/race/race.qh:Race INIT"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:Activate"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:RaceTeams"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:LapLimit"
+    constants:
+      - { name: "g_race_laps_limit (default)", base: "-1 (use mapinfo); 0 = unlimited", port: "7 (DefaultLapLimit fallback)", match: false }
+      - { name: "g_race_teams (default)", base: "0", port: "0; clamp 2..4 when set", match: true }
+      - { name: "g_race_qualifying_timelimit (default)", base: "0; >0 ⇒ qualifying==2 + timelimit swap", port: "wired (GameWorld.cs:2960-2978: reads g_race_qualifying_timelimit(_override), derives qualifying==2, stashes limits, replaces active timelimit)", match: true }
+      - { name: "gametype legacy defaults", base: "timelimit=20 qualifying=5 laplimit=7 teamlaplimit=15 leadlimit=0", port: "laplimit=7 + timelimit=20 (seeded at activation, GameWorld.cs:3106-3107) when unset; teamlaplimit/qualifying/leadlimit defaults still unseeded", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Unset g_race_laps_limit defaults to 7 in the port; Base (-1) consults the mapinfo laplimit."
+      - "The remaining legacy gametype_init defaults (teamlaplimit=15, the 5-min qualifying default, leadlimit=0) are not seeded — only laplimit=7 and (this wave) the 20-min timelimit have a port fallback."
+    verification:
+      - { kind: code, ref: "Race.Activate / RaceTeams / LapLimit (live in GameWorld WireGametype) + qualifying-timelimit source wired (GameWorld.cs:3124-3135) + timelimit=20 default seeded at activation (GameWorld.cs:3106-3107, consumed by the timelimit-elapsed match-end at GameWorld.cs:3777)", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22 (qualifying-timelimit source wired). UPDATED this wave: the Base gametype_init timelimit=20 default is now seeded at Race activation when `timelimit` is unset (GameWorld.cs:3106-3107, the same pattern Cts/Duel/Assault use), consumed by the timelimit-elapsed match-end (GameWorld.cs:3777) — an unconfigured race map now times out at 20 min instead of running unlimited. Team clamp + lap-limit core wired & tested; qualifying-timelimit source derives qualifying==2 and stashes/swaps the limits at activation. Still divergent: lap-limit -1=mapinfo semantics, and the teamlaplimit=15 / qualifying=5 / leadlimit=0 seeds."
+
+  - id: race.score.rules
+    name: "Score rules (fastest/laps/time columns + sort keys, no SP_SCORE)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/race/sv_race.qc:race_ScoreRules"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:DeclareScoreRules"
+    constants:
+      - { name: "SP_RACE_FASTEST flags", base: "PRIMARY|LOWER|TIME (qualifying)", port: "LowerIsBetter|Time", match: true }
+      - { name: "SP_RACE_LAPS / SP_RACE_TIME flags", base: "LAPS PRIMARY; TIME SECONDARY|LOWER|TIME", port: "LAPS primary; TIME secondary lower time", match: true }
+      - { name: "score_enabled", base: "false (no SP_SCORE)", port: "scoreEnabled: false", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Race.DeclareScoreRules vs race_ScoreRules", result: pass }
+    confidence: high
+    notes: "Faithful column/sort declaration for FFA, qualifying, and team race."
+
+  - id: race.checkpoint.entities
+    name: "Checkpoint trigger entities spawned from the map lump"
+    layer: [authority]
+    base_refs:
+      - "server/race.qc:spawnfunc(trigger_race_checkpoint)"
+      - "server/race.qc:checkpoint_touch"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:SpawnCheckpoint"
+      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:RaceCheckpoint"
+    constants:
+      - { name: "finish line index", base: "race_timed_checkpoint (cp 0 closed-loop; highest CP via spawnflags & 8)", port: "TimedCheckpoint = 0 default, follows highest CP when spawnflag 8 set; armed from e.SpawnFlags & 8 (GameWorld.cs:3042)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Defrag target_checkpoint / target_startTimer / target_stopTimer chain not modeled for Race (CTS-only no-ops)."
+    verification:
+      - { kind: code, ref: "GameWorld.WireObjectiveSpawns Race arm (GameWorld.cs:3032-3043): SpawnCheckpoint(e.Origin, e.Count, punishWrongWay: (e.SpawnFlags & 4)!=0, timed: (e.SpawnFlags & 8)!=0) — both spawnflag variants now armed from the BSP lump", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22. The prior audit flagged the spawnflag-4 wrong-way variant and the spawnflag-8 timed-finish as un-armed (WireObjectiveSpawns dropped e.SpawnFlags). The Race arm now passes BOTH punishWrongWay (spawnflag 4) and timed (spawnflag 8), so a start!=finish track scores the lap at its highest timed CP (race_timed_checkpoint) instead of hardcoding CP 0. Checkpoints + penalty zones are genuinely spawned from the BSP entity lump on the live path."
+
+  - id: race.checkpoint.ordered_crossing
+    name: "Ordered checkpoint crossing detection + advance"
+    layer: [authority]
+    base_refs:
+      - "server/race.qc:checkpoint_passed"
+      - "server/race.qc:race_NextCheckpoint"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:CheckpointTouch"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:CrossCheckpoint"
+    constants:
+      - { name: "wrong-CP kill damage (spawnflag 4)", base: "10000 (DEATH_HURTTRIGGER)", port: "10000 (DeathTypes.Void)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Uses DeathTypes.Void instead of Base's DEATH_HURTTRIGGER for the wrong-way kill (cosmetic deathtype/obituary only; the 10000 damage matches)."
+      - "No SUB_UseTargets / equipment-clear (Portal_ClearAll, porto_forbidden) on crossing."
+    verification:
+      - { kind: code, ref: "Race.CheckpointTouch expected-next + _punishWrongWay set; now populated from the BSP lump (WireObjectiveSpawns GameWorld.cs:3041 punishWrongWay: (e.SpawnFlags & 4)!=0), so a wrong-order crossing of a spawnflag-4 CP deals 10000 on the live path", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22 (wrong-way kill now LIVE). Next-CP wrap + start-line lap reset match Base; the punitive spawnflag-4 branch is now armed from the map lump (GameWorld.cs:3041) so a wrong-order crossing actually kills. Residual: the Void-vs-HURTTRIGGER deathtype and the SUB_UseTargets / equipment-clear side branches remain omitted."
+
+  - id: race.lap.timing_scoring
+    name: "Lap close: fastest-lap + laps + cumulative-time scoring"
+    layer: [authority]
+    base_refs:
+      - "server/race.qc:race_SendTime"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:CrossCheckpoint"
+    constants:
+      - { name: "TIME_FACTOR", base: "100 (hundredths)", port: "TimeEncode hundredths", match: true }
+      - { name: "lap-time source", base: ".race_movetime frame accumulator (frac+count)", port: "RaceMoveTime accumulator on live path (wall-clock fallback for harness-only paths)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "RaceOvertimePenaltyTests (lap close paths)", result: pass }
+      - { kind: code, ref: "CrossCheckpoint (Race.cs:650) reads st.RaceMoveTime (the deterministic .race_movetime accumulator advanced each OnPlayerPhysics frame, Race.cs:972-978) when it has run; wall-clock now-LapStartTime is only the fallback for a host that drives no physics frames (e.g. a unit harness)", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-25 (timing was partial). The deterministic per-frame .race_movetime accumulator is now ported (RaceState.MoveTimeFrac/Count/RaceMoveTime, advanced in OnPlayerPhysics) and is the authoritative lap-time source on the live path, matching Base's frame-rate-independent timing; the wall clock survives only as the harness fallback. Both CrossCheckpoint and RecordCheckpointSplit read it."
+
+  - id: race.records.db
+    name: "Per-map top-99 record ranking DB (read/pos/write/setTime)"
+    layer: [authority]
+    base_refs:
+      - "server/race.qc:race_readTime"
+      - "server/race.qc:race_readPos"
+      - "server/race.qc:race_writeTime"
+      - "server/race.qc:race_setTime"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/RaceRecords.cs:SetTime"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/RaceRecords.cs:WriteTime"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/RaceRecords.cs:ReadPos"
+    constants:
+      - { name: "RANKINGS_CNT", base: "99", port: "99", match: true }
+      - { name: "record key scheme", base: "strcat(map, record_type, field, pos)", port: "map+type+field+pos", match: true }
+      - { name: "UID requirement", base: "needs crypto_idfp + cl_allow_uidtracking==1 && cl_allow_uid2name==1", port: "needs non-empty uid AND UidConsentProvider true (both cvars ==1; uid2name default -1 = not consenting)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "RaceRecordsTests", result: pass }
+      - { kind: code, ref: "Race.RecordFinishTime (Race.cs:844-852): a record-worthy time (RaceRecords.WouldBeNewRecord) with consent withheld (UidConsentProvider false) fires INFO_RACE_NEW_MISSING_NAME and is NOT stored; the gate is wired LIVE at GameWorld.cs:3015-3017 to Commands.GetClientCvarFloat(cl_allow_uidtracking)==1 && (cl_allow_uid2name)==1", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-27 (was the cl_allow_uid* consent-gate gap). Filing is live (CrossCheckpoint -> RecordFinishTime -> SetTime); the classified result is consumed (race.records.notifications). The Base cl_allow_uidtracking==1 && cl_allow_uid2name==1 consent gate is now ported + live via Race.UidConsentProvider (wired to the per-client replicated-cvar store), with the cl_allow_uid2name default -1 treated as NOT consenting exactly as Base. A record-worthy time without consent is announced (NEW_MISSING_NAME) and discarded rather than silently stored."
+
+  - id: race.records.notifications
+    name: "Record result + finish/abandon notifications (INFO_RACE_*)"
+    layer: [authority]
+    base_refs:
+      - "server/race.qc:race_setTime"
+      - "common/gametypes/gametype/race/sv_race.qc:PlayerDies"
+      - "server/race.qc:race_AbandonRaceCheck"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:RecordFinishTime"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:SendRecordNotification"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:FinishRacer"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:AbandonRaceCheck"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:RACE_FINISHED"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:RACE_ABANDONED"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:RACE_NEW_MISSING_NAME"
+    constants:
+      - { name: "INFO_RACE_NEW_* / FAIL_* / MISSING_UID / MISSING_NAME arg counts", base: "decl in notifications all.inc (RACE_NEW_MISSING_NAME = 1 string, 1 float, all.inc:451)", port: "all 9 calls match declared (stringCount,floatCount); RACE_NEW_MISSING_NAME = (1,1)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Notification time tokens are TIME_ENCODE'd ints (matches Base race_diff/race_time HUD tokens); not yet verified visually in a live client, but the dispatch path is the same NotificationSystem.Info used by Ctf/Domination."
+    verification:
+      - { kind: code, ref: "RecordFinishTime->SendRecordNotification (NEW_IMPROVED/SET/BROKEN/FAIL_RANKED/FAIL_UNRANKED/NEW_MISSING_UID) + the consent-withheld NEW_MISSING_NAME branch (Race.cs:851) + FinishRacer RACE_FINISHED + AbandonRaceCheck RACE_ABANDONED; all 9 arg counts cross-checked vs NotificationsList decls (RACE_NEW_MISSING_NAME = 1s/1f, matches Base all.inc:451)", result: pass }
+    confidence: high
+    notes: "FIXED in Wave-2 (was stub/dead); EXTENDED 2026-06-27. CrossCheckpoint->RecordFinishTime is live; the classified RaceRecordResult fires the matching INFO_RACE_* line via NotificationSystem.Info. Since 2026-06-27 the consent-withheld path also fires INFO_RACE_NEW_MISSING_NAME (a record-worthy time whose racer has a UID but withheld cl_allow_uid2name) — the 9th race notification, now declared + wired. The old race.Events dependency is bypassed (Events stays null but is no longer required)."
+
+  - id: race.penalty.zones
+    name: "Penalty zones (freeze in race / accumulate in qualifying)"
+    layer: [authority]
+    base_refs:
+      - "server/race.qc:spawnfunc(trigger_race_penalty)"
+      - "server/race.qc:race_ImposePenaltyTime"
+      - "common/gametypes/gametype/race/sv_race.qc:PlayerPhysics"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:SpawnPenaltyZone"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:SetPenalty"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:Tick"
+    constants:
+      - { name: "default penalty seconds", base: "5", port: "5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "disableclientprediction = 2 (Base) is not set during the freeze; the client may mispredict through the freeze (no per-player client-prediction-disable field in the port; documented cross-boundary)."
+      - "RACE_NET_PENALTY_* networking (the on-screen penalty line) is not sent over the wire — penalty HUD line is fed host-side only (LastPenaltySeconds/EventTime/Reason populated, but no net stream for a pure remote client)."
+    verification:
+      - { kind: test, ref: "RaceOvertimePenaltyTests.PenaltyZone_*", result: pass }
+      - { kind: code, ref: "SetPenalty captures PenaltyPrevMoveType (Race.cs:1058-1059) and the release restores it (OnPlayerPhysics Race.cs:987-988 / Tick Race.cs:928-929) only when still MOVETYPE_NONE — no longer forces Walk", result: pass }
+    confidence: high
+    notes: "Freeze logic upgraded to faithful since baseline: the release now restores the racer's pre-freeze movetype (Swim/Fly/Noclip) rather than forcing Walk (the baseline logic:partial gap is fixed). Freeze/accumulate + expiry tested. Residual: disableclientprediction=2 has no port mechanism; the penalty line is host-side-fed only (no RACE_NET_PENALTY_* net stream)."
+
+  - id: race.win.condition
+    name: "Win condition: everyone-finished + lap-limit + sudden-death run-on"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/race/sv_race.qc:WinningCondition_Race"
+      - "common/gametypes/gametype/race/sv_race.qc:CheckRules_World"
+      - "server/race.qc:race_StartCompleting"
+      - "server/race.qc:race_AbandonRaceCheck"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:CheckWinningCondition"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:FinishRacer"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:StartCompleting"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:AbandonRaceCheck"
+      - "src/XonoticGodot.Server/GameWorld.cs:3421 (case Race: race.Tick(); race.CheckWinningCondition(); race.SpeedAwardFrame(...))"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Sudden-death is modeled as a Race-local latch (SuddenDeath) gated on the RaceCompleting state; the shared OverTimeManager deliberately excludes the race/qualifying branch, so the standard overtime-window timer does not gate race end (intentional split, documented in OverTimeManager.cs)."
+    verification:
+      - { kind: test, ref: "RaceOvertimePenaltyTests.Overtime_LapLimitWithUnfinished_StartsSuddenDeath", result: pass }
+      - { kind: code, ref: "FinishRacer->StartCompleting (RaceCompleting latch + abandon dead racers) + OnDeath->AbandonRaceCheck; CheckWinningCondition gates sudden-death on RaceCompleting. Live via GameWorld.cs:3421 (race.Tick(); race.CheckWinningCondition(); race.SpeedAwardFrame()).", result: pass }
+    confidence: high
+    notes: "FIXED in Wave-2 (was partial). The global race_completing latch is now modeled: the FIRST racer to reach the lap limit trips StartCompleting (abandoning every dead racer + INFO_RACE_ABANDONED), and a dead racer respawning into a completing race is auto-abandoned via OnDeath->AbandonRaceCheck. This is the multi-racer drain-to-(n==c) state machine the baseline VERIFIER flagged as absent."
+
+  - id: race.team.laps
+    name: "Team race: members' laps add up into ST_RACE_LAPS"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/race/sv_race.qc:rc_SetLimits"
+      - "server/race.qc:race_SendTime"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:RaceTeams"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:CrossCheckpoint"
+    constants:
+      - { name: "team count clamp", base: "bound(2,n,4)", port: "Clamp(n,2,4)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "RaceOvertimePenaltyTests.TeamRace_LapsAddUpToTeam", result: pass }
+    confidence: high
+    notes: "Team-lap accumulation into the secondary team slot (ST_RACE_LAPS) tested."
+
+  - id: race.qualifying.mode
+    name: "Qualifying solo time-trial (rank by fastest, retract after each lap)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/race/sv_race.qc:rc_SetLimits"
+      - "server/race.qc:race_RetractPlayer"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:Qualifying"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:RetractPlayer"
+      - "src/XonoticGodot.Server/GameWorld.cs:2945-2978 (race.Activate + OnFinishRetract = Clients.Spawn)"
+    constants: []
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Retract uses Clients.Spawn (a normal spawn), not the Base checkpoint/grid-aware respawn (race_RetractPlayer + spawn_evalfunc by race_place)."
+      - "independent_players / MAKE_INDEPENDENT_PLAYER (solo scoring isolation) not modeled."
+      - "Qualifying checkpoint records + RACE_NET_CHECKPOINT_*_QUALIFYING packets absent."
+    verification:
+      - { kind: code, ref: "Race.Qualifying + OnFinishRetract wiring (GameWorld.cs:2953)", result: partial }
+    confidence: medium
+    notes: "Unchanged by Wave-2. Solo retract-to-start works; the qualifying-specific networking, isolation and grid spawn do not."
+
+  - id: race.qualifying.transition
+    name: "Qualifying-then-race transition (g_race_qualifying==2 -> 0)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/race/sv_race.qc:reset_map_global"
+      - "common/gametypes/gametype/race/sv_race.qc:rc_SetLimits"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:TransitionQualifyingToRace"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:SaveRaceLimits"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "GameWorld.cs:2960-2978 Race activation reads g_race_qualifying_timelimit(_override), derives g_race_qualifying=2 + SaveRaceLimits + replaces the active timelimit with the qualifying clock; RunCheckRulesWorld timelimit-elapsed branch (GameWorld.cs:3597) calls race.TransitionQualifyingToRace() + re-arms GameStartTime", result: pass }
+    confidence: high
+    notes: "FIXED again since 2026-06-22 (qualifying-timelimit source now wired). The full qualifying==2 chain is live: g_race_qualifying_timelimit(_override)>0 derives qualifying==2 and replaces the active timelimit with the qualifying clock at activation (GameWorld.cs:2960-2978, the prior audit's last open gap), and when that clock elapses TransitionQualifyingToRace converts the session to a plain race (clears g_race_qualifying, restores the stashed fraglimit/leadlimit/timelimit, re-declares score rules, resets every racer) instead of going to intermission."
+
+  - id: race.spawn.grid_respawn
+    name: "Spawn grid by race_place + respawn at last checkpoint"
+    layer: [authority]
+    base_refs:
+      - "server/race.qc:trigger_race_checkpoint_spawn_evalfunc"
+      - "server/race.qc:spawnfunc(info_player_race)"
+      - "server/race.qc:race_RetractPlayer"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:ApplyRespawnSpot"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:OnDeath (respawn-checkpoint resume)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:CheckpointTouch (RespawnSpot/RespawnCheckpoint update)"
+      - "src/XonoticGodot.Server/GameWorld.cs:2953 (Clients.OnPreSpawn = p => race.ApplyRespawnSpot(p))"
+      - "src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs:332 (consumes Player.SpawnPointTarg)"
+    constants: []
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "race_place START-GRID ordering still missing: racers do not get ordered start positions in a multi-racer race (no race_place read / info_player_race grid)."
+      - "trigger_race_checkpoint_verify map-load validation (missing-spawn error) not performed."
+    verification:
+      - { kind: code, ref: "Race.ApplyRespawnSpot sets Player.SpawnPointTarg to the last-passed checkpoint; wired LIVE via ClientManager.OnPreSpawn (invoked ClientManager.cs:616 before SelectSpawnPoint) → SpawnSystem.cs:332 short-circuits to the forced spot; OnDeath resumes NextCheckpoint after the respawn CP", result: partial }
+    confidence: high
+    notes: "FIXED (partial) since baseline — the prior audit marked this fully dead/missing. The respawn-at-last-checkpoint half (Base race_respawn_checkpoint / race_respawn_spotref / SPAWN_PRIO_RACE_PREVIOUS_SPAWN) is now implemented and genuinely live: crossing a CP in order re-points RespawnSpot, a death resumes from that CP (or clears the lap at the start line), and the host forces the next spawn there via SpawnPointTarg. Still open: the race_place start-grid ordering and the map-load checkpoint-verify."
+
+  - id: race.movement.quantization
+    name: "Force-keyboard movement quantization + race_movetime + FixClientCvars"
+    layer: [authority, shared]
+    base_refs:
+      - "common/gametypes/gametype/race/sv_race.qc:PlayerPhysics"
+      - "common/gametypes/gametype/race/sv_race.qc:FixClientCvars"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:OnPlayerPhysics"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:Activate (MutatorHooks.PlayerPhysics.Add, Race.cs:491-492)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:RaceState.MoveTimeFrac/MoveTimeCount/RaceMoveTime"
+    constants:
+      - { name: "M_SQRT1_2 diagonal snap", base: "0.70710678 (45 deg octant)", port: "0.70710678118654752440 (Race.cs:1023)", match: true }
+      - { name: "off-axis snap guard", base: "x!=0 && y!=0 && x!=y", port: "ax!=0 && ay!=0 && ax!=ay (Race.cs:1004)", match: true }
+      - { name: "pure-axis threshold", base: "x >= 2*y / y >= 2*x", port: "ax >= 2*ay / ay >= 2*ax (Race.cs:1008/1014)", match: true }
+      - { name: "race_movetime accumulator", base: "frac += dt; f=floor(frac); frac-=f; count+=f; movetime=frac+count", port: "same (Race.cs:974-978)", match: true }
+      - { name: "cl_movecliptokeyboard", base: "stuffed to 2 (FixClientCvars)", port: "set to 2 globally at activation (Race.cs:540) — but the cvar has NO reader in src/ or game/ (not in CVARS.md), so the client input clip is still not forced", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "cl_movecliptokeyboard is now SET to 2 at activation (Race.cs:540, the FixClientCvars stuffcmd analogue) but NOTHING reads it — no consumer in src/ or game/ (and it is not in CVARS.md), so the client input clip is still not actually forced. The write is live but its effect is dead; the server-side octant snap remains the only authority. Residual gap unchanged in observable behavior."
+      - "disableclientprediction=2 during the freeze has no port mechanism (documented cross-boundary)."
+    verification:
+      - { kind: code, ref: "Race.Activate registers OnPlayerPhysics on the global MutatorHooks.PlayerPhysics chain (Race.cs:491-492, the same seam CTS uses); OnPlayerPhysics (Race.cs:965-1028) runs all 3 QC slices: race_movetime accumulator (974-978), race_penalty freeze (981-996), M_SQRT1_2 octant snap (998-1027) — guard + thresholds + sqrt1_2 match sv_race.qc:128-197. This wave added Cvars.Set(cl_movecliptokeyboard,2) at Race.cs:540 but grep finds no reader of that cvar anywhere in src/ or game/.", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-25 (was all-missing/na); UPDATED this wave (no behavioral change). All three QC rc PlayerPhysics slices are ported faithfully and LIVE: the deterministic .race_movetime lap-clock accumulator, the race_penalty freeze, and the M_SQRT1_2 force-keyboard octant snap (the server authority). This wave added an Api.Cvars.Set(cl_movecliptokeyboard, 2) at activation (Race.cs:540) as the FixClientCvars analogue, BUT the port has no consumer for that cvar, so the client's own input clip is still not forced — the residual gap is cosmetically narrowed (the cvar is now set) but observably unchanged. disableclientprediction=2 during the freeze still has no port mechanism."
+
+  - id: race.hud.split_timer
+    name: "Race split timer HUD panel (#8): running clock, splits, anticipation, medals"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/racetimer.qc:HUD_RaceTimer"
+      - "client/hud/panel/racetimer.qc:MakeRaceString"
+      - "common/gametypes/gametype/race/cl_race.qc:HUD_Mod_Race"
+      - "client/main.qc:NET_HANDLE(TE_CSQC_RACE)"
+    port_refs:
+      - "game/hud/RaceTimerPanel.cs:DrawPanel"
+      - "game/hud/RaceTimerPanel.cs:MakeRaceString"
+    constants:
+      - { name: "TIME_DECIMALS", base: "2", port: "DeltaFmt 0.00", match: true }
+      - { name: "panel aspect", base: "4:1", port: "AspectInner 4:1", match: true }
+      - { name: "split fade window", base: "2 s", port: "2 s", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "On a pure (remote) client the feed is still absent — there is no TE_CSQC_RACE net message; the feed is host-side (NetGame.UpdateRacePanels reads the live Race gametype's RaceState + per-checkpoint record store). On a listen server the timer/splits/anticipation/speed/medal all render live."
+    verification:
+      - { kind: code, ref: "NetGame.UpdateRacePanels feeds RaceCheckpoint/RaceTime/RaceCheckpointTime/RacePreviousBestTime/RaceNextBestTime/RaceCheckpointSpeed/RaceStatus from Race.GetState + Race.CheckpointRecord* (server-side per-checkpoint records added in Race.RecordCheckpointSplit)", result: pass }
+    confidence: high
+    notes: "FIXED in Wave-5 (was dead). The server Race gametype now keeps per-checkpoint split records (RecordCheckpointSplit, QC race_checkpoint_records[]) and the host feeds the split/anticipation/speed + the record-result medal flash (race_status 0/1/2/3) into the panel each frame. Rendering (MakeRaceString + medal art) was already faithful."
+
+  - id: race.hud.checkpoint_splits
+    name: "Checkpoints split list panel (#27)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/checkpoints.qc:HUD_Checkpoints"
+      - "client/hud/panel/racetimer.qc:StoreCheckpointSplits"
+    port_refs:
+      - "game/hud/CheckpointsPanel.cs:DrawPanel"
+      - "game/hud/CheckpointsPanel.cs:StoreSplit"
+    constants:
+      - { name: "CHECKPOINTS_BASE_SIZE", base: "0.75", port: "0.75", match: true }
+      - { name: "CHECKPOINTS_SPACING", base: "0.25", port: "0.25", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Host-side feed only (no TE_CSQC_RACE net path for a pure client). On a listen server StoreSplit is now called per crossing (QC StoreCheckpointSplits) and ClearSplits on a fresh lap, so the panel renders the live split list."
+    verification:
+      - { kind: code, ref: "NetGame.UpdateRacePanels calls Checkpoints.StoreSplit(cp, label, delta) on each new crossing + ClearSplits on a fresh lap, deduped by the crossing stamp", result: pass }
+    confidence: high
+    notes: "FIXED in Wave-5 (was dead). StoreSplit is now fed from the live race path (the per-checkpoint record delta), once per crossing; ClearSplits fires on a lap restart. Word-wrap + flip/align/fontscale rendering was already faithful."
+
+  - id: race.bot.role
+    name: "Bot race role (navigate the checkpoint track)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/race/sv_race.qc:havocbot_role_race"
+      - "common/gametypes/gametype/race/sv_race.qc:MUTATOR_HOOKFUNCTION(rc, HavocBot_ChooseRole)"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotObjectiveRoles.cs:RoleRace"
+      - "src/XonoticGodot.Server/Bot/BotRoles.cs:103 (ChooseRole \"rc\"/\"race\" => RoleRace)"
+    constants:
+      - { name: "checkpoint routerating", base: "navigation_routerating(this, it, 1000000, 5000)", port: "rater.Rate(..., RatingRaceCheckpoint=1000000f, 5000f) (BotObjectiveRoles.cs:33/894)", match: true }
+      - { name: "checkpoint match key", base: "it.cnt == cp || cp == -1", port: "cp == -1 || it.GtCheckpointIndex == cp (BotObjectiveRoles.cs:892)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The raw_touch_check warpzone redirect (QC: a bot within 30qu of an untouchable checkpoint's nearestwaypoint advances to race_NextCheckpoint(cp)) is not modeled — a bot can stall on an unreachable gate (e.g. Stormkeep's warpzone checkpoint). The port falls back to rating ALL checkpoints if the expected gate isn't resolvable, but does not skip a touchable-but-unreachable one."
+    verification:
+      - { kind: code, ref: "BotObjectiveRoles.RoleRace (BotObjectiveRoles.cs:871) route-rates the bot's NextCheckpoint gate(s) at 1000000/5000 (or ALL if unresolvable); wired LIVE via BotRoles.ChooseRole \"rc\"/\"race\" => RoleRace (BotRoles.cs:103), the per-gametype role dispatch", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-25 (was missing/na). BotObjectiveRoles.RoleRace ports havocbot_role_race: it route-rates the checkpoint matching the bot's expected NextCheckpoint (or any when -1) at QC's 1000000/5000 routerating, and is selected via BotRoles.ChooseRole on the gametype NetName (\"rc\"/\"race\"). A bot-filled race now navigates the track gate-to-gate. Residual: the QC raw_touch_check warpzone-skip workaround (advance past an untouchable CP) is not ported."
+
+  - id: race.hud.mod_icon_rankings
+    name: "Race/CTS mod-icon (PB + server best + medals) and Rankings scoreboard column"
+    layer: [presentation]
+    base_refs:
+      - "common/gametypes/gametype/race/cl_race.qc:HUD_Mod_Race"
+      - "server/race.qc:race_send_recordtime"
+      - "server/race.qc:getrankings"
+    port_refs:
+      - "game/net/ServerNet.cs:2207-2233 (snapshot RaceRecords top-N → _scoreRankings; displayCnt = g_cts_send_rankings_cnt)"
+      - "src/XonoticGodot.Net/ScoreboardBlock.cs (Serialize/Deserialize rankings block)"
+      - "game/net/NetGame.cs (_scoreboard.SetRankings(sb.Rankings))"
+      - "game/hud/ScoreboardPanel.cs:SetRankings / DrawRankings"
+      - "game/hud/ModIconsPanel.cs:DrawRace (ModIconsMode.Race; RaceModIconPb/ServerRecord/Status + 5 s medal fade)"
+      - "game/net/NetGame.cs:4075-4104 (feed the Race mod-icon: PB, server record, medal-flash status)"
+    constants:
+      - { name: "RACE_NET_SERVER_STATUS medal fade", base: "5 s", port: "5 s (ModIconsPanel _raceStatusTime = time + 5)", match: true }
+      - { name: "rankings display cap", base: "min(RANKINGS_CNT, g_cts_send_rankings_cnt) (default 15, cap 99)", port: "g_cts_send_rankings_cnt clamped to RankingsCnt(99), default 15", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The mod-icon + split panels are fed host-side (LocalServerPlayer / _serverWorld.GameType), so on a PURE remote client the floating PB/server-best icon + medal flash do not render — there is no TE_CSQC_RACE / RACE_NET_SERVER_RECORD net stream feeding ModIconsPanel; only the RANKINGS scoreboard column is genuinely networked. On a listen server the mod-icon renders live."
+      - "ReadName/ReadTime are read straight from the persistent RaceRecords DB (no separate networked record-name stream); the local PB is resolved by PersistentId rather than the QC ClientProgsDB cache."
+    verification:
+      - { kind: code, ref: "ServerNet.UpdateScoreboardRows fills _scoreRankings from RaceRecords.ReadTime/ReadName for gt rc|cts (top-N where N=g_cts_send_rankings_cnt, ServerNet.cs:2219-2233) → ScoreboardBlock.Serialize → NetGame feeds ScoreboardPanel.SetRankings (PURE remote client OK). Mod-icon: ModIconsPanel.DrawRace (Race enum case, line 206) fed via NetGame.cs:4075-4104 from _serverWorld.GameType (host-side only)", result: partial }
+    confidence: high
+    notes: "FIXED since baseline — the prior audit marked the HUD_Mod_Race floating mod-icon as having NO port code. ModIconsPanel now has a full Race case (DrawRace: personal-best + server-best rows + the new-record/new-rank/fail medal flash with the 5 s fade), fed each frame from the live Race/Cts gametype (NetGame.cs:4075-4104). The rankings DISPLAY cap is now Base-faithful (g_cts_send_rankings_cnt, default 15, capped at RANKINGS_CNT 99) — no longer hardcoded 15. STILL host-side: the mod-icon + split panels feed off LocalServerPlayer, so a pure remote client gets only the networked RANKINGS scoreboard column, not the floating icon/medal."
+
+  - id: race.speed_awards
+    name: "Speed awards (round-best + all-time-best speed at checkpoint)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/gametypes/gametype/race/sv_race.qc:GetPressedKeys (race_SpeedAwardFrame)"
+      - "server/race.qc:race_SpeedAwardFrame"
+      - "server/race.qc:race_send_speedaward / race_send_speedaward_alltimebest"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:SpeedAwardFrame"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/RaceRecords.cs:ReadSpeedAwardBest / WriteSpeedAwardBest"
+      - "src/XonoticGodot.Server/GameWorld.cs:3421 (race.SpeedAwardFrame(Clients.Players))"
+      - "game/net/ServerNet.cs:2303 (snapshot round + all-time speed award into ScoreboardBlock)"
+      - "src/XonoticGodot.Net/ScoreboardBlock.cs:56 (SpeedAward wire field)"
+      - "game/hud/ScoreboardPanel.cs:DrawSpeedAward"
+      - "game/net/NetGame.cs:3725 (RaceCheckpointSpeed) (RaceTimerPanel speed-at-CP readout)"
+    constants:
+      - { name: "planar (horizontal) speed only", base: "vlen(vec2(velocity)) — z stripped", port: "sqrt(vx^2+vy^2)", match: true }
+      - { name: "speed rounding for wire", base: "floor(speed + 0.5)", port: "(int)floor(s + 0.5)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "All-time-best persistence keys off PersistentId (non-empty uid) rather than the cl_allow_uid* consent gate Base uses (same uid-gate divergence as the record DB)."
+    verification:
+      - { kind: code, ref: "Race.SpeedAwardFrame tracks round-best planar speed + persists the all-time best (RaceRecords.WriteSpeedAwardBest); driven LIVE per frame at GameWorld.cs:3421; networked via ScoreboardBlock.SpeedAward (ServerNet.cs:2303) → ScoreboardPanel.DrawSpeedAward; RaceTimerPanel speed-at-CP fed at NetGame.cs:3725 (RaceCheckpointSpeed)", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22 (was all-missing/dead). race_SpeedAwardFrame is fully ported: Race.SpeedAwardFrame runs every server frame, tracks the round-best planar speed + holder/uid, and persists the all-time best into RaceRecords; both are networked into the scoreboard (works for a pure remote client) and the per-CP speed readout is fed into RaceTimerPanel. Shared with the sibling CTS gametype (Cts.SpeedAwardFrame)."

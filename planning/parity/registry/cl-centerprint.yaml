@@ -1,0 +1,397 @@
+unit: cl-centerprint
+category: client
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-25"
+summary:
+  feature_count: 13
+  worst_gaps:
+    - "MOTD/welcome is still shown via the DialogWelcome menu rather than the centerprint panel (Base shows the MOTD on the panel). Minor surface difference, not separately rowed."
+    - "Panel does not reproduce Base's slide-below-scoreboard/radar repositioning (HUD_CenterPrint:221-242) — minor layout-only omission, not separately rowed."
+    - "No remaining numeric/logic countdown or fade gaps: the durcnt arg-selection (ResolveDurcnt), per-step duration, fade_in=0.15, fontscale 1.2/1.3 skin defaults, and the HUD-editor live preview are all now faithful + live (Wave fixes since the 2026-06-22 audit)."
+features:
+  - id: cl-centerprint.ring.add_replace
+    name: "Message ring + add / replace-by-cpid"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/centerprint.qc:centerprint_Add"
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs:Push"
+    constants:
+      - { name: "CENTERPRINT_MAX_MSGS", base: "10", port: "10", match: true }
+      - { name: "CENTERPRINT_BASE_SIZE", base: "1.3", port: "1.3", match: true }
+      - { name: "CENTERPRINT_SPACING", base: "0.3", port: "0.3", match: true }
+      - { name: "CENTERPRINT_TITLE_SPACING", base: "0.35", port: "0.35", match: true }
+      - { name: "duration==0 default", base: "max(1, hud_panel_centerprint_time)", port: "max(1, time)", match: true }
+      - { name: "duration<0 sticky", base: "time=-1 (forced)", port: "ExpireTime=+Inf", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "CenterPrintPanel.Push vs centerprint_Add: strip edge newlines, id-replace-in-place, sticky/default duration all reproduced", result: pass }
+    confidence: high
+    notes: "Newest-prepend, non-empty id → RemoveAll(Id==id) then prepend (QC replace-in-place). Push now has MULTIPLE live callers: ShowCenter (DefaultDuration=3) AND the new Add() path (centerprint_AddStandard analogue, also DefaultDuration) driven by the now-live CenterRaw feed. The sticky (<0) / time-cvar default branches remain faithfully coded but unexercised on the live path (no caller passes <0 or the time-cvar value)."
+
+  - id: cl-centerprint.feed.msg_center
+    name: "MSG_CENTER notification feed → panel"
+    layer: [presentation]
+    base_refs:
+      - "common/notifications/all.qc:Local_Notification (case MSG_CENTER)"
+      - "common/notifications/all.qc:Local_Notification_centerprint_Add"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:Send"
+      - "game/net/ClientNet.cs:HandleReliableBundle"
+      - "game/net/NetGame.cs:OnNotificationReceived"
+      - "game/hud/HudNotifications.cs:ShowCenter"
+      - "game/hud/CenterPrintPanel.cs:Push"
+    constants:
+      - { name: "cpid carried", base: "notif.nent_cpid (local CSQC)", port: "Notification.Cpid recovered by registry id", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base resolves MSG_CENTER client-side (CSQC Local_Notification); the port has no CSQC, so the server formats + reliably networks the dispatch (NotificationSystem.Send → sink → ClientNet) and the client re-resolves the Notification by registry id (carrying cpid). Behaviorally equivalent feed."
+    gaps: []
+    verification:
+      - { kind: code, ref: "many live NotificationSystem.Center/Send(...MsgType.Center...) callers (CTF/instagib/NIX/items/buffs/LMS/countdown); HudSink + net path → ShowCenter → Push traced", result: pass }
+    confidence: high
+    notes: "Cpid is not on the wire but recovered from the registry by id; equivalent. The local single-process path mirrors via HudNotifications.HudSink (NotificationSystem.Sink). The HudSink now passes d.WireType (HudNotifications.cs:383) so the new Center* wire-types route correctly on the single-process path too."
+
+  - id: cl-centerprint.countdown.count_token
+    name: "^COUNT countdown decrement"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/centerprint.qc:HUD_CenterPrint (countdown decrement, lines 349-360)"
+      - "client/announcer.qc:Announcer_Countdown"
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs:_Process"
+      - "game/hud/CenterPrintPanel.cs:MessageAlpha"
+      - "game/hud/HudNotifications.cs:ShowCenter"
+      - "src/XonoticGodot.Server/GameWorld.cs:BroadcastGameStartCountdown"
+      - "src/XonoticGodot.Server/GameWorld.cs:BroadcastRoundStartCountdown"
+    constants:
+      - { name: "countdown forces fade_in/out=0", base: "yes", port: "yes (MessageAlpha countdown branch)", match: true }
+      - { name: "always-laid-out at ~0 alpha", base: "yes (hold position)", port: "yes (isCountdown skip-guard)", match: true }
+      - { name: "durcnt COUNTDOWN_GAMESTART", base: "\"1 f1\" → dur=1s/step, count=f1(seconds)", port: "ResolveDurcnt(\"1 f1\",flts)→dur=1, count=f1=flts[0]=seconds", match: true }
+      - { name: "durcnt COUNTDOWN_ROUNDSTART", base: "\"1 f2\" → dur=1s/step, count=f2(seconds), %s=f1(round)", port: "ResolveDurcnt(\"1 f2\",flts)→dur=1, count=f2=flts[1]=seconds; %s=f1=round", match: true }
+      - { name: "per-step duration", base: "1s (durcnt first token)", port: "1s (ResolveDurcnt token0; Push duration=1 → _Process decrement window = m.Duration=1)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value_diff, ref: "all.inc:567-568 COUNTDOWN_GAMESTART durcnt \"1 f1\" / ROUNDSTART \"1 f2\"; NotificationsList.cs:82-83 CenterDurcnt stamps the same specs onto Notification.Durcnt; HudNotifications.cs:183 ResolveDurcnt selects token0=duration, token1=count via fN ref; GameWorld.cs:1885 Send(...,secondsLeft), 1892 Send(...,round+1,secondsLeft) → f2=flts[1]=secondsLeft is correctly selected", result: pass }
+      - { kind: code, ref: "Push(text,duration=1,cpid,count) → Message.Duration=1; _Process decrements Count each m.Duration (=1s) window (CenterPrintPanel.cs:343-352). Server still re-broadcasts each second (intended no-CSQC cadence) but the panel-local ^COUNT now ticks at the correct 1s window", result: pass }
+    confidence: high
+    notes: "BOTH baseline countdown gaps FIXED (partial→faithful). HudNotifications now models the QC durcnt arg-selection: ResolveDurcnt/ResolveDurcntToken (HudNotifications.cs:208-244) splits durcnt into token0=display-duration, token1=^COUNT-count, each resolved as a literal, an fN float-arg reference (1-based), or item_centime. NotificationsList.CenterDurcnt stamps the Base durcnt specs (\"1 f2\" for ROUNDSTART) onto Notification.Durcnt, so ROUNDSTART's count now correctly reads f2=flts[1]=secondsLeft (not flts[0]=round#), and the per-step duration is 1s (not the old DefaultDuration=3). INTENDED, unchanged: the server-driven once-per-second re-broadcast (no CSQC Announcer_Countdown think loop) — a deliberate no-CSQC consequence, but now numerically/timing-faithful. End-of-countdown via MSG_MULTI \"BEGIN\" + title-clear on BEGIN/abort still correct."
+
+  - id: cl-centerprint.fade.in_out
+    name: "Per-message fade in / out"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/centerprint.qc:HUD_CenterPrint (fade block 376-386)"
+      - "client/hud/panel/centerprint.qh:autocvar_hud_panel_centerprint_fade_in/out"
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs:MessageAlpha"
+      - "game/hud/CenterPrintPanel.cs:RegisterDefaults"
+    constants:
+      - { name: "hud_panel_centerprint_fade_in", base: "0.15", port: "0.15", match: true }
+      - { name: "hud_panel_centerprint_fade_out", base: "0.15", port: "0.15", match: true }
+      - { name: "fade_out hard cap", base: "min(5, fade_out)", port: "min(5, fade_out)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value_diff, ref: "CenterPrintPanel.cs:283 registers fade_in \"0.15\"; CvarF(\"fade_in\", 0.15f) at :304; centerprint.qh:6 defaults it to 0.15 — now match", result: pass }
+    confidence: high
+    notes: "FIXED (fade_in 0→0.15, partial→faithful). fade_in default now 0.15 (RegisterDefaults registers \"0.15\" + the live read defaults to 0.15), matching Base centerprint.qh:6; messages now ramp in instead of popping. fade_out (0.15) and the min(5,..) cap match exactly. CPID_TIMEIN fade-exemption (Base centerprint.qc:378) is not reproduced, but TIMEIN is not emitted in the port so it is moot."
+
+  - id: cl-centerprint.fade.subsequent
+    name: "Subsequent-message two-pass progressive fade"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/centerprint.qc:HUD_CenterPrint (fade_subsequent block 393-399)"
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs:MessageAlpha"
+    constants:
+      - { name: "fade_subsequent", base: "1", port: "1", match: true }
+      - { name: "passone", base: "3", port: "3", match: true }
+      - { name: "passone_minalpha", base: "0.5", port: "0.5", match: true }
+      - { name: "passtwo", base: "10", port: "10", match: true }
+      - { name: "passtwo_minalpha", base: "0.5", port: "0.5", match: true }
+      - { name: "fade_minfontsize", base: "1", port: "1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "two bound()/Clamp passes with matching floors + alpha→fontsize shrink (sz = minfontsize + a*(1-minfontsize)) reproduced exactly", result: pass }
+    confidence: high
+    notes: "Both passes use 1 - g/max(1,pass) clamped to [min,1], identical to QC. Floor cvars are sanitized to [0,1] in the port (a NaN-guard hardening, not a behavior change)."
+
+  - id: cl-centerprint.layout.draw
+    name: "Layout: flip / align / wrap / ^BOLD / color codes / font scales"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/centerprint.qc:HUD_CenterPrint (message draw 434-491)"
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs:DrawPanel"
+      - "game/hud/CenterPrintPanel.cs:DrawMessage"
+      - "game/hud/CenterPrintPanel.cs:WrapLine"
+    constants:
+      - { name: "fontscale", base: "1", port: "1", match: true }
+      - { name: "fontscale_bold (shipped skin)", base: "1.2 (hud_luma/luminos cfgs:290)", port: "1.2 (RegisterDefaults + live read both default 1.2)", match: true }
+      - { name: "fontscale_title (shipped skin)", base: "1.3 (hud_luma/luminos cfgs:291)", port: "1.3 (RegisterDefaults + live read both default 1.3)", match: true }
+      - { name: "BOLD_OPERATOR", base: "^BOLD", port: "^BOLD", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "flip bottom-up pre-measure block, align lerp, word-wrap + single-word hard-break, ^BOLD bold-font swap all present and behavior-matched; fontscale_bold=1.2/title=1.3 registered at CenterPrintPanel.cs:280-281 + live-read defaults at :302-303 match hud_luma.cfg:290-291", result: pass }
+    confidence: high
+    notes: "FIXED (fontscale_bold 1.4→1.2, title 1.8→1.3 baked as port defaults, partial→faithful values). The port now registers the loaded-skin (luma/luminos) values 1.2/1.3 as the defaults instead of the centerprint.qh header defaults 1.4/1.8, so bold message lines + titles render at the stock-skin size. Word-wrap is reimplemented (not QC getWrappedLine) but matches behavior incl. hard-break of an over-long single word. Panel does NOT reproduce Base's slide-below-scoreboard/radar repositioning (HUD_CenterPrint:221-242) — minor layout-only omission; not separately rowed."
+
+  - id: cl-centerprint.kill.group
+    name: "centerprint_Kill — graceful group fade-out"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/centerprint.qc:centerprint_Kill"
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs:Kill"
+      - "game/hud/HudNotifications.cs:OnNotification (case MsgType.CenterKill)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:SendCenterKill"
+      - "src/XonoticGodot.Server/GameWorld.cs:Warmup.OnCountdownStop / BroadcastRoundStop"
+    constants:
+      - { name: "kill fade time", base: "min(5, fade_out)", port: "min(5, fade_out)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "GameWorld.cs:732 SendCenterKill(All,null,\"CPID_ROUND\") on countdown abort → wire MsgType.CenterKill → HudNotifications.cs:132 _hud.CenterPrint.Kill(text); Kill matches Base (start_time=0, expire over min(5,fade_out))", result: pass }
+    confidence: high
+    notes: "FIXED dead→live: the new SendCenterKill(broadcast, target, cpid) (non-empty cpid) wires MSG_CENTER_KILL to the panel's Kill(id). Driven on the real path by Warmup.OnCountdownStop (GameWorld.cs:732, countdown abort retracts the CPID_ROUND 'Game starts in' line). Implementation matches Base exactly."
+
+  - id: cl-centerprint.kill.all_remote
+    name: "MSG_CENTER_KILL — remote group / all kill from server"
+    layer: [presentation]
+    base_refs:
+      - "common/notifications/all.qc:NET_HANDLE(ENT_CLIENT_NOTIFICATION) MSG_CENTER_KILL (1372-1392)"
+      - "client/hud/panel/centerprint.qc:centerprint_KillAll"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:SendCenterKill"
+      - "game/net/ServerNet.cs:WriteNotification (WireType)"
+      - "game/net/ClientNet.cs:HandleReliableBundle"
+      - "game/hud/HudNotifications.cs:OnNotification (case MsgType.CenterKill)"
+      - "game/hud/CenterPrintPanel.cs:ClearAll / Kill"
+      - "src/XonoticGodot.Server/GameWorld.cs:2873 (SendCenterKill All/null → kill all)"
+    constants:
+      - { name: "CPID_Null → kill all", base: "centerprint_KillAll", port: "ClearAll (empty cpid branch)", match: true }
+      - { name: "else → kill group", base: "centerprint_Kill(cpid)", port: "Kill(text)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "SendCenterKill encodes MsgType.CenterKill in WireType + cpid in Text (carrier notification); ServerNet.WriteNotification:2365 writes WireType byte; ClientNet decodes type; HudNotifications.cs:127-132 empty→ClearAll else→Kill; GameWorld.cs:2873 SendCenterKill(All,null,null) clears all", result: pass }
+    confidence: high
+    notes: "FIXED missing→faithful + dead→live. The wire path carries the override WireType (ServerNet/ClientNet both honour d.WireType, not n.Type) so a CenterKill rides on a carrier center notification's registry id without disturbing the registry. Empty cpid → centerprint_KillAll (ClearAll); non-empty → Kill(cpid). Both single-process (HudSink uses d.WireType) and networked paths handled."
+
+  - id: cl-centerprint.title.gametype
+    name: "Gametype title line (centerprint_SetTitle + Announcer driver)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/centerprint.qc:centerprint_SetTitle"
+      - "client/announcer.qc:Announcer_Gamestart (centerprint_SetTitle(\"^BG\"+MapInfo_Type_ToText(gametype)))"
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs:SetTitle / ClearTitle / DrawTitle"
+      - "game/hud/HudNotifications.cs:OnNotification (case MsgType.CenterTitle)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:SendCenterTitle"
+      - "src/XonoticGodot.Server/GameWorld.cs:BroadcastCountdownTitle"
+    constants:
+      - { name: "fontscale_title", base: "1.3 shipped skin", port: "1.3 (skin override now applied as default)", match: true }
+      - { name: "title text", base: "^BG + MapInfo_Type_ToText(gametype)", port: "^BG + GameType.DisplayName", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "BroadcastCountdownTitle SendCenterTitle(All,null,\"^BG\"+name) once per armed countdown (non-Duel) → wire MsgType.CenterTitle → HudNotifications.cs:140 SetTitle; cleared via empty SendCenterTitle on BEGIN/abort/roundstop; titleFont = cpFont*FontScaleTitle with FontScaleTitle default now 1.3 (CenterPrintPanel.cs:303)", result: pass }
+    confidence: high
+    notes: "FIXED dead→live + logic partial→faithful (prior wave) AND the title fontscale skin gap now closed (1.8→1.3, values partial→faithful) — shared with layout.draw. The server drives the gametype-name title server-side (no CSQC Announcer needed): BroadcastCountdownTitle sets ^BG<DisplayName> once per armed game-start countdown and clears it on BEGIN, countdown abort, and round-stop. DrawTitle rendering (bold title + underline at fontscale_title) is faithful, now at the stock-skin scale."
+
+  - id: cl-centerprint.title.duel
+    name: "Duel title 'left vs right' (centerprint_SetDuelTitle + Announcer_Duel)"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/centerprint.qc:centerprint_SetDuelTitle"
+      - "client/announcer.qc:Announcer_Duel"
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs:SetDuelTitle / DrawTitle / ShortenColored"
+      - "game/hud/HudNotifications.cs:OnNotification (case MsgType.CenterDuelTitle)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:SendCenterDuelTitle"
+      - "src/XonoticGodot.Server/GameWorld.cs:BroadcastCountdownTitle"
+    constants:
+      - { name: "name shorten width", base: "textShortenToWidth(name, hud_panel_scoreboard_namesize * hud_fontsize.x)", port: "ShortenColored(name, namesize(default 15) * Cfg.FontSize)", match: true }
+      - { name: "hud_panel_scoreboard_namesize default", base: "15", port: "15", match: true }
+      - { name: "refresh when pair changes only", base: "yes (Announcer_Duel 'players haven't changed, stop here')", port: "yes (GameWorld _duelTitleLeft/_duelTitleRight gate)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "GameWorld.cs:1505-1522 BroadcastCountdownTitle (Duel branch) picks top-2 non-observer players, re-sends SendCenterDuelTitle only when the pair changes → wire MsgType.CenterDuelTitle (s1=left,s2=right) → HudNotifications.cs:144 SetDuelTitle; DrawTitle now calls ShortenColored with namesize*fontsize budget", result: pass }
+    confidence: high
+    notes: "BOTH baseline gaps FIXED. (1) dead→live: the duel 'P1 vs P2' title is now driven server-side in Duel by BroadcastCountdownTitle, only when the GameType is Duel, refreshed when the two duelers change (matches Announcer_Duel). (2) name-shorten: the new ShortenColored (CenterPrintPanel.cs) reproduces textShortenToWidth — copies color codes through without charging width, appends an ellipsis at hud_panel_scoreboard_namesize(15)*fontsize. Duel layout (left vs right + per-name underline) already faithful."
+
+  - id: cl-centerprint.feed.engine_builtin
+    name: "Raw engine centerprint() builtin → panel (map/trigger/door/item/target_print text)"
+    layer: [presentation]
+    base_refs:
+      - "client/main.qc:CSQC_Parse_CenterPrint"
+      - "client/hud/panel/centerprint.qc:centerprint_AddStandard"
+      - "common/mapobjects/func/door.qc (.message centerprint)"
+      - "common/mapobjects/target/items.qc / target_print (map-trigger centerprints)"
+      - "server/compat/quake3.qc:target_print_message"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:MapMover.Centerprint"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:SendCenterRaw"
+      - "game/hud/HudNotifications.cs:OnNotification (case MsgType.CenterRaw)"
+      - "game/hud/CenterPrintPanel.cs:Add"
+      - "MapObjects/Doors.cs:406 / TargetUtilities.cs:509,805 / CompatRemaps.cs:424,472 (callers)"
+    constants:
+      - { name: "NOTIF_ONE_ONLY targeting", base: "centerprint(activator, s)", port: "SendCenterRaw(OneOnly, actor, text)", match: true }
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "MOTD/welcome is still shown via the DialogWelcome menu rather than the centerprint panel (minor: Base shows it on the panel; the port shows it in a dialog). Not separately rowed — distinct surface."
+    verification:
+      - { kind: code, ref: "MapMover.Centerprint (MapObjectsCommon.cs:793-803) routes free-text .message via SendCenterRaw(OneOnly, actor, message) → wire MsgType.CenterRaw → HudNotifications.cs:150 CenterPrint.Add; live callers: Doors.cs:406 (door .message), TargetUtilities.cs:509 (target_items give), 805 (trigger_multiple/target .message), CompatRemaps.cs:424 (target_fragsFilter 'N more frags needed'), 472 (Q3 target_print_message)", result: pass }
+    confidence: high
+    notes: "FIXED missing/dead→faithful/live. The whole raw centerprint() family (door/trigger/target/.message, target_print, Q3-compat target_print) now routes the TEXT through MapMover.Centerprint → SendCenterRaw → CenterPrintPanel.Add (centerprint_AddStandard analogue), in addition to playing the audible SND(TALK)/noise half. SendCenterRaw fires regardless of the optional CenterprintHandler host seam, so the text is delivered to the targeted client on the live match path. audio upgraded partial→faithful (both halves now play). MOTD-on-panel is the only remaining minor surface difference."
+
+  - id: cl-centerprint.feed.chat_tell
+    name: "Server chat 'tell'/private-message centerprint (cmsg/sourcecmsg)"
+    layer: [presentation, authority]
+    base_refs:
+      - "server/chat.qc (cmsgstr / sourcecmsgstr → centerprint(client, ...))"
+    port_refs:
+      - "src/XonoticGodot.Server/Chat.cs:CenterPrint"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationSystem.cs:SendCenterRaw"
+      - "game/hud/HudNotifications.cs:OnNotification (case MsgType.CenterRaw)"
+      - "game/hud/CenterPrintPanel.cs:Add"
+    constants:
+      - { name: "private-say cmsgstr", base: "'NAME tells you:\\n<msg>'", port: "'{name}^3 tells you:\\n^7{msg}' (Chat.cs:172)", match: true }
+      - { name: "team-message cmsgstr", base: "'(NAME)\\n<msg>'", port: "'({name})\\n^7{msg}' (Chat.cs:180)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Chat.cs builds cmsgstr/sourcecmsgstr (152-200), calls CenterPrint for source echo (350,367), private-say recipient (360), and team-message members (376); Chat.CenterPrint (665-670) now → SendCenterRaw(OneOnly, client, text) → MsgType.CenterRaw → CenterPrintPanel.Add (and still logs DeliveredCenter for headless tests)", result: pass }
+    confidence: high
+    notes: "FIXED partial/dead→faithful/live. Chat.CenterPrint no longer drops the text on DeliveredCenter; it routes through the raw-centerprint notification channel (NOTIF_ONE_ONLY → exactly the recipient). The /tell 'X tells you:' and team-message '(X)' centerprints now reach the recipient's panel. DeliveredCenter is retained as a test observability hook, not the consumer."
+
+  - id: cl-centerprint.config.preview
+    name: "HUD-config live preview messages + title"
+    layer: [presentation]
+    base_refs:
+      - "client/hud/panel/centerprint.qc:HUD_CenterPrint (autocvar__hud_configure block 189-217)"
+    port_refs:
+      - "game/hud/CenterPrintPanel.cs:UpdateHudConfigurePreview"
+      - "game/hud/CenterPrintPanel.cs:_Process (calls it per-frame)"
+      - "game/hud/HudConfigEditor.cs:548 (sets IsHighlighted)"
+      - "game/hud/HudConfig.cs:76 (registers _hud_configure)"
+    constants:
+      - { name: "countdown sample (id floor(r*1000), dur 1, count 10)", base: "r>0.8", port: "r>0.8f, Push(...,1f,id,10)", match: true }
+      - { name: "multiline sample (id 0, dur 20, ^BOLD line)", base: "r>0.55", port: "r>0.55f, Push(...,20f)", match: true }
+      - { name: "standard sample (AddStandard)", base: "else", port: "else Add(...)", match: true }
+      - { name: "regen cadence highlighted", base: "time+1+random()*4", port: "_now+1.0+rng*4.0", match: true }
+      - { name: "regen cadence non-highlighted", base: "time+10-random()*3", port: "_now+10.0-rng*3.0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "UpdateHudConfigurePreview (CenterPrintPanel.cs:210-263) reproduces the autocvar__hud_configure branch: enter→ClearAll+immediate gen, highlighted→SetTitle(\"Title\")+rotating countdown/multiline/standard on time+1+rand*4, non-highlighted→'Generic message' on time+10-rand*3, leave→ClearTitle+ClearAll; gated on GlobalF(_hud_configure) and IsHighlighted (set by HudConfigEditor.cs:548)", result: pass }
+    confidence: high
+    notes: "FIXED missing/dead→faithful/live. The HUD-editor live preview is now implemented and wired: _Process calls UpdateHudConfigurePreview every frame, self-gating on the _hud_configure cvar (registered HudConfig.cs:76, toggled by the HUD setup dialog). The rotating sample lines + 'Title' (when this is the highlighted panel) match the Base r-thresholds, ids, durations, count, and randomized regen cadences. IsHighlighted is driven live by HudConfigEditor."

@@ -81,6 +81,10 @@ public partial class CreateGameScreen : MenuScreen
         ["nb"]      = new("Goals:", "g_nexball_goallimit", 1, 50, 1, null),
         ["race"]    = new("Laps:", "g_race_laps_limit", 1, 25, 1, null),
         ["cts"]     = new("", "", 0, 0, 0, null),
+        // Invasion: "Point limit:" label (50..500 step 10) but no cvar binding — Base m_configuremenu
+        // passes string_null for pCvar (same as Assault/CTS/Onslaught), so the slider is disabled/greyed.
+        // The live point-limit is set via g_invasion_point_limit / mapinfo pointlimit=50 at server start.
+        ["inv"]     = new("Point limit:", "", 50, 500, 10, null),
     };
 
     // QC: only "priority" gametypes show unless menu_create_show_all, in the QC menu order (the stock list).
@@ -581,6 +585,17 @@ public static class MapInfoCache
                 }
             }
         }
+        // QC Duel.m_isForcedSupported (duel.qh:15-28): any DM map also supports duel, unless
+        // g_duel_not_dm_maps is set. Mirrors MapInfoBackend.ApplyForcedGametypes.
+        bool forceDuelOnDm = MenuState.Cvars.GetFloat("g_duel_not_dm_maps") == 0f;
+        if (forceDuelOnDm && e.Gametypes.Contains("dm") && !e.Gametypes.Contains("duel"))
+            e.Gametypes.Add("duel");
+        // QC TeamDeathmatch.m_isForcedSupported (tdm.qh): any DM map also supports TDM when
+        // g_tdm_on_dm_maps is set (default 0 = off, opposite polarity to g_duel_not_dm_maps).
+        // Mirrors MapInfoBackend.ApplyForcedGametypes (the dead MapInfoBackend path; this is the live one).
+        bool forceTdmOnDm = MenuState.Cvars.GetFloat("g_tdm_on_dm_maps") != 0f;
+        if (forceTdmOnDm && e.Gametypes.Contains("dm") && !e.Gametypes.Contains("tdm"))
+            e.Gametypes.Add("tdm");
         Cache[map] = e;
         return e;
     }

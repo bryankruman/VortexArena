@@ -124,6 +124,18 @@ public partial class Main : Node
             if (ms >= 0 && ms + 1 < args.Length)
                 shell.DebugScreen = args[ms + 1];
 
+            // `--camera-trace <scenario.json> <out.json>` (apparatus A2): boot the listen server on the scenario's
+            // map, feed NetGame the scripted per-tick input, and dump the per-frame rendered camera + predicted
+            // origin to out.json, then quit. Run with `--headless --fixed-fps 72` for a deterministic capture. The
+            // scenario sets the map/gametype; we force a 0-bot listen server so nothing else perturbs the player.
+            int ct = Array.IndexOf(args, "--camera-trace");
+            if (ct >= 0 && ct + 2 < args.Length && CameraTrace.Configure(args[ct + 1], args[ct + 2]))
+            {
+                shell.BootMap = CameraTrace.Map;
+                shell.BootGametype = CameraTrace.Gametype;
+                shell.BootBots = CameraTrace.Bots; // 0 by default; a scenario can request bots to capture the bot-join transition
+            }
+
             // Networked boot paths (CI/dev): join a server, or host a listen server + self-connect.
             int c = Array.IndexOf(args, "--connect");
             if (c >= 0 && c + 1 < args.Length)

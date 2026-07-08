@@ -102,11 +102,20 @@ public readonly struct WarpzoneTraceResult
     /// <summary>How many portals the trace crossed (0 for a plain trace; capped at the 16-zone guard).</summary>
     public readonly int ZonesCrossed;
 
-    public WarpzoneTraceResult(TraceResult trace, WarpzoneTransformChain transform, int zonesCrossed)
+    /// <summary>The FIRST crossing's entry point (in the trace's START frame) and exit point (in the frame past
+    /// that first portal) — valid when <see cref="ZonesCrossed"/> &gt; 0. Lets a caller draw a beam/tracer as
+    /// two correct segments (near side up to the portal, far side from the exit) instead of one wrong straight
+    /// line whose ends live in different frames.</summary>
+    public readonly Vector3 FirstCrossPoint, FirstExitPoint;
+
+    public WarpzoneTraceResult(TraceResult trace, WarpzoneTransformChain transform, int zonesCrossed,
+        Vector3 firstCrossPoint = default, Vector3 firstExitPoint = default)
     {
         Trace = trace;
         Transform = transform;
         ZonesCrossed = zonesCrossed;
+        FirstCrossPoint = firstCrossPoint;
+        FirstExitPoint = firstExitPoint;
     }
 }
 
@@ -183,6 +192,7 @@ public static class WarpzoneTrace
         Vector3 segEnd = end;
         Warpzone? lastZone = null;
         int crossed = 0;
+        Vector3 firstCross = default, firstExit = default;
 
         // QC's `i = 16` loop: each iteration sweeps one segment; on a portal crossing it warps and re-sweeps.
         TraceResult tr = trace.Trace(segStart, mins, maxs, segEnd, filter, ignore);
@@ -204,6 +214,11 @@ public static class WarpzoneTrace
             lastZone = wz;
 
             Vector3 exitPoint = wz.Transform.TransformOrigin(crossPoint);
+            if (crossed == 1)
+            {
+                firstCross = crossPoint;   // start-frame entry point (for two-segment beam/tracer draws)
+                firstExit = exitPoint;
+            }
             segEnd = wz.Transform.TransformOrigin(segEnd);
             // Nudge just past the exit plane so the next sweep doesn't immediately re-detect the same crossing
             // (QC steps back a bit with a 32qu trace; the port nudges along the post-warp direction).
@@ -213,7 +228,7 @@ public static class WarpzoneTrace
             tr = trace.Trace(segStart, mins, maxs, segEnd, filter, ignore);
         }
 
-        return new WarpzoneTraceResult(tr, chain, crossed);
+        return new WarpzoneTraceResult(tr, chain, crossed, firstCross, firstExit);
     }
 
     /// <summary>
@@ -408,12 +423,17 @@ public static class WarpzoneRadiusQuery
             if (Vector3.Dot(org - wz.InOrigin, wz.Transform.InForward) < 0f)
                 continue;
 
-            // Step the blast through the portal (QC org_new = WarpZone_TransformOrigin(e, org)).
+            // Step the blast through the portal (QC org0_new = WarpZone_TransformOrigin(e, org)).
             Vector3 orgNew = wz.Transform.TransformOrigin(org);
 
-            // Reduce the radius by the travelled distance, clamped to [0, rad - 8] exactly as QC.
-            float travelled = distToZone;
-            float radNew = QClamp(rad - travelled, 0f, rad - RadiusRecurseMargin);
+            // QC WarpZone_FindRadius_Recurse (common.qc:650): the recursion radius is
+            // bound(0, rad - vlen(org_new - org0_new), rad - 8), where org0_new is the blast transformed THROUGH
+            // the zone and org_new = trace_endpos of a LOS traceline from the zone's target origin to org0_new.
+            // With a clear seam (the analytic port doesn't re-trace solid here) org_new == org0_new, so the
+            // travelled term is ~0 and the binding clamp is the rad-8 UPPER bound — Base recurses with very nearly
+            // the FULL remaining radius (only shaved by 8qu), NOT reduced by the distance to the portal mouth.
+            // (The previous port reduced by distToZone, under-budgeting far-side splash through a portal.)
+            float radNew = QClamp(rad, 0f, rad - RadiusRecurseMargin);
             if (radNew <= 0f) continue;
 
             // Accumulate the transform so far-side victims map back to the blast frame, and recurse.
@@ -430,6 +450,15 @@ public static class WarpzoneRadiusQuery
     private static bool IsBadEntity(Entity e)
     {
         if (e.IsFreed) return true;
+
+        // QC's leading `is_pure(e)` guard = (e.pure_data && e.solid == SOLID_NOT): a bare data object created
+        // without a spawnfunc, left non-solid. The port has no `pure_data` flag, but the dominant pure case — a
+        // data object with no real classname AND non-solid — is captured by the empty-classname branch below plus
+        // this Solid.Not pairing. We require BOTH conditions exactly as is_pure (a non-solid REAL entity, e.g. a
+        // non-solid item, still keeps its classname and is NOT treated as pure), so legitimate non-solid victims
+        // are not excluded. A faithful full port needs an Entity.PureData flag (see todos).
+        if (e.Solid == Solid.Not && string.IsNullOrEmpty(e.ClassName)) return true;
+
         string s = e.ClassName;
         switch (s)
         {

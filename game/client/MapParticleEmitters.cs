@@ -55,6 +55,8 @@ public partial class MapParticleEmitters : Node3D
         if (Api.Services is null)
             return;
 
+        using var _prof = FrameProfiler.Scope("emitters");
+
         _rescanIn -= (float)delta;
         if (_rescanIn <= 0f)
         {
@@ -67,6 +69,11 @@ public partial class MapParticleEmitters : Node3D
             Entity e = em.Entity;
             if (e.IsFreed || !GodotObject.IsInstanceValid(em.Particles))
                 continue;
+
+            // #30 slowmo/pause: ambient map emitters are Godot self-processing particle nodes (they ignore the
+            // scaled deltas the CPU-side drivers use), so drive their SpeedScale from the shared factor — frozen
+            // mid-air at slowmo 0, slow drift at fractional slowmo. Nothing else sets SpeedScale (default 1).
+            em.Particles.SpeedScale = XonoticGodot.Game.Client.ClientRenderTime.Scale;
 
             bool active = e.Active == MapMover.ActiveActive;
             if (em.ImpulseMode)

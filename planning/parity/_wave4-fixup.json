@@ -1,0 +1,378 @@
+[
+{
+"unit": "monster-zombie",
+"regressions": 2,
+"notes": [
+"REGRESSION (audio na -> partial) on setup.mr_setup: Wave-2 added MonsterSound(e,st,'spawn',...) in Setup (MonsterAI.cs:312). The zombie 'spawn' cue is COMMENTED OUT in zombie.dpm_0.sounds (Base spawn is silent), and no monsters/zombie_spawn asset exists (sound/monsters/zombie/ ships only death/idle/sight.ogg). The port now attempts a sound Base never plays.",
+"REGRESSION (audio na -> partial) on attack.melee: Wave-2 added MonsterSound(self,st,'melee',...) on a connecting swing (MonsterAI.cs:1165). The zombie 'melee' cue is also commented out in Base (silent); the port attempts monsters/zombie_melee.wav, which doesn't exist. Net: the zombie_melee.wav was deleted from the block path but re-introduced on the melee-connect path for a cue Base silences.",
+"Root cause of both regressions + the unchanged pain-sound defect: the port's MonsterSound plays a literal monsters/<name>_<cue>.wav for EVERY cue, with no per-cue check of whether that cue is DEFINED (uncommented) in the model's .sounds file. Base's Monster_Sound reads this.(samplefield); a commented-out cue yields an empty sample and sound7 plays nothing. The port needs the same defined/commented gate so zombie pain/melee/spawn/ranged stay silent."
+]
+},
+{
+"unit": "damage-pipeline",
+"regressions": 1,
+"notes": [
+"fire.burning REGRESSION (wyvern + Inferno buff): the Wave-2 burn-tick rewrite changed the per-tick formula from Strength*0.05 to dps*frametime (treating Strength as raw dps via fallback). But MonsterFramework.AddFireDamage (MonsterFramework.cs:96) was NOT updated - it still pre-scales Strength = dps/0.05*FrameTime for the OLD convention and never sets FireDamagePerSec. The new tick then multiplies that already-scaled value by frametime AGAIN, so wyvern fireball (Wyvern.cs:164) and the Inferno buff (BuffsMutator.cs:437) now deal ~dps*FrameTime^2/0.05 (about 0.4% of intended at 72fps). These two sources burned roughly correctly under the old tick; the rewrite broke them. Fix: route AddFireDamage through StatusEffectsCatalog.FireAddDamage (pass raw dps). Flagged as a spawn task (task_a32750e7)."
+]
+},
+{
+"unit": "mutator-breakablehook",
+"regressions": 1,
+"notes": [
+"TEAMPLAY REGRESSION introduced by Wave-2 in breakablehook.owner.punish_splash: the new DiffTeam(a,b) helper keys off the STATIC bool GameScores.Teamplay, but that static is never assigned on the server gameplay path. Its only writer is ScoreInfoBlock.Apply (the CLIENT network deserialise), and ScoreInfoBlock.Apply/Serialize/Deserialize have ZERO live callers in the entire src tree (the scoreboard layout block is not wired into the snapshot composer). So server-side the static stays false every match, and DiffTeam always takes the FFA branch !ReferenceEquals(a,b). Consequence: in a TEAM game (CTF/TDM/CA), breaking a TEAMMATE's hook now wrongly fires the punish (5 splash to the teammate + force-removes the chain); Base DIFF_TEAM uses team!=team and skips same-team. The pre-Wave-2 port used !Teams.SameTeam, which handled teamplay correctly, so this is a true regression vs BOTH Base and the old port. Same dead-static dependency exists in NadeOrbHelper.DiffTeam (NadeOrbHelper.cs:33) and Teleporters (Teleporters.cs:124,366) -- a shared bug class. Spawned a follow-up task to wire GameScores.Teamplay (or route through the authoritative world.Teamplay.IsTeamGame). The existing test (MutatorBatchT51Tests.cs:519) is an FFA self-hit and does not exercise the teamplay path, so it stays green and hides the regression."
+]
+},
+{
+"unit": "physics-movetypes",
+"regressions": 1,
+"notes": [
+"step.physics REGRESSION (Wave-2): routing MOVETYPE_STEP through WalkMove exposed an applyGravity gate that only checks `ent.MoveType == MoveType.Walk` (MoveTypePhysics.cs:331). Base walk.qc:12 gates on `WALK || STEP`. So a MOVETYPE_STEP body now gets applyGravity=false and gets NO gravity in FlyMove \u2014 it slides and stair-steps but never free-falls. Before Wave-2 the freefall PhysicsStep DID apply gravity to STEP bodies, so the alias change traded the stepping gap for a gravity gap on the monster corpse/body path. One-line fix (add `|| ent.MoveType == MoveType.Step`); flagged as a spawn_task."
+]
+},
+{
+"unit": "survival",
+"regressions": 1,
+"notes": [
+"survival.win.timeout is now LIVE but DIVERGES from stock Base. Wave-2 wired RoundTimedOut()\u2192EndRoundTimedOut() (survivors win) into CheckWinningCondition on the live path (GameWorld.cs:1745), so a hiding-prey round now ends at g_survival_round_timelimit (120s). But it OMITS Base's gate `autocvar_g_survival_round_enddelay == -1`. The shipped default is enddelay=0 (gametypes-server.cfg:704), so in stock Base Surv_CheckWinner returns 0 when both sides are alive at the timer, and round_handler_Think never force-ends on round_endtime \u2014 stock Base does NOT auto-resolve a timed-out round. The port now ends + awards (survivor +1 reward) a round that stock Base would leave running. This is a real new behavioral divergence, not a clean fix. NOTE: the baseline's framing ('the headline survive-until-time rule is dead') was itself partly mistaken \u2014 in stock config Base intentionally does not resolve on the timer.",
+"Secondary: the new timeout reads surv.Handler.RoundEndTime, which is armed by the OWNED handler's own countdown timeline, not the live GameWorld.Rounds map-reset timeline (Survival, unlike CA/FreezeTag, wires neither _roundPrep nor _roundSync at GameWorld.cs:1468), so the 120s clock can desync from the map-reset/respawn handler.",
+"Interaction risk: with teamkill punishment now live but Bot_ForbidAttack still unported, an ally-attacking bot now mirror-kills (suicides) itself."
+]
+},
+{
+"unit": "sv-commands-votes",
+"regressions": 1,
+"notes": [
+"REGRESSION (live, real): vote.parse_whitelist \u2014 Wave-2 added an 'allready' case that rejects unless VoteController.WarmupStage() is true, but WarmupStage is NEVER wired in GameWorld.WireCommandsWarmupVoting (defaults static () => false). 'allready' IS in the default sv_vote_commands whitelist, so an allready vote is now ALWAYS rejected with 'Game already started. Use the resetmatch command...' even during warmup \u2014 previously it fell through and was votable. Net regression: warmup allready voting is broken. Root cause is the same unwired-hook pattern as the dead vote guards; wiring Voting.WarmupStage = () => Warmup.WarmupStage in GameWorld would fix it."
+]
+},
+{
+"unit": "sv-spawnpoints",
+"regressions": 1,
+"notes": [
+"spawnpoint_idle_glow per-team tint is BROKEN by the Wave-2 change. SpawnPointParticles.TeamColorRgb switches on team == 1/2/3/4, but a spawnpoint's e.Team carries the port's CSQC team encoding Teams.Red/Blue/Yellow/Pink = 4/13/12/9 (Teams.cs:12-15). Result: a RED spot (Team 4) hits case 4 and is tinted PINK; blue(13)/yellow(12)/pink(9) fall through to white/untinted. The baseline 'untinted' gap is not closed \u2014 it is replaced with an incorrect-color defect (red is now objectively wrong). Correct table must switch on Teams.Red/Blue/Yellow/Pink as Ctf.cs:379-386 (TeamRadarColor) does. RGB values themselves are correct. Flagged as a one-line-fix background task (task_274cf96e)."
+]
+},
+{
+"unit": "turret-machinegun",
+"regressions": 1,
+"notes": [
+"lifecycle.damage / setup.flags: turret retaliation is now an ACTIVE divergence. TurretAI.Damage:690 sets `turret.Enemy = attacker`, and Wave-2 made Damage() live via the GtEventDamage shim. But Base's turret_damage (sv_turrets.qc:207-250) has NO such line, and TFL_DMG_RETALIATE \u2014 while set in the machinegun's inherited default damage_flags (sv_turrets.qc:1274) \u2014 is never READ by any Base code (grep confirms only the BIT def + the unread default-set). So the port turret now turns to face/acquire whoever shot it from anywhere, bypassing the normal scan/score acquisition; Base never does this. Previously the baseline correctly recorded this code as dead (inert); Wave-2 activated it, turning a moot extra into a live behavioral defect. Low gameplay impact but a genuine fidelity regression."
+]
+},
+{
+"unit": "turret-plasma_dual",
+"regressions": 1,
+"notes": [
+"aim.lead_splash_predict (zPredict): PlasmaDualTurret.Think passes zPredict:true, but Base plasma tr_setup aim_flags = LEAD|SHOTTIMECOMPENSATE|SPLASH and NEVER sets TFL_AIM_ZPREDICT (and the dual has no tr_setup override, so it inherits plasma's flags). turret_aim_generic gates the gravity-arc z-prediction purely on TFL_AIM_ZPREDICT, so the dual mis-leads airborne targets down an arc the Base plasma never predicts. Wave-2 CORRECTED the single plasma (MakeParams now zPredict:false) but left the dual at true \u2014 an asymmetric defect. Baseline had mis-graded this row faithful (it claimed Base sets zPredict on the gravity branch, which is false), so it is a long-standing inaccuracy now precise rather than a strict status downgrade, but the single-vs-dual asymmetry is genuinely new.",
+"Not a code regression but worth flagging: the death_blast divergence (port Die() actively does an ammo-scaled RadiusDamage that Base turret_die has COMMENTED OUT) remains UNCHANGED by Wave-2 and is still a port-added blast Base does not deal."
+]
+},
+{
+"unit": "vehicle-spiderbot",
+"regressions": 1,
+"notes": [
+"REAL REGRESSION in frame.locomotion (values): the same Wave-2 change that fixed the gravity-step TIMING also replaced the hardcoded factor 0.5 with GravityTicrateFactor(), which reads autocvar_sv_gameplayfix_gravityunaffectedbyticrate via Api.Cvars.GetFloat. That cvar is NOT registered/seeded anywhere in the port (grep confirms only references). EngineServices.GetFloat returns 0f for unregistered cvars (EngineServices.cs:370), so the factor resolves to 1.0 instead of the QC stock 0.5 -> the walk/strafe manual gravity sub-step (g*dt*sv_gravity at velz<=20) is now 2x too strong vs Base default. The port's own engine treats this fix as default-true (FlyMove.cs:61 GravityUnaffectedByTicrate=true), so the cvar read is both wrong-vs-default and engine-inconsistent. Before Wave-2 the factor was hardcoded 0.5 (correct). Flagged a spawn task (task_bdddbe58) to fix it. Net for the row: timing partial->faithful (a gain) but values faithful->partial (the regression), so the row stays values:partial overall."
+]
+},
+{
+"unit": "assault",
+"regressions": 0,
+"notes": [
+"CAUTION (not a regression, but a wired-but-dead trap): DriveFrame, TimeLimitReached, StartSecondRound, CanRoundStart, CanRoundEnd grew real bodies this wave (full timelimit check, role swap) but have ZERO live callers (verified by grep across src/ tests/ game/). They compile and look done but are not invoked. GameWorld.cs:1461 still calls bare EnableRounds() for Assault with NO round callbacks, while CA and FreezeTag got full CheckTeams/CheckWinner round wiring in the same wave - Assault was skipped.",
+"CAUTION: the campaign-end fix in DestroyFinalObjective (Assault.cs:465, campaign = TargetUtilities.IsCampaign?.Invoke()) is DEAD: TargetUtilities.IsCampaign is declared at TargetUtilities.cs:376 but is NEVER assigned anywhere in the entire repo (src/, game/, engine/, net/), so the delegate is null and the campaign branch can never fire. Single-round campaign Assault still never ends."
+]
+},
+{
+"unit": "bot-ai",
+"regressions": 0,
+"notes": [
+"TWO DEAD WIRINGS (not regressions, but the new code has no behavioral effect -- flagged as still-open and spun off as task_9efd5856): (1) move.danger -- Wave-2 added a Waypoint.Danger field and made A* add nb.Danger to path cost, but NO producer ever sets Danger (no botframe_updatedangerousobjects analogue; BotPopulation.cs:201 admits it's unported), so Danger is always 0 and routing is unchanged. The baseline 'per-waypoint danger-cost' gap is therefore NOT genuinely closed. (2) The bunnyhop 1.25x LinearCost branch reads WaypointNetwork.Skill, which is never assigned anywhere (defaults 0 -> branch always false), so high-skill route costs are not actually scaled -- identical to pre-Wave behavior."
+]
+},
+{
+"unit": "bot-waypoints",
+"regressions": 0,
+"notes": [
+"Two Wave-2 additions are dead scaffolding, NOT closed gaps: (1) WaypointNetwork.Skill + the skill>=7 1.25x bunnyhop-speed cost branch in LinearCost \u2014 Network.Skill is never assigned anywhere (only the SEPARATE BotNavigation.Skill/BotBrain.Skill are set), so it stays 0 and LinearCost always uses base speed exactly as before. (2) Waypoint.Danger + the A* term gScore+link.Cost+nb.Danger \u2014 nothing ever writes Danger (botframe_updatedangerousobjects still explicitly unported, BotPopulation.cs:201), so the term is always +0. These compile and read plausibly but produce no behavioral change on the live match path."
+]
+},
+{
+"unit": "clanarena",
+"regressions": 0,
+"notes": [
+"CRITICAL NEAR-MISS (not a regression - was dead in baseline, still effectively dead, but now for a subtler reason worth flagging): clanarena.scoring.damage2score is now fully implemented (decimal-carry, excess subtraction, friendly-fire debit, environmental self-penalty) AND subscribed on the live damage hook (DamageSystem.cs:438) - BUT its QC round-phase gate reads ca.Handler.IsRoundStarted, and ca.Handler (the owned Common RoundHandler) is NEVER ticked: ClanArena.Tick() has zero callers, and MirrorRoundTiming copies only RoundEndTime/RoundsPlayed, not the phase. So IsRoundStarted is permanently false and OnSplitHealthArmor always returns early at ClanArena.cs:299 -> the SCORE column stays 0 in every match. Fix: tick ca.Handler, OR mirror IsRoundStarted/GameStartTime in MirrorRoundTiming, OR read the live GameWorld.Rounds phase. The SAME un-ticked-handler bug would silence NotifyLastPlayerForTeam's IsRoundStarted gate if it had a caller (it doesn't).",
+"DriveGametypeFrame case ClanArena is now a bare `break` (CheckRound removed to avoid double-award now that the live handler drives CheckWinner) - this is correct, not a regression: CheckRound is now dead-but-harmless."
+]
+},
+{
+"unit": "cts",
+"regressions": 0,
+"notes": [
+"Watch item (not a regression, inside still-partial row): cts.death.respawn_rules \u2014 OnDeath now sets RespawnFlag.Force, but it is DEAD: RespawnTiming.Calculate (DeadPlayerThink death edge, GameWorld:1819) does p.RespawnFlags = flags (RespawnTiming.cs:75), clobbering it; and the respawn delay still reads generic g_respawn_delay_* (~2s) not CTS g_cts_respawn_delay -1. So the Force set compiles but isn't wired through \u2014 classic dead-on-the-live-path. removeprojectiles still unmodeled."
+]
+},
+{
+"unit": "duel",
+"regressions": 0,
+"notes": [
+"Non-blocking test-staleness (NOT a code regression, out of scope to edit): tests/XonoticGodot.Tests/FilterItemHookTests.cs:108 (DuelFilterItem_NotRegistered_PowerupStillSpawns) still asserts/documents the OLD dead behavior ('Duel.FilterItem is NEVER registered ... must NOT fire'). It still passes only because it boots a plain server without activating the Duel gametype, so the now-live subscription never registers. The assertion contradicts the now-fixed behavior and should be updated to activate Duel and assert the powerup IS filtered."
+]
+},
+{
+"unit": "items-pickups",
+"regressions": 0,
+"notes": [
+"No regressions. But three Wave-2 additions are DEAD (compile, never fire) and must NOT be mistaken for fixes: (1) cl_autoswitch/CTS autoswitch re-selection logic was ported faithfully into ItemGiveTo head+tail (ItemPickupRules.cs:68-83/135-155) but gates on AutoswitchProvider/CtsAutoswitchProvider/CtsActiveProvider (ItemPickupRules.cs:175-189) which are DECLARED-ONLY \u2014 never assigned anywhere. Commands.cs:324 wires Inventory.PriorityProvider at server boot but skips these; the replicated cl_autoswitch value lives in Commands._autoswitch/GetAutoswitch with no bridge. AutoswitchEnabled() therefore always returns false -> picking up a better weapon STILL never auto-switches in a real match (baseline worst-gap NOT closed, only reframed missing->dead). (2) q3compat item origin offset (z += -15 - mins.z) added to StartItem.cs:228-241 but gated on Q3CompatProvider (StartItem.cs:50) which is never assigned -> no-op; Q3/QL-map items still sit ~15qu low. (3) Resources.TakeResourceWithLimit added (faithful to sv_resources.qc:205) but has ZERO callers \u2014 GiveAmmoTo still uses TakeResource(res,-amount) at ItemPickupRules.cs:241-242. No unit test was added for autoswitch or center-prints, so the FuelRegen/Jetpack fix is code-read-verified, not test-verified."
+]
+},
+{
+"unit": "keyhunt",
+"regressions": 0,
+"notes": [
+"CAUTION (not a regression, but a liveness trap to flag): drop.voluntary_use (DropOneKey) is now FULLY coded - throwvelocity 400, delay_collect gate, DROP notif+sound - but is DEAD. The +use key (WeaponImpulses) routes only to VehicleBoarding.UseKey; the PlayerUseKey mutator hook that should reach kh.DropOneKey is not wired. Baseline had this as plain missing; it is now missing-on-the-live-path-but-coded. A reader could mistake the implementation for a live feature.",
+"CAUTION: the PUSH branch of LoserTeam (score_push + KH_PUSHES + INFO_KEYHUNT_PUSHED) is implemented but unreachable - nothing ever sets key.Pusher (no off-map/push tracking). ProtectTime is set on drop but only feeds this dead branch, so it has no observable effect. Only the destroy branch is live."
+]
+},
+{
+"unit": "monster-framework",
+"regressions": 0,
+"notes": [
+"NOT a regression but a re-verified-still-open defect worth surfacing: MonsterAI.MatchHalted (MonsterAI.cs:1741) reads Scoring.GameScores.GameStopped, which has NO live writer anywhere (only the public setter exists). The server actually drives match-stopped into VehicleCommon.GameStopped (GameWorld.cs:1243 = Intermission.Running||MatchEnded||Timeout.IsPaused) \u2014 the global vehicle/mutator ports read. So the game_stopped half of the new prematch/halt guard is dead on the live path; monsters keep targeting/roaming through intermission and timeout. Trivial one-line fix (read VehicleCommon.GameStopped or the g_game_stopped cvar). Registry rows target.validtarget + move.brain + worst_gaps updated with this concrete root cause."
+]
+},
+{
+"unit": "mutator-buffs",
+"regressions": 0,
+"notes": [
+"No regressions found. The highest-risk row to re-check was buffs.jump.velocity: I confirmed it is correctly STILL DEAD, not falsely upgraded. JumpVelocityOverride is written only by BuffsMutator (519/524) + declared at EntityMutatorState.cs:158; PlayerPhysics.cs:822 still reads mp.JumpVelocity[Crouch] (cvar-built), and the PlayerJump hook (826-829) that could override mjumpheight is NOT subscribed by BuffsMutator (it subscribes PlayerPhysics, which has no reader). The Wave-2 PlayerPhysics.cs edits were footstep-only (g_footsteps gate + jittered cadence + ladder/lastground gating), unrelated to jump. A Jump-buffed player still jumps at normal height."
+]
+},
+{
+"unit": "mutator-dynamic_handicap",
+"regressions": 0,
+"notes": [
+"enable.predicate: NOT a true behavioral regression, but the ONE Wave-2 change for this unit is a 'compiles-but-dead' non-fix. Wave-2 added `&& !HandicapDisabled` to DynamicHandicapMutator.IsEnabled, where HandicapDisabled = `g_cts != 0 || g_race != 0` (DynamicHandicapMutator.cs:51-53), intending to port Base HANDICAP_DISABLED() == IS_GAMETYPE(CTS)||IS_GAMETYPE(RACE). But the port NEVER sets the bare g_cts/g_race cvars to 1: gametypes-server.cfg defaults them to 0 ('script-ignore'), there is no Cvars.Set('g_cts'/'g_race') anywhere in src/ or game/, and gametype selection (GameWorld.ResolveGameType) picks a C# object without stamping a select cvar. The codebase actually detects CTS/RACE via `GameType is Cts`/`GameType is Race` (GameWorld.cs:496 CompatRemaps.IsCtsActive, GameWorld.cs:2579). So in a real CTS/RACE match HandicapDisabled stays false and the mutator still activates \u2014 the exact gap the guard was meant to close. I dropped liveness on this row to `dead` rather than calling it a regression because the guard is inert/harmless in the common non-CTS/RACE case and the pre-Wave state also activated in CTS/RACE. The bundled doc-comment fix (correctly re-identifying HANDICAP_DISABLED as the CTS/RACE gate, replacing the old 'sv_cheats lock' mislabel) is a genuine improvement. Recommended real fix: gate on the same `GameType is Cts/Race` provider, not the unset cvars. NOTE: PowerupsMutator.cs:233 has the identical g_cts-cvar reliance but is latent there (0 yields the correct non-CTS default)."
+]
+},
+{
+"unit": "mutator-kick_teamkiller",
+"regressions": 0,
+"notes": [
+"CAUTION (not a regression, but the action.punish 'fix' must not be over-trusted): enforcement is still incomplete on all three severity branches. (1) Default play-ban force-spectate sets attacker.IsObserver=true DIRECTLY instead of calling ClientManager.PutObserverInServer (ClientManager.cs:400), so a live spawned offender keeps MoveType.Walk/Solid.SlideBox/DamageMode.Aim/FragsPlayer \u2014 body stays solid, damageable, effectively still in the match. (2) g_playban_list is written but NEVER enforced at join: ClientManager.cs:274 explicitly defers the playban gate and Bans.IsPlayBanned is only consulted by MinigameSessionManager, so the offender can press fire / autojoin and rejoin. (3) Severity 1 (kick) and 2 (IP-ban) remain dead: both only set LastAction + broadcast, and LastAction has ZERO source-code observers (grep src/**/*.cs) \u2014 Bans.DropClient/KickBanClient are never reached. The doc-comment's claim that 'the host observes LastAction to perform the kick/ban' is aspirational; that wiring does not exist."
+]
+},
+{
+"unit": "mutator-multijump",
+"regressions": 0,
+"notes": [
+"No genuine regressions found. The Wave-2 changes are strict improvements or no-ops on the default path. Caveat (not a regression, but important): the client_gate fix is INCOMPLETE -- ClientMultijumpProvider is declared and read but NEVER assigned by any host code (grep over src/ shows only the in-mutator declaration+read; the analogous Inventory.PriorityProvider IS wired at Commands.cs:324). So the per-client cl_multijump opt-out/cap still cannot fire; it always resolves to ClientDefault=-1->1. This is a dead seam ('compiles but isn't wired'), so client_gate is partial, not faithful. The rejump_grant ready-gate truthiness factor consumes this same dead value, so on the default path it can never gate false -- but it still matches Base default behavior, so rejump_grant itself is faithful."
+]
+},
+{
+"unit": "mutator-powerups",
+"regressions": 0,
+"notes": [
+"OUT-OF-UNIT latent bug (not a powerups regression, flagged as a spawned task): the helper CsqcModelEffectFlags.RoleGlowFlags / CsqcModelAppearance.ComposeForcedAppearance maps the powerup glow colors BACKWARDS (strength->EF_RED, shield->EF_BLUE) vs Base. It has NO live caller, so it does NOT affect the live powerup glow (which uses the correct PowerupsMutator->player.Effects path). It belongs to the cl-csqcmodel unit; if the Wave-3 forced-appearance path is ever wired it would invert the colors."
+]
+},
+{
+"unit": "mutator-sandbox",
+"regressions": 0,
+"notes": [
+"No genuine regressions. The one near-miss to flag: menu.tools_dialog stays faithful/dead exactly as in the baseline \u2014 Wave-2 added a server-side SandboxMutator backend but did NOT route the menu/console `sandbox \u2026` commands to its HandleCommand (no SV_ParseClientCommand mutator-hook seam, `g_sandbox` absent from ClientCommandRegistry), so the buttons remain inert end-to-end and there is still no normal-match entry point (dev --menu-screen sandbox only). Status unchanged, gap text updated; not a downgrade."
+]
+},
+{
+"unit": "mutator-status_effects",
+"regressions": 0,
+"notes": [
+"No genuine regressions found: every baseline-faithful/live row (apply, net.entity, hud.powerups_feed) is unchanged or improved. Two NON-regression caveats worth flagging as new partial-defects introduced by the Wave-2 sound wiring (they were 'audio: missing' in the baseline too, so not a regression \u2014 but the new code LOOKS wired yet silently no-ops): (1) burning RemovalSound='steam_burst' is set on the def but no 'steam_burst'/desertfactory sound is registered in SoundsList -> Sounds.ByName returns null -> silent; (2) stunned RemovalSound='ons_spark1' is the wrong CASE for the Ordinal registry key 'ONS_SPARK1' (Registry.cs uses StringComparer.Ordinal) -> null -> silent. Only superweapon 'POWEROFF' actually resolves. These are cheap one-line fixes (register the sound / fix the case).",
+"framework.removeall_lifecycle advanced from 'missing' to 'stub' but is STILL DEAD: RemoveAll/ClearAll are now written (with per-effect m_remove + sound) but grep confirms ZERO host callers \u2014 they are not wired to PlayerDies/MonsterDies/ClientDisconnect/MakePlayerObserver/reset_map_global/PutClientInServer. Stale timers can still survive death/respawn/map reset. This is the single highest-value remaining wire-up."
+]
+},
+{
+"unit": "mutator-superspec",
+"regressions": 0,
+"notes": [
+"No true regressions (no baseline-faithful/live row got worse). IMPORTANT liveness caveat to flag: the Wave-2 change is largely COMPILED-BUT-NOT-WIRED. The followkiller PlayerDies hook is subscribed to the live chain, but its guarded body can NEVER execute in a real match because ASF_FOLLOWKILLER (and every autospec/superspec flag) is only settable via the autospec/superspec console commands, which require an SV_ParseClientCommand mutator hook chain that does NOT exist in MutatorHooks.cs. The ClientConnect hook (which sets the SSF_VERBOSE default + loads options) is also absent. Net: the option store is created with defaults but is read-only-reachable. So the 5 'ported' helpers (followkiller, SpectateTransfer, Msg, FilterItem, the flag store) are all effectively dead on the live path until the SV_ParseClientCommand + ItemTouch + ClientConnect hook chains land. Also note: msg.helper's sprint/centerprint output is stubbed (`_ = ...` discards) \u2014 even if reached it prints nothing; and FilterItemHookTests.cs covers the UNRELATED StartItem/nix/melee_only FilterItem chain, NOT superspec.FilterItem (no test coverage for this unit)."
+]
+},
+{
+"unit": "mutator-walljump",
+"regressions": 0,
+"notes": [
+"No genuine regressions. The fx.sound row LOOKS improved (Wave-2 switched from the hardcoded raw path \"player/jump.wav\" to the correct per-model API SoundSystem.PlayPlayerSound) and logic is now faithful, but the cue is STILL silent because it passes null for modelSoundDir, which resolves to sound/player/default.sounds/jump \u2014 and `default.sounds` is a TEXT MANIFEST, not a directory; the port never parses .sounds manifests, so AssetLoader probes a non-existent file. Net audibility is the same as the baseline (silent), so this is neither a fix nor a regression \u2014 but worth flagging as a not-actually-closed change. The same unresolved-default-dir gap afflicts DamageSystem pain/death voices (ModelSoundDir is a `return null` stub)."
+]
+},
+{
+"unit": "net-entity-state",
+"regressions": 0,
+"notes": [
+"No true status regression. But adversarial verification downgraded replicate.client_cvars liveness faithful->partial: Wave-2 (ec788f7) expanded the CLIENT send list (ClientNet.cs ReplicatedCvars) to mirror the full Base REPLICATE set, which LOOKS like a closure, but the server-side SentCvarAllowlist (Commands.cs:179-190) was NOT touched, so cl_autoscreenshot/cl_clippedspectating/cl_handicap(+given/taken)/g_xonoticversion are dropped at the gate (Commands.cs:1900). The send-side widening with no consumer is a compiles-but-dead change.",
+"cl_autoswitch_cts is now sent AND allowlisted AND stored via SetClientCvar, yet its sole consumer ItemPickupRules.CtsAutoswitchProvider is never assigned anywhere in src/ or game/ -> CtsAutoswitchCvar always returns the -1 null default and CTS autoswitch never fires. End-to-end dead.",
+"appearance_hook: Wave-2 added 4 new helpers (RespawnGhostClearsColors, BaseGlowmod, GuardGlowmodZero, ApplyHdrGlowClamp) but they have ZERO callers outside CsqcModelAppearance.cs -> dead code; the respawn-ghost decoloring + glowmod-palette/zero-guard/HDR-clamp fidelity is still not applied on the live render path (ModelTint does not call them)."
+]
+},
+{
+"unit": "overkill-weapons",
+"regressions": 0,
+"notes": [
+"No genuine REGRESSION (no baseline-faithful/live row was made worse by the waves). BUT a serious baseline OVER-CLAIM was corrected on okrpc.primary_chainsaw_missile: the baseline marked it logic:faithful, liveness:live and asserted 'Shootable (takedamage=Yes, health 25 -> ProjectileDamage->Explode)'. In reality the missile shoot-down is DEAD and always has been \u2014 OkRpc.cs (unchanged by the waves) sets missile.TakeDamage=Yes + missile.ProjectileDamage=Explode but never calls Projectiles.MakeShootable, the only thing that installs the GtEventDamage shim the damage pipeline dispatches. DamageSystem.EventDamage (DamageSystem.cs:331) only routes a non-player victim through GtEventDamage; a missile with no GtEventDamage falls into the player-resource PlayerDamage path and NEVER runs Explode. So you cannot shoot the chainsaw out of the air. I downgraded that row logic faithful->partial, liveness live->partial, and result fail. This is a baseline-audit correction, not a wave-induced regression. The ironic part: the waves ADDED MakeShootable (now used by Mortar/Devastator/Minelayer/etc.) but did not wire it into okrpc \u2014 one-line fix: Projectiles.MakeShootable(missile) after seeding health+ProjectileDamage."
+]
+},
+{
+"unit": "resources",
+"regressions": 0,
+"notes": [
+"No genuine regressions. One nuance worth flagging, not a regression: the newly-ported TakeResourceWithLimit (api.take) has zero callers in the port, so liveness for that row was set to 'partial' (TakeResource live, TakeResourceWithLimit dead). Base SVQC TakeResourceWithLimit is likewise uncalled (only the CSQC odd form is used), so this is parity-neutral, not a behavior regression."
+]
+},
+{
+"unit": "sv-cheats",
+"regressions": 0,
+"notes": [
+"No true regressions. One CAVEAT on the new refusal-logging (not a regression vs baseline, since baseline had NO logging at all): the port's Allowed() logs on the dead-player guard AND the observer guard, but Base CheatsAllowed returns 0 SILENTLY on those two guards and only logs at the FINAL sv_cheats==0 fall-through. So the port over-logs cheat attempts by dead players / observers. Also the message uses p.NetName instead of Base's team-colored playername(netname, team, false). Recorded as gaps on sv-cheats.gating.cheats_allowed (presentation downgraded to partial); the gating logic itself remains faithful + live."
+]
+},
+{
+"unit": "sv-mapvoting",
+"regressions": 0,
+"notes": [
+"No genuine regressions. Every baseline-faithful/live row stayed at least as good: override_chain (faithful/live), finish.winner (live), lifecycle (live) are unchanged or improved. No row went live->dead or faithful->partial.",
+"Caveat (not a regression, but a Wave-2 trap to flag): much of the new MapVoting.cs logic COMPILES but is not wired on the live match path. CastVote/Abstain still have zero callers; DispatchImpulse still early-returns during intermission (Commands.cs:1357); GameWorld.DriveEndOfMatchMapFlow still calls the 3-arg Start (no suggestions) and applies the map on MapVote.Finished without consulting the new ReadyToChangeLevel 1 s delay. The client panel's SetVote/SetVotes/SetWinner still have zero callers and there is still no ENT_CLIENT_MAPVOTE net sync, so the vote screen never appears. The reduce cvars g_maplist_votable_reduce_time/_reduce_count remain unregistered (reduce_count -> 0 -> wrong keep mode) and the misnamed g_maplist_votable_keeptwotime=15 still sits unread in Cvars.cs:397."
+]
+},
+{
+"unit": "sv-world-rules",
+"regressions": 0,
+"notes": [
+"CAUTION (not a regression, but a correctness caveat on the 'fixes'): a large part of the new Wave-2 warmup machinery is CODED-BUT-DEAD. The host never wires CampaignActive, MapMinPlayers, OnCountdownStop, OnLockTeams, or TimeoutActive (verified by grep: no setters exist), and teamplay_lockonrestart + g_start_delay are not registered cvars (FloatOr falls back to 0). Consequences: the minplayers/badteams countdown-abort + COUNTDOWN_STOP notifications never fire (MinPlayers=0, badteams hardcoded false), the campaign 3s countdown never applies (CampaignActive=false => 10s path), team-lock-on-restart never fires, and the dedicated 15s g_start_delay join window collapses to 0. These rows are recorded as partial/dead-seam, not as fully closed."
+]
+},
+{
+"unit": "tka",
+"regressions": 0,
+"notes": [
+"Watch item (not a regression, but a notable dead-wire): tka.score.bctime and tka.score.timepoints had a Tick(dt) method WRITTEN in Wave-2 (correct accrual + carried-ball orbit + remainder handling), but it is NEVER CALLED - GameWorld.cs:1738 still does `case TeamKeepaway tka: tka.CheckPointLimit(); break;` whereas the sibling `case Keepaway ka: ka.Tick(...)` at :1740 calls Tick. So bctime/timepoints/orbit remain dead. These were already not-closed in the baseline (no Tick existed at all), so net liveness is unchanged (still dead) - not a regression, but the single most fixable remaining gap (one-line wiring)."
+]
+},
+{
+"unit": "tmayhem",
+"regressions": 0,
+"notes": [
+"Caveat (not a regression, pre-existing): Mayhem.cs exposed DefaultTimeLimitMinutes=15 'for the host to apply on select', but GameWorld never reads it (dead scaffolding), and tmayhem has no equivalent. So the timelimit=20 gametype-default gap is STILL OPEN, just as in the baseline -- still mitigated because the global timelimit cvar default is already 20."
+]
+},
+{
+"unit": "turret-flac",
+"regressions": 0,
+"notes": [
+"No regressions found. Every baseline-faithful/live row stayed faithful/live; all five changed rows moved strictly toward Base. The new live event_damage path is an improvement (it wires previously-dead pre-damage gating), not a regression."
+]
+},
+{
+"unit": "turret-plasma",
+"regressions": 0,
+"notes": [
+"No regressions found. Every baseline-faithful/live row is still faithful/live, and the Wave-2 edits only tightened parity. Verified no double-death (EventDamage fires Combat.Death only when DeadState==No; OnAnyDeath guards DeadState!=Respawning) and that all newly-passed TurretParams fields are genuinely consumed (ScoreTarget/SelectTarget/Track/AimPoint), not dead-wired."
+]
+},
+{
+"unit": "turret-tesla",
+"regressions": 0,
+"notes": [
+"No regressions found. All five baseline-faithful/live rows (identity, tr_setup, lifecycle framework, spawn.liveness, weapon.chain mechanic) remain intact. The shot_force->0 and sound-removal changes are correct toward Base, not regressions: Base toast() uses force '0 0 0' and the turret actor never reaches the electro_fire emission. Adversarial check on realowner: for a map-placed turret turret.Owner is null so 'turret.Owner ?? turret' = turret, and a turret never validates as its own player/missile target, so damage always applies -- exactly Base's net effect; the branch is now present and correct."
+]
+},
+{
+"unit": "turret-walker",
+"regressions": 0,
+"notes": [
+"No genuine regressions found. One caveat worth flagging (not a regression): the newly-ported SWIM gait is DEAD on the live path \u2014 Entity.WaterLevel is only computed by PlayerPhysics, and MOVETYPE_STEP turrets never get it set, so e.WaterLevel stays 0 and the WETFEET/SWIMMING/SUBMERGED branches of WalkerMoveTo never fire. The swim logic compiles and is correct but is unreachable; recorded as liveness: dead on drive.gaits_extra rather than a regression (baseline had swim missing)."
+]
+},
+{
+"unit": "vehicle-bumblebee",
+"regressions": 0,
+"notes": [
+"NOTABLE NEW DEFECT (still_open, not a regression since it was `missing` before): impact.bouncepain \u2014 Wave-2 added a Bumblebee bouncepain impl with the CORRECT constants ('1 100 200', 0.25s gate) BUT the WRONG signature `public void Impact(Entity vehicle, Vector3 oldVelocity)` (Bumblebee.cs:380). It is NOT declared `override` of the base virtual `Vehicle.Impact(Entity)`; the dispatcher VehicleCommon.Touch -> `vehic.VehicleDef.Impact(vehic)` (single-arg, VehicleCommon.cs:767) therefore calls the empty base no-op. Result: implemented-but-DEAD (compiles, never invoked). Racer/Raptor override correctly; only the bumblebee mismatched. Fix = make it `override Impact(Entity)` and snapshot OldVelocity in Think like Racer/Raptor do via VehicleCommon.Impact.",
+"Latent (unchanged): the symbolic SoundsList VEH_BUMBLEBEE_FIRE -> flacexp3 mapping is wrong, but the cannon plays the correct literal 'vehicles/bumblebee_fire.wav', so it's a dead/unused mapping, not a live audio defect."
+]
+},
+{
+"unit": "vehicle-framework",
+"regressions": 0,
+"notes": [
+"NOT a regression of a previously-faithful row, but a NEW DEFECT inside the new crush feature: Spiderbot.Spawn (Spiderbot.cs:119) sets vehicle.Touch = null AFTER VehicleCommon.SpawnVehicle installs the crush/touch handler. Base spiderbot vr_spawn does NOT reset touch (settouch func_null appears only in vr_death). Net effect: the ground walker most likely to run a player over never crushes; crush is live only on 3/4 vehicles. combat.crush logic=partial, liveness=partial.",
+"Dead-code additions that did NOT close their gap: VehicleCommon.PainFrame (faithful body, ZERO callers -> combat.painframe still dead), VehicleCommon.InitVehicle (wraps the real FireVehicleInit hook but has ZERO callers -> VehicleInit hook still dead). These compile but are not wired on the live path."
+]
+},
+{
+"unit": "vehicle-raptor",
+"regressions": 0,
+"notes": [
+"CAUTION \u2014 a NEW feature was added that is DEAD, not a fix: raptor.impact (vr_impact) got a correct Impact override + VehicleCommon.Impact body in Wave-2, BUT it has no live caller. Raptor.Spawn line 141 sets vehicle.Touch = null, which wipes the VehicleCommon.Touch dispatcher (installed by SpawnVehicle) that is the only thing that calls VehicleDef.Impact; AND Raptor.Think never snapshots vehicle.OldVelocity (Racer.Think does, Racer.cs:296), so the impact delta would always be the full velocity. Net behavior vs Base is unchanged (raptor still takes no crash damage). Recorded as liveness: dead, verification fail. This is the recurring 'compiles but unwired' pattern \u2014 adversarially confirmed against the live Racer (whose identical Impact IS live). Spawned a fix task (task_5a2f582b).",
+"Minor: raptor.spawn.setup mass=1 is set but INERT \u2014 the port's MoveTypePhysics never reads .Mass, so the QC bounce-missile mass tuning has no behavioral effect (value set for fidelity only)."
+]
+},
+{
+"unit": "warpzones",
+"regressions": 0,
+"notes": [
+"No true regressions. BUT one Wave-2 change is dead/inconsistent and is recorded as STILL OPEN, not a fix: warpzones.client.prediction. TriggerTouch.PredictWarpzonesAmbient was added (TriggerTouch.cs:192) but has ZERO callers -- game/net/EntityMovementStep.cs invokes only PredictJumppadsAmbient and PredictTeleportsAmbient, never the new warpzone predictor -- so a warpzone crossing still rubber-bands. Worse, the new predictor still uses the OLD velocity-direction gate that Wave-2 deliberately removed from the authoritative Teleport, and its docstring falsely claims the gate matches authority EXACTLY; if it were wired it would mis-predict vs the server. Row downgraded liveness na->dead, logic missing->stub to reflect the unwired/inconsistent code (still effectively a no-op, so the feature outcome is unchanged from baseline)."
+]
+},
+{
+"unit": "weapon-arc",
+"regressions": 0,
+"notes": [
+"No genuine regressions. IMPORTANT non-fix to flag: Wave-2 added a LagComp.Begin/End antilag bracket around the beam damage trace (Arc.cs:301-307), but LagComp.Provider is never assigned anywhere in src/ (no ILagCompensation implementation is registered; Net/AntilagBuffer.cs's LagCompensation class does NOT implement the Common interface). So the bracket is a no-op on every path -- it produces NO actual lag compensation. The dps_core antilag gap is therefore only seam-present, not behaviorally closed. Not a regression (Base was already identical without antilag) but it should not be mistaken for a working fix. Same dead LagComp.Provider applies to WeaponFiring.cs:216/364, affecting all hitscan weapons."
+]
+},
+{
+"unit": "weapon-fireball",
+"regressions": 0,
+"notes": [
+"One NEW defect introduced by the Wave-2 firemine work (tracked inside the existing secondary.firemine.lifecycle row, not a new row): the make-it-hot decouple sets Entity.Owner=null, but the port's Entity.RealOwner is a COMPUTED ALIAS of Owner (DamageEntityState.RealOwner => Owner). In Base, the decouple nulls only .owner and keeps .realowner=firer, so a post-decouple burn is still credited to the firer; in the port, nulling Owner also nulls RealOwner, so the firemine's burn/obituary after decouple is attributed to the mine itself (FireAddDamage owner = self.RealOwner ?? self = self) rather than the original firer. The scorch-own-firer behavior works; only the damage/kill credit is wrong."
+]
+},
+{
+"unit": "weapon-machinegun",
+"regressions": 0,
+"notes": [
+"No genuine regressions. No baseline-faithful/live row became worse. All Wave-2 edits either closed gaps or (in one case) added dead code without breaking an existing path.",
+"NOTE (not a regression, a correction): the baseline's #1 worst gap \u2014 'burst secondary kills wrongly obituary as SPRAY instead of SNIPE' \u2014 was largely WRONG. Base's W_MachineGun_Attack_Burst fires with thiswep.m_id and NO HITTYPE_SECONDARY, so Base burst ALSO reads MURDER_SPRAY. The SNIPE obituary is only reachable from Base's mode-0 secondary (m_id | HITTYPE_SECONDARY), which is dead by default (mode 1). So in default play the port matches Base; the genuine SNIPE defect is narrow and confined to the non-default mode-0 secondary (machinegun.fire.single_mode0).",
+"CAUTION (still-open, dead code): the Wave-2 'casing eject' (machinegun.presentation.muzzle_impact) compiles but is DEAD. WeaponFiring.EjectCasing routes through EmitByEffectInfoName('casing_bullet'), which has no registered Effect, so the EffectRequest carries Effect=null \u2014 and ServerNet.WriteEffect / ln.Encode both DROP null-Effect requests. The casing is never networked to clients; EffectSystem.SpawnCasing is never reached. Casings remain effectively NOT ported. Same null-Effect drop will silently kill any other weapon that relies on EjectCasing (rifle/shotgun/okmg) \u2014 worth a shared follow-up: register casing_bullet/casing_shell effects or add a dedicated casing net-temp."
+]
+},
+{
+"unit": "weapon-minelayer",
+"regressions": 0,
+"notes": [
+"No genuine regressions. One residual gap to flag (not a regression): the W_MineLayer_Damage knock-loose-while-alive branch (damageforcescale bounce + .wait re-stick + avelocity spin on a non-fatal hit) is structurally unreachable, because the shared Projectiles.ShootDown shim only invokes the per-weapon ProjectileDamage callback once hp<=0. So OnMineDamage's hp>0 branch never runs \u2014 a shot mine that survives is not detached, it only explodes when its 15 hp is depleted. This is a shared-shim limitation affecting any weapon needing a per-hit (hp>0) side effect; worth a cross-weapon fix. Net it is still an improvement over the baseline (where shoot-down was fully dead/mis-routed)."
+]
+},
+{
+"unit": "weapon-porto",
+"regressions": 0,
+"notes": [
+"No genuine regressions found. One thing to watch (NOT a regression vs baseline, both were broken): the slick/clip-reflect and noimpact-fail branches were ADDED to OnTouch with correct sounds, but IsSlickOrClip/IsNoImpact are hardcoded `return false` (Porto.cs:288,293), so those branches are unreachable headless. Net behavior (always places on a world hit) is the same as baseline; the registry now records them as branch-present-but-dead rather than missing.",
+"PortalClearWithId is declared (Porto.cs:331) and invoked on cnt<0 fail/timeout (Porto.cs:245,357) but the host hook is NEVER assigned in GameWorld.cs (only PortalSpawner at line 412 is wired) -> the combined-shot in-portal cleanup is a silent no-op. This is a new dormant seam, not a regression."
+]
+},
+{
+"unit": "weapon-rifle",
+"regressions": 0,
+"notes": [
+"Caveat (NOT a regression, but an incompletely-closed change to flag): rifle.casings now has live-looking code (EjectCasing called with the correct g_casings>=2 gate and exact QC eject velocity) but is DEAD on the networked path. It emits via EmitByEffectInfoName('casing_bullet') which makes an EffectRequest with Effect=null; ServerNet.WriteEffect / EffectNetProtocol.Encode drop any null-Effect request, so it never networks, and even client-side Spawn('casing_bullet') routes to the generic particle path, not EffectSystem.SpawnCasing (the real brass-shell spawner). Status kept liveness:dead / presentation:missing. Same dead path now also affects MachineGun and Shotgun casings."
+]
+},
+{
+"unit": "weapon-shotgun",
+"regressions": 0,
+"notes": [
+"No true behavioral regression vs baseline, but ONE latent correctness trap introduced: the out-of-ammo auto-melee fallback is now PRESENT in WrThink (emptyPrimaryAutoMelee branch) yet DEAD \u2014 it gates on PrepareAttack(actor, slot, FireMode.Secondary), which checks st.ButtonAttack2 (WeaponFireGate.cs:60). On an empty PRIMARY press ATK2 is not held, so PrepareAttack returns false and the slap never fires. Player-observable behavior matches baseline (empty primary press still does nothing), but the code now looks wired when it isn't. Fix: gate the auto-melee on the primary button / a private path that doesn't require ATK2.",
+"Casing eject is only half-fixed: the server seam (Shotgun.Attack -> EjectCasing, gated + deterministic velocity) is live, but the client never renders a casing because the emitted effect-name 'casing_shell' is not mapped to EffectSystem.SpawnCasing (still zero callers); it falls into the generic particle path. Also the eject up-velocity uses the machinegun value (70 - rand*5) not the shotgun's (30 - rand*5), and the gate is g_casings>=2 vs Base shotgun's >=1."
+]
+}
+]

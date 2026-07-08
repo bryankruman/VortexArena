@@ -1,0 +1,236 @@
+unit: mutator-pinata
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-27"
+summary:
+  feature_count: 8
+  worst_gaps:
+    - "Offhand (g_pinata_offhand) branch is inert: the port models a single weapon slot, so the QC slot>0 offhand loop has no extra weapons to scatter (intended divergence pending dual-wielding)."
+    - "Menu describe text rides on the checkbox tooltip (no dedicated PAGE_TEXT describe-page widget) and the incompatibility binding is approximated as the dominant 'not InstaGib' gate rather than QC checkCompatibility_pinata's full set (instagib/nix/overkill/melee_only/weapon-arena)."
+features:
+  - id: mutator-pinata.enable.predicate
+    name: "Enable predicate (g_pinata gate + InstaGib/Overkill suppression + registration/activation)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/pinata/sv_pinata.qc:5 REGISTER_MUTATOR(pinata, expr_evaluate(autocvar_g_pinata) && !MUTATOR_IS_ENABLED(mutator_instagib) && !MUTATOR_IS_ENABLED(ok))"
+      - "lib/cvar.qh:48 bool expr_evaluate(string s)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PinataMutator.cs:IsEnabled"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PinataMutator.cs:ExprEvaluate"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PinataMutator.cs:ExprToken"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PinataMutator.cs:Hook"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:Apply"
+      - "src/XonoticGodot.Server/GameWorld.cs"
+    constants:
+      - { name: "g_pinata", base: "0 (string, expr_evaluate; mutators.cfg:557)", port: "0 (read as string via Api.Cvars.GetString, evaluated by faithful ExprEvaluate)", match: true }
+      - { name: "suppressed if instagib enabled", base: "!MUTATOR_IS_ENABLED(mutator_instagib)", port: "!OtherEnabled(\"instagib\") (reads instagib.IsEnabled)", match: true }
+      - { name: "suppressed if overkill enabled", base: "!MUTATOR_IS_ENABLED(ok)", port: "!OtherEnabled(\"overkill\") (reads overkill.IsEnabled)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "PinataMutator.IsEnabled = Api.Services != null && ExprEvaluate(GetString(g_pinata)) && !OtherEnabled(instagib) && !OtherEnabled(overkill). ExprEvaluate is now a FULL faithful port of QC expr_evaluate (lib/cvar.qh:48): optional leading '+'/'-' (negate), whitespace-token AND chain via ExprToken with comparison operators (>= <= == != === !== > <) in QC's strstrofs source order, bare literal-number vs named-cvar truthiness (boolean((ftos(f)==k)?f:cvar(k))), '!' invert. OtherEnabled reads the other mutator's IsEnabled predicate (order-independent, matching MUTATOR_IS_ENABLED). [Mutator] auto-discovery -> Mutators.All -> MutatorActivation.Apply() calls Hook() when enabled", result: pass }
+      - { kind: value, ref: "Base mutators.cfg:557 'set g_pinata 0' -> ExprEvaluate('0')=false matches port default off; mutators.cfg:558 g_pinata_offhand 0 matches; InstaGib/Overkill order-independent via the other mutator's IsEnabled predicate", result: pass }
+      - { kind: value, ref: "Adversarial: Base lib/cvar.qh expr_evaluate('') = true (zero tokens, ret flips to true). Port ExprEvaluate(''): no '+'/'-', empty token list -> exprFail=false -> ret=!false=true. MATCHES Base now (the prior baseline's empty-string divergence is RESOLVED by the full port). g_pinata never defaults to '' in stock play (DP cvar() of an unset cvar is '0') so it is anyway unreachable", result: pass }
+    confidence: high
+    notes: "FIXED since the 2026-06-25 baseline: ExprEvaluate is no longer a simplified ''/'0'/'false' helper — it is now the full expr_evaluate grammar port (ExprEvaluate + ExprToken + CvarF/Cvar helpers), matching HookMutator/melee/instagib/nix. The two documented residual nits from the baseline (no operators/cvar-refs, and expr_evaluate('') returning false) are both gone. Registered (auto-discovered via [Mutator]); PlayerDies handler subscribed on the live boot path when g_pinata != 0 and neither InstaGib nor Overkill is on."
+
+  - id: mutator-pinata.death.scatter_weapons
+    name: "PlayerDies burst — scatter every owned-but-not-held throwable weapon as loot"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/pinata/sv_pinata.qc:7-30 MUTATOR_HOOKFUNCTION(pinata, PlayerDies)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PinataMutator.cs:OnPlayerDies"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:658"
+    constants:
+      - { name: "weapon set scanned", base: "FOREACH(Weapons, it != WEP_Null) & STAT(WEAPONS,frag_target)", port: "foreach(target.OwnedWeaponSet.Weapons())", match: true }
+      - { name: "exclude currently-held weapon", base: "frag_target.(weaponentity).m_weapon != it", port: "skip if ReferenceEquals(it, held) where held=Inventory.CurrentWeapon (=ActiveWeaponId = slot0 m_weapon)", match: true }
+      - { name: "throwable gate", base: "W_IsWeaponThrowable(frag_target, it.m_id)", port: "WeaponThrowing.IsWeaponThrowable(target, it)", match: true }
+      - { name: "doreduce", base: "false", port: "false", match: true }
+      - { name: "hook return", base: "true (does not stop chain)", port: "true", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "OnPlayerDies iterates OwnedWeaponSet, excludes held (CurrentWeapon = slot0 active), IsWeaponThrowable-gated, ThrowNewWeapon(doreduce:false); fired from MutatorHooks.PlayerDies.Call at DamageSystem.cs:658 on the live kill path", result: pass }
+      - { kind: code, ref: "held weapon dropped separately by WeaponThrowing.SpawnThrownWeapon at DamageSystem.cs:689 (after the PlayerDies hook ran at 658) -> not double-thrown, matching QC m_weapon!=it exclusion + the separate player.qc death drop", result: pass }
+    confidence: high
+    notes: "Core behavior is faithful and live. The pinata burst still correctly runs BEFORE the held-weapon SpawnThrownWeapon, matching the QC ordering (hook then player.qc drop). DamageSystem line numbers shifted again (hook 594->658, held drop 625->689, corpse ViewOfs 632->696)."
+
+  - id: mutator-pinata.death.spawn_origin
+    name: "Burst spawn origin — CENTER_OR_VIEWOFS(frag_target) (eye height)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/pinata/sv_pinata.qc:25 CENTER_OR_VIEWOFS(frag_target)"
+      - "server/utils.qh:31 #define CENTER_OR_VIEWOFS"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PinataMutator.cs:OnPlayerDies"
+    constants:
+      - { name: "spawn origin", base: "origin + (IS_PLAYER ? view_ofs : (mins+maxs)*0.5)", port: "target.Origin + target.ViewOfs", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "CENTER_OR_VIEWOFS resolves to origin+view_ofs because frag_target is still a player (IS_PLAYER true) at the PlayerDies hook, before corpse setup; port computes Origin+ViewOfs. Re-confirmed 2026-06-27: DamageSystem sets the corpse ViewOfs (0,0,-8) at line 696, AFTER the hook at 658 and the held drop at 689, so the eye-height view_ofs is still in effect when pinata reads it", result: pass }
+    confidence: high
+    notes: "The player has not yet been turned into a corpse at PlayerDies (DamageSystem.cs sets the -8 corpse ViewOfs only at line 696, after the hook at 658 and the held drop at 689), so the player branch (view_ofs) is taken; the port matches."
+
+  - id: mutator-pinata.death.throw_impulse
+    name: "Burst throw impulse — randomvec()*175 + '0 0 325'"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/pinata/sv_pinata.qc:25 randomvec() * 175 + '0 0 325'"
+      - "lib/random.qh:34 randomvec resolution (USE_PRANDOM defined)"
+      - "lib/random.qc:120-131 prandomvec rejection sampling"
+      - "dpdefs/upstream/csprogsdefs.qc:411 vector() randomvec = #91 (engine builtin)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PinataMutator.cs:OnPlayerDies"
+      - "src/XonoticGodot.Common/Math/Prandom.cs:Vec"
+    constants:
+      - { name: "horizontal scale", base: "175 (* randomvec())", port: "175f (* Prandom.Vec())", match: true }
+      - { name: "vertical offset", base: "'0 0 325'", port: "(0,0,325)", match: true }
+      - { name: "random vector distribution", base: "randomvec() engine builtin #91 = uniform in UNIT BALL (|v|<=1; prandomvec fallback also rejection-samples while v*v>1)", port: "Prandom.Vec() = rejection-sample the cube [-1,1)^3, retry while x*x+y*y+z*z>1 (uniform UNIT BALL; degenerate (0,0,-1) after rejects)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Prandom.Vec() (Prandom.cs:67) rejection-samples the unit ball: loops drawing (Signed(),Signed(),Signed()) in [-1,1)^3 and returns the first point with x*x+y*y+z*z<=1, else degenerate (0,0,-1). Matches the DarkPlaces engine randomvec() #91 unit-ball distribution AND the QC prandomvec fallback (random.qc:120 `while (v*v > 1)`)", result: pass }
+    confidence: high
+    notes: "Distribution matches Base. The port deliberately uses the deterministic Prandom (QC prandom family, ADR-0010) rather than the raw engine randomvec — acceptable for a server-side non-predicted death event; the unit-ball distribution shape matches too."
+
+  - id: mutator-pinata.death.offhand_slots
+    name: "g_pinata_offhand — scatter off-hand (slot>0) weapons when dual-wielding"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/pinata/sv_pinata.qc:11-19 (per-slot loop + `if(slot > 0 && !autocvar_g_pinata_offhand) break`)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PinataMutator.cs:Offhand"
+    constants:
+      - { name: "g_pinata_offhand", base: "0 (mutators.cfg:558)", port: "0 (read into Offhand in Hook(), inert)", match: true }
+      - { name: "slots scanned", base: "0..MAX_WEAPONSLOTS-1 (=2), break after slot 0 unless offhand", port: "single WeaponSlot(0) only", match: false }
+    status:
+      logic: stub
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: true
+    divergence_rationale: "The port models a single weapon slot (no dual-wielding in normal play; MaxWeaponSlots=2 exists but is not driven for the main game), so QC's slot>0 offhand loop has no extra weapons to scatter. g_pinata_offhand is read in Hook() for cvar parity but has no behavioral effect. Not player-observable in stock play; should be revisited only if/when dual-wielding is implemented."
+    gaps:
+      - "With g_pinata_offhand 1 and a dual-wield loadout, Base would also scatter the off-hand slot's non-held weapons; the port has no second slot to iterate (OnPlayerDies hardcodes WeaponSlot(0)), so this branch never does anything. Inert in stock play (no dual-wielding)."
+    verification:
+      - { kind: code, ref: "PinataMutator.Offhand read from g_pinata_offhand in Hook() but OnPlayerDies iterates a single WeaponSlot(0); no slot>0 loop. Class comment documents the single-slot divergence", result: pass }
+    confidence: high
+    notes: "Recorded as intended_divergence because it is a deliberate consequence of the port not implementing dual-wielding, not a bug in pinata. Cvar default (0) matches Base; the Offhand field is set but never read in OnPlayerDies."
+
+  - id: mutator-pinata.report.mutators_string
+    name: "Active-mutators machine string hook — BuildMutatorsString (':Pinata')"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/pinata/sv_pinata.qc:32-35 MUTATOR_HOOKFUNCTION(pinata, BuildMutatorsString)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PinataMutator.cs:BuildMutatorsString"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:BuildMutatorsString"
+      - "src/XonoticGodot.Server/GameWorld.cs:1141"
+    constants:
+      - { name: "BuildMutatorsString token", base: "strcat(s, \":Pinata\")", port: "s + \":Pinata\" (PinataMutator.BuildMutatorsString override)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "PinataMutator overrides BuildMutatorsString(s) => s + \":Pinata\"; the chain runner MutatorActivation.BuildMutatorsString iterates added mutators; GameWorld.cs:1141 calls it (gated by sv_eventlog) to build the :gameinfo:mutators:LIST gamelog line. Live", result: pass }
+    confidence: high
+    notes: "Live via GameWorld.cs:1141 (sv_eventlog-gated GameLogInit). The machine token contributes to the server-side active-mutators list. (Caller line shifted 876->1141.)"
+
+  - id: mutator-pinata.report.mutators_pretty_string
+    name: "Active-mutators pretty string hook — BuildMutatorsPrettyString (', Piñata')"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/pinata/sv_pinata.qc:37-40 MUTATOR_HOOKFUNCTION(pinata, BuildMutatorsPrettyString)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PinataMutator.cs:BuildMutatorsPrettyString"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorActivation.cs:BuildMutatorsPrettyString"
+      - "src/XonoticGodot.Server/GameWorld.cs:SendMutatorsWelcome"
+      - "src/XonoticGodot.Server/GameWorld.cs:1152"
+    constants:
+      - { name: "BuildMutatorsPrettyString token", base: "strcat(s, \", Piñata\")", port: "s + \", Piñata\" (PinataMutator.BuildMutatorsPrettyString override)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "PinataMutator overrides BuildMutatorsPrettyString(s) => s + \", Piñata\"; the MutatorActivation.BuildMutatorsPrettyString chain runner now HAS live consumers: GameWorld.SendMutatorsWelcome (GameWorld.cs:1433) is invoked per-join from ClientConnect (GameWorld.cs:1318 `else if (!p.IsBot)`) and surfaces the 'Active modifications: <list>' line to the joining client (QC server/client.qc:1107 SendWelcomeMessage), GameWorld.cs:1152 writes the stripped 'modifications' serverinfo key at match start, and ServerNet.cs:608 builds it for the net path. The ', Piñata' token now reaches the joining client's welcome line. Live", result: pass }
+    confidence: high
+    notes: "FIXED since the 2026-06-25 baseline: the BuildMutatorsPrettyString chain runner was previously DEAD (no external caller). It now has live callers — SendMutatorsWelcome (per-join ClientConnect path), the match-start 'modifications' serverinfo write (GameWorld.cs:1152), and ServerNet.cs:608. The pretty token contributes to the joining-client 'Active modifications:' welcome line, matching QC's SendWelcomeMessage."
+
+  - id: mutator-pinata.menu.metadata
+    name: "MENUQC metadata (describe text + create-game checkbox)"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/pinata/pinata.qc:4-11 METHOD(MutatorPinata, describe)"
+      - "common/mutators/mutator/pinata/pinata.qh:4-8 CLASS(MutatorPinata) ATTRIB message = _(\"Piñata\")"
+      - "menu/xonotic/dialog_multiplayer_create_mutators.qc:161 setDependentWeird(e, checkCompatibility_pinata)"
+    port_refs:
+      - "game/menu/dialogs/DialogMutators.cs:252"
+    constants:
+      - { name: "menu label/message", base: "_(\"Piñata\")", port: "\"Piñata\" (CheckBox label)", match: true }
+      - { name: "describe text", base: "'makes players drop all their weapons when they die. Without this mutator, players normally drop only their equipped weapon'", port: "same text on the checkbox tooltip", match: true }
+      - { name: "create-game checkbox cvar", base: "g_pinata", port: "g_pinata", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Minor: the port has no dedicated describe-page widget, so the describe text rides on the checkbox tooltip rather than a PAGE_TEXT panel. The incompatibility binding is approximated as the dominant 'not InstaGib' gate (Dependent.Bind(pinata, \"g_instagib\", 0, 0)) rather than QC checkCompatibility_pinata's full set (instagib/nix/overkill/melee_only/weapon-arena)."
+    verification:
+      - { kind: code, ref: "DialogMutators.cs:252 Widgets.CheckBox(\"g_pinata\", \"Piñata\", <describe tooltip>) added to the box, with Dependent.Bind(pinata, \"g_instagib\", 0, 0). Label = MutatorPinata.message, tooltip = MutatorPinata.describe() text. Present and wired to the g_pinata cvar", result: pass }
+    confidence: high
+    notes: "Create-game mutators dialog offers a Piñata checkbox with the Base label and describe text, bound to g_pinata. Residual: describe rides on tooltip (no PAGE_TEXT panel) and the compatibility binding is simplified to the InstaGib gate. (Checkbox line shifted 223->252.)"

@@ -299,6 +299,13 @@ public sealed class AssetSystem
             mat.SetShaderParameter(PlayerSkinShader.ReflectMaskUniform, reflect);
             mat.SetShaderParameter("has_reflect", true);
             mat.SetShaderParameter(PlayerSkinShader.ReflectStrengthUniform, 1.0f);
+            // dpreflectcube — DELIBERATELY NOT BOUND (playtest r8): DP applies the reflect cubemap only inside
+            // its RTLIGHT shader permutations (USEREFLECTCUBE), and stock Xonotic runs with realtime world
+            // lighting OFF — so in practice the term is nearly invisible in Base. The always-on EMISSION add we
+            // shipped first mirrored the sky at full strength on every reflect-masked panel: bright sky-colored
+            // patches that read as HOLES through the gun + chrome ("too shiny / seeing through geometry",
+            // r8 screenshots). The shader's no-cubemap fallback (a restrained metal sheen that never kills the
+            // diffuse) is the faithful default look; revisit binding the cube only with a real rtlight pass.
         }
 
         Texture2D? norm = LoadTexture(baseName + "_norm");
@@ -325,6 +332,51 @@ public sealed class AssetSystem
         // (ModelTint). They default to no team tint / white colormod when unset, so there is nothing to set
         // on the shared, cached material.
         return mat;
+    }
+
+    // --- dpreflectcube (playtest #36) ----------------------------------------------------------------
+    private Cubemap? _defaultReflectCube;
+    private bool _defaultReflectCubeTried;
+
+    /// <summary>
+    /// The `cubemaps/default/sky` environment cubemap every shipped weapon shader names via
+    /// <c>dpreflectcube</c> (scripts/weapons.shader) — six faces loaded in DP box order (+X −X +Y −Y +Z −Z,
+    /// r_sky.c's <c>px/nx/py/ny/pz/nz</c> convention, no flips), QUAKE axes; the skin shader converts its
+    /// sample direction Godot→Quake to match. Built once and cached (null-cached on a miss so a data set
+    /// without the faces never re-probes).
+    /// CURRENTLY UNWIRED BY DESIGN (playtest r8): DP evaluates dpreflectcube only in its rtlight shader
+    /// permutations and stock Xonotic ships realtime world lighting OFF, so the faithful default look has no
+    /// visible cubemap term — the always-on EMISSION add read as sky-mirror holes on the guns. Kept for a
+    /// future realtime-lighting pass (bind via <see cref="PlayerSkinShader.ReflectCubeUniform"/> +
+    /// <c>has_reflect_cube</c>).
+    /// </summary>
+    internal Cubemap? DefaultReflectCubemap()
+    {
+        if (_defaultReflectCubeTried)
+            return _defaultReflectCube;
+        _defaultReflectCubeTried = true;
+
+        string[] suffixes = { "px", "nx", "py", "ny", "pz", "nz" }; // DP box order = GL cubemap layer order
+        var faces = new Godot.Collections.Array<Image>();
+        foreach (string s in suffixes)
+        {
+            Image? img = LoadImage("cubemaps/default/sky" + s);
+            if (img is null)
+            {
+                XonoticGodot.Common.Diagnostics.Log.Info("[AssetSystem] cubemaps/default/sky*: face missing — weapon reflection falls back to the mild sheen.");
+                return null;
+            }
+            // All layers of a layered texture must share one format/size; the shipped faces are uniform PNGs,
+            // but normalize the format defensively (a DDS/TGA override could differ).
+            if (img.GetFormat() != Image.Format.Rgba8)
+                img.Convert(Image.Format.Rgba8);
+            img.GenerateMipmaps();
+            faces.Add(img);
+        }
+        var cube = new Cubemap();
+        cube.CreateFromImages(faces);
+        _defaultReflectCube = cube;
+        return cube;
     }
 
     /// <summary>
@@ -509,6 +561,10 @@ public sealed class AssetSystem
     {
         if (string.IsNullOrEmpty(baseNameNoExt) || baseNameNoExt[0] == '$')
             return;
+        // (perf 2026-07-03) Named scope: the worker-side read+decode was the biggest UNATTRIBUTED allocator in
+        // the profiler (a 190 MB join-window frame carried no top-alloc scope) — per-thread Prof accumulators
+        // make worker scopes cheap, and the alloc column now names this path in hitch trees.
+        using var _ = XonoticGodot.Common.Diagnostics.Prof.Sample("stream.predecode");
         string? vpath = _vfs.ResolveImage(baseNameNoExt);   // ConcurrentDictionary-cached (thread-safe)
         if (vpath is null || _predecodedImages.ContainsKey(vpath))
             return;
@@ -530,6 +586,18 @@ public sealed class AssetSystem
     /// </summary>
     private static void EnsureMipmaps(string vpath, Image image)
     {
+        // A decode that failed under memory pressure (Godot's alloc_static returning null on a full disk / OOM)
+        // can hand back a non-null Image whose pixel buffer never allocated; Godot's NATIVE GenerateMipmaps then
+        // dereferences that empty buffer and hard-SIGSEGVs the whole process (observed: a 100%-full disk → pagefile
+        // exhaustion → alloc_static null → segfault here). Skip an empty image — this also covers a truncated /
+        // corrupt asset that decoded to nothing. NOTE: this cannot save an OOM that fails INSIDE GenerateMipmaps'
+        // own mip-chain allocation; a native segfault is uncatchable from managed code — freeing memory/disk is the
+        // only remedy for that.
+        if (image.IsEmpty())
+        {
+            GD.PrintErr($"[AssetSystem] '{vpath}': image has no pixel data (decode likely failed — low memory/disk?); skipping mipmaps.");
+            return;
+        }
         if (image.HasMipmaps() || image.IsCompressed())
             return;
         int slash = vpath.LastIndexOf('/');
@@ -622,8 +690,33 @@ public sealed class AssetSystem
         }
     }
 
+    // (perf 2026-07-03) Grow-only per-thread FILE buffer for the tga/dds read path: `_vfs.ReadBytes`'s fresh
+    // `new byte[]` per texture (4-16 MB for an uncompressed TGA / mip-chained DDS, ~11 textures per player
+    // model) was the dominant LOH churn behind the 130-430 MB single-frame allocation storms → gen2
+    // collections at load/join. One retained buffer per decoding thread (streamer workers + main), bounded by
+    // the largest texture file. PNG/JPG keep the exact-array path (Godot's LoadXxxFromBuffer marshals the
+    // WHOLE array, and those files are small/rare in Xonotic data).
+    [ThreadStatic] private static byte[]? _fileScratch;
+
     private Image? LoadImageFromVpath(string vpath)
     {
+        string ext = AssetPaths.GetExtension(vpath);
+        if (ext is "tga" or "dds")
+        {
+            int length;
+            try
+            {
+                length = _vfs.ReadBytesInto(vpath, ref _fileScratch);
+            }
+            catch (Exception ex)
+            {
+                GD.PrintErr($"[AssetSystem] read failed for texture '{vpath}': {ex.Message}");
+                return null;
+            }
+            byte[] buf = _fileScratch!;
+            return ext == "tga" ? DecodeTga(buf, length, vpath) : DecodeDds(buf, length, vpath);
+        }
+
         byte[] bytes;
         try
         {
@@ -635,27 +728,27 @@ public sealed class AssetSystem
             return null;
         }
 
-        string ext = AssetPaths.GetExtension(vpath);
         return ext switch
         {
-            "tga" => DecodeTga(bytes, vpath),
             "png" => LoadViaGodot(bytes, isPng: true, vpath),
             "jpg" or "jpeg" => LoadViaGodot(bytes, isPng: false, vpath),
-            "dds" => DecodeDds(bytes, vpath),
             _ => DecodeUnknown(bytes, vpath), // pcx/wal/etc.: unsupported
         };
     }
 
-    private static Image? DecodeTga(byte[] bytes, string vpath)
+    private static Image? DecodeTga(byte[] bytes, int length, string vpath)
     {
         // Primary: our own decoder (handles the full Xonotic TGA spread, RLE included).
-        Image? img = TgaDecoder.Decode(bytes);
+        Image? img = TgaDecoder.Decode(bytes, length);
         if (img != null)
             return img;
 
-        // Fallback: let Godot try, in case of an exotic header our decoder rejected.
+        // Fallback: let Godot try, in case of an exotic header our decoder rejected. Godot's buffer loader
+        // marshals the whole array, so the (rare) fallback needs an exact-length copy of the pooled buffer.
+        var exact = new byte[length];
+        Array.Copy(bytes, exact, length);
         var godot = new Image();
-        if (godot.LoadTgaFromBuffer(bytes) == Error.Ok)
+        if (godot.LoadTgaFromBuffer(exact) == Error.Ok)
             return godot;
 
         GD.PrintErr($"[AssetSystem] failed to decode TGA '{vpath}'.");
@@ -672,12 +765,12 @@ public sealed class AssetSystem
         return null;
     }
 
-    private static Image? DecodeDds(byte[] bytes, string vpath)
+    private static Image? DecodeDds(byte[] bytes, int length, string vpath)
     {
         // Xonotic ships GPU-precompressed S3TC textures under a parallel dds/ tree; for some maps (e.g.
-        // stormkeep) the .dds is the only variant present. Decoded to RGBA8 by our own DdsDecoder, since
-        // Godot's scripting API has no DDS-from-buffer loader.
-        Image? img = DdsDecoder.Decode(bytes);
+        // stormkeep) the .dds is the only variant present. Full-chain DXT1/3/5 files PASS THROUGH compressed
+        // (no CPU decode, mips kept, S3TC on the GPU — see DdsDecoder); the rest decode to RGBA8 as before.
+        Image? img = DdsDecoder.Decode(bytes, length);
         if (img != null)
             return img;
         GD.PrintErr($"[AssetSystem] failed to decode DDS '{vpath}'.");

@@ -111,6 +111,15 @@ public sealed class RoundHandler
     private Action? _onRoundStart;
 
     /// <summary>
+    /// QC <c>!(autocvar_g_campaign &amp;&amp; !campaign_bots_may_start)</c> from the countdown gate
+    /// (server/round_handler.qc:38): in a campaign the round countdown is held until the human spawns
+    /// (campaign_bots_may_start flips true on first real-client spawn). The host wires this to
+    /// <c>g_campaign &amp;&amp; !Campaign.BotsMayStart</c>; when it returns true the countdown is frozen at its
+    /// current second (it does NOT reset). Unset (non-campaign play) → never holds.
+    /// </summary>
+    public Func<bool>? CampaignBotHold { get; set; }
+
+    /// <summary>
     /// Fired once when a round actually begins (QC the <c>FOREACH_CLIENT … GameRules_scoring_add(ROUNDS_PL)</c>
     /// at cnt==0). The host adds the per-player ROUNDS_PL score and any "round started" notification here.
     /// </summary>
@@ -223,7 +232,9 @@ public sealed class RoundHandler
         {
             // countdown running: only advance while the start predicate holds, and only step at 1 Hz
             // (QC sets nextthink = time + 1, so the countdown ticks once a second — not once per frame).
-            if (CanStart())
+            // QC round_handler.qc:38 also AND-gates the campaign bot hold: in a campaign the countdown is frozen
+            // until the human spawns (campaign_bots_may_start), so bots can't race the round before the player is in.
+            if (CanStart() && !(CampaignBotHold?.Invoke() ?? false))
             {
                 if (_cnt == Countdown + 1)
                     RoundStartTime = now + Countdown;

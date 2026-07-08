@@ -61,8 +61,70 @@ public static class NotificationsList
         RegisterGeneratedMulti();
         RegisterGeneratedChoice();
 
+        // Apply the MSG_CENTER durcnt (duration/count) specs from Base all.inc onto the registered center
+        // notifications (the .Center builder defaults durcnt to "" == "0 0" == default panel time).
+        ApplyCenterDurcnt();
+
         // Deterministic CL/SV ordering + ids (mirrors QC REGISTRY_SORT(Notifications) at boot).
         Notifications.Sort();
+    }
+
+    /// <summary>
+    /// The MSG_CENTER durcnt ("DURATION COUNT") column from Base <c>common/notifications/all.inc</c> — the only
+    /// center notifications whose durcnt differs from the default "0 0" (which means "use the panel default
+    /// time, no countdown"). Token 0 is the display duration, token 1 the ^COUNT count; tokens are a literal
+    /// number, an <c>fN</c> float-arg reference, or <c>item_centime</c> (== notification_item_centerprinttime).
+    /// Resolved at centerprint time by <c>HudNotifications.ShowCenter</c>. Keyed by bare notification name.
+    /// </summary>
+    private static readonly (string Name, string Durcnt)[] CenterDurcnt =
+    {
+        ("COUNTDOWN_BEGIN",            "2 0"),
+        ("COUNTDOWN_GAMESTART",        "1 f1"),
+        ("COUNTDOWN_ROUNDSTART",       "1 f2"),
+        ("COUNTDOWN_ROUNDSTOP",        "2 0"),
+        ("COUNTDOWN_STOP_MINPLAYERS",  "4 0"),
+        ("DISCONNECT_IDLING",          "1 f1"),
+        ("INSTAGIB_DOWNGRADE",         "5 0"),
+        ("INSTAGIB_FINDAMMO",          "1 9"),
+        ("INSTAGIB_FINDAMMO_FIRST",    "1 10"),
+        ("ITEM_BUFF_DROP",             "item_centime 0"),
+        ("ITEM_BUFF_GOT",              "item_centime 0"),
+        ("ITEM_FUELREGEN_GOT",         "item_centime 0"),
+        ("ITEM_JETPACK_GOT",           "item_centime 0"),
+        ("ITEM_WEAPON_DONTHAVE",       "item_centime 0"),
+        ("ITEM_WEAPON_DROP",           "item_centime 0"),
+        ("ITEM_WEAPON_GOT",            "item_centime 0"),
+        ("ITEM_WEAPON_NOAMMO",         "item_centime 0"),
+        ("ITEM_WEAPON_PRIMORSEC",      "item_centime 0"),
+        ("ITEM_WEAPON_UNAVAILABLE",    "item_centime 0"),
+        ("KEYHUNT_ROUNDSTART",         "1 f1"),
+        ("KEYHUNT_SCAN",               "f1 0"),
+        ("MOVETOSPEC_IDLING",          "1 f1"),
+        ("MOVETOSPEC_REMOVE",          "1 f1"),
+        ("NIX_COUNTDOWN",              "1 f2"),
+        ("OVERTIME_CONTROLPOINT",      "5 0"),
+        ("SURVIVAL_HUNTER",            "5 0"),
+        ("SURVIVAL_SURVIVOR",          "5 0"),
+        ("TEAMCHANGE_RED",             "1 f1"),
+        ("TEAMCHANGE_BLUE",            "1 f1"),
+        ("TEAMCHANGE_YELLOW",          "1 f1"),
+        ("TEAMCHANGE_PINK",            "1 f1"),
+        ("TEAMCHANGE_SPECTATE",        "1 f1"),
+        ("TEAMCHANGE_SUICIDE",         "1 f1"),
+        ("TIMEOUT_BEGINNING",          "1 f1"),
+        ("TIMEOUT_ENDING",             "1 f1"),
+        ("VEHICLE_STEAL_SELF",         "4 0"),
+    };
+
+    /// <summary>Stamp the Base durcnt specs onto the registered center notifications (see <see cref="CenterDurcnt"/>).</summary>
+    private static void ApplyCenterDurcnt()
+    {
+        foreach ((string name, string durcnt) in CenterDurcnt)
+        {
+            Notification? n = Notifications.ByName(MsgType.Center, name);
+            if (n is not null)
+                n.Durcnt = durcnt;
+        }
     }
 
     // The four team suffixes used by the MULTITEAM_* expansions (NUM_TEAM_1..4).
@@ -430,6 +492,9 @@ public static class NotificationsList
         Notifications.Center("ITEM_JETPACK_GOT", 0, 0, "", "CPID_ITEM", "^BGYou got the ^F1Jetpack");
         Notifications.Center("ITEM_FUELREGEN_GOT", 0, 0, "", "CPID_ITEM", "^BGYou got the ^F1Fuel regenerator");
 
+        // nades mutator: banking a bonus grenade (Base all.inc:654 MSG_CENTER_NOTIF(NADE_BONUS), CPID_NADES).
+        Notifications.Center("NADE_BONUS", 0, 0, "", "CPID_NADES", "^F2You got a ^K1BONUS GRENADE^F2!");
+
         // self-death centerprints (shown to the victim)
         CenterSelf("GENERIC", BOLD + "^K1You fragged yourself!");
         CenterSelf("SUICIDE", BOLD + "^K1You committed suicide!");
@@ -708,6 +773,28 @@ public static class NotificationsList
         Notifications.Info("NEXBALL_RETURN_HELD_BLUE", 0, 0, "", "", "^BGThe ^4BLUE^BG team held the ball for too long", "");
         Notifications.Info("NEXBALL_RETURN_HELD_YELLOW", 0, 0, "", "", "^BGThe ^3YELLOW^BG team held the ball for too long", "");
         Notifications.Info("NEXBALL_RETURN_HELD_PINK", 0, 0, "", "", "^BGThe ^6PINK^BG team held the ball for too long", "");
+        // QC GoalTouch bprint announcements (sv_nexball.qc:390-414) ported as INFO lines (the port collapses
+        // server bprints to INFO, like Domination). s1 = the scorer's netname. The team name is baked into the
+        // per-team variant (the established KEYHUNT/ONSLAUGHT/CTF convention), matching Team_ColoredFullName.
+        Notifications.Info("NEXBALL_GOAL_RED", 1, 0, "s1", "", "^BGGoaaaaal! ^BG%s^BG scored a point for the ^1RED^BG team", "");
+        Notifications.Info("NEXBALL_GOAL_BLUE", 1, 0, "s1", "", "^BGGoaaaaal! ^BG%s^BG scored a point for the ^4BLUE^BG team", "");
+        Notifications.Info("NEXBALL_GOAL_YELLOW", 1, 0, "s1", "", "^BGGoaaaaal! ^BG%s^BG scored a point for the ^3YELLOW^BG team", "");
+        Notifications.Info("NEXBALL_GOAL_PINK", 1, 0, "s1", "", "^BGGoaaaaal! ^BG%s^BG scored a point for the ^6PINK^BG team", "");
+        // QC own-goal: "Boo! <name>^7 scored a goal against their own team!"
+        Notifications.Info("NEXBALL_OWNGOAL", 1, 0, "s1", "", "^BGBoo! ^BG%s^BG scored a goal against their own team!", "");
+        // QC fault (two-team): "<otherteam> gets a point due to <name>^7's silliness." The team is the one that GAINS.
+        Notifications.Info("NEXBALL_FAULT_RED", 1, 0, "s1", "", "^1RED^BG gets a point due to ^BG%s^BG's silliness", "");
+        Notifications.Info("NEXBALL_FAULT_BLUE", 1, 0, "s1", "", "^4BLUE^BG gets a point due to ^BG%s^BG's silliness", "");
+        Notifications.Info("NEXBALL_FAULT_YELLOW", 1, 0, "s1", "", "^3YELLOW^BG gets a point due to ^BG%s^BG's silliness", "");
+        Notifications.Info("NEXBALL_FAULT_PINK", 1, 0, "s1", "", "^6PINK^BG gets a point due to ^BG%s^BG's silliness", "");
+        // QC fault (>2-team): "<ballteam> loses a point due to <name>^7's silliness." The team is the one that LOSES.
+        Notifications.Info("NEXBALL_FAULT_LOSE_RED", 1, 0, "s1", "", "^1RED^BG loses a point due to ^BG%s^BG's silliness", "");
+        Notifications.Info("NEXBALL_FAULT_LOSE_BLUE", 1, 0, "s1", "", "^4BLUE^BG loses a point due to ^BG%s^BG's silliness", "");
+        Notifications.Info("NEXBALL_FAULT_LOSE_YELLOW", 1, 0, "s1", "", "^3YELLOW^BG loses a point due to ^BG%s^BG's silliness", "");
+        Notifications.Info("NEXBALL_FAULT_LOSE_PINK", 1, 0, "s1", "", "^6PINK^BG loses a point due to ^BG%s^BG's silliness", "");
+        // QC out: a carried ball out-of-bounds names the carrier; a loose ball just "was returned".
+        Notifications.Info("NEXBALL_OUT_PLAYER", 1, 0, "s1", "", "^BG%s^BG went out of bounds", "");
+        Notifications.Info("NEXBALL_OUT", 0, 0, "", "", "^BGThe ball was returned", "");
         Notifications.Info("ONSLAUGHT_CAPTURE", 2, 0, "s1 s2", "", "^BG%s^BG captured %s^BG control point", "");
         Notifications.Info("ONSLAUGHT_CAPTURE_NONAME", 1, 0, "s1", "", "^BG%s^BG captured a control point", "");
         Notifications.Info("ONSLAUGHT_CPDESTROYED_RED", 2, 0, "s1 s2", "", "^1RED^BG team %s^BG control point has been destroyed by %s", "");

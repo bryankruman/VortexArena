@@ -128,6 +128,14 @@ public class GameItemDef
     /// <summary>True if this definition is a powerup (QC instanceOfPowerup).</summary>
     public bool IsPowerup;
 
+    /// <summary>
+    /// QC <c>m_botvalue</c> — base bot desirability for this item (used by the bot goal-rater via
+    /// <c>bot_pickupbasevalue</c>). 0 = not specially valued (default). Powerups = 11000; Jetpack/FuelRegen
+    /// = 3000 (they override the Powerup base); weapons/health/armor/ammo carry their own values (set on their
+    /// own defs). See <c>powerups.qh</c> CLASS(Powerup) m_botvalue ATTRIB and the per-item overrides.
+    /// </summary>
+    public int BotValue;
+
     /// <summary>Whether the definition is allowed in the current ruleset (QC Item_IsDefinitionAllowed): not mutator-blocked.</summary>
     public bool IsAllowed => (SpawnFlags & GameItemSpawnFlag.MutatorBlocked) == 0;
 }

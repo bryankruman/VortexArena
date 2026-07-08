@@ -1,0 +1,1788 @@
+[
+{
+"file": "src/XonoticGodot.Server/Bot/BotBrain.cs",
+"cat": "bot",
+"impact": "H",
+"shards": [
+"bot-ai"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Server/Bot/BotRoles.cs",
+"cat": "bot",
+"impact": "H",
+"shards": [
+"bot-ai"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs",
+"cat": "damage",
+"impact": "H",
+"shards": [
+"damage-pipeline"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs",
+"cat": "gametype",
+"impact": "H",
+"shards": [
+"assault"
+],
+"seams": [
+"S11",
+"S2",
+"S4"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs",
+"cat": "gametype",
+"impact": "H",
+"shards": [
+"clanarena",
+"scoring"
+],
+"seams": [
+"S2",
+"S4"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs",
+"cat": "gametype",
+"impact": "H",
+"shards": [
+"ctf"
+],
+"seams": [
+"S1",
+"S2",
+"S3",
+"S4",
+"S5",
+"S9"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs",
+"cat": "gametype",
+"impact": "H",
+"shards": [
+"domination"
+],
+"seams": [
+"S2",
+"S3",
+"S4",
+"S9"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs",
+"cat": "gametype",
+"impact": "H",
+"shards": [
+"freezetag"
+],
+"seams": [
+"S10",
+"S2",
+"S4"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/GameTypes/Invasion.cs",
+"cat": "gametype",
+"impact": "H",
+"shards": [
+"invasion"
+],
+"seams": [
+"S2",
+"S4"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs",
+"cat": "gametype",
+"impact": "H",
+"shards": [
+"keepaway"
+],
+"seams": [
+"S12",
+"S3",
+"S4",
+"S5",
+"S9"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/GameTypes/KeyHunt.cs",
+"cat": "gametype",
+"impact": "H",
+"shards": [
+"keyhunt"
+],
+"seams": [
+"S2",
+"S3",
+"S4",
+"S5",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs",
+"cat": "gametype",
+"impact": "H",
+"shards": [
+"lms"
+],
+"seams": [
+"S4"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs",
+"cat": "gametype",
+"impact": "H",
+"shards": [
+"nexball"
+],
+"seams": [
+"S3",
+"S4",
+"S5",
+"S9"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs",
+"cat": "gametype",
+"impact": "H",
+"shards": [
+"onslaught"
+],
+"seams": [
+"S11",
+"S3",
+"S4",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs",
+"cat": "gametype",
+"impact": "H",
+"shards": [
+"race"
+],
+"seams": [
+"S4"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/GameTypes/Survival.cs",
+"cat": "gametype",
+"impact": "H",
+"shards": [
+"survival"
+],
+"seams": [
+"S2",
+"S4"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs",
+"cat": "gametype",
+"impact": "H",
+"shards": [
+"tka"
+],
+"seams": [
+"S12",
+"S3",
+"S4",
+"S5",
+"S9"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs",
+"cat": "item",
+"impact": "H",
+"shards": [
+"items-pickups"
+],
+"seams": [
+"S3",
+"S4"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs",
+"cat": "mapobject",
+"impact": "H",
+"shards": [
+"mapobject-misc"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Monsters/Mage.cs",
+"cat": "monster",
+"impact": "H",
+"shards": [
+"monster-mage"
+],
+"seams": [
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs",
+"cat": "monster",
+"impact": "H",
+"shards": [
+"monster-framework"
+],
+"seams": [
+"S10",
+"S7"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Monsters/Spider.cs",
+"cat": "monster",
+"impact": "H",
+"shards": [
+"monster-spider"
+],
+"seams": [
+"S1",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/BuffsMutator.cs",
+"cat": "mutator",
+"impact": "H",
+"shards": [
+"mutator-buffs"
+],
+"seams": [
+"S3",
+"S4",
+"S5",
+"S6",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/HookMutator.cs",
+"cat": "mutator",
+"impact": "H",
+"shards": [
+"mutator-hook"
+],
+"seams": [
+"S5",
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/InstagibMutator.cs",
+"cat": "mutator",
+"impact": "H",
+"shards": [
+"mutator-instagib"
+],
+"seams": [
+"S4",
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/OverkillMutator.cs",
+"cat": "mutator",
+"impact": "H",
+"shards": [
+"mutator-overkill"
+],
+"seams": [
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs",
+"cat": "mutator",
+"impact": "H",
+"shards": [
+"mutator-powerups"
+],
+"seams": [
+"S3",
+"S4",
+"S7",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/WeaponArenaRandomMutator.cs",
+"cat": "mutator",
+"impact": "H",
+"shards": [
+"mutator-weaponarena_random"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Nades/NadesMutator.cs",
+"cat": "mutator",
+"impact": "H",
+"shards": [
+"mutator-nades"
+],
+"seams": [
+"S1",
+"S3",
+"S4",
+"S5",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/StatusEffects.cs",
+"cat": "mutator",
+"impact": "H",
+"shards": [
+"damage-pipeline",
+"mutator-status_effects"
+],
+"seams": [
+"S3",
+"S4"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs",
+"cat": "mutator",
+"impact": "H",
+"shards": [
+"mutator-waypoints"
+],
+"seams": [
+"S3",
+"S5",
+"S9"
+]
+},
+{
+"file": "game/hud/MapVotePanel.cs",
+"cat": "server",
+"impact": "H",
+"shards": [
+"sv-intermission",
+"sv-mapvoting"
+],
+"seams": [
+"S5"
+]
+},
+{
+"file": "src/XonoticGodot.Server/ClientManager.cs",
+"cat": "server",
+"impact": "H",
+"shards": [
+"sv-client-lifecycle"
+],
+"seams": [
+"S2",
+"S4",
+"S5"
+]
+},
+{
+"file": "src/XonoticGodot.Server/Commands.cs",
+"cat": "server",
+"impact": "H",
+"shards": [
+"sv-cheats",
+"sv-commands-votes",
+"sv-impulse",
+"sv-ipban",
+"sv-mapvoting",
+"sv-teamplay"
+],
+"seams": [
+"S2",
+"S4",
+"S5"
+]
+},
+{
+"file": "src/XonoticGodot.Server/MapVoting.cs",
+"cat": "server",
+"impact": "H",
+"shards": [
+"sv-intermission",
+"sv-mapvoting"
+],
+"seams": [
+"S5"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs",
+"cat": "turret",
+"impact": "H",
+"shards": [
+"turret-framework"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Turrets/WalkerTurret.cs",
+"cat": "turret",
+"impact": "H",
+"shards": [
+"turret-walker"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Vehicles/Bumblebee.cs",
+"cat": "vehicle",
+"impact": "H",
+"shards": [
+"vehicle-bumblebee"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Vehicles/Spiderbot.cs",
+"cat": "vehicle",
+"impact": "H",
+"shards": [
+"vehicle-spiderbot"
+],
+"seams": [
+"S1"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Vehicles/VehicleCommon.cs",
+"cat": "vehicle",
+"impact": "H",
+"shards": [
+"vehicle-framework"
+],
+"seams": [
+"S7"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs",
+"cat": "weapon",
+"impact": "H",
+"shards": [
+"sv-antilag",
+"weapon-arc"
+],
+"seams": [
+"S3",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/Electro.cs",
+"cat": "weapon",
+"impact": "H",
+"shards": [
+"weapon-electro"
+],
+"seams": [
+"S1",
+"S3"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/Fireball.cs",
+"cat": "weapon",
+"impact": "H",
+"shards": [
+"weapon-fireball"
+],
+"seams": [
+"S3",
+"S4",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/Hook.cs",
+"cat": "weapon",
+"impact": "H",
+"shards": [
+"mutator-vampirehook",
+"weapon-hook"
+],
+"seams": [
+"S5",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/Mortar.cs",
+"cat": "weapon",
+"impact": "H",
+"shards": [
+"weapon-mortar"
+],
+"seams": [
+"S1",
+"S4",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/Tuba.cs",
+"cat": "weapon",
+"impact": "H",
+"shards": [
+"weapon-tuba"
+],
+"seams": [
+"S5",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/Vaporizer.cs",
+"cat": "weapon",
+"impact": "H",
+"shards": [
+"mutator-rocketminsta",
+"weapon-vaporizer"
+],
+"seams": [
+"S1",
+"S3",
+"S4",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Server/Bot/BotAim.cs",
+"cat": "bot",
+"impact": "M",
+"shards": [
+"bot-ai"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Server/Bot/BotNavigation.cs",
+"cat": "bot",
+"impact": "M",
+"shards": [
+"bot-ai",
+"bot-waypoints"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Server/Bot/Waypoint.cs",
+"cat": "bot",
+"impact": "M",
+"shards": [
+"bot-waypoints"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/GameTypes/Cts.cs",
+"cat": "gametype",
+"impact": "M",
+"shards": [
+"cts"
+],
+"seams": [
+"S4"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/GameTypes/Duel.cs",
+"cat": "gametype",
+"impact": "M",
+"shards": [
+"duel"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/GameTypes/Mayhem.cs",
+"cat": "gametype",
+"impact": "M",
+"shards": [
+"mayhem"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs",
+"cat": "gametype",
+"impact": "M",
+"shards": [
+"tdm"
+],
+"seams": [
+"S4"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/GameTypes/TeamMayhem.cs",
+"cat": "gametype",
+"impact": "M",
+"shards": [
+"tmayhem"
+],
+"seams": []
+},
+{
+"file": "game/client/ClientWorld.cs",
+"cat": "item",
+"impact": "M",
+"shards": [
+"items-pickups"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Items/StartItem.cs",
+"cat": "item",
+"impact": "M",
+"shards": [
+"items-pickups"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Server/PlayerFrameLogic.cs",
+"cat": "item",
+"impact": "M",
+"shards": [
+"resources",
+"sv-client-lifecycle"
+],
+"seams": [
+"S3",
+"S4"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/Breakable.cs",
+"cat": "mapobject",
+"impact": "M",
+"shards": [
+"mapobject-func"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/Buttons.cs",
+"cat": "mapobject",
+"impact": "M",
+"shards": [
+"mapobject-func"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs",
+"cat": "mapobject",
+"impact": "M",
+"shards": [
+"mapobject-func"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/DynamicLight.cs",
+"cat": "mapobject",
+"impact": "M",
+"shards": [
+"mapobject-misc"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs",
+"cat": "mapobject",
+"impact": "M",
+"shards": [
+"mapobject-triggers"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs",
+"cat": "mapobject",
+"impact": "M",
+"shards": [
+"mapobject-misc",
+"mapobject-movers-platforms"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/MovingBrushes.cs",
+"cat": "mapobject",
+"impact": "M",
+"shards": [
+"mapobject-func",
+"mapobject-misc"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/TargetMusic.cs",
+"cat": "mapobject",
+"impact": "M",
+"shards": [
+"mapobject-target",
+"mapobject-triggers"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/TargetSpeaker.cs",
+"cat": "mapobject",
+"impact": "M",
+"shards": [
+"mapobject-target"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs",
+"cat": "mapobject",
+"impact": "M",
+"shards": [
+"mapobject-func",
+"mapobject-target",
+"sv-campaign"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs",
+"cat": "mapobject",
+"impact": "M",
+"shards": [
+"teleporters"
+],
+"seams": [
+"S2"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs",
+"cat": "mapobject",
+"impact": "M",
+"shards": [
+"mapobject-triggers"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/ViewLocation.cs",
+"cat": "mapobject",
+"impact": "M",
+"shards": [
+"mapobject-triggers"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs",
+"cat": "mapobject",
+"impact": "M",
+"shards": [
+"portals",
+"warpzones"
+],
+"seams": [
+"S1",
+"S4"
+]
+},
+{
+"file": "src/XonoticGodot.Engine/Simulation/TriggerTouch.cs",
+"cat": "mapobject",
+"impact": "M",
+"shards": [
+"warpzones"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Monsters/Golem.cs",
+"cat": "monster",
+"impact": "M",
+"shards": [
+"monster-golem"
+],
+"seams": [
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Monsters/Wyvern.cs",
+"cat": "monster",
+"impact": "M",
+"shards": [
+"monster-wyvern"
+],
+"seams": [
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Monsters/Zombie.cs",
+"cat": "monster",
+"impact": "M",
+"shards": [
+"monster-zombie"
+],
+"seams": [
+"S10"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/BugrigsMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-bugrigs"
+],
+"seams": [
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/CampcheckMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-campcheck"
+],
+"seams": [
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/CloakedMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-cloaked"
+],
+"seams": [
+"S6",
+"S7"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/DamagetextMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-damagetext"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/DodgingMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-dodging"
+],
+"seams": [
+"S5"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/DynamicHandicapMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-dynamic_handicap"
+],
+"seams": [
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/ItemstimeMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"items-pickups",
+"mutator-itemstime"
+],
+"seams": [
+"S9"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/KickTeamkillerMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-kick_teamkiller"
+],
+"seams": [
+"S4"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/MeleeOnlyMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-melee_only"
+],
+"seams": [
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/MidairMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-midair"
+],
+"seams": [
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/MultijumpMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-multijump"
+],
+"seams": [
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/NewToysMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-new_toys"
+],
+"seams": [
+"S3"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/OffhandBlasterMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-offhand_blaster"
+],
+"seams": [
+"S5",
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/RandomGravityMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-random_gravity"
+],
+"seams": [
+"S2",
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/RandomItemsMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-random_items"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/RocketFlyingMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-rocketflying"
+],
+"seams": [
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/RunningGunsMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-running_guns"
+],
+"seams": [
+"S7"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/SpawnNearTeammateMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-spawn_near_teammate",
+"sv-spawnpoints"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/TouchExplodeMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-touchexplode"
+],
+"seams": [
+"S6",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/VampireMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-vampire"
+],
+"seams": [
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/WalljumpMutator.cs",
+"cat": "mutator",
+"impact": "M",
+"shards": [
+"mutator-walljump"
+],
+"seams": [
+"S8"
+]
+},
+{
+"file": "game/net/ClientNet.cs",
+"cat": "net",
+"impact": "M",
+"shards": [
+"net-entity-state",
+"sv-intermission"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Engine/Simulation/MoveTypePhysics.cs",
+"cat": "physics",
+"impact": "M",
+"shards": [
+"physics-movetypes"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs",
+"cat": "scoring",
+"impact": "M",
+"shards": [
+"scoring"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/WeaponImpulses.cs",
+"cat": "server",
+"impact": "M",
+"shards": [
+"sv-impulse"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Server/Intermission.cs",
+"cat": "server",
+"impact": "M",
+"shards": [
+"sv-intermission"
+],
+"seams": [
+"S5"
+]
+},
+{
+"file": "src/XonoticGodot.Server/OverTimeManager.cs",
+"cat": "server",
+"impact": "M",
+"shards": [
+"sv-world-rules"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Server/Teamplay.cs",
+"cat": "server",
+"impact": "M",
+"shards": [
+"sv-teamplay"
+],
+"seams": [
+"S4"
+]
+},
+{
+"file": "src/XonoticGodot.Server/TimeoutController.cs",
+"cat": "server",
+"impact": "M",
+"shards": [
+"sv-commands-votes"
+],
+"seams": [
+"S4"
+]
+},
+{
+"file": "src/XonoticGodot.Server/VoteController.cs",
+"cat": "server",
+"impact": "M",
+"shards": [
+"sv-commands-votes"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Server/WarmupController.cs",
+"cat": "server",
+"impact": "M",
+"shards": [
+"sv-teamplay",
+"sv-world-rules"
+],
+"seams": [
+"S4"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs",
+"cat": "turret",
+"impact": "M",
+"shards": [
+"turret-ewheel"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Turrets/FlacTurret.cs",
+"cat": "turret",
+"impact": "M",
+"shards": [
+"turret-flac"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Turrets/HellionTurret.cs",
+"cat": "turret",
+"impact": "M",
+"shards": [
+"turret-hellion"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Turrets/HkTurret.cs",
+"cat": "turret",
+"impact": "M",
+"shards": [
+"turret-hk"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Turrets/MachinegunTurret.cs",
+"cat": "turret",
+"impact": "M",
+"shards": [
+"turret-machinegun"
+],
+"seams": [
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Turrets/MlrsTurret.cs",
+"cat": "turret",
+"impact": "M",
+"shards": [
+"turret-mlrs"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaDualTurret.cs",
+"cat": "turret",
+"impact": "M",
+"shards": [
+"turret-plasma_dual"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaTurret.cs",
+"cat": "turret",
+"impact": "M",
+"shards": [
+"turret-plasma"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Turrets/TeslaTurret.cs",
+"cat": "turret",
+"impact": "M",
+"shards": [
+"turret-tesla"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Vehicles/Racer.cs",
+"cat": "vehicle",
+"impact": "M",
+"shards": [
+"vehicle-racer"
+],
+"seams": [
+"S1"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Vehicles/Raptor.cs",
+"cat": "vehicle",
+"impact": "M",
+"shards": [
+"vehicle-raptor"
+],
+"seams": [
+"S1"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/Crylink.cs",
+"cat": "weapon",
+"impact": "M",
+"shards": [
+"weapon-crylink"
+],
+"seams": [
+"S3",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/Devastator.cs",
+"cat": "weapon",
+"impact": "M",
+"shards": [
+"weapon-devastator"
+],
+"seams": [
+"S4",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/Hagar.cs",
+"cat": "weapon",
+"impact": "M",
+"shards": [
+"weapon-hagar"
+],
+"seams": [
+"S3",
+"S4",
+"S5",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs",
+"cat": "weapon",
+"impact": "M",
+"shards": [
+"weapon-hlac"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/Machinegun.cs",
+"cat": "weapon",
+"impact": "M",
+"shards": [
+"weapon-machinegun"
+],
+"seams": [
+"S3",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/Minelayer.cs",
+"cat": "weapon",
+"impact": "M",
+"shards": [
+"weapon-minelayer"
+],
+"seams": [
+"S1",
+"S3",
+"S4"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs",
+"cat": "weapon",
+"impact": "M",
+"shards": [
+"portals",
+"weapon-porto"
+],
+"seams": [
+"S3"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/Rifle.cs",
+"cat": "weapon",
+"impact": "M",
+"shards": [
+"weapon-rifle"
+],
+"seams": [
+"S3",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/Seeker.cs",
+"cat": "weapon",
+"impact": "M",
+"shards": [
+"weapon-seeker"
+],
+"seams": [
+"S3",
+"S4",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/Shotgun.cs",
+"cat": "weapon",
+"impact": "M",
+"shards": [
+"sv-antilag",
+"weapon-shotgun"
+],
+"seams": [
+"S3",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs",
+"cat": "weapon",
+"impact": "M",
+"shards": [
+"weapon-vortex"
+],
+"seams": [
+"S3",
+"S4"
+]
+},
+{
+"file": "src/XonoticGodot.Server/Bot/BotDanger.cs",
+"cat": "bot",
+"impact": "L",
+"shards": [
+"bot-ai"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Server/Bot/BotPopulation.cs",
+"cat": "bot",
+"impact": "L",
+"shards": [
+"bot-ai",
+"sv-teamplay"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs",
+"cat": "gametype",
+"impact": "L",
+"shards": [
+"deathmatch"
+],
+"seams": [
+"S4"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Items/Resources.cs",
+"cat": "item",
+"impact": "L",
+"shards": [
+"resources"
+],
+"seams": []
+},
+{
+"file": "game/client/LaserRenderer.cs",
+"cat": "mapobject",
+"impact": "L",
+"shards": [
+"mapobject-misc"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/Follow.cs",
+"cat": "mapobject",
+"impact": "L",
+"shards": [
+"mapobject-misc"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/Jumppads.cs",
+"cat": "mapobject",
+"impact": "L",
+"shards": [
+"mapobject-triggers"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/MapModels.cs",
+"cat": "mapobject",
+"impact": "L",
+"shards": [
+"mapobject-misc"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectFieldsExtra.cs",
+"cat": "mapobject",
+"impact": "L",
+"shards": [
+"mapobject-misc"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/MapVolumes.cs",
+"cat": "mapobject",
+"impact": "L",
+"shards": [
+"mapobject-func"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs",
+"cat": "mapobject",
+"impact": "L",
+"shards": [
+"mapobject-func",
+"mapobject-movers-platforms"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Warpzone/WarpzoneRadiusQuery.cs",
+"cat": "mapobject",
+"impact": "L",
+"shards": [
+"warpzones"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Server/Cvars.cs",
+"cat": "mapobject",
+"impact": "L",
+"shards": [
+"sv-campaign",
+"teleporters"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/BloodlossMutator.cs",
+"cat": "mutator",
+"impact": "L",
+"shards": [
+"mutator-bloodloss"
+],
+"seams": [
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/BreakablehookMutator.cs",
+"cat": "mutator",
+"impact": "L",
+"shards": [
+"mutator-breakablehook"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/DoublejumpMutator.cs",
+"cat": "mutator",
+"impact": "L",
+"shards": [
+"mutator-doublejump"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/GlobalForcesMutator.cs",
+"cat": "mutator",
+"impact": "L",
+"shards": [
+"mutator-globalforces"
+],
+"seams": [
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/InvincibleProjectilesMutator.cs",
+"cat": "mutator",
+"impact": "L",
+"shards": [
+"mutator-invincibleproj"
+],
+"seams": [
+"S1",
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/PhysicalItemsMutator.cs",
+"cat": "mutator",
+"impact": "L",
+"shards": [
+"mutator-physical_items"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/PinataMutator.cs",
+"cat": "mutator",
+"impact": "L",
+"shards": [
+"mutator-pinata"
+],
+"seams": [
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/SandboxMutator.cs",
+"cat": "mutator",
+"impact": "L",
+"shards": [
+"mutator-sandbox"
+],
+"seams": [
+"S3",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/SpawnUniqueMutator.cs",
+"cat": "mutator",
+"impact": "L",
+"shards": [
+"mutator-spawn_unique"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/StaleMoveNegationMutator.cs",
+"cat": "mutator",
+"impact": "L",
+"shards": [
+"mutator-stale_move_negation"
+],
+"seams": [
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Mutators/SuperSpecMutator.cs",
+"cat": "mutator",
+"impact": "L",
+"shards": [
+"mutator-superspec"
+],
+"seams": [
+"S6"
+]
+},
+{
+"file": "src/XonoticGodot.Engine/Simulation/CsqcModelAppearance.cs",
+"cat": "net",
+"impact": "L",
+"shards": [
+"net-entity-state"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Physics/PMAccelerate.cs",
+"cat": "physics",
+"impact": "L",
+"shards": [
+"physics-player"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Physics/PlayerPhysics.cs",
+"cat": "physics",
+"impact": "L",
+"shards": [
+"physics-player"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Engine/Simulation/FlyMove.cs",
+"cat": "physics",
+"impact": "L",
+"shards": [
+"physics-movetypes"
+],
+"seams": []
+},
+{
+"file": "game/client/SpawnPointParticles.cs",
+"cat": "server",
+"impact": "L",
+"shards": [
+"sv-spawnpoints"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Inventory.cs",
+"cat": "server",
+"impact": "L",
+"shards": [
+"sv-impulse"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Server/Bans.cs",
+"cat": "server",
+"impact": "L",
+"shards": [
+"sv-ipban"
+],
+"seams": []
+},
+{
+"file": "src/XonoticGodot.Server/Campaign.cs",
+"cat": "server",
+"impact": "L",
+"shards": [
+"sv-campaign"
+],
+"seams": [
+"S2"
+]
+},
+{
+"file": "src/XonoticGodot.Server/Cheats.cs",
+"cat": "server",
+"impact": "L",
+"shards": [
+"sv-cheats"
+],
+"seams": [
+"S3",
+"S8"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/Blaster.cs",
+"cat": "weapon",
+"impact": "L",
+"shards": [
+"weapon-blaster"
+],
+"seams": [
+"S1",
+"S5"
+]
+},
+{
+"file": "src/XonoticGodot.Common/Gameplay/Weapons/OkMachinegun.cs",
+"cat": "weapon",
+"impact": "L",
+"shards": [
+"overkill-weapons"
+],
+"seams": [
+"S1",
+"S3",
+"S4",
+"S8"
+]
+}
+]

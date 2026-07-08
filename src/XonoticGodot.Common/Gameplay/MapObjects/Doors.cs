@@ -11,8 +11,10 @@
 // Now ported in full: LinkDoors connected-component grouping (double/quad doors move as a unit via the
 // owner/enemy chain), the separate spawned door_spawnfield touch volume, Quake-1/QL key locks
 // (itemkeys / gold/silver), shootable doors via the damage pipeline's Death hook, the chain-open through
-// owner/enemy, and door_rotating axis selection. Genuinely client-only bits (CSQC networking, CPMA sound
-// overrides, DOOR_ROTATING_BIDIR trigger-side reverse) are out of scope for the headless sim.
+// owner/enemy, and door_rotating axis selection. The DOOR_ROTATING_BIDIR / BIDIR_IN_DOWN trigger-side
+// reverse-open path (door_use's trigger.trigger_reverse handling) is now ported too — the firing trigger is
+// threaded via MapMover.CurrentUseTrigger. Genuinely client-only bits (CSQC networking, CPMA sound
+// overrides) are out of scope for the headless sim.
 
 using System.Numerics;
 using XonoticGodot.Common.Framework;
@@ -34,13 +36,15 @@ public static class Doors
     public const int GoldKey = 1 << 3;     // SPAWNFLAGS_GOLD_KEY
     public const int SilverKey = 1 << 4;   // SPAWNFLAGS_SILVER_KEY
     public const int Toggle = 1 << 5;      // DOOR_TOGGLE — wait in both states for a trigger
+    public const int NoSplash = 1 << 8;    // NOSPLASH (defs.qh) — generic anti-splashdamage spawnflag
     public const int NonSolid = 1 << 10;   // DOOR_NONSOLID
     public const int Crush = 1 << 11;      // DOOR_CRUSH — instakill blockers
 
     // ---- door_rotating.qh spawnflag bits ----
-    public const int RotatingBidir = 1 << 1;     // DOOR_ROTATING_BIDIR
-    public const int RotatingXAxis = 1 << 6;     // DOOR_ROTATING_XAXIS
-    public const int RotatingYAxis = 1 << 7;     // DOOR_ROTATING_YAXIS
+    public const int RotatingBidir = 1 << 1;        // DOOR_ROTATING_BIDIR
+    public const int RotatingBidirInDown = 1 << 3;  // DOOR_ROTATING_BIDIR_IN_DOWN
+    public const int RotatingXAxis = 1 << 6;        // DOOR_ROTATING_XAXIS
+    public const int RotatingYAxis = 1 << 7;        // DOOR_ROTATING_YAXIS
 
     // QC key bits (item_keys): BIT(0) gold, BIT(1) silver.
     private const int KeyGoldBit = 1 << 0;
@@ -61,10 +65,12 @@ public static class Doors
 
         if (!MapMover.InitMovingBrushTrigger(this_))
             return;
+        this_.Effects |= AdvancedMovers.EfLowPrecision; // QC: this.effects |= EF_LOWPRECISION (door.qc:779)
         this_.ClassName = "door";
 
         this_.Blocked = DoorBlocked;
         this_.Use = DoorUse;
+        this_.Reset = DoorReset; // QC door.qc: this.reset = door_reset (round-restart re-arm)
         this_.Active = MapMover.ActiveActive;
 
         if ((this_.SpawnFlags & NonSolid) != 0)
@@ -124,6 +130,7 @@ public static class Doors
 
         this_.Blocked = DoorBlocked;
         this_.Use = DoorUse;
+        this_.Reset = DoorReset; // QC door.qc: this.reset = door_reset (shared with func_door)
         this_.Active = MapMover.ActiveActive;
 
         // pos1 = closed angles (zero), pos2 = open-angle delta (movedir).
@@ -173,11 +180,10 @@ public static class Doors
         if ((this_.Dmg != 0f || (this_.SpawnFlags & Crush) != 0) && string.IsNullOrEmpty(this_.Message))
             this_.Message = "was squished";
 
-        // Default door sounds (QC uses plats/medplat*.wav).
-        if (this_.Noise2 == "")
-            this_.Noise2 = "plats/medplat1.wav"; // moving
-        if (this_.Noise1 == "")
-            this_.Noise1 = "plats/medplat2.wav"; // stop
+        // QC door_init_shared only assigns the medplat soundpack when `sounds > 0 || q3compat`
+        // (Q3 doors are hard-coded to have sounds); otherwise Noise1/Noise2 stay empty and the
+        // move/stop _sound calls are no-ops. ApplyDoorSounds reads Entity.Sounds and gates this.
+        MapMover.ApplyDoorSounds(this_);
 
         if (this_.Wait == 0f)
             this_.Wait = 3f;
@@ -193,6 +199,30 @@ public static class Doors
         // QC: a key door never auto-returns.
         if (this_.ItemKeys != 0)
             this_.Wait = -1f;
+    }
+
+    /// <summary>
+    /// QC <c>door_reset</c> (door.qc:648): the round-restart hook. Snap the door home (pos1 = closed),
+    /// stop it, restore STATE_BOTTOM + ACTIVE_ACTIVE, drop any pending think, and re-init the key bits.
+    /// For func_door_rotating the "home" is the closed ANGLE (pos1) rather than a translated origin.
+    /// </summary>
+    public static void DoorReset(Entity this_)
+    {
+        if (this_.ClassName == "door_rotating")
+            this_.Angles = this_.Pos1;           // rotating door: closed angle (origin doesn't translate)
+        else
+            MapMover.SetOrigin(this_, this_.Pos1); // sliding door: snap to the closed origin
+
+        this_.Velocity = Vector3.Zero;
+        this_.AVelocity = Vector3.Zero;
+        this_.MoverState = MapMover.StateBottom;
+        this_.Active = MapMover.ActiveActive;
+        this_.Think = null;
+        this_.NextThink = 0f;
+
+        // QC #ifdef SVQC: door_init_keys(this) — re-arm the gold/silver key bits.
+        DoorInitKeys(this_);
+        // (QC also raises SendFlags |= SF_TRIGGER_RESET for CSQC; door networking is latent/commented in Base.)
     }
 
     /// <summary>QC <c>door_init_startopen</c>: place at pos2, then swap pos1/pos2 so it runs in reverse.</summary>
@@ -352,7 +382,12 @@ public static class Doors
 
     // ================= activation =================
 
-    /// <summary>QC <c>door_use</c>: open (or, for TOGGLE doors that are open, close) the whole linked group.</summary>
+    /// <summary>
+    /// QC <c>door_use(this, actor, trigger)</c>: open (or, for TOGGLE doors that are open, close) the whole
+    /// linked group. The QC third <c>trigger</c> argument (the entity that fired the door) is threaded via
+    /// <see cref="MapMover.CurrentUseTrigger"/> — it is non-null only on the SUB_UseTargets path and carries
+    /// the <c>.trigger_reverse</c> flag that drives bidirectional rotating doors.
+    /// </summary>
     public static void DoorUse(Entity self, Entity actor)
     {
         EnsureLinked(self);            // safety net if the post-spawn link pass hasn't run yet
@@ -362,6 +397,11 @@ public static class Doors
         if (owner.Active != MapMover.ActiveActive)
             return;
         Entity door = owner;
+
+        // QC door_use's `trigger` parameter: the firing trigger (carries .trigger_reverse). NULL on
+        // touch/damage/blocked opens — only set during a SUB_UseTargets dispatch.
+        Entity? trigger = MapMover.CurrentUseTrigger;
+        int triggerReverse = trigger?.TriggerReverse ?? 0;
 
         if ((door.SpawnFlags & Toggle) != 0
             && (door.MoverState == MapMover.StateUp || door.MoverState == MapMover.StateTop))
@@ -380,7 +420,31 @@ public static class Doors
         Entity o = door;
         do
         {
-            DoorGoUpAny(o, actor);
+            if (o.ClassName == "door")
+            {
+                DoorGoUp(o, actor);
+            }
+            else
+            {
+                // door_rotating: DOOR_ROTATING_BIDIR reverses the swing direction when the firing trigger
+                // set .trigger_reverse (QC door.qc:248-258).
+                if ((o.SpawnFlags & RotatingBidir) != 0 && triggerReverse != 0
+                    && o.Lip != 666f && o.MoverState == MapMover.StateBottom)
+                {
+                    o.Lip = 666f;            // remember the reverse-open direction (undone in HitBottom)
+                    o.Pos2 = -o.Pos2;
+                }
+
+                // DOOR_ROTATING_BIDIR_IN_DOWN: while closing, don't let the door re-open if it is triggered
+                // from the wrong side (QC door.qc:253-258).
+                bool blockReopen = (o.SpawnFlags & RotatingBidir) != 0
+                    && (o.SpawnFlags & RotatingBidirInDown) != 0
+                    && o.MoverState == MapMover.StateDown
+                    && ((o.Lip == 666f && triggerReverse == 0) || (o.Lip != 666f && triggerReverse != 0));
+
+                if (!blockReopen)
+                    DoorRotatingGoUp(o, actor);
+            }
             o = o.Enemy!;
         } while (!ReferenceEquals(o, door) && o is not null);
     }
@@ -400,7 +464,11 @@ public static class Doors
         door.DoorFinished = MapMover.Now() + 2f;
 
         if (door.Dmg == 0f && !string.IsNullOrEmpty(door.Message))
-            MapMover.Sound(other, SoundChannel.Voice, door.Noise); // play2(toucher, noise); message text is client-side
+        {
+            // QC door.qc:313 centerprint(toucher, message) + play2(toucher, noise) — 2D VOL_BASE/ATTEN_NONE.
+            MapMover.Centerprint(other, door.Message);
+            MapMover.Play2(other, door.Noise);
+        }
     }
 
     /// <summary>
@@ -453,14 +521,22 @@ public static class Doors
 
         if (door.ItemKeys == 0)
         {
-            MapMover.Sound(player, SoundChannel.Voice, door.Noise); // unlocked sound; CENTER_DOOR_UNLOCKED is client-side
+            // all required keys given -> unlock (door.qc:182-186).
+            MapMover.Play2(player, door.Noise); // QC door.qc:183 play2(player, door.noise) — 2D VOL_BASE/ATTEN_NONE
+            NotificationSystem.Send(NotifBroadcast.One, player, MsgType.Center, "DOOR_UNLOCKED");
             return true;
         }
 
-        // still missing keys: throttle the "need a key" sound to once per 2s.
+        // Still missing keys: name them in the centerprint, throttled with the sound to once per 2s.
+        // QC distinguishes the player who had NONE of the needed keys (valid==0 -> CENTER_DOOR_LOCKED_NEED,
+        // "You need …") from the player who gave SOME but not all (-> CENTER_DOOR_LOCKED_ALSONEED, "You also
+        // need …") (door.qc:189-209).
         if (player.KeyDoorMessageTime <= MapMover.Now())
         {
-            MapMover.Sound(player, SoundChannel.Voice, door.Noise3);
+            MapMover.Play2(player, door.Noise3); // QC door.qc:194/206 play2(player, door.noise3) — 2D VOL_BASE/ATTEN_NONE
+            string keylist = MapObjectsRegistry.ItemKeysKeylist(door.ItemKeys);
+            NotificationSystem.Send(NotifBroadcast.One, player, MsgType.Center,
+                valid == 0 ? "DOOR_LOCKED_NEED" : "DOOR_LOCKED_ALSONEED", keylist);
             player.KeyDoorMessageTime = MapMover.Now() + 2f;
         }
         return false;
@@ -616,6 +692,13 @@ public static class Doors
                 else
                     DoorGoDownAny(self);
             }
+            // QC door_blocked: a live blocker on a never-return / TOGGLE door (wait < 0) does NOT reverse the
+            // door; instead SUB_CalcMovePause(this) freezes the eased mover on its easing curve so it doesn't
+            // lurch forward when the blocker clears (linear doors have no controller, so this is a no-op there).
+            else if (!MapMover.IsDead(blocker) && blocker.TakeDamage != DamageMode.No && self.Wait < 0f)
+            {
+                MapMover.CalcMovePause(self);
+            }
             else if (self.Dmg != 0f && blocker.TakeDamage != DamageMode.No && MapMover.IsDead(blocker))
             {
                 Combat.Damage(blocker, self, self, 10000f, DeathTypes.Void, blocker.Origin, Vector3.Zero); // gib
@@ -645,6 +728,18 @@ public static class Doors
         if (v.ClassName is not ("door" or "door_rotating"))
             return false;
         Entity door = v.Owner ?? v;
+
+        // NOSPLASH: a non-special splash (blast) hit deals no damage to the door (QC door_damage
+        // early-returns before TakeResource). The pipeline already drove health below 1, so resuscitate
+        // the owner and leave it closed — the kill path's "resuscitated to HP>=1, don't die" early-out
+        // keeps the brush intact and the door never opens from splash.
+        // QC reads NOSPLASH off the hit brush (`this`), i.e. the victim, not the group owner.
+        if ((v.SpawnFlags & NoSplash) != 0
+            && !DeathTypes.IsSpecial(ev.DeathType) && DeathTypes.HasHitType(ev.DeathType, DeathTypes.Splash))
+        {
+            door.Health = door.MaxHealthMover;
+            return false;
+        }
 
         // key doors can't be damage-opened (QC door_damage early-returns when itemkeys remain).
         if (door.ItemKeys != 0)

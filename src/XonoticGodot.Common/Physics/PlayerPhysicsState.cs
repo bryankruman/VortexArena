@@ -58,4 +58,22 @@ public partial class Entity
     /// alternate "drift" handling. Not used by the stock 3D modes; kept for fidelity (null in normal play).
     /// </summary>
     public Entity? ViewLoc;
+
+    // --- specialcommand (QC .specialcommand_pos — the xwxw... button cheat-code decoder) ---
+    /// <summary>
+    /// QC <c>.specialcommand_pos</c> (common/physics/player.qc): the position pointer into the secret
+    /// movement-input cheat sequence <c>"xwxwxsxsxaxdxaxdx1x "</c>. Each server tick the button mask is
+    /// decoded to a character; matching the next character advances this, a mismatch resets it, and
+    /// completing the sequence triggers <c>SpecialCommand</c> (give-all when cheats are allowed).
+    /// </summary>
+    public int SpecialCommandPos;
+
+    // --- previous-tick wishmove (QC PHYS_CS(this).movement_old) ---
+    /// <summary>
+    /// QC <c>PHYS_CS(this).movement_old.x</c> (saved at ecs/systems/physics.qc:24 each tick): the previous
+    /// tick's forward wishmove. Only the viewloc (1D-rail) ladder sub-case reads it (physics.qc:277-278:
+    /// <c>wishvel.z = movement_old.x</c>). Inert on stock 3D maps (ViewLoc null). Updated in the postupdate
+    /// bookkeeping after the branch chain.
+    /// </summary>
+    public float MovementForwardOld;
 }

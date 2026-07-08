@@ -72,6 +72,15 @@ public static class GameScores
     /// </summary>
     public static Func<Entity, ScoreField, int, (bool allow, int delta, bool claimed)>? AddPlayerScoreHook { get; set; }
 
+    /// <summary>
+    /// QC the <c>AddedPlayerScore</c> mutator hook (<c>MUTATOR_CALLHOOK(AddedPlayerScore, scorefield, score, player)</c>,
+    /// server/scores.qc:377): the POST-write event, fired AFTER a non-zero delta has been applied to the column —
+    /// distinct from the pre-write <see cref="AddPlayerScoreHook"/> (veto/rewrite). dynamic_handicap subscribes
+    /// this to recompute the score-based handicap on every SP_SCORE change (caps/objective/KH/Dom/CTF points, not
+    /// just frags). Args: (player, field, applied delta). Null = no subscriber.
+    /// </summary>
+    public static Action<Entity, ScoreField, int>? AddedPlayerScoreHook { get; set; }
+
     /// <summary>QC <c>game_stopped</c>: when true, score additions are dropped (warmup end / match over).</summary>
     public static bool GameStopped { get; set; }
 
@@ -306,7 +315,7 @@ public static class GameScores
     /// name="sprees"/> activates the kills column; <paramref name="scoreEnabled"/> = QC GameRules_score_enabled
     /// (false for Race/CTS/Invasion, which rank by their own columns and have no SP_SCORE).
     /// </summary>
-    public static void ScoreRulesBasics(bool teams, bool sprees = true, bool scoreEnabled = true)
+    public static void ScoreRulesBasics(bool teams, bool sprees = true, bool scoreEnabled = true, bool independent = false)
     {
         Ensure();
         // QC ScoreRules_basics opening: blank every player column so only the columns this mode declares survive.
@@ -319,10 +328,13 @@ public static class GameScores
         Primary = Secondary = null;
 
         if (scoreEnabled) SetLabel(Score, "score", ScoreFlags.SortPrioPrimary);
-        if (sprees) SetLabel(Kills, "kills", ScoreFlags.None);
+        // QC server/scores_rules.qc: SP_KILLS / SP_SUICIDES / SP_TEAMKILLS are only labelled when NOT
+        // INDEPENDENT_PLAYERS — in independent-players modes (Race/CTS qualifying, Invasion) these "useless" PvP
+        // columns are dropped, leaving only SP_DEATHS. SP_DEATHS is always present.
+        if (sprees && !independent) SetLabel(Kills, "kills", ScoreFlags.None);
         SetLabel(Deaths, "deaths", ScoreFlags.LowerIsBetter);
-        SetLabel(Suicides, "suicides", ScoreFlags.HideZero | ScoreFlags.LowerIsBetter);
-        if (teams) SetLabel(TeamKills, "teamkills", ScoreFlags.HideZero | ScoreFlags.LowerIsBetter);
+        if (!independent) SetLabel(Suicides, "suicides", ScoreFlags.HideZero | ScoreFlags.LowerIsBetter);
+        if (teams && !independent) SetLabel(TeamKills, "teamkills", ScoreFlags.HideZero | ScoreFlags.LowerIsBetter);
         InvalidateLayout();
     }
 
@@ -424,6 +436,9 @@ public static class GameScores
         int[] cols = Columns(p);
         cols[field.RegistryId] += delta;
         if (field.Label.Length != 0) { p.ScoreDirty |= 1u << (field.RegistryId & 31); Bump(); }
+        // QC MUTATOR_CALLHOOK(AddedPlayerScore, scorefield, score, player) (scores.qc:377): post-write event,
+        // fired after the column was actually changed (delta != 0). dynamic_handicap recomputes here.
+        AddedPlayerScoreHook?.Invoke(p, field, delta);
         return cols[field.RegistryId];
     }
 
@@ -529,8 +544,16 @@ public static class GameScores
     public static void SeedTeams(int teamCount)
     {
         foreach (int t in Teams.Active(teamCount))
-            for (int s = 0; s < MaxTeamScore; s++)
-                if (!_teamScores[s].ContainsKey(t)) _teamScores[s][t] = 0;
+            SeedTeam(t);
+    }
+
+    /// <summary>Ensure a single team colour has a zeroed slot in BOTH score slots (used when the team set is derived
+    /// from map entities, e.g. Nexball's per-goal team seeding, rather than a fixed count).</summary>
+    public static void SeedTeam(int team)
+    {
+        if (team == Teams.None) return;
+        for (int s = 0; s < MaxTeamScore; s++)
+            if (!_teamScores[s].ContainsKey(team)) _teamScores[s][team] = 0;
     }
 
     /// <summary>The teams that currently have a score slot (keys of the ST_SCORE dict; both slots share the team set).</summary>
@@ -588,6 +611,34 @@ public static class GameScores
             cols[i] = 0;
         }
         if (any) Bump();
+    }
+
+    /// <summary>QC <c>autocvar_g_score_resetonjoin</c> (server/scores.qc:28): 0 = keep score on (re)join (the
+    /// default), 1 = always wipe, -1 = wipe unless the <c>PreferPlayerScore_Clear</c> mutator hook vetoes.</summary>
+    private const string CvarScoreResetOnJoin = "g_score_resetonjoin";
+
+    /// <summary>
+    /// QC <c>PlayerScore_Clear(player)</c> (server/scores.qc:286): the (re)join-gated clear. Returns false (a
+    /// no-op) when <c>g_score_resetonjoin</c> is 0, or when it is -1 and the <c>PreferPlayerScore_Clear</c> hook
+    /// declines the wipe; otherwise it runs the SKILL-preserving <see cref="ClearPlayer"/> and returns true. This
+    /// is the missing live arm of the resetonjoin feature: a player who specs out and rejoins keeps their score at
+    /// the default 0, but an admin's 1/-1 now takes effect. The server's (re)join path calls this (the
+    /// <paramref name="preferClear"/> delegate supplies the QC <c>MUTATOR_CALLHOOK(PreferPlayerScore_Clear)</c>
+    /// result; null = the hook is unhandled, i.e. QC's default false).
+    /// </summary>
+    public static bool ClearPlayerOnJoin(Entity p, System.Func<Entity, bool>? preferClear = null)
+    {
+        int mode = Api.Services is null ? 0 : (int)Api.Cvars.GetFloat(CvarScoreResetOnJoin);
+        // QC server/scores.qc:289 PlayerScore_Clear: the -1 branch is vetoed by
+        // MUTATOR_CALLHOOK(PreferPlayerScore_Clear) — a GLOBAL dispatch, not a per-caller delegate. Consult the
+        // global hook chain (the gametype that wants to keep score, e.g. TKA, returns true), keeping the optional
+        // preferClear delegate as an extra override so either path can veto the wipe.
+        bool veto = (preferClear is not null && preferClear(p))
+            || XonoticGodot.Common.Gameplay.MutatorHooks.FirePreferPlayerScore_Clear(p);
+        if (mode == 0 || (mode == -1 && !veto))
+            return false;
+        ClearPlayer(p);
+        return true;
     }
 
     /// <summary>QC <c>Score_ClearAll</c>: zero every supplied player + both team slots (e.g. on map reset).</summary>
@@ -735,6 +786,69 @@ public static class GameScores
         return bestTeam;
     }
 
+    // =====================================================================================
+    //  Remaining-frags announcer (QC WinningCondition_Scores, server/world.qc:1559-1622): the
+    //  "N frags left" / "leadlimit approaching" voice cue. The sibling REMAINING_MIN_{1,5} minutes
+    //  announcer is live in AnnouncerController; this is the frags branch, which had no port caller.
+    // =====================================================================================
+
+    /// <summary>QC <c>fragsleft_last</c> (server/world.qc:1559): the last announced remaining-frags value, so the
+    /// same cue isn't re-announced every frame. <see cref="float.MaxValue"/> = the QC <c>FLOAT_MAX</c> "no limit".</summary>
+    private static float _fragsLeftLast = float.MaxValue;
+
+    /// <summary>QC <c>autocvar_leadlimit_and_fraglimit</c>: when set, a finish needs BOTH the frag and lead limits
+    /// (so the announcer takes the MAX remaining), else EITHER (the MIN). Mirrors world.qc:1605-1609.</summary>
+    private const string CvarLeadAndFrag = "leadlimit_and_fraglimit";
+
+    /// <summary>Reset the remaining-frags announce latch (QC <c>fragsleft_last</c>) at match/round start so the
+    /// cue can fire again next match. Call alongside the match reset that clears scores.</summary>
+    public static void ResetFragsRemaining() => _fragsLeftLast = float.MaxValue;
+
+    /// <summary>
+    /// QC <c>WinningCondition_Scores</c>'s remaining-frags announce block (server/world.qc:1592-1622): compute
+    /// how many frags (or lead) are left to the limit and, when that number changes, fire the
+    /// ANNCE_REMAINING_FRAG_{1,2,3} announcer ONCE (broadcast to all). <paramref name="limit"/> = fraglimit (0 =
+    /// none), <paramref name="leadlimit"/> = leadlimit (0 = none), with <paramref name="topScore"/> /
+    /// <paramref name="secondScore"/> the leader's and runner-up's primary-key values
+    /// (WinningConditionHelper_topscore / _secondscore — already lower-is-better-negated by the caller, as QC
+    /// does at world.qc:1579-1584). <paramref name="suddenDeathEnding"/> = the QC
+    /// <c>checkrules_suddendeathend &amp;&amp; time &gt;= checkrules_suddendeathend</c> case (forces fragsleft 1).
+    /// Gated by the caller on the QC <c>Scores_CountFragsRemaining</c> mutator hook (only the modes that announce
+    /// frags call it); the per-mode hook decision stays with the caller, this just does the count + the cue.
+    /// </summary>
+    public static void CountFragsRemaining(float limit, float leadlimit, int topScore, int secondScore, bool suddenDeathEnding)
+    {
+        float fragsleft;
+        if (suddenDeathEnding)
+        {
+            fragsleft = 1;
+        }
+        else
+        {
+            fragsleft = float.MaxValue; // QC FLOAT_MAX
+            float leadingfragsleft = float.MaxValue;
+            if (limit != 0) fragsleft = limit - topScore;
+            if (leadlimit != 0) leadingfragsleft = secondScore + leadlimit - topScore;
+
+            bool both = Api.Services is not null && Api.Cvars.GetFloat(CvarLeadAndFrag) != 0f;
+            if (limit != 0 && leadlimit != 0 && both)
+                fragsleft = System.Math.Max(fragsleft, leadingfragsleft);
+            else
+                fragsleft = System.Math.Min(fragsleft, leadingfragsleft);
+        }
+
+        if (_fragsLeftLast != fragsleft) // QC: do not announce the same remaining frags multiple times
+        {
+            if (fragsleft == 1)
+                NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Annce, "REMAINING_FRAG_1");
+            else if (fragsleft == 2)
+                NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Annce, "REMAINING_FRAG_2");
+            else if (fragsleft == 3)
+                NotificationSystem.Send(NotifBroadcast.All, null, MsgType.Annce, "REMAINING_FRAG_3");
+            _fragsLeftLast = fragsleft;
+        }
+    }
+
     /// <summary>The runner-up team by the same flag-aware compare, or <see cref="Teams.None"/> (for lead-limit checks).</summary>
     public static int SecondTeam()
     {
@@ -755,6 +869,12 @@ public static class GameScores
     /// </summary>
     public static int Version { get; private set; }
     private static void Bump() => Version++;
+
+    /// <summary>Force the scoreboard block to re-send even without a score change — used for ROSTER/status changes
+    /// (a player joining/leaving, observer↔player, a team switch) which alter the networked row set but don't touch
+    /// any score value, so they wouldn't otherwise bump <see cref="Version"/> (playtest #22: the scoreboard was
+    /// stuck at the pre-join state — "you're a spectator, no bots" — until the first frag bumped the version).</summary>
+    public static void MarkDirty() => Bump();
 
     /// <summary>
     /// The networked column subset, in registry order (QC the non-empty-label, non-client-only fields). Both

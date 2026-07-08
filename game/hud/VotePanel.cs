@@ -58,8 +58,9 @@ public partial class VotePanel : HudPanel
     /// </summary>
     public int Highlighted { get; set; }
 
-    /// <summary>QC <c>hud_panel_vote_alreadyvoted_alpha</c>: panel alpha multiplier once you've voted.</summary>
-    public float AlreadyVotedAlpha { get; set; } = 0.75f;
+    /// <summary>QC <c>hud_panel_vote_alreadyvoted_alpha</c>: panel alpha multiplier once you've voted. Default
+    /// from the active (luma) skin (hud_luma.cfg:201 = 0.7).</summary>
+    public float AlreadyVotedAlpha { get; set; } = 0.7f;
 
     /// <summary>The keybind hint for Yes (QC <c>getcommandkey_forcename(_("Yes"), "vyes")</c>).</summary>
     public string YesKey { get; set; } = "F1";
@@ -94,8 +95,8 @@ public partial class VotePanel : HudPanel
     public static void RegisterDefaults(CvarService c)
     {
         const CvarFlags save = CvarFlags.Save;
-        // QC HUD_Vote_Export writes hud_panel_vote_alreadyvoted_alpha into the skin; default from hud_luma.cfg.
-        c.Register("hud_panel_vote_alreadyvoted_alpha", "0.75", save);
+        // QC HUD_Vote_Export writes hud_panel_vote_alreadyvoted_alpha into the skin; default from hud_luma.cfg:201.
+        c.Register("hud_panel_vote_alreadyvoted_alpha", "0.7", save);
         // QC the dynamic-hud scale flag (port reads it as a behaviour cvar, like the other panels).
         c.Register("hud_panel_vote_dynamichud", "1", save);
     }

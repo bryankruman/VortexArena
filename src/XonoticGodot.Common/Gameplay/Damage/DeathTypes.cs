@@ -104,6 +104,15 @@ public static class DeathTypes
     /// <summary>QC DEATH_GENERIC — unattributed damage.</summary>
     public const string Generic = "generic";
 
+    /// <summary>QC DEATH_CHEAT (deathtypes/all.inc:5) — the r00t cheat's radius nuke (server/cheats.qc CHIMPULSE_R00T).
+    /// Registered with DEATH_SELF_CHEAT / DEATH_MURDER_CHEAT and an empty .message (a plain murder, no special
+    /// category); the obituary uses the generic cheat murder line.</summary>
+    public const string Cheat = "cheat";
+
+    /// <summary>QC DEATH_CAMP — campcheck mutator anti-camp damage. Self-only (no murder line); the obituary
+    /// is the camp-specific DEATH_SELF_CAMP ("thought they found a nice camping ground" / "Die camper!").</summary>
+    public const string Camp = "camp";
+
     /// <summary>QC DEATH_MIRRORDAMAGE — teamdamage reflected back at the attacker.</summary>
     public const string MirrorDamage = "mirrordamage";
 
@@ -118,6 +127,38 @@ public static class DeathTypes
 
     /// <summary>QC DEATH_BUFF_VENGEANCE — vengeance-buff reflected damage (excluded from hit-sound credit).</summary>
     public const string BuffVengeance = "buff_vengeance";
+
+    /// <summary>QC DEATH_TOUCHEXPLODE — the touch-explode mutator blast ("died in an accident"). Registered with
+    /// DEATH_SELF_TOUCHEXPLODE / DEATH_MURDER_TOUCHEXPLODE and empty .message (all.inc:35). Also used by the
+    /// nade spawn/translocate booms (NadeSpawnBoom / NadeTranslocateBoom) which tag their blast the same way.</summary>
+    public const string TouchExplode = "touchexplode";
+
+    // --- nade-family deaths (QC DEATH_NADE*; all.inc:23-27). The live nade booms emit these via
+    // Combat.Damage when g_nades is enabled; mirrored here (== NadeDeathTypes.*) so DeathMessages can map them
+    // without depending on the Nades subsystem. Each registers BOTH a self and a murder notification line.
+    /// <summary>QC DEATH_NADE — a normal nade explosion / held-nade throw.</summary>
+    public const string Nade = "nade";
+    /// <summary>QC DEATH_NADE_NAPALM — napalm-nade fire damage.</summary>
+    public const string NadeNapalm = "nade_napalm";
+    /// <summary>QC DEATH_NADE_ICE — ice-nade explode / ice-field damage.</summary>
+    public const string NadeIce = "nade_ice";
+    /// <summary>QC DEATH_NADE_HEAL — heal-nade harm-to-foe damage.</summary>
+    public const string NadeHeal = "nade_heal";
+    /// <summary>QC DEATH_NADE_DARKNESS — darkness-nade explode.</summary>
+    public const string NadeDarkness = "nade_darkness";
+
+    /// <summary>QC DEATH_ROT (all.inc:29) — the regen/rot "health rotted away" tick death. Self-only
+    /// (DEATH_SELF_ROT; NULL murder line → generic frag fallback).</summary>
+    public const string Rot = "rot";
+
+    /// <summary>QC DEATH_SHOOTING_STAR (all.inc:30) — the "shooting star" launch death (e.g. a jumppad/launch
+    /// mutator). Registered with DEATH_SELF_SHOOTING_STAR / DEATH_MURDER_SHOOTING_STAR.</summary>
+    public const string ShootingStar = "shooting_star";
+
+    /// <summary>QC DEATH_CUSTOM (all.inc:6) — a mapper-supplied custom death message (server/damage.qc ACCIDENT
+    /// branch formats <c>deathmessage</c> into DEATH_SELF_CUSTOM, "You were %s"). Self-only (NULL murder).
+    /// The inflictor/trigger carries the mapper string; see Scores.EmitObituary's CUSTOM handling.</summary>
+    public const string Custom = "custom";
 
     /// <summary>Prefix marking a deathtype string that names a weapon (vs. a special death).</summary>
     public const string WeaponPrefix = "weapon/";
@@ -214,6 +255,18 @@ public static class DeathTypes
         return b == Fire || b == BuffInferno || b == BuffVengeance;
     }
 
+    /// <summary>
+    /// QC <c>ITEM_DAMAGE_NEEDKILL(dt)</c> (server/items/items.qh:123): the environmental-kill deathtypes a
+    /// dropped objective (CTF flag / Keepaway ball / KeyHunt key) must respawn on — DEATH_HURTTRIGGER
+    /// (= the port's <see cref="Void"/>), DEATH_SLIME, DEATH_LAVA, DEATH_SWAMP. Used by ka_DamageEvent to
+    /// teleport a ball out of a hurt/lava/slime/swamp volume it fell into.
+    /// </summary>
+    public static bool ItemDamageNeedKill(string? deathType)
+    {
+        string b = BaseOf(deathType);
+        return b == Void || b == Slime || b == Lava || b == Swamp;
+    }
+
     /// <summary>QC: DEATH_KILL / DEATH_TEAMCHANGE / DEATH_AUTOTEAMCHANGE — the unconditionally-lethal deaths.</summary>
     public static bool IsAlwaysLethal(string? deathType)
     {
@@ -227,6 +280,10 @@ public static class DeathTypes
         string b = BaseOf(deathType);
         return b == TeamChange || b == AutoTeamChange;
     }
+
+    /// <summary>QC: DEATH_AUTOTEAMCHANGE only — the auto-balance team move (server/damage.qc:304 special-cases it:
+    /// the suicide frag is NOT negated when the player was auto-switched, unlike a manual DEATH_TEAMCHANGE).</summary>
+    public static bool IsAutoTeamChange(string? deathType) => BaseOf(deathType) == AutoTeamChange;
 
     // ============================================================================================
     //  Special deathtype registry + .message category (QC deathtypes/all.qh DEATH_ISMONSTER/
@@ -257,8 +314,66 @@ public static class DeathTypes
     /// <summary>QC DEATH_TURRET — generic turret ("turret").</summary>
     public const string Turret = "turret";
 
+    // Per-turret deathtypes (QC DEATH_TURRET_*; all carry .message "turret"). Each turret attack tags its
+    // damage with its own row so the obituary self line is turret-specific (the murder line is the shared
+    // DEATH_MURDER_CHEAT). Mirror the all.inc rows; used by the turret attack call sites + BuildRegistry.
+    /// <summary>QC DEATH_TURRET_EWHEEL — eWheel turret blaster ("turret").</summary>
+    public const string TurretEwheel = "turret_ewheel";
+    /// <summary>QC DEATH_TURRET_FLAC — Flac turret air-burst ("turret").</summary>
+    public const string TurretFlac = "turret_flac";
+    /// <summary>QC DEATH_TURRET_HELLION — Hellion turret rocket ("turret").</summary>
+    public const string TurretHellion = "turret_hellion";
+    /// <summary>QC DEATH_TURRET_HK — Hunter-Killer turret rocket ("turret").</summary>
+    public const string TurretHk = "turret_hk";
+    /// <summary>QC DEATH_TURRET_MACHINEGUN — Machinegun turret bullet ("turret").</summary>
+    public const string TurretMachinegun = "turret_machinegun";
+    /// <summary>QC DEATH_TURRET_MLRS — MLRS turret rocket ("turret").</summary>
+    public const string TurretMlrs = "turret_mlrs";
+    /// <summary>QC DEATH_TURRET_PHASER — Phaser turret beam ("turret").</summary>
+    public const string TurretPhaser = "turret_phaser";
+    /// <summary>QC DEATH_TURRET_PLASMA — Plasma (+ dual plasma) turret bolt / instagib rail ("turret").</summary>
+    public const string TurretPlasma = "turret_plasma";
+    /// <summary>QC DEATH_TURRET_TESLA — Tesla coil turret zap ("turret").</summary>
+    public const string TurretTesla = "turret_tesla";
+    /// <summary>QC DEATH_TURRET_WALK_GUN — Walker turret gun ("turret").</summary>
+    public const string TurretWalkGun = "turret_walk_gun";
+    /// <summary>QC DEATH_TURRET_WALK_MELEE — Walker turret melee bite ("turret").</summary>
+    public const string TurretWalkMelee = "turret_walk_melee";
+    /// <summary>QC DEATH_TURRET_WALK_ROCKET — Walker turret rocket ("turret").</summary>
+    public const string TurretWalkRocket = "turret_walk_rocket";
+
     /// <summary>QC DEATH_VH_* — generic vehicle death ("vehicle"). Use the registry for the full per-vehicle set.</summary>
     public const string Vehicle = "vehicle";
+
+    // Per-vehicle deathtypes (QC DEATH_VH_*; all carry .message "vehicle"). Each vehicle weapon/death tags its
+    // damage with its own row so the obituary picks that vehicle's self/murder line. Mirror the all.inc rows;
+    // used by the vehicle attack call sites + BuildRegistry. (Racer == QC "waki", Spiderbot == "spid".)
+    /// <summary>QC DEATH_VH_BUMB_DEATH — Bumblebee death explosion ("vehicle").</summary>
+    public const string VhBumbDeath = "vh_bumb_death";
+    /// <summary>QC DEATH_VH_BUMB_GUN — Bumblebee side-gunner plasma cannon ("vehicle").</summary>
+    public const string VhBumbGun = "vh_bumb_gun";
+    /// <summary>QC DEATH_VH_CRUSH — vehicle ram/crush ("vehicle").</summary>
+    public const string VhCrush = "vh_crush";
+    /// <summary>QC DEATH_VH_RAPT_BOMB — Raptor cluster bomblet ("vehicle").</summary>
+    public const string VhRaptBomb = "vh_rapt_bomb";
+    /// <summary>QC DEATH_VH_RAPT_CANNON — Raptor twin cannon ("vehicle").</summary>
+    public const string VhRaptCannon = "vh_rapt_cannon";
+    /// <summary>QC DEATH_VH_RAPT_DEATH — Raptor death explosion ("vehicle").</summary>
+    public const string VhRaptDeath = "vh_rapt_death";
+    /// <summary>QC DEATH_VH_RAPT_FRAGMENT — Raptor bomb fragment ("vehicle").</summary>
+    public const string VhRaptFragment = "vh_rapt_fragment";
+    /// <summary>QC DEATH_VH_SPID_DEATH — Spiderbot death explosion ("vehicle").</summary>
+    public const string VhSpidDeath = "vh_spid_death";
+    /// <summary>QC DEATH_VH_SPID_MINIGUN — Spiderbot minigun ("vehicle").</summary>
+    public const string VhSpidMinigun = "vh_spid_minigun";
+    /// <summary>QC DEATH_VH_SPID_ROCKET — Spiderbot rocket ("vehicle").</summary>
+    public const string VhSpidRocket = "vh_spid_rocket";
+    /// <summary>QC DEATH_VH_WAKI_DEATH — Racer (waki) death explosion ("vehicle").</summary>
+    public const string VhWakiDeath = "vh_waki_death";
+    /// <summary>QC DEATH_VH_WAKI_GUN — Racer (waki) energy cannon ("vehicle").</summary>
+    public const string VhWakiGun = "vh_waki_gun";
+    /// <summary>QC DEATH_VH_WAKI_ROCKET — Racer (waki) rocket ("vehicle").</summary>
+    public const string VhWakiRocket = "vh_waki_rocket";
 
     /// <summary>
     /// The categorized special-deathtype registry — the C# successor to the QC <c>Deathtypes</c> registry
@@ -281,6 +396,10 @@ public static class DeathTypes
         void Reg(string name, DeathCategory cat, string? self, string? murder)
             => d[name] = new DeathTypeDef(name, cat, self, murder);
 
+        // QC all.inc: special deaths that register both self and murder notification (or one of them).
+        // camp (all.inc:4): DEATH_SELF_CAMP self-only (NULL murder -> FRAG below), the campcheck anti-camping mutator.
+        Reg(Camp, DeathCategory.None, "DEATH_SELF_CAMP", null);
+
         // QC all.inc monster rows (message == "monster"): each monster has its OWN DEATH_SELF_MON_* self line;
         // ALL monsters share DEATH_MURDER_MONSTER for the murder line.
         Reg(MonsterMage,       DeathCategory.Monster, "DEATH_SELF_MON_MAGE",         "DEATH_MURDER_MONSTER");
@@ -296,38 +415,38 @@ public static class DeathTypes
         // ALL turrets share DEATH_MURDER_CHEAT for the murder line. The bare "turret" tag uses DEATH_SELF_TURRET;
         // the per-turret variants below carry their own self line (resolved through the explicit rows here, with
         // the "turret" base-name prefix in Lookup catching any unlisted variant → bare DEATH_SELF_TURRET).
-        Reg(Turret,                  DeathCategory.Turret, "DEATH_SELF_TURRET",               "DEATH_MURDER_CHEAT");
-        Reg("turret_ewheel",         DeathCategory.Turret, "DEATH_SELF_TURRET_EWHEEL",        "DEATH_MURDER_CHEAT");
-        Reg("turret_flac",           DeathCategory.Turret, "DEATH_SELF_TURRET_FLAC",          "DEATH_MURDER_CHEAT");
-        Reg("turret_hellion",        DeathCategory.Turret, "DEATH_SELF_TURRET_HELLION",       "DEATH_MURDER_CHEAT");
-        Reg("turret_hk",             DeathCategory.Turret, "DEATH_SELF_TURRET_HK",            "DEATH_MURDER_CHEAT");
-        Reg("turret_machinegun",     DeathCategory.Turret, "DEATH_SELF_TURRET_MACHINEGUN",    "DEATH_MURDER_CHEAT");
-        Reg("turret_mlrs",           DeathCategory.Turret, "DEATH_SELF_TURRET_MLRS",          "DEATH_MURDER_CHEAT");
-        Reg("turret_phaser",         DeathCategory.Turret, "DEATH_SELF_TURRET_PHASER",        "DEATH_MURDER_CHEAT");
-        Reg("turret_plasma",         DeathCategory.Turret, "DEATH_SELF_TURRET_PLASMA",        "DEATH_MURDER_CHEAT");
-        Reg("turret_tesla",          DeathCategory.Turret, "DEATH_SELF_TURRET_TESLA",         "DEATH_MURDER_CHEAT");
-        Reg("turret_walk_gun",       DeathCategory.Turret, "DEATH_SELF_TURRET_WALK_GUN",      "DEATH_MURDER_CHEAT");
-        Reg("turret_walk_melee",     DeathCategory.Turret, "DEATH_SELF_TURRET_WALK_MELEE",    "DEATH_MURDER_CHEAT");
-        Reg("turret_walk_rocket",    DeathCategory.Turret, "DEATH_SELF_TURRET_WALK_ROCKET",   "DEATH_MURDER_CHEAT");
+        Reg(Turret,            DeathCategory.Turret, "DEATH_SELF_TURRET",               "DEATH_MURDER_CHEAT");
+        Reg(TurretEwheel,      DeathCategory.Turret, "DEATH_SELF_TURRET_EWHEEL",        "DEATH_MURDER_CHEAT");
+        Reg(TurretFlac,        DeathCategory.Turret, "DEATH_SELF_TURRET_FLAC",          "DEATH_MURDER_CHEAT");
+        Reg(TurretHellion,     DeathCategory.Turret, "DEATH_SELF_TURRET_HELLION",       "DEATH_MURDER_CHEAT");
+        Reg(TurretHk,          DeathCategory.Turret, "DEATH_SELF_TURRET_HK",            "DEATH_MURDER_CHEAT");
+        Reg(TurretMachinegun,  DeathCategory.Turret, "DEATH_SELF_TURRET_MACHINEGUN",    "DEATH_MURDER_CHEAT");
+        Reg(TurretMlrs,        DeathCategory.Turret, "DEATH_SELF_TURRET_MLRS",          "DEATH_MURDER_CHEAT");
+        Reg(TurretPhaser,      DeathCategory.Turret, "DEATH_SELF_TURRET_PHASER",        "DEATH_MURDER_CHEAT");
+        Reg(TurretPlasma,      DeathCategory.Turret, "DEATH_SELF_TURRET_PLASMA",        "DEATH_MURDER_CHEAT");
+        Reg(TurretTesla,       DeathCategory.Turret, "DEATH_SELF_TURRET_TESLA",         "DEATH_MURDER_CHEAT");
+        Reg(TurretWalkGun,     DeathCategory.Turret, "DEATH_SELF_TURRET_WALK_GUN",      "DEATH_MURDER_CHEAT");
+        Reg(TurretWalkMelee,   DeathCategory.Turret, "DEATH_SELF_TURRET_WALK_MELEE",    "DEATH_MURDER_CHEAT");
+        Reg(TurretWalkRocket,  DeathCategory.Turret, "DEATH_SELF_TURRET_WALK_ROCKET",   "DEATH_MURDER_CHEAT");
 
         // QC all.inc vehicle rows (message == "vehicle"): each VH_* row carries its OWN self AND murder line
         // (some are NULL — e.g. a vehicle GUN has murder-only). The generic "vehicle" tag falls back to GENERIC
         // (no QC row registers a bare "vehicle"); the per-vehicle rows below are the real all.inc entries, and
         // the "vh_" base-name prefix in Lookup catches any unlisted variant → generic.
-        Reg(Vehicle,           DeathCategory.Vehicle, null, null);
-        Reg("vh_bumb_death",   DeathCategory.Vehicle, "DEATH_SELF_VH_BUMB_DEATH",  "DEATH_MURDER_VH_BUMB_DEATH");
-        Reg("vh_bumb_gun",     DeathCategory.Vehicle, null,                        "DEATH_MURDER_VH_BUMB_GUN");
-        Reg("vh_crush",        DeathCategory.Vehicle, "DEATH_SELF_VH_CRUSH",       "DEATH_MURDER_VH_CRUSH");
-        Reg("vh_rapt_bomb",    DeathCategory.Vehicle, "DEATH_SELF_VH_RAPT_BOMB",   "DEATH_MURDER_VH_RAPT_BOMB");
-        Reg("vh_rapt_cannon",  DeathCategory.Vehicle, null,                        "DEATH_MURDER_VH_RAPT_CANNON");
-        Reg("vh_rapt_death",   DeathCategory.Vehicle, "DEATH_SELF_VH_RAPT_DEATH",  "DEATH_MURDER_VH_RAPT_DEATH");
-        Reg("vh_rapt_fragment",DeathCategory.Vehicle, "DEATH_SELF_VH_RAPT_BOMB",   "DEATH_MURDER_VH_RAPT_BOMB");
-        Reg("vh_spid_death",   DeathCategory.Vehicle, "DEATH_SELF_VH_SPID_DEATH",  "DEATH_MURDER_VH_SPID_DEATH");
-        Reg("vh_spid_minigun", DeathCategory.Vehicle, null,                        "DEATH_MURDER_VH_SPID_MINIGUN");
-        Reg("vh_spid_rocket",  DeathCategory.Vehicle, "DEATH_SELF_VH_SPID_ROCKET", "DEATH_MURDER_VH_SPID_ROCKET");
-        Reg("vh_waki_death",   DeathCategory.Vehicle, "DEATH_SELF_VH_WAKI_DEATH",  "DEATH_MURDER_VH_WAKI_DEATH");
-        Reg("vh_waki_gun",     DeathCategory.Vehicle, null,                        "DEATH_MURDER_VH_WAKI_GUN");
-        Reg("vh_waki_rocket",  DeathCategory.Vehicle, "DEATH_SELF_VH_WAKI_ROCKET", "DEATH_MURDER_VH_WAKI_ROCKET");
+        Reg(Vehicle,        DeathCategory.Vehicle, null, null);
+        Reg(VhBumbDeath,    DeathCategory.Vehicle, "DEATH_SELF_VH_BUMB_DEATH",  "DEATH_MURDER_VH_BUMB_DEATH");
+        Reg(VhBumbGun,      DeathCategory.Vehicle, null,                        "DEATH_MURDER_VH_BUMB_GUN");
+        Reg(VhCrush,        DeathCategory.Vehicle, "DEATH_SELF_VH_CRUSH",       "DEATH_MURDER_VH_CRUSH");
+        Reg(VhRaptBomb,     DeathCategory.Vehicle, "DEATH_SELF_VH_RAPT_BOMB",   "DEATH_MURDER_VH_RAPT_BOMB");
+        Reg(VhRaptCannon,   DeathCategory.Vehicle, null,                        "DEATH_MURDER_VH_RAPT_CANNON");
+        Reg(VhRaptDeath,    DeathCategory.Vehicle, "DEATH_SELF_VH_RAPT_DEATH",  "DEATH_MURDER_VH_RAPT_DEATH");
+        Reg(VhRaptFragment, DeathCategory.Vehicle, "DEATH_SELF_VH_RAPT_BOMB",   "DEATH_MURDER_VH_RAPT_BOMB");
+        Reg(VhSpidDeath,    DeathCategory.Vehicle, "DEATH_SELF_VH_SPID_DEATH",  "DEATH_MURDER_VH_SPID_DEATH");
+        Reg(VhSpidMinigun,  DeathCategory.Vehicle, null,                        "DEATH_MURDER_VH_SPID_MINIGUN");
+        Reg(VhSpidRocket,   DeathCategory.Vehicle, "DEATH_SELF_VH_SPID_ROCKET", "DEATH_MURDER_VH_SPID_ROCKET");
+        Reg(VhWakiDeath,    DeathCategory.Vehicle, "DEATH_SELF_VH_WAKI_DEATH",  "DEATH_MURDER_VH_WAKI_DEATH");
+        Reg(VhWakiGun,      DeathCategory.Vehicle, null,                        "DEATH_MURDER_VH_WAKI_GUN");
+        Reg(VhWakiRocket,   DeathCategory.Vehicle, "DEATH_SELF_VH_WAKI_ROCKET", "DEATH_MURDER_VH_WAKI_ROCKET");
 
         return d;
     }

@@ -34,6 +34,7 @@ public sealed class OkShotgun : Weapon
         public float Refire;            // g_balance_okshotgun_primary_refire
         public float SolidPenetration;  // g_balance_okshotgun_primary_solidpenetration
         public float Spread;            // g_balance_okshotgun_primary_spread
+        public float BotRange;          // g_balance_okshotgun_primary_bot_range (bot ATCK1/ATCK2 switch distance)
         public int   SecondaryRefireType; // g_balance_okshotgun_secondary_refire_type (1 = own jump_interval timer)
         public float ReloadAmmo;        // g_balance_okshotgun_reload_ammo
         public float ReloadTime;        // g_balance_okshotgun_reload_time
@@ -66,6 +67,7 @@ public sealed class OkShotgun : Weapon
         Cvars.Refire = Bal("g_balance_okshotgun_primary_refire", 0.75f);
         Cvars.SolidPenetration = Bal("g_balance_okshotgun_primary_solidpenetration", 3.8f);
         Cvars.Spread = Bal("g_balance_okshotgun_primary_spread", 0.07f);
+        Cvars.BotRange = Bal("g_balance_okshotgun_primary_bot_range", 512f);
         Cvars.SecondaryRefireType = BalInt("g_balance_okshotgun_secondary_refire_type", 1);
         Cvars.ReloadAmmo = Bal("g_balance_okshotgun_reload_ammo", 24f);
         Cvars.ReloadTime = Bal("g_balance_okshotgun_reload_time", 2f);
@@ -76,8 +78,8 @@ public sealed class OkShotgun : Weapon
     {
         var st = actor.WeaponState(slot);
 
-        // Secondary blaster-jump on the dedicated jump_interval timer (refire_type 1).
-        OkWeapons.FireSecondaryBlasterJump(actor, slot, fire, Cvars.SecondaryRefireType);
+        // Secondary blaster-jump: refire_type 1 = own jump_interval; refire_type 0 = shared ATTACK_FINISHED.
+        OkWeapons.FireSecondaryBlasterJump(this, actor, slot, fire, Cvars.SecondaryRefireType);
 
         // forced reload
         if (Cvars.ReloadAmmo != 0f && st.ClipLoad < Cvars.Ammo)
@@ -110,11 +112,32 @@ public sealed class OkShotgun : Weapon
         int pellets = (int)Cvars.Bullets;
         for (int i = 0; i < pellets; ++i)
         {
-            WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.MaxShotDistance, Cvars.Damage,
-                RegistryId, Cvars.Spread, Cvars.SolidPenetration, force: Cvars.Force);
+            // W_Shotgun_Attack passes EFFECT_RIFLE_WEAK as the per-pellet tracer (okshotgun.qc:57).
+            WeaponFiring.FireBullet(actor, shot.Origin, shot.Dir, WeaponFiring.CurrentMaxShotDistance, Cvars.Damage,
+                RegistryId, Cvars.Spread, Cvars.SolidPenetration, force: Cvars.Force, tracerEffect: "RIFLE_WEAK");
+            // QC wr_impacteffect (okshotgun.qc:103-113): EFFECT_SHOTGUN_IMPACT puff + the 5%/0.25s-throttled
+            // SND_RIC_RANDOM ricochet (the seam owns the throttle so a 10-pellet blast yields at most one ric).
+            Vector3 impEnd = shot.Origin + shot.Dir * WeaponFiring.CurrentMaxShotDistance;
+            TraceResult impTr = WeaponFiring.HitscanImpactTrace(actor, shot.Origin, impEnd).Trace; // [T45] warpzone-aware: impact FX land on the far side of a portal
+            Vector3 backoff = impTr.PlaneNormal.LengthSquared() > 1e-6f ? impTr.PlaneNormal : -shot.Dir;
+            // QC wr_impacteffect guards the ricochet with !w_issilent — suppress the puff+ric on a sky/miss hit,
+            // matching the okmachinegun/okhmg impact path.
+            bool silent = (impTr.DpHitQ3SurfaceFlags & WeaponFiring.Q3SurfaceFlagSky) != 0 || impTr.Fraction >= 1f;
+            WeaponFiring.BulletImpactFx(actor, impTr.EndPos, backoff, "SHOTGUN_IMPACT", silent);
         }
         Api.Sound.Play(actor, SoundChannel.WeaponAuto, "weapons/shotgun_fire.wav");
+
+        // W_MuzzleFlash inside W_Shotgun_Attack — EFFECT_SHOTGUN_MUZZLEFLASH (matching the base Shotgun port).
+        EffectEmitter.Emit("SHOTGUN_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
+        // Casing eject — W_Shotgun_Attack SpawnCasing (shotgun shell, type 1) when g_casings >= 1 (gate inside).
+        WeaponFiring.EjectCasing(actor, shot.Origin, WeaponFiring.CasingType.Shell);
     }
+
+    // METHOD(OverkillShotgun, wr_aim) — okshotgun.qc:4-9. Beyond bot_range the bot presses the SECONDARY
+    // (the no-damage blaster, used as a ranged poke / mobility tool); within range it presses the pellet
+    // primary. Returning true routes the already-decided shot onto ATCK2 (BotBrain), matching QC's range split.
+    public override bool BotWantsSecondary(float enemyDistance, float skill, ref BotAimState ctx)
+        => enemyDistance > Cvars.BotRange;
 
     // METHOD(OverkillShotgun, wr_checkammo1)
     public bool CheckAmmoPrimary(Entity actor) => actor.GetResource(AmmoType) >= Cvars.Ammo;

@@ -35,6 +35,16 @@ public sealed class HookMutator : MutatorBase
     public override bool IsEnabled =>
         Api.Services is not null && ExprEvaluate(Api.Cvars.GetString("g_grappling_hook"));
 
+    private static float Stof(string s)
+    {
+        return float.TryParse(s, System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out float f) ? f : 0f;
+    }
+
+    // QC ftos(f): the "canonical" float->string used to detect a literal-number token (e.g. "1" == ftos(1)).
+    private static string Ftos(float f) =>
+        f.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture);
+
     // The offhand hook uses a dedicated high slot (outside the weapon-fire driver), like the offhand blaster.
     private static readonly WeaponSlot OffhandSlot = new(MutatorConstants.MaxWeaponSlots);
 
@@ -101,6 +111,12 @@ public sealed class HookMutator : MutatorBase
         return false;
     }
 
+    // MUTATOR_HOOKFUNCTION(hook, BuildMutatorsString) — sv_hook.qc:23-26 (":grappling_hook" server-info token).
+    public override string BuildMutatorsString(string s) => s + ":grappling_hook";
+
+    // MUTATOR_HOOKFUNCTION(hook, BuildMutatorsPrettyString) — sv_hook.qc:28-31 (", Hook" votescreen token).
+    public override string BuildMutatorsPrettyString(string s) => s + ", Hook";
+
     // MUTATOR_HOOKFUNCTION(hook, SetStartItems): grant fuel + FuelRegen when the hook uses ammo.
     private bool OnSetStartItems(ref MutatorHooks.SetStartItemsArgs args)
     {
@@ -109,7 +125,9 @@ public sealed class HookMutator : MutatorBase
         // start_items |= ITEM_FuelRegen.m_itemid; start_ammo_fuel = max(start_ammo_fuel, g_balance_fuel_rotstable);
         l.ItemFlags.Add("FUEL_REGEN");
         float rotstable = Api.Services is null ? 0f : Api.Cvars.GetFloat("g_balance_fuel_rotstable");
+        // start_ammo_fuel = max(start_ammo_fuel, rotstable); warmup_start_ammo_fuel = max(.., rotstable);
         l.AmmoFuel = MathF.Max(l.AmmoFuel, rotstable);
+        l.WarmupAmmoFuel = MathF.Max(l.WarmupAmmoFuel, rotstable);
         return false;
     }
 
@@ -122,12 +140,68 @@ public sealed class HookMutator : MutatorBase
         return def.NetName == "hook" || def.ClassName == "weapon_hook";
     }
 
-    /// <summary>QC <c>expr_evaluate(s)</c> for a cvar string: false for "" / "0" / "false", true otherwise.</summary>
+    /// <summary>
+    /// Faithful port of QC <c>expr_evaluate(string s)</c> (lib/cvar.qh:48). A boolean cvar-expression
+    /// interpreter: an optional leading '+' (no-op) or '-' (negate the result); then each whitespace token is
+    /// a predicate that must hold (logical AND) — either a comparison <c>var>=x</c> / <c>var&lt;=x</c> /
+    /// <c>var&gt;</c> / <c>var&lt;</c> / <c>var==x</c> / <c>var!=x</c> (numeric, via cvar()) or
+    /// <c>var===s</c> / <c>var!==s</c> (string, via cvar_string()), or a bare token which is either a literal
+    /// number (its own truthiness) or a cvar name (cvar()'s truthiness), optionally '!'-prefixed to invert.
+    /// If any predicate fails, the AND fails (and is NOT inverted by '-'); otherwise the running result flips.
+    /// For the realistic literal defaults "0"/"1" (and ruleset-instahook "g_grappling_hook 1") this matches the
+    /// old truthiness check; the grammar covers expression-valued cvars.
+    /// </summary>
     private static bool ExprEvaluate(string s)
     {
-        if (string.IsNullOrEmpty(s)) return false;
-        s = s.Trim();
-        if (s == "0" || string.Equals(s, "false", System.StringComparison.OrdinalIgnoreCase)) return false;
-        return true;
+        s ??= string.Empty;
+        bool ret = false;
+        if (s.Length > 0 && s[0] == '+') s = s.Substring(1);
+        else if (s.Length > 0 && s[0] == '-') { ret = true; s = s.Substring(1); }
+
+        bool exprFail = false;
+        foreach (string tok in s.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (!ExprToken(tok)) { exprFail = true; break; }
+        }
+        if (!exprFail) ret = !ret;
+        return ret;
     }
+
+    // One whitespace token of expr_evaluate's AND chain — returns true if the predicate holds (QC: continue).
+    private static bool ExprToken(string s)
+    {
+        int o;
+        // Operators tested in EXACTLY QC's BINOP source order (>= <= == != === !==, then > <). strstrofs finds
+        // the FIRST occurrence, so for a "var===x" token the leading "==" matches before "===" is ever tried —
+        // a faithful quirk of expr_evaluate (lib/cvar.qh:69-80), not reordered here.
+        if ((o = s.IndexOf(">=", System.StringComparison.Ordinal)) >= 0)
+            return CvarF(s.Substring(0, o)) >= Stof(s.Substring(o + 2));
+        if ((o = s.IndexOf("<=", System.StringComparison.Ordinal)) >= 0)
+            return CvarF(s.Substring(0, o)) <= Stof(s.Substring(o + 2));
+        if ((o = s.IndexOf("==", System.StringComparison.Ordinal)) >= 0)
+            return CvarF(s.Substring(0, o)) == Stof(s.Substring(o + 2));
+        if ((o = s.IndexOf("!=", System.StringComparison.Ordinal)) >= 0)
+            return CvarF(s.Substring(0, o)) != Stof(s.Substring(o + 2));
+        if ((o = s.IndexOf("===", System.StringComparison.Ordinal)) >= 0)
+            return Cvar(s.Substring(0, o)) == s.Substring(o + 3);
+        if ((o = s.IndexOf("!==", System.StringComparison.Ordinal)) >= 0)
+            return Cvar(s.Substring(0, o)) != s.Substring(o + 3);
+        if ((o = s.IndexOf('>')) >= 0)
+            return CvarF(s.Substring(0, o)) > Stof(s.Substring(o + 1));
+        if ((o = s.IndexOf('<')) >= 0)
+            return CvarF(s.Substring(0, o)) < Stof(s.Substring(o + 1));
+
+        // Bare token: literal number (its own value) or cvar name; optional leading '!' inverts.
+        string k = s;
+        bool b = true;
+        if (k.Length > 0 && k[0] == '!') { k = k.Substring(1); b = false; }
+        float f = Stof(k);
+        // QC: boolean((ftos(f) == k) ? f : cvar(k)) — if k is a literal number use it, else read the cvar.
+        float val = (Ftos(f) == k) ? f : CvarF(k);
+        return (val != 0f) == b;
+    }
+
+    // cvar(name) / cvar_string(name) analogues; "" when services aren't up (cvar of a missing name is 0/"").
+    private static float CvarF(string name) => Api.Services is null ? 0f : Api.Cvars.GetFloat(name);
+    private static string Cvar(string name) => Api.Services is null ? string.Empty : Api.Cvars.GetString(name);
 }

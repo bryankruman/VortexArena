@@ -1,0 +1,501 @@
+unit: mapobject-teleporters-portals
+category: mapobject
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 17
+  reaudit_note: "DRIFT RE-AUDIT 2026-06-28 (FIFTH pass, post Phase-1/2/3a parity waves on branch claude/parity-port-waves): the ONLY file in this unit touched since the 11baede baseline is Warpzone.cs (+107 lines, git diff 11baede..HEAD); Teleporters.cs / Porto.cs / GameWorld.cs unchanged. Two additions landed, but only ONE lands in a row this unit owns: (A) GRAPPLING-HOOK TELEPORT through the Porto portal is now implemented (Warpzone.cs:359-373) — closes the second of the two gaps in portals.weapon.hook_and_predict (the Portal_WillHitPlane predict-ahead is now its sole remaining gap). The hook block runs on the live Teleport() crossing, gated Porto-only (owner!=null) + client-only, warping each weapon-slot Hook's origin/velocity/avelocity through wz.Transform with OldOrigin reset (mirrors Portal_Think_TryTeleportPlayer, portals.qc:248-262); Hook is a real runtime field (PlayerPhysics.cs:1301). (B) func_camera / func_warpzone_camera spawnfunc + camera-pose FixAngle stamp (WarpzoneSpawns.FuncCameraSetup, registered MapObjectsRegistry.cs:128-129, dispatched live via SpawnFuncs.TrySpawn GameWorld.cs:4356) — but that feature belongs to the warpzones.yaml unit (warpzones.camera row), NOT this unit, so it is flagged as cross-unit drift here and NOT scored in this registry. No teleporter-row status changed. ===PRIOR=== DRIFT RE-AUDIT 2026-06-28 (FOURTH pass, post-warpzone-angle-fix wave): re-read Teleporters.cs + Warpzone.cs + GameWorld.cs wiring on branch claude/parity-port-waves; XonoticGodot.Common builds clean (0 err/0 warn). The wave's edits to this unit's files were the warpzone EXIT-ANGLE fixes (commits 11baede normalize transformed angles, 1c62b01 server stamps authoritative fixangle, c264c27 plane-normal-faced-backwards) — these refine the already-`partial`-values warpzone transform (correctness still not behaviorally verified, so portals.teleport.transform_and_amazing values stays partial; e.FixAngle/FixAngleAngles stamp on a CLIENT crossing confirmed Warpzone.cs:339-343) and do NOT change any teleporter-row status. ONE GENUINE DRIFT CORRECTION (a stale baseline claim, not a this-wave fix): teleporters.core.telefrag_cvars + teleporters.dest.random_selection listed 'g_telefrags_avoid still hardcoded always-on for clients' as a residual gap — that is INACCURATE. PickDestination reads g_telefrags_avoid LIVE via CvarOr (Teleporters.cs:336, landed Wave 13 / commit 5427e74, PRE-dating the 2026-06-27 baseline), honoring an explicit `set g_telefrags_avoid 0` while defaulting to 1 on the unregistered path. All three telefrag cvars registered Cvars.cs:241-243. Both rows now zero-gap faithful. Everything else from the 2026-06-27 (THIRD) pass re-verified and CARRIED unchanged. ===PRIOR=== DRIFT RE-AUDIT 2026-06-27 (THIRD pass, consolidated re-verify) against current branch claude/parity-port-waves. Re-read all four port files (Teleporters.cs, Warpzone.cs, Porto.cs, GameWorld.cs) + confirmed XonoticGodot.Common builds clean (0 errors). Every fix the prior pass claimed is CONFIRMED genuinely landed AND wired live; only line refs had drifted, now corrected throughout. Wiring re-traced to live callers: GameScores.Gametype = GameType.NetName at GameWorld.cs:586 (Race.cs:284 \"rc\", Cts.cs:132 \"cts\"); RoundHandler.RoundNotStartedProvider wired GameWorld.cs:1645 (nulled 2776); ExpirePortals swept once/frame at GameWorld.cs:1811; Porto.PortalSpawner/PortalInId/PortalClearWithId/PortalClearAll wired GameWorld.cs:437-449; NotificationSystem.Announce(\"ACHIEVEMENT_AMAZING\") reaches a real Send->Sink.Dispatch (NotificationSystem.cs:200), registered NotificationsList.cs:144. The 15s Porto-portal LIFETIME/EXPIRY is implemented on the warpzone path — Warpzone.cs FadeTime + PortalFadeTime() (reads g_balance_portal_lifetime live, default 15, recharged on every crossing Warpzone.cs:344-349, stamped LinkPair:709-715), ExpirePortals() (Warpzone.cs:663-683) sweeps both halves. NEW CORRECTION this pass: natural-expiry now PLAYS the SND_PORTO_EXPIRE cue (porto/expire.wav, CH_SHOTS) via EmitPortalExpire (Warpzone.cs:691-696) for both halves — so portals.entity.lifecycle audio missing->partial (only the SHOOT-DOWN SND_PORTO_EXPLODE + EFFECT_ROCKET_EXPLODE remain absent, gated behind the unported portal-HEALTH entity). NOT registered: g_balance_portal_lifetime/_health read raw via GetFloat with a 15f test-path fallback (functionally correct at default; a live `set g_balance_portal_lifetime N` still applies). CARRIED FORWARD (all re-verified): Porto-crossing FORCE_TDEATH + Amazing<1s else portal-owner kill-credit (Warpzone.cs:336-367); item_flag_team never portalled + independent-player gate (Warpzone.cs:296-309); teleport SOUND CH_TRIGGER(-3), EF_TELEPORT_BIT XOR (1<<21) + istypefrag, RemoveGrapplingHooks on teleport, portal_activatetime self-skip; per-owner in/out slot replacement; exit-flash at to+v_forward*32. RESIDUAL OPEN (architectural): portal HEALTH entity (g_balance_portal_health=200, Portal_Damage shoot-down), MDL_PORTAL model/skins/EF glow, SND_PORTO_EXPLODE + EFFECT_ROCKET_EXPLODE on shoot-down, SUB_SetFade 0.5s expiry fade, Portal_Customize; Portal_WillHitPlane predict-ahead + grappling-hook teleport through the portal; the exact +/-48 plane-shift / Portal_FindSafeOrigin transform (warpzone transform substituted); g_telefrags_avoid hardcoded always-on for clients; EXACTTRIGGER_TOUCH brush-face precision."
+  worst_gaps:
+    - "Porto portal ENTITY partially replaced by a seamless warpzone pair: no portal HEALTH (g_balance_portal_health=200, can't be shot down via Portal_Damage), no portal model/skins(0/1/2)/EF_RED/BLUE/STARDUST/ADDITIVE glow, no SND_PORTO_EXPLODE + EFFECT_ROCKET_EXPLODE on shoot-down, no SUB_SetFade 0.5s fade-out, no Portal_Customize independent-player hiding. (The 15s lifetime/timeout AND the SND_PORTO_EXPIRE natural-expiry cue are now DONE — see below.)"
+    - "Portal_WillHitPlane predict-ahead crossing (PHYS_GRAVITY-aware tracebox over velocity*2*frametime, portals.qc:237/317) is still absent on the warpzone path — a very fast mover relies on the fixed trigger overlap rather than a same-frame predicted crossing. (Flag exclusion + Amazing + FORCE_TDEATH + the 15s lifetime/expiry + the grappling-hook teleport-through-the-portal — Warpzone.cs:359-373, landed 2026-06-28 — are now all DONE; the predict-ahead is the sole survivor of this cluster.)"
+    - "Portal_FindSafeOrigin (move_out_of_solid 16u in front, portal_safe_origin) + CheckWireframeBox 96^3 clearance are not modeled on the warpzone realisation; the +/-48 plane-shift / Portal_ApplyTransformToPlayerAngle angle transform is substituted by the generic warpzone transform (correctness not behaviorally verified)."
+    - "g_balance_portal_lifetime / g_balance_portal_health are NOT registered in Cvars.cs (read raw via GetFloat with a 15f test-path fallback); lifetime is functionally correct at default and a live `set` applies, but the health cvar drives nothing (no portal-health entity)."
+features:
+  - id: teleporters.core.teleport_player
+    name: "TeleportPlayer relocate/sound/telefrag/kill-credit core"
+    layer: [authority, shared]
+    base_refs:
+      - "common/mapobjects/teleporters.qc:TeleportPlayer"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:TeleportPlayer"
+    constants:
+      - { name: "g_maxpushtime", base: "8.0", port: "8 (registered Cvars.cs)", match: true }
+      - { name: "effect_debounce_s", base: "0.2", port: "0.2", match: true }
+      - { name: "tflags (TELEPORT_FLAG_* bitmask)", base: "TELEPORT_FLAGS_TELEPORTER / _PORTAL", port: "FlagsTeleporter / FlagsPortal (Teleporters.cs:38-39)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Teleporters.cs:432 player.Effects ^= EffectFlags.Teleport (EF_TELEPORT_BIT); Teleporters.cs:456 player.IsTypeFrag = player.ButtonChat — both prior core gaps closed; relocate/0.2s debounce/fixangle/owner kill-credit window all live", result: pass }
+    confidence: high
+    notes: "UNCHANGED-faithful (line refs shifted ~+70). EF_TELEPORT_BIT BITXOR_ASSIGN on teleport (Teleporters.cs:432, teleporters.qc:122); istypefrag = PHYS_INPUT_BUTTON_CHAT in the kill-credit window (Teleporters.cs:456, teleporters.qc:166). Relocate, 0.2s debounce, fixangle view-snap, owner kill-credit pusher window all live."
+
+  - id: teleporters.core.telefrag
+    name: "tdeath box telefrag with self-gib for dead/monster teleportees"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/teleporters.qc:tdeath"
+      - "common/mapobjects/teleporters.qc:TeleportPlayer (telefrag gate, teleporters.qc:148-150)"
+      - "common/mapobjects/teleporters.qh:TDEATHLOOP"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:TeleportPlayer"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:Telefrag"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:TeleportRoundGateSuppressed"
+      - "src/XonoticGodot.Server/GameWorld.cs:586 (server-side GameScores.Gametype wire)"
+    constants:
+      - { name: "telefrag_damage", base: "10000", port: "10000", match: true }
+      - { name: "deathtype", base: "DEATH_TELEFRAG", port: "DeathTypes.Telefrag", match: true }
+      - { name: "gate", base: "(tflags&TDEATH) && takedamage && !DEAD && !g_race && !g_cts && (g_telefrags || (tflags&FORCE_TDEATH)) && !(round active && !round started)", port: "(tflags&FlagTdeath) && takedamage && !dead && (g_telefrags || (tflags&FlagForceTdeath)) && !TeleportRoundGateSuppressed()", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Teleporters.cs:445-448 gate mirrors teleporters.qc:148-150 incl. FORCE_TDEATH; TeleportRoundGateSuppressed (587-593) wires BOTH halves — round-prestart via RoundHandler.RoundGateBlocks (wired GameWorld.cs:1645, nulled 2776) and !g_race/!g_cts via GameScores.Gametype, now SET server-side by GameWorld.cs:586 (= GameType.NetName, rc/cts)", result: pass }
+    confidence: high
+    notes: "FIX (2026-06-27): the !g_race/!g_cts half is now genuinely LIVE on the server. GameWorld.cs:586 sets GameScores.Gametype = GameType.NetName during world setup (Race.cs:284 \"rc\", Cts.cs:132 \"cts\"); TeleportRoundGateSuppressed (Teleporters.cs:587) reads it, so a spawn/checkpoint overlap no longer telefrags in Race/CTS on the authoritative path. The round-prestart half (RoundHandler.RoundGateBlocks) is wired live per round-based match (GameWorld.cs:1645 RoundNotStartedProvider). RE-VERIFIED 2026-06-27 second pass against the current branch (line refs corrected: 569/584-590 -> 586/587-593). tdeath box loop / deathradius / self-gib / 10000-dmg DEATH_TELEFRAG remain faithful. logic faithful; both prior gaps closed; gate constant match true."
+
+  - id: teleporters.core.telefrag_teamplay
+    name: "Teammates spared from telefrag in team modes (g_telefrags_teamplay)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/teleporters.qc:tdeath"
+      - "common/mapobjects/teleporters.qh:autocvar_g_telefrags_teamplay"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:Telefrag"
+      - "src/XonoticGodot.Server/Cvars.cs (g_telefrags_teamplay)"
+    constants:
+      - { name: "g_telefrags_teamplay", base: "1 (xonotic-server.cfg:60 = never telefrag teammates)", port: "1 (REGISTERED Cvars.cs)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value, ref: "Teleporters.cs:521 spareTeammates = GameScores.Teamplay && Cvar(\"g_telefrags_teamplay\",1)!=0; Teleporters.cs:535 if(spareTeammates && head.Team==player.Team) continue", result: pass }
+    confidence: high
+    notes: "UNCHANGED-faithful (line refs shifted). Mirrors Base tdeath's `!(teamplay && g_telefrags_teamplay && head.team==player.team)`. Live on the touch->TeleportPlayer->Telefrag path."
+
+  - id: teleporters.core.telefrag_cvars
+    name: "g_telefrags / g_telefrags_avoid cvars honored at runtime"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/teleporters.qh:autocvar_g_telefrags"
+      - "common/mapobjects/teleporters.qh:autocvar_g_telefrags_avoid"
+      - "common/stats.qh:REGISTER_STAT(TELEPORT_TELEFRAG_AVOID, INT, autocvar_g_telefrags_avoid)"
+    port_refs:
+      - "src/XonoticGodot.Server/Cvars.cs (g_telefrags / _avoid)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:PickDestination"
+    constants:
+      - { name: "g_telefrags", base: "1 (xonotic-server.cfg:59)", port: "1 (REGISTERED Cvars.cs)", match: true }
+      - { name: "g_telefrags_avoid", base: "1 (xonotic-server.cfg:61)", port: "1 (REGISTERED Cvars.cs); read LIVE via CvarOr in PickDestination", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value, ref: "Teleporters.cs:447 reads g_telefrags live; PickDestination (336) telefragAvoid = CvarOr(\"g_telefrags_avoid\",1)!=0, used to gate the avoid priority (342-346); all three telefrag cvars registered in Cvars.cs:241-243", result: pass }
+    confidence: high
+    notes: "RE-AUDIT 2026-06-28 (DRIFT CORRECTION): the prior 'g_telefrags_avoid still hardcoded always-on' gap is REMOVED — it was already inaccurate at the 2026-06-27 baseline. PickDestination reads g_telefrags_avoid LIVE (Teleporters.cs:336 CvarOr, which honors an explicit `set g_telefrags_avoid 0` while defaulting to 1 on the unregistered/test path), so a server override genuinely disables the avoidance. g_telefrags also read live (Cvar, 447). All three (g_telefrags / _teamplay / _avoid) registered Cvars.cs:241-243. Row now fully faithful, zero gaps."
+
+  - id: teleporters.dest.simple_teleport
+    name: "Simple_TeleportPlayer dest lookup + speed reproject + .speed cap"
+    layer: [authority, shared]
+    base_refs:
+      - "common/mapobjects/teleporters.qc:Simple_TeleportPlayer"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:SimpleTeleportPlayer"
+    constants:
+      - { name: "dest_z_nudge", base: "1 - mins.z - 24 (= 1 for PL_MIN.z=-24)", port: "1f - mins.Z - 24f", match: true }
+      - { name: "out_velocity", base: "v_forward * vlen(player.velocity)", port: "forward * Velocity.Length()", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Teleporters.cs:290-322; out-velocity reprojected along dest facing, .speed cap applied; locout = dest.origin + '0 0 1'*(1-mins.z-24); passes FlagsTeleporter into TeleportPlayer", result: pass }
+    confidence: high
+    notes: "Unchanged-faithful core. KEEP_SPEED still only skips the (out-of-scope) STAT clamp. Faithful on both server touch and single-dest client-prediction paths."
+
+  - id: teleporters.dest.random_selection
+    name: "Multi-destination weighted-random pick with telefrag-avoid priority"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/teleporters.qc:Simple_TeleportPlayer"
+      - "common/mapobjects/teleporters.qc:check_tdeath"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:PickDestination"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:CheckTdeath"
+    constants:
+      - { name: "dest_weight", base: "it.cnt ? it.cnt : 1", port: "Cnt != 0 ? Cnt : 1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: unknown
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "RandomSelection over FindByTargetName with cnt weight + avoid priority (Teleporters.cs:329-348); avoid now reads g_telefrags_avoid LIVE (336 CvarOr)", result: pass }
+    confidence: medium
+    notes: "RE-AUDIT 2026-06-28: the 'forces telefrag-avoid always-on' gap is REMOVED — PickDestination now reads g_telefrags_avoid live via CvarOr (Teleporters.cs:336), so the avoid priority is cvar-driven (see teleporters.core.telefrag_cvars). RandomSelection RNG parity vs Base's per-tick RandomSelection still not behaviorally verified (timing unknown), so confidence stays medium."
+
+  - id: teleporters.trigger.active_gate
+    name: "Teleport_Active gating (active/dead/team/INVERT_TEAMS/observers-only/turret/vehicle)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/trigger/teleport.qc:Teleport_Active"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:TeleportActive"
+    constants:
+      - { name: "TELEPORT_OBSERVERS_ONLY", base: "BIT(0)", port: "ObserversOnly = 1<<0", match: true }
+      - { name: "INVERT_TEAMS", base: "BIT(2)", port: "InvertTeams = 1<<2 (Teleporters.cs:30/231)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Vehicle-teleportable check and turret exclusion are still approximated by 'IsCreature' rather than the explicit player.teleportable / player.vehicle.teleportable / IS_TURRET checks (minor — no turret/vehicle on the common path)."
+    verification:
+      - { kind: code, ref: "Teleporters.cs:226-235 — applies the team gate `if(this.team) if(((spawnflags&INVERT_TEAMS)==0)==DIFF_TEAM) return false`, matching teleport.qc:38-39", result: pass }
+    confidence: high
+    notes: "Unchanged-faithful. TeleportActive applies the team-ownership gate AND INVERT_TEAMS (BIT(2)) via GameScores.Teamplay. Closed except the turret/vehicle approximation."
+
+  - id: teleporters.trigger.touch_and_targets
+    name: "Teleport_Touch + SUB_UseTargets firing"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/trigger/teleport.qc:Teleport_Touch"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:TeleportTouch"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No EXACTTRIGGER_TOUCH brush-face precision test (box overlap only) — teleport.qc:56."
+    verification:
+      - { kind: code, ref: "Teleporters.cs:243-263 — TeleportActive gate, RemoveGrapplingHooks(toucher) for clients (Teleporters.cs:251 -> Hook.cs:479), relocate via SimpleTeleportPlayer, then UseTargets (own target blanked) + dest targets", result: pass }
+    confidence: high
+    notes: "Unchanged-faithful. RemoveGrapplingHooks(player) called on teleport (teleport.qc:59-61) and on the use-activated TargetTeleportUse (Teleporters.cs:273, teleport.qc:82-83). Target firing order matches Base. Only the EXACTTRIGGER_TOUCH brush-face precision test remains unported."
+
+  - id: teleporters.trigger.team_claim
+    name: "trigger_teleport_use team claim"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/trigger/teleport.qc:trigger_teleport_use"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:TeleportUse"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: unknown
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "SendFlags networking (SF_TRIGGER_UPDATE) still not replicated (client-side only; harmless headless)."
+    verification:
+      - { kind: code, ref: "Teleporters.cs:212-213 `if (GameScores.Teamplay) self.Team = actor.Team` — teamplay-guarded as Base; enforced by the team gate in TeleportActive", result: pass }
+    confidence: medium
+    notes: "Unchanged. The team claim is teamplay-guarded AND enforced by the TeleportActive team gate. Liveness still unknown (whether a use-link calls TeleportUse on a teamplay map not traced)."
+
+  - id: teleporters.spawn.entities
+    name: "spawnfuncs: trigger_teleport / target_teleporter / info_teleport_destination / misc_teleporter_dest"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/trigger/teleport.qc:spawnfunc(trigger_teleport)"
+      - "common/mapobjects/trigger/teleport.qc:spawnfunc(target_teleporter)"
+      - "common/mapobjects/trigger/teleport.qc:target_teleporter_checktarget"
+      - "common/mapobjects/misc/teleport_dest.qc:spawnfunc(info_teleport_destination)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:TeleportSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:TargetTeleporterSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:TeleportDestSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs"
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "teleport_findtarget bot-waypoint spawning (waypoint_spawnforteleporter) is omitted (bot navigation)."
+      - "noise precache (FOREACH_WORD precache_sound) is a no-op; harmless headless."
+    verification:
+      - { kind: code, ref: "all 4 classnames registered in MapObjectsRegistry; FindTarget caches single dest + sets Touch; TargetTeleporterCheckTarget (124-159) reproduces the dest / self-target (.enemy=this) / normal disambiguation", result: pass }
+    confidence: high
+    notes: "FIX-carried (re-verified): the target_teleporter_checktarget disambiguation IS now reproduced — destination / self-target (.enemy=this, mangle=angles) / normal teleporter (Teleporters.cs:124-159), matching teleport.qc:142-185. (The prior baseline still listed the self-target case as a gap; current code handles it, so that gap is removed.) Destination .mangle/.angles handling and single-dest caching match. Net-linking of the dest to CSQC out of scope (headless)."
+
+  - id: teleporters.fx.flash
+    name: "Teleport flash effect at both ends"
+    layer: [presentation]
+    base_refs:
+      - "common/mapobjects/teleporters.qc:TeleportPlayer (Send_Effect EFFECT_TELEPORT x2)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:TeleportPlayer"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs (EFFECT_TELEPORT)"
+    constants:
+      - { name: "exit_effect_offset", base: "to + v_forward*32", port: "to + toForward*32 (Teleporters.cs:406)", match: true }
+      - { name: "entry_effect_origin", base: "player.origin", port: "from (= entry origin)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Teleporters.cs:402-407 — both flashes emitted INSIDE TeleportPlayer under the pushltime debounce, gated by FlagParticles; exit flash at to+toForward*32 (matches teleporters.qc:100-101)", result: pass }
+    confidence: high
+    notes: "Unchanged-faithful. Both flashes live inside TeleportPlayer under the 0.2s pushltime debounce gated by TELEPORT_FLAG_PARTICLES."
+
+  - id: teleporters.fx.sound
+    name: "Teleport sound (misc/teleport, debounced, optional noise word-list)"
+    layer: [presentation]
+    base_refs:
+      - "common/mapobjects/teleporters.qc:TeleportPlayer (_sound SND(TELEPORT), CH_TRIGGER, noise RandomSelection)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:TeleportPlayer"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:TeleportSound"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundsList.cs (misc/teleport)"
+    constants:
+      - { name: "sound", base: "misc/teleport", port: "misc/teleport", match: true }
+      - { name: "channel", base: "CH_TRIGGER (= -3, SoundChannel.TriggerAuto)", port: "SoundChannel.TriggerAuto (= -3) (Teleporters.cs:401)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value, ref: "Teleporters.cs:401 MapMover.Sound(player, SoundChannel.TriggerAuto, TeleportSound(...)); CH_TRIGGER=-3 match. TeleportSound (556-573) noise word-list RandomSelection.", result: pass }
+    confidence: high
+    notes: "Unchanged-faithful. Sound channel SoundChannel.TriggerAuto (CH_TRIGGER -3) matches Base; teleporter.noise space-separated word-list RandomSelection override implemented (TeleportSound)."
+
+  - id: portals.weapon.projectile
+    name: "Porto projectile launch/bounce/lifetime/one-portal latch + touch decision tree"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/porto.qc:W_Porto_Attack"
+      - "common/weapons/weapon/porto.qc:W_Porto_Touch"
+      - "common/weapons/weapon/porto.qc:W_Porto_Think"
+      - "common/weapons/weapon/porto.qc:wr_think (porto_v_angle hold)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:OnTouch"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:PortoThink"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:WrThink"
+    constants:
+      - { name: "g_balance_porto_primary_speed", base: "1000", port: "1000", match: true }
+      - { name: "g_balance_porto_primary_lifetime", base: "5", port: "5", match: true }
+      - { name: "g_balance_porto_primary_refire", base: "1.5", port: "1.5", match: true }
+      - { name: "g_balance_powerup_strength_force", base: "3 (balance-xonotic.cfg:237; 4 in nexuiz25)", port: "3, read LIVE from cvar (Porto.cs:78)", match: true }
+      - { name: "create/bounce/unsupported sound channel", base: "CH_SHOTS (-4)", port: "SoundChannel.ShotsAuto (-4)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "OnTouch re-probes the impact face with a worldonly traceline (ProbeImpact) to recover Q3 surface flags + the true plane normal, so the slick/clip + noimpact branches are reachable; but on a miss (no nearby solid) it falls back to the negated-velocity normal rather than the real wall normal."
+      - "porto_v_angle held-angle capture for the non-secondary combined shot is dormant in stock play (g_balance_porto_secondary defaults to 1, so that branch is never reached); the hold state machine is modeled but only exercised with secondary disabled."
+    verification:
+      - { kind: code, ref: "Porto is [Weapon]-registered (Porto.cs:25); PortalSpawner wired in GameWorld.cs:424; OnTouch decision tree (in/out/combined red->blue), right_vector reflect, fire/create/bounce/unsupported sounds on CH_SHOTS", result: pass }
+    confidence: high
+    notes: "Unchanged-faithful. create/bounce/unsupported on CH_SHOTS; SND_PORTO_BOUNCE on slick/clip reflect, SND_PORTO_UNSUPPORTED on noimpact/not-owner, SND_PORTO_CREATE on each placement. right_vector carried on AVelocity, reflected per bounce. strength_force read LIVE (default 3). Remaining gaps are the headless per-contact surface-flag limitation and the dormant secondary-disabled hold path."
+
+  - id: portals.entity.lifecycle
+    name: "Portal edict: model, skins, EF effects, health, lifetime/fade, damage, explode/expire sounds, Customize"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/portals.qc:Portal_Spawn"
+      - "server/portals.qc:Portal_Damage"
+      - "server/portals.qc:Portal_Remove"
+      - "server/portals.qc:Portal_MakeInPortal/Portal_MakeOutPortal/Portal_MakeWaitingPortal/Portal_MakeBrokenPortal"
+      - "server/portals.qc:Portal_Customize"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:PlacePortoPortal"
+    constants:
+      - { name: "g_balance_portal_health", base: "200", port: "none (indestructible warpzone; cvar unused)", match: false }
+      - { name: "g_balance_portal_lifetime", base: "15", port: "15 (read live via PortalFadeTime, Warpzone.cs:648-654; NOW IMPLEMENTED)", match: true }
+      - { name: "skins", base: "0=in/1=out/2=waiting+broken", port: "none (transparent warpzone window)", match: false }
+      - { name: "effects", base: "EF_RED / EF_STARDUST|EF_BLUE / EF_ADDITIVE", port: "none", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: missing
+      audio: partial
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Porto portals are realised as a seamless two-way warpzone, so there is no portal health (g_balance_portal_health=200) — Base portals can be shot down (Portal_Damage); the cvar is unused."
+      - "Portal expiry is now modeled (15s g_balance_portal_lifetime, recharged on each crossing, ExpirePortals sweep at GameWorld.cs:1811) BUT the SUB_SetFade(time,0.5) 0.5s visual fade-out is absent — a timed-out pair is hard-removed, not faded; and the recharge-to-200-health half is moot (no portal health)."
+      - "No portal model (MDL_PORTAL) / skins (0/1/2) or EF_RED / EF_BLUE|EF_STARDUST / EF_ADDITIVE glow; a warpzone is a transparent window, not a Quake portal disc."
+      - "RE-VERIFIED 2026-06-27 (second pass): SND_PORTO_EXPIRE on natural timeout NOW plays — ExpirePortals -> EmitPortalExpire (Warpzone.cs:691-696) emits porto/expire.wav on CH_SHOTS (-4) at the portal origin for BOTH halves of the pair. Still ABSENT (the shoot-down path, which has no warpzone equivalent without a portal-HEALTH entity): SND_PORTO_EXPLODE + EFFECT_ROCKET_EXPLODE on Portal_Remove(this,1) at health<0. So audio is partial (expire cue live, explode cue missing), not fully missing."
+      - "Portal_Customize visibility gating (hiding the portal model from players who can't use it, IS_INDEPENDENT_PLAYER) is absent."
+      - "Portal_FindSafeOrigin (move_out_of_solid 16u in front, portal_safe_origin) and CheckWireframeBox 96^3 clearance are not modeled."
+    verification:
+      - { kind: code, ref: "Warpzone.cs FadeTime/PortalFadeTime()/ExpirePortals() implement the 15s lifetime+recharge (wired GameWorld.cs:1811); ExpirePortals->EmitPortalExpire plays porto/expire.wav on CH_SHOTS for the timed-out pair; still NO g_balance_portal_health/Portal_Damage shoot-down, MDL_PORTAL, EF_RED/STARDUST, SND_PORTO_EXPLODE+rocket-explode, or SUB_SetFade visual on the porto path", result: partial }
+    confidence: high
+    notes: "FIX (2026-06-27, first pass): the 15s portal LIFETIME/timeout is implemented on the warpzone path (FadeTime, PortalFadeTime reading g_balance_portal_lifetime live, recharge-on-crossing Warpzone.cs:344-349, ExpirePortals sweep wired GameWorld.cs:1811 removing both halves). timing missing->partial, values missing->partial, logic missing->partial, liveness na->partial. SECOND-PASS RE-VERIFY 2026-06-27: re-read the current port — confirmed all above still hold AND the natural-expiry SND_PORTO_EXPIRE cue (porto/expire.wav, CH_SHOTS) is now emitted by EmitPortalExpire on the ExpirePortals teardown -> audio missing->partial (the EXPIRE cue is live; only the SHOOT-DOWN SND_PORTO_EXPLODE + EFFECT_ROCKET_EXPLODE remain absent, gated behind the unported portal-HEALTH entity). STILL ARCHITECTURALLY ABSENT: the damageable portal-HEALTH entity (Portal_Damage shoot-down), the MDL_PORTAL model/skins/EF glow, the explode-on-shoot-down + rocket FX, the SUB_SetFade 0.5s fade-out, and Portal_Customize — so presentation stays missing and timing is partial (hard removal, no fade). Port-ref line shift since first pass: GameWorld.cs:1787 -> 1811."
+
+  - id: portals.teleport.transform_and_amazing
+    name: "Portal teleport transform, two-way semantics, Amazing announcer, portal-owner kill-credit"
+    layer: [authority]
+    base_refs:
+      - "server/portals.qc:Portal_TeleportPlayer"
+      - "server/portals.qc:Portal_ApplyTransformToPlayerAngle"
+      - "server/portals.qc:Portal_Connect"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:LinkPair"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:Teleport"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:PlacePortoPortal"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:PortalForceTelefrag"
+    constants:
+      - { name: "amazing_window_s", base: "1", port: "1 (Warpzone.cs:331 now < TeleportTime + 1f)", match: true }
+      - { name: "directionality", base: "two-way (Portal_Connect sets .enemy both ways; both portals run Portal_Think)", port: "two-way (LinkPair)", match: true }
+      - { name: "portal_activatetime", base: "0.1 (server/portals.qc:301-306 owner self-skip)", port: "0.1 (Warpzone.ActivateTime; Warpzone.cs:268-272,503)", match: true }
+      - { name: "planeshift_bound", base: "+/-48 (s/t bound onto exit plane)", port: "warpzone transform (not the +/-48 plane-shift)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: unknown
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The exact +/-48 plane-shift (Portal_ApplyTransformToPlayerAngle s/t bound onto the exit plane), Portal_FindSafeOrigin tracebox safe-origin validation, and the precise angle transform are replaced by the generic warpzone transform; angle/velocity/seam correctness is not behaviorally verified (values: partial)."
+    verification:
+      - { kind: code, ref: "Warpzone.Teleport (351-367): client crossing -> Teleporters.PortalForceTelefrag (FORCE_TDEATH, Warpzone.cs:353); on hit awards ANNCE_ACHIEVEMENT_AMAZING (358, registered NotificationsList.cs:144, reaches NotificationSystem.Announce->Send->Sink) within now<TeleportTime+1; else credits portal owner as pusher (istypefrag, 360-366). portal_activatetime self-skip (285-289) + TeleportTime stamped in LinkPair (713). Two-way LinkPair faithful.", result: pass }
+    confidence: medium
+    notes: "FIX (2026-06-27): three prior gaps CLOSED on the warpzone Teleport path (landed after the 2026-06-26 baseline). (1) ANNCE_ACHIEVEMENT_AMAZING is now awarded on a portal telefrag within 1s of portal creation (Warpzone.cs:330-333, portals.qc:192-194) — audio missing->faithful. (2) FORCE_TDEATH is now APPLIED: the warpzone crossing routes through Teleporters.PortalForceTelefrag with TELEPORT_FLAGS_PORTAL (Warpzone.cs:327) — the exit is force-telefragged, then EITHER the Amazing announcer OR the portal-owner kill-credit fires (mutually exclusive, mirroring QC). (3) Independent-player gating is in place (Warpzone.cs:286-292, a faithful no-op while IsIndependentPlayer==false). logic partial->faithful. STILL OPEN: the exact +/-48 plane-shift / safe-origin transform (values stays partial; correctness unverified, timing unknown)."
+
+  - id: portals.weapon.cleanup
+    name: "Portal pair lifecycle: one pair per owner, death/timeout clears both, ID-clear"
+    layer: [authority]
+    base_refs:
+      - "server/portals.qc:Portal_SetInPortal"
+      - "server/portals.qc:Portal_SetOutPortal"
+      - "server/portals.qc:Portal_ClearAll"
+      - "server/portals.qc:Portal_ClearWithID"
+      - "common/weapons/weapon/porto.qc:W_Porto_Remove"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:CleanupProjectile"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:PortalClearWithId"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:PortalClearAll"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Porto.cs:WrPlayerDeath"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:ClearPortoPortal"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:ClearAllPortoPortals"
+      - "src/XonoticGodot.Server/GameWorld.cs:424-431"
+    constants: []
+    constants:
+      - { name: "g_balance_portal_lifetime", base: "15", port: "15 (read live, PortalFadeTime Warpzone.cs:648-654)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Death/reset teardown (PortalClearAll) is dispatched only for the player's CURRENTLY-held weapon slot (DamageSystem/SpawnSystem dispatch WrPlayerDeath/WrResetPlayer on the active weapon), whereas Base's Portal_ClearAll fires irrespective of held weapon — so portals could outlive the owner if they died holding a different weapon. (Mitigated: ClientManager.PutObserverInServer / ClientDisconnect also call PortalClearAll directly.)"
+      - "The 15s timeout is a hard removal — Base's SUB_SetFade(time,0.5) 0.5s visual fade-out on expiry is absent (cosmetic; see portals.entity.lifecycle)."
+    verification:
+      - { kind: code, ref: "GameWorld.cs:437-449 WIRES PortalSpawner/PortalInId/PortalClearWithId/PortalClearAll -> Warpzones.{PlacePortoPortal,PortalInId,ClearPortoPortal,ClearAllPortoPortals}; ExpirePortals wired GameWorld.cs:1811; Porto.WrPlayerDeath (611-614) calls PortalClearAll; PlacePortoPortal replaces the prior portal of the SAME ROLE per owner; FadeTime/PortalFadeTime/recharge-on-crossing implement the 15s lifetime", result: pass }
+    confidence: high
+    notes: "FIX (2026-06-27): the 15s time-based expiry (g_balance_portal_lifetime) is implemented — FadeTime is stamped on connect (LinkPair:709-715), recharged to a fresh time+15 on every crossing (Warpzone.cs:344-349), and ExpirePortals (Warpzone.cs:663-683) sweeps timed-out pairs once per server frame (wired GameWorld.cs:1811), removing both halves. timing faithful; the prior 'no time-based 15s expiry' gap closed. RE-VERIFIED 2026-06-27 third pass (line refs corrected). CARRIED: PlacePortoPortal keys per-owner in/out slots and tears down the owner's prior portal of the same role before re-linking (Portal_SetInPortal/Portal_SetOutPortal); PortalClearWithId/PortalClearAll live; Porto.WrPlayerDeath calls PortalClearAll. Residual: death dispatch is held-weapon-only on the weapon path (mitigated by direct PortalClearAll on observer/disconnect); the expiry visual fade is hard-cut not faded (cosmetic, the SND_PORTO_EXPIRE cue does now play — see portals.entity.lifecycle)."
+
+  - id: portals.weapon.hook_and_predict
+    name: "Portal grappling-hook teleport + predict-ahead crossing (Portal_WillHitPlane) + flag exclusion"
+    layer: [authority]
+    base_refs:
+      - "server/portals.qc:Portal_Think"
+      - "server/portals.qc:Portal_Think_TryTeleportPlayer"
+      - "server/portals.qc:Portal_WillHitPlane"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Warpzone.cs:Teleport (flag exclusion + independent-player gate + hook relocate)"
+    constants: []
+    status:
+      logic: partial
+      values: missing
+      timing: missing
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base Portal_Think predicts a player/hook crossing the portal plane THIS frame (Portal_WillHitPlane, PHYS_GRAVITY-aware tracebox over velocity*2*frametime, portals.qc:237/317) and teleports pre-emptively so fast movers don't tunnel; the warpzone realisation relies on a fixed trigger overlap + a same-frame finishtime guard + plane-side test, with no velocity*2*frametime predict-ahead."
+    verification:
+      - { kind: code, ref: "Warpzone.cs:303 item_flag_team never portalled (portals.qc:275-276); Warpzone.cs:310-316 independent-player gate (portals.qc:307-314); Warpzone.cs:359-373 grappling-hook relocate through the portal transform (portals.qc:248-262); grep: still no Portal_WillHitPlane predict-ahead equivalent", result: partial }
+    confidence: medium
+    notes: "RE-AUDIT 2026-06-28 (FIFTH pass, post Phase-1/2/3a parity waves; this unit's only touched file since the 11baede baseline was Warpzone.cs, +107 lines). NEW FIX landed THIS wave: the grappling-hook teleport-through-the-portal is now implemented (Warpzone.cs:359-373) — on a CLIENT crossing a Porto portal (wz.Owner!=null), ForEachWeaponSlot iterates the player's live Hook chain and warps each hook's origin/velocity/avelocity through the SAME wz.Transform, with OldOrigin reset to cancel interpolation, mirroring Portal_Think_TryTeleportPlayer (portals.qc:248-262). The Hook slot is a real runtime field (PlayerPhysics.cs:1301 reads it), the block sits on the live Teleport() crossing path, and it is correctly gated Porto-only (owner!=null) + client-only. logic stays partial (Portal_WillHitPlane predict-ahead is the LAST remaining gap in this row) but the hook-teleport gap is now CLOSED. CARRIED (2026-06-27): item_flag_team exclusion (Warpzone.cs:303, portals.qc:275-276) + IS_INDEPENDENT_PLAYER gating (Warpzone.cs:310-316, a faithful no-op while IsIndependentPlayer==false). STILL OPEN: Portal_WillHitPlane PHYS_GRAVITY-aware velocity*2*frametime predict-ahead (values/timing missing) so a very fast mover relies on the fixed trigger overlap rather than a same-frame predicted crossing."

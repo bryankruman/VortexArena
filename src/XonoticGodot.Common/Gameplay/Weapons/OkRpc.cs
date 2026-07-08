@@ -92,8 +92,8 @@ public sealed class OkRpc : Weapon
     {
         var st = actor.WeaponState(slot);
 
-        // Secondary blaster-jump on the dedicated jump_interval timer (refire_type 1).
-        OkWeapons.FireSecondaryBlasterJump(actor, slot, fire, Cvars.SecondaryRefireType);
+        // Secondary blaster-jump: refire_type 1 = own jump_interval; refire_type 0 = shared ATTACK_FINISHED.
+        OkWeapons.FireSecondaryBlasterJump(this, actor, slot, fire, Cvars.SecondaryRefireType);
 
         // forced reload
         if (Cvars.ReloadAmmo != 0f && st.ClipLoad < Cvars.Ammo)
@@ -141,6 +141,19 @@ public sealed class OkRpc : Weapon
         missile.TakeDamage = DamageMode.Yes;
         missile.Health = Cvars.Health;
 
+        // QC okrpc.qc: missile.bot_dodge = true; missile.bot_dodgerating = WEP_CVAR_PRI(damage) * 2; IL_PUSH on the
+        // g_bot_dodge danger list — bots swerve away from the in-flight chainsaw (consumed by the havocbot dodge
+        // scan, BotBrain/Waypoint, which iterates every non-client edict flagged BotDodge; no list-push needed).
+        missile.BotDodge = true;
+        missile.BotDodgeRating = Cvars.Damage * 2f;
+
+        // QC okrpc.qc: IL_PUSH(g_damagedbycontents, missile) — the flying chainsaw takes lava/slime contents
+        // damage and detonates (via its shoot-down shim, installed below). Consumed by the per-frame
+        // g_damagedbycontents sweep (GameWorld → PlayerFrameLogic.ProjectileContentsDamage), which scans the
+        // entity table for this flag. Inert in dry maps; correctly NOT gated by g_projectiles_damage (that gates
+        // only the shoot-down) — lava/slime use g_balance_contents_projectiledamage, matching Base.
+        missile.DamagedByContents = true;
+
         // W_SetupProjVelocity_Basic(missile, speed, 0) — launch straight along shotdir at speed.
         missile.Velocity = shot.Dir * Cvars.Speed;
         missile.Angles = QMath.VecToAngles(missile.Velocity);
@@ -159,7 +172,16 @@ public sealed class OkRpc : Weapon
         var ep = new MutatorHooks.EditProjectileArgs(actor, missile);
         MutatorHooks.EditProjectile.Call(ref ep);
 
+        // QC missile.event_damage = W_OverkillRocketPropelledChainsaw_Damage (+ DAMAGE_YES + RES_HEALTH already set
+        // above). Install the GtEventDamage shoot-down shim the damage pipeline actually dispatches; without this the
+        // missile's ProjectileDamage callback is dead (DamageSystem.EventDamage only routes a non-player victim via
+        // GtEventDamage), so the chainsaw cannot be shot out of the air. No exception (-1), matching okrpc.qc:50.
+        Projectiles.MakeShootable(missile, exception: -1f);
+
         Api.Sound.Play(actor, SoundChannel.Weapon, "weapons/rocket_fire.wav");
+
+        // W_MuzzleFlash(thiswep, ...) — okrpc.qh m_muzzleeffect = EFFECT_ROCKET_MUZZLEFLASH (okrpc.qc:106).
+        EffectEmitter.Emit("ROCKET_MUZZLEFLASH", shot.Origin, shot.Dir * 1000f, 1, except: actor);
 
         if (Api.Clock.Time >= missile.NextThink)
             missile.Think(missile);
@@ -212,12 +234,24 @@ public sealed class OkRpc : Weapon
         self.Think = null;
         self.TakeDamage = DamageMode.No;
         self.ProjectileDamage = null;
+        self.GtEventDamage = null; // QC W_..._Explode: this.event_damage = func_null
 
         WeaponSplash.RadiusDamage(self, self.Origin, Cvars.Damage, Cvars.EdgeDamage, Cvars.Radius,
             self.Owner, RegistryId, Cvars.Force, directHit: directHit);
 
+        // QC wr_impacteffect (okrpc.qc:232-238): EFFECT_ROCKET_EXPLODE puff + SND_ROCKET_IMPACT at the blast point.
+        WeaponSplash.ImpactSound(self, "weapons/rocket_impact.wav"); // QC SND_ROCKET_IMPACT
+        EffectEmitter.Emit("ROCKET_EXPLODE", self.Origin);
+
         Api.Entities.Remove(self);
     }
+
+    // METHOD(OverkillRocketPropelledChainsaw, wr_aim) — okrpc.qc:144-147. The chainsaw is a slow projectile, so
+    // bots lead the target by its launch speed (WEP_CVAR_PRI speed = 2500) — QC passes that speed as bot_aim's
+    // lead argument. Without this override the brain would lead by the generic default speed and mis-aim the
+    // flying chainsaw. (The QC lifetime arg only widens the lead-prediction window; the brain already caps the
+    // lead by the weapon's primary speed, which is the dominant term.)
+    public override float BotAimShotSpeed(float defaultSpeed) => Cvars.Speed;
 
     // METHOD(OverkillRocketPropelledChainsaw, wr_checkammo1)
     public bool CheckAmmoPrimary(Entity actor) => actor.GetResource(AmmoType) >= Cvars.Ammo;

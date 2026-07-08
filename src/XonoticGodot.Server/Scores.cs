@@ -94,14 +94,21 @@ public sealed class PlayerScoreRow
         BestKillStreak = 0;
         MultiKill = 0;
         MultiKillBest = 0;
+        HandicapAvgGivenSum = 0f;
+        HandicapAvgTakenSum = 0f;
         _lastKillTime = 0f;
     }
 
     /// <summary>
     /// QC <c>PlayerScore_Clear</c> on a team change (KillPlayerForTeamChange): reset the auxiliary score
     /// columns + accuracy/streak counters so a mid-match team move doesn't carry kills/deaths to the new
-    /// team. Deliberately leaves SP_SCORE (the frag total) alone — DEATH_AUTOTEAMCHANGE "does not negate
-    /// frags" in QC — so the player's standing is preserved across the forced move.
+    /// team. Deliberately leaves SP_SCORE (the frag total) alone. The DEATH_TEAMCHANGE suicide that follows
+    /// in <see cref="Teamplay.KillPlayerForTeamChange"/> negates exactly one frag (the gametype's suicide
+    /// branch / Obituary SUICIDE −1), matching Base where DEATH_TEAMCHANGE (unlike AUTOTEAMCHANGE) is NOT in
+    /// the GiveFrags-skip exception (server/damage.qc:304). Note: Base's own SP_SCORE wipe lives in
+    /// PlayerScore_Clear and is gated on <c>g_score_resetonjoin</c> (default 0 → no-op), so by default Base
+    /// also keeps SP_SCORE; this port unconditionally clears only the aux columns (a separate scores-parity
+    /// concern), but the frag-negation result here matches stock Base.
     /// </summary>
     internal void ClearForTeamChange()
     {
@@ -144,6 +151,16 @@ public sealed class PlayerScoreRow
 
     /// <summary>The best multikill this match (double/triple/... medal).</summary>
     public int MultiKillBest { get; internal set; }
+
+    /// <summary>
+    /// QC <c>.handicap_avg_given_sum</c> / <c>.handicap_avg_taken_sum</c> (server/handicap.qh:71-72): the
+    /// damage-weighted running sums for the XonStat <c>handicapgiven</c>/<c>handicaptaken</c> report events.
+    /// Accumulated each frame the player deals/takes damage as <c>realdmg * Handicap_GetTotalHandicap(...)</c>
+    /// (QC PlayerFrame, server/client.qc:2865/2871); divided by the total DMG/DMGTAKEN score column at report
+    /// time to yield the average handicap over the match.
+    /// </summary>
+    public float HandicapAvgGivenSum { get; internal set; }
+    public float HandicapAvgTakenSum { get; internal set; }
 
     internal float _lastKillTime;
 }
@@ -262,8 +279,8 @@ public sealed class WeaponAccuracy
 /// (<see cref="PlayerScoreRow.BestKillStreak"/>/<see cref="PlayerScoreRow.MultiKillBest"/>), and the
 /// AddPlayerScore hook (<see cref="AddPlayerScoreHook"/>).
 ///
-/// Deferred: the network scoreboard (Net_LinkEntity / SendFlags), playerstats reporting, and the SFL_*
-/// sort-flag metadata.
+/// The network scoreboard (ScoreInfoBlock / ScoreboardBlock), playerstats reporting (PlayerStats),
+/// and the SFL_* sort-flag metadata are all implemented.
 /// </summary>
 public sealed class Scores
 {
@@ -297,7 +314,42 @@ public sealed class Scores
     /// <summary>True once <see cref="SubscribeToDeaths"/> wired the obituary handler (mirrors QC scores_initialized).</summary>
     public bool Subscribed { get; private set; }
 
+    /// <summary>
+    /// [A5 #8] Per-recipient MSG_CHOICE resolution source — the C# successor to QC reading
+    /// <c>CS(recipient).msg_choice_choices[idx]</c> inside <c>Send_Notification_Core</c>'s per-client send loop.
+    /// The host wires this to <see cref="Commands.GetChoiceState"/> so each <see cref="NotifBroadcast.One"/>
+    /// frag/typefrag centerprint resolves option A (terse) vs option B (verbose) from THAT recipient's replicated
+    /// <c>notification_CHOICE_*</c> preference rather than a single global value. Null (standalone tests / an
+    /// unwired host) → the dispatch falls back to <see cref="NotificationSystem.DefaultChoiceValue"/>.
+    /// </summary>
+    public Func<Player, NotificationChoiceState?>? ChoiceStateProvider { get; set; }
+
+    /// <summary>
+    /// QC <c>GameLogEcho</c> seam for the kill event-log line — the host wires this to <c>GameLog.Echo</c>
+    /// (gated on <c>sv_eventlog</c> at the call site, the QC pattern). When set, <see cref="Obituary"/> emits
+    /// the <c>:kill:&lt;mode&gt;:&lt;killer&gt;:&lt;killed&gt;:type=&lt;deathtype&gt;:items=…</c> line (the port's
+    /// <c>LogDeath</c>, server/damage.qc:100). Null (a standalone test / unwired host) → no kill log emitted.
+    /// </summary>
+    public Action<string>? LogDeath { get; set; }
+
     private HookHandler<DeathEvent>? _deathHandler;
+
+    /// <summary>
+    /// [A5 #8] Send a MSG_CHOICE notification to a single recipient, resolving its option A/B from THAT
+    /// recipient's replicated choice preferences first — QC <c>Send_Notification_Core</c> reads
+    /// <c>CS(recipient).msg_choice_choices[idx]</c> per recipient inside the FOREACH_CLIENT send loop. The static
+    /// <see cref="NotificationSystem"/> dispatch keys its <see cref="NotificationSystem.ChoiceValues"/> map by the
+    /// choice's RegistryName, so prime that map from the recipient's <see cref="NotificationChoiceState"/> (via
+    /// <see cref="ChoiceStateProvider"/>) immediately before the <see cref="NotifBroadcast.One"/> Send. When no
+    /// per-client state exists the map is cleared, so the dispatch falls back to
+    /// <see cref="NotificationSystem.DefaultChoiceValue"/> (option A) — the pre-A5#8 behavior.
+    /// </summary>
+    private void SendChoiceToOne(Player recipient, string name, params object[] args)
+    {
+        NotificationSystem.ChoiceValues.Clear();
+        ChoiceStateProvider?.Invoke(recipient)?.ApplyTo(NotificationSystem.ChoiceValues);
+        NotificationSystem.Send(NotifBroadcast.One, recipient, MsgType.Choice, name, args);
+    }
 
     // ---------------------------------------------------------------------------------------------
     // roster registration (QC PlayerScore_Attach / _Detach)
@@ -446,7 +498,7 @@ public sealed class Scores
     /// keeps the scoreboard's kill/death/etc. columns consistent across every gametype in one place.
     /// <paramref name="teamGame"/> selects the team-aware matrix.
     /// </summary>
-    public void Obituary(Player? attacker, Player victim, string deathType, bool teamGame)
+    public void Obituary(Player? attacker, Player victim, string deathType, bool teamGame, Entity? inflictor = null)
     {
         // QC reads CS(targ).killcount (the victim's spree) for the obituary's spree_end/spree_lost arg BEFORE it
         // resets it to 0 (server/damage.qc:480). Capture it now so EmitObituary renders "ending their N frag
@@ -462,7 +514,11 @@ public sealed class Scores
         {
             // SUICIDE / world death (QC "SUICIDE"/"ACCIDENT-TRAP"): +1 suicide; −1 frag (only if we own score).
             Row(victim).AddAux(ScoreField.Suicides, 1);
-            if (OwnsScore)
+            // QC server/damage.qc:304 special-cases DEATH_AUTOTEAMCHANGE (an auto-balance team move): the suicide
+            // frag is NOT negated. A manual DEATH_TEAMCHANGE still negates. (In the live path OwnsScore is false —
+            // each gametype owns its own suicide −1 and applies the same skip — so this gate guards the sole-scorer
+            // configuration; it is the central mirror of damage.qc:304.)
+            if (OwnsScore && !DeathTypes.IsAutoTeamChange(deathType))
             {
                 Add(victim, ScoreField.Score, -1);
                 if (teamGame) AddTeamScore((int)victim.Team, -1);
@@ -470,12 +526,19 @@ public sealed class Scores
         }
         else if (teamKill)
         {
-            // TEAMKILL (QC "FRAG"/team): +1 teamkill; −1 frag (only if we own score).
-            Row(attacker).AddAux(ScoreField.TeamKills, 1);
+            // TEAMKILL (QC "FRAG"/team, server/damage.qc:GiveFrags): +1 teamkill; base −1 frag. When
+            // autocvar_g_teamkill_punishing (default 0/off) is set, the penalty escalates with the attacker's
+            // running teamkill count: f -= (teamkills * (teamkills - 1)) * 0.5 → −1, −2, −4, −7, −11, … as the
+            // total reaches 1, 2, 3, 4, 5, … (AddAux returns the new running total, mirroring the value QC reads
+            // back from GameRules_scoring_add(attacker, TEAMKILLS, 1)). The curve term is always integral.
+            int teamkills = Row(attacker).AddAux(ScoreField.TeamKills, 1);
+            int penalty = -1;
+            if (Api.Services is not null && Api.Cvars.GetFloat("g_teamkill_punishing") != 0f)
+                penalty -= (int)((teamkills * (teamkills - 1)) * 0.5f);
             if (OwnsScore)
             {
-                Add(attacker, ScoreField.Score, -1);
-                AddTeamScore((int)attacker.Team, -1);
+                Add(attacker, ScoreField.Score, penalty);
+                AddTeamScore((int)attacker.Team, penalty);
             }
         }
         else
@@ -499,10 +562,24 @@ public sealed class Scores
             RecordWeaponKill(attacker, victim, deathType);
         }
 
+        // QC LogDeath (server/damage.qc:303/315/329/468): the structured :kill: event-log line, emitted from
+        // INSIDE Obituary for each scoring branch. Mode mirrors QC: self-death -> "suicide", world/trap (no
+        // attacker) -> "accident", teamkill -> "tk", enemy frag -> "frag".
+        if (LogDeath is not null)
+        {
+            string mode = ReferenceEquals(attacker, victim) ? "suicide"
+                        : attacker is null ? "accident"
+                        : teamKill ? "tk"
+                        : "frag";
+            // QC LogDeath(mode, deathtype, killer, killed): killer = attacker (== targ for suicide/accident).
+            Player killer = attacker ?? victim;
+            EmitLogDeath(mode, deathType, killer, victim);
+        }
+
         // QC Obituary's notification + sound emission (server/damage.qc:268-477): kill feed, frag/typefrag/
         // teamkill centerprints, the killstreak announcer, and first blood. Runs AFTER the scoring above so the
         // attacker's KillStreak reflects this kill (the 3rd kill announces KILLSTREAK_03). T40.
-        EmitObituary(attacker, victim, deathType, teamGame, victimStreakBefore);
+        EmitObituary(attacker, victim, deathType, teamGame, victimStreakBefore, inflictor);
 
         // QC: a kill resets the victim's kill spree (they died).
         if (!ReferenceEquals(attacker, victim))
@@ -514,6 +591,59 @@ public sealed class Scores
     }
 
     /// <summary>
+    /// Port of QC <c>LogDeath</c> (server/damage.qc:100): build the colon-delimited <c>:kill:</c> event-log
+    /// line and hand it to the <see cref="LogDeath"/> sink. Format (QC):
+    /// <c>:kill:&lt;mode&gt;:&lt;killerid&gt;:&lt;killedid&gt;:type=&lt;deathtype&gt;:items=&lt;killer codes&gt;</c>,
+    /// plus <c>:victimitems=&lt;killed codes&gt;</c> when killer != killed.
+    /// </summary>
+    private void EmitLogDeath(string mode, string deathType, Player killer, Player killed)
+    {
+        // QC strcat(":kill:", mode, ":", playerid(killer), ":", playerid(killed), ":type=", Deathtype_Name, ":items=").
+        // The port's deathType IS the deathtype name (dual int/string deathtype), so it maps to Deathtype_Name directly.
+        string s = $":kill:{mode}:{killer.PlayerId}:{killed.PlayerId}:type={deathType}:items=";
+        s = AppendItemcodes(s, killer);
+        if (!ReferenceEquals(killed, killer))
+        {
+            s += ":victimitems=";
+            s = AppendItemcodes(s, killed);
+        }
+        LogDeath?.Invoke(s);
+    }
+
+    /// <summary>
+    /// Port of QC <c>AppendItemcodes</c> (server/damage.qc:81): append a player's death-log item codes — the
+    /// per-slot held weapon id (falling back to the previous weapon when none is current; slot 0 always emits
+    /// even when 0), a trailing "T" when chatting (typing), then the <c>LogDeath_AppendItemCodes</c> mutator
+    /// chain (powerups "S"/"I", etc.).
+    /// </summary>
+    private static string AppendItemcodes(string s, Player player)
+    {
+        for (int slot = 0; slot < MutatorConstants.MaxWeaponSlots; ++slot)
+        {
+            var st = player.WeaponState(new WeaponSlot(slot));
+            int w = st.CurrentWeaponId;
+            if (w <= 0)
+                w = st.PrevWeaponId; // QC: previous weapon (.cnt)
+            if (w > 0 || slot == 0)
+                s += (w > 0 ? w : 0).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        }
+        // QC: if(PHYS_INPUT_BUTTON_CHAT(player)) s = strcat(s, "T");
+        if (player.ButtonChat)
+            s += "T";
+        // QC: MUTATOR_CALLHOOK(LogDeath_AppendItemCodes, player, s) → S/I (powerups), F (ctf), …
+        s = MutatorActivation.LogDeathAppendItemCodes(player, s);
+
+        // QC the per-GAMETYPE LogDeath_AppendItemCodes hook (ctf/sv_ctf.qc appends "F" for a flag carrier). The
+        // MutatorActivation chain above only iterates mutators; CTF is a GameType, so dispatch the active mode's
+        // virtual here. GameScores.Gametype is the live mode name and GameTypes.ByName returns the activated
+        // singleton, so its live flag-carrier state (CarriedBy) is correct; non-CTF modes return s unchanged.
+        if (GameTypes.ByName(GameScores.Gametype) is { } activeMode)
+            s = activeMode.LogDeathAppendItemCodes(player, s);
+
+        return s;
+    }
+
+    /// <summary>
     /// Port of the notification + announcer emission inside QC <c>Obituary</c> (server/damage.qc:268-477):
     /// the kill feed (MSG_MULTI to the victim + MSG_INFO to everyone else — <c>Obituary_WeaponDeath</c> /
     /// <c>Obituary_SpecialDeath</c>), the frag/typefrag/teamkill centerprints (MSG_CHOICE / MSG_CENTER), the
@@ -522,7 +652,7 @@ public sealed class Scores
     /// <c>CS(attacker).killcount</c>) and the victim's pre-reset streak (<paramref name="victimStreakBefore"/>,
     /// QC <c>CS(targ).killcount</c>). Mirrors the SUICIDE / MURDER(team vs enemy) / ACCIDENT branch order.
     /// </summary>
-    private void EmitObituary(Player? attacker, Player victim, string deathType, bool teamGame, int victimStreakBefore)
+    private void EmitObituary(Player? attacker, Player victim, string deathType, bool teamGame, int victimStreakBefore, Entity? inflictor = null)
     {
         // QC: deathlocation = autocvar_notification_server_allows_location ? NearestLocation(...) : "". The cvar
         // ships 0, so location is off; the s2loc/s3loc token collapses to "" for an empty string. T40.
@@ -533,11 +663,72 @@ public sealed class Scores
         // =======  SUICIDE / ACCIDENT-TRAP (QC: targ == attacker, or no player attacker)  =======
         if (attacker is null || ReferenceEquals(attacker, victim))
         {
+            string baseType = DeathTypes.BaseOf(deathType);
+
+            // QC Obituary_SpecialDeath (server/damage.qc:137): `if (g_cts && deathtype == DEATH_KILL.m_id) return;`
+            // — a /kill in CTS prints no obituary at all (the run is invalidated silently, no "died" line). QC's
+            // g_cts is the IS_GAMETYPE(CTS) macro, NOT a cvar; the port never stamps a g_cts cvar (Handicap.cs:26)
+            // and instead selects the gametype as the active GameScores.Gametype string.
+            if (baseType == DeathTypes.Kill && GameScores.Gametype == "cts")
+                return;
+
+            // QC SUICIDE switch (server/damage.qc:271-273): TEAMCHANGE / AUTOTEAMCHANGE route to their own self
+            // line with f1 = targ.team (the death_team float arg the DEATH_SELF_*TEAMCHANGE rows render as the
+            // destination team name). The frag-negation skip for AUTOTEAMCHANGE is applied in the scoring branch
+            // above (and in each gametype's own suicide handler, e.g. Tdm.OnDeath) — here we only emit the
+            // correct obituary self-line.
+            if (baseType == DeathTypes.TeamChange || baseType == DeathTypes.AutoTeamChange)
+            {
+                string tcName = baseType == DeathTypes.AutoTeamChange
+                    ? "DEATH_SELF_AUTOTEAMCHANGE" : "DEATH_SELF_TEAMCHANGE";
+                // row args (selector "s1 death_team s2loc"): SplitArgs takes ALL strings first (s1=victim,
+                // s2loc=location), then ALL floats (death_team=victim.team). QC passes the same: Obituary_SpecialDeath
+                // (server/damage.qc:272) -> s1=targ.netname, s2=deathlocation, ..., f1=targ.team.
+                NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Multi, tcName,
+                    victimName, deathloc, victim.Team);
+                NotificationSystem.Send(NotifBroadcast.AllExcept, victim, MsgType.Info, tcName,
+                    victimName, deathloc, victim.Team);
+                return;
+            }
+
+            // QC DEATH_CUSTOM (server/damage.qc:454-461, ACCIDENT branch): a mapper-supplied deathmessage routes
+            // to DEATH_SELF_CUSTOM ("You were %s"). The string is formatted with a leading "%s " when it has no
+            // own format specifier (QC strstrofs(deathmessage,"%",0) < 0 ? strcat("%s ", deathmessage) : ...).
+            // The mapper string rides on the inflictor's .Message (the same plumbing as the VOID_ENT path).
+            if (baseType == DeathTypes.Custom)
+            {
+                string deathmessage = inflictor?.Message ?? "";
+                string s2 = deathmessage.IndexOf('%') < 0 ? "%s " + deathmessage : deathmessage;
+                // DEATH_SELF_CUSTOM row: (s1=victim, s2=formatted message, s3loc=location, spree_lost=killcount).
+                NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Multi, "DEATH_SELF_CUSTOM",
+                    victimName, s2, deathloc, victimStreakBefore);
+                NotificationSystem.Send(NotifBroadcast.AllExcept, victim, MsgType.Info, "DEATH_SELF_CUSTOM",
+                    victimName, s2, deathloc, victimStreakBefore);
+                EmitBotlikeAchievement(attacker, victim);
+                return;
+            }
+
+            // QC HURTTRIGGER msg_from_ent (server/damage.qc:281-290,442-451): a trigger_hurt (DEATH_VOID) that
+            // carries a custom inflictor.message routes to DEATH_SELF_VOID_ENT with the mapper string as s2 (the
+            // generic "you ended up in the wrong place" line is replaced). msg_from_ent = inflictor.message != "".
+            string? entMessage = MsgFromEnt(deathType, inflictor, murder: false);
+            if (entMessage is not null)
+            {
+                // DEATH_SELF_VOID_ENT row: (s1=victim, s2=mapper message, s3loc=location, spree_lost=killcount).
+                NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Multi, "DEATH_SELF_VOID_ENT",
+                    victimName, entMessage, deathloc, victimStreakBefore);
+                NotificationSystem.Send(NotifBroadcast.AllExcept, victim, MsgType.Info, "DEATH_SELF_VOID_ENT",
+                    victimName, entMessage, deathloc, victimStreakBefore);
+                EmitBotlikeAchievement(attacker, victim);
+                return;
+            }
+
             // QC SUICIDE shape: WEAPON_*_SUICIDE / DEATH_SELF_* with (s1=netname, s2loc=location, spree_lost=killcount).
             string self = weapon
                 ? DeathMessages.SelectSuicideMessage(DeathTypes.WeaponNetNameOf(deathType), deathType)
                 : DeathMessages.SelectSpecial(deathType, murder: false);
             BroadcastObituary(self, victim, victimName, deathloc, "", victimStreakBefore, 0, suicide: true);
+            EmitBotlikeAchievement(attacker, victim);
             return;
         }
 
@@ -589,29 +780,53 @@ public sealed class Scores
             float victimPing = victim.IsBot ? -1f : 0f;
             float attackerPing = attacker.IsBot ? -1f : 0f;
 
+            // Each centerprint is a MSG_CHOICE resolved PER RECIPIENT (A5 #8): the attacker's line from the
+            // attacker's notification_CHOICE_* preference, the victim's from the victim's (QC reads
+            // CS(recipient).msg_choice_choices[idx] for each). SendChoiceToOne primes the dispatch accordingly.
             if (victim.IsTypeFrag)
             {
                 // CHOICE_TYPEFRAG to attacker (s1=victim, f1=spree_cen=kill_count_to_attacker, f2=ping).
-                NotificationSystem.Send(NotifBroadcast.One, attacker, MsgType.Choice, "TYPEFRAG",
-                    victimName, killCountToAttacker, victimPing);
+                SendChoiceToOne(attacker, "TYPEFRAG", victimName, killCountToAttacker, victimPing);
                 // CHOICE_TYPEFRAGGED to victim (s1=attacker, f1=spree_cen=kill_count_to_target, f2=health, f3=armor, f4=ping).
-                NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Choice, "TYPEFRAGGED",
-                    attackerName, killCountToTarget, attackerHealth, attackerArmor, attackerPing);
+                SendChoiceToOne(victim, "TYPEFRAGGED", attackerName, killCountToTarget, attackerHealth, attackerArmor, attackerPing);
             }
             else if (DeathTypes.BaseOf(deathType) == DeathTypes.Fire)
             {
                 // QC frag_centermessage_override: DEATH_FIRE -> CHOICE_FRAG_FIRE / CHOICE_FRAGGED_FIRE.
-                NotificationSystem.Send(NotifBroadcast.One, attacker, MsgType.Choice, "FRAG_FIRE",
-                    victimName, killCountToAttacker, victimPing);
-                NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Choice, "FRAGGED_FIRE",
-                    attackerName, killCountToTarget, attackerHealth, attackerArmor, attackerPing);
+                SendChoiceToOne(attacker, "FRAG_FIRE", victimName, killCountToAttacker, victimPing);
+                SendChoiceToOne(victim, "FRAGGED_FIRE", attackerName, killCountToTarget, attackerHealth, attackerArmor, attackerPing);
             }
             else
             {
-                NotificationSystem.Send(NotifBroadcast.One, attacker, MsgType.Choice, "FRAG",
-                    victimName, killCountToAttacker, victimPing);
-                NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Choice, "FRAGGED",
-                    attackerName, killCountToTarget, attackerHealth, attackerArmor, attackerPing);
+                // QC Obituary (server/damage.qc:371) fires MUTATOR_CALLHOOK(FragCenterMessage, attacker, targ,
+                // deathtype, ...) so a gametype can swap/suppress the personal frag centerprint. Freeze Tag swaps
+                // FRAG/FRAGGED for FRAG_FREEZE/FRAGGED_FREEZE ("You froze X" / "You were frozen by Y") and
+                // suppresses both when the target was already frozen (a void/lava re-kill). Scores' obituary
+                // handler runs BEFORE FreezeTag.OnDeath (SubscribeToDeaths is added to Combat.Death before the
+                // gametype Activate), so at hook time IsFrozen(victim) still reflects the PRE-death state, exactly
+                // matching QC's STAT(FROZEN, frag_target) test.
+                var fcm = new MutatorHooks.FragCenterMessageArgs(attacker, victim, deathType);
+                MutatorHooks.FragCenterMessage.Call(ref fcm);
+                if (!fcm.Suppress)
+                {
+                    SendChoiceToOne(attacker, fcm.AttackerChoice, victimName, killCountToAttacker, victimPing);
+                    SendChoiceToOne(victim, fcm.TargetChoice, attackerName, killCountToTarget, attackerHealth, attackerArmor, attackerPing);
+                }
+            }
+
+            // QC HURTTRIGGER msg_from_ent (server/damage.qc:420-426): an enemy-credited trigger_hurt (DEATH_VOID)
+            // carrying a custom inflictor.message2 routes to DEATH_MURDER_VOID_ENT with the mapper string as s3
+            // (s4loc=location). msg_from_ent = (DEATH_ENT == HURTTRIGGER && inflictor.message2 != "").
+            string? entMurder = MsgFromEnt(deathType, inflictor, murder: true);
+            if (entMurder is not null)
+            {
+                // DEATH_MURDER_VOID_ENT row: (s1=victim, s2=attacker, s3=mapper message2, s4loc=location,
+                // f1=spree_end=victimStreak, f2=spree_inf=killCountToAttacker).
+                NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Multi, "DEATH_MURDER_VOID_ENT",
+                    victimName, attackerName, entMurder, deathloc, victimStreakBefore, killCountToAttacker);
+                NotificationSystem.Send(NotifBroadcast.AllExcept, victim, MsgType.Info, "DEATH_MURDER_VOID_ENT",
+                    victimName, attackerName, entMurder, deathloc, victimStreakBefore, killCountToAttacker);
+                return;
             }
 
             // QC the kill feed (server/damage.qc:418): Obituary_WeaponDeath, falling back to Obituary_SpecialDeath.
@@ -648,6 +863,27 @@ public sealed class Scores
     }
 
     /// <summary>
+    /// QC the ACCIDENT/TRAP BOTLIKE achievement (server/damage.qc:466-471): when a world/accident death (NO
+    /// player attacker — <paramref name="attacker"/> is null) drives the victim's running SP_SCORE to exactly
+    /// −5, announce ANNCE_ACHIEVEMENT_BOTLIKE to them. A genuine self-suicide (<c>targ == attacker</c>, a
+    /// non-null attacker) is NOT eligible — QC only checks this in the no-attacker ACCIDENT branch.
+    /// NOTE (live-path ordering caveat): QC reads SP_SCORE *after* its <c>GiveFrags(targ,targ,-1)</c>. In
+    /// sole-scorer mode (<see cref="OwnsScore"/>=true) the central <see cref="Obituary"/> applies that −1 before
+    /// this runs, so the read matches QC. In read-through mode (the live DM path, OwnsScore=false) the gametype's
+    /// own death handler applies <c>ScoreFrags-=1</c> *after* <see cref="Scores"/> (it subscribes to Combat.Death
+    /// later), so <c>Row(victim).Score</c> here still excludes this death's −1 — the −5 medal can therefore latch
+    /// one accident death late on that path. Cosmetic-only (the rare bot-like self-destruct medal); a faithful fix
+    /// would need the Scores/gametype death-handler ordering reconciled, which is out of this unit's scope.
+    /// </summary>
+    private void EmitBotlikeAchievement(Player? attacker, Player victim)
+    {
+        if (attacker is not null)
+            return; // QC: only the ACCIDENT/TRAP branch (no player attacker) announces BOTLIKE.
+        if (Row(victim).Score == -5)
+            NotificationSystem.Send(NotifBroadcast.One, victim, MsgType.Annce, "ACHIEVEMENT_BOTLIKE");
+    }
+
+    /// <summary>
     /// QC the KILL_SPREE_LIST switch in Obituary (server/damage.qc:346): the ANNCE_KILLSTREAK_## announcer for a
     /// milestone kill count (3/5/10/15/20/25/30), or null for a non-milestone. The bare name maps the milestone
     /// to its zero-padded suffix (3 -> KILLSTREAK_03, 5 -> KILLSTREAK_05, …). T40.
@@ -663,6 +899,22 @@ public sealed class Scores
         30 => "KILLSTREAK_30",
         _ => null,
     };
+
+    /// <summary>
+    /// QC <c>msg_from_ent</c> (server/damage.qc:283,420,444): a <c>trigger_hurt</c> (the HURTTRIGGER /
+    /// <see cref="DeathTypes.Void"/> deathtype) routes the obituary through the <c>DEATH_*_VOID_ENT</c> rows when
+    /// its inflictor carries a mapper-authored death string — <c>.message</c> for the self/accident line, or
+    /// <c>.message2</c> for the murder line (an enemy who took the trigger over). Returns the custom string, or
+    /// <c>null</c> to fall back to the fixed <c>DEATH_*_VOID</c> line (non-void deathtype, no inflictor, or empty
+    /// field). Only HURTTRIGGER gets this treatment in QC; the port carries trigger_hurt as DEATH_VOID.
+    /// </summary>
+    private static string? MsgFromEnt(string deathType, Entity? inflictor, bool murder)
+    {
+        if (inflictor is null || DeathTypes.BaseOf(deathType) != DeathTypes.Void)
+            return null;
+        string msg = murder ? inflictor.Message2 : inflictor.Message;
+        return string.IsNullOrEmpty(msg) ? null : msg;
+    }
 
     /// <summary>QC APP_TEAM_NUM(team, …): the team color suffix (RED/BLUE/YELLOW/PINK) for a team color code.</summary>
     private static string TeamSuffix(float team) => (int)team switch
@@ -730,6 +982,21 @@ public sealed class Scores
     public void AddDamageTaken(Player p, float amount)
     {
         if (amount > 0f) Row(p).AddAux(ScoreField.DamageTaken, (int)amount);
+    }
+
+    /// <summary>
+    /// QC common/playerstats.qc:262-265 — the damage-weighted handicap averages for the XonStat report:
+    /// <c>given&lt;=0 ? 1 : handicap_avg_given_sum / given</c> (and likewise for taken), where the denominators
+    /// are the player's total DMG / DMGTAKEN score columns. Returns (1, 1) for an unregistered player.
+    /// </summary>
+    public (float given, float taken) HandicapReportAverages(Player p)
+    {
+        if (!_rows.TryGetValue(p, out PlayerScoreRow? row))
+            return (1f, 1f);
+        float given = row.DamageDealt;
+        float taken = row.DamageTaken;
+        return (given <= 0f ? 1f : row.HandicapAvgGivenSum / given,
+                taken <= 0f ? 1f : row.HandicapAvgTakenSum / taken);
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -894,14 +1161,22 @@ public sealed class Scores
     // same rounding QC's GameRules_scoring_add ends up with on whole-number balance damage).
     private void OnDamageDealtScored(Entity attacker, float realdmg)
     {
-        if (attacker is Player p && _rows.ContainsKey(p))
+        if (attacker is Player p && _rows.TryGetValue(p, out PlayerScoreRow? row))
+        {
+            // QC server/client.qc:2865 — damage-weighted avg-sum for the handicapgiven report, BEFORE the column add.
+            row.HandicapAvgGivenSum += realdmg * DamageSystem.GetTotalHandicap(p, receiving: false);
             AddDamageDealt(p, realdmg);
+        }
     }
 
     private void OnDamageTakenScored(Entity victim, float realdmg)
     {
-        if (victim is Player p && _rows.ContainsKey(p))
+        if (victim is Player p && _rows.TryGetValue(p, out PlayerScoreRow? row))
+        {
+            // QC server/client.qc:2871 — damage-weighted avg-sum for the handicaptaken report.
+            row.HandicapAvgTakenSum += realdmg * DamageSystem.GetTotalHandicap(p, receiving: true);
             AddDamageTaken(p, realdmg);
+        }
     }
 
     private bool _teamGameForBus;
@@ -917,7 +1192,7 @@ public sealed class Scores
         if (attacker is not null && !_rows.ContainsKey(attacker))
             attacker = null;
 
-        Obituary(attacker, victim, ev.DeathType, _teamGameForBus);
+        Obituary(attacker, victim, ev.DeathType, _teamGameForBus, ev.Inflictor);
         return false;
     }
 }

@@ -72,8 +72,10 @@ namespace XonoticGodot.Common.Gameplay
         {
             this_.ClassName = "func_fourier";
 
-            if (!string.IsNullOrEmpty(this_.Noise))                        // QC: precache + looping soundto(MSG_INIT)
-                MapMover.Sound(this_, SoundChannel.Voice, this_.Noise);
+            // QC fourier.qc:46-49: precache + looping soundto(MSG_INIT, this, CH_TRIGGER_SINGLE, .noise, VOL_BASE,
+            // ATTEN_IDLE, 0) — a persistent loop on the mover, replayed to every (incl. late-joining) client via
+            // the entity's sound state (the headless analogue of the per-player MSG_INIT resend).
+            MapMover.LoopAmbient(this_, this_.Noise);
 
             if (this_.Speed == 0f) this_.Speed = 4f;                        // QC: if (!this.speed) this.speed = 4;
             if (this_.Height == 0f) this_.Height = 32f;                     // QC: if (!this.height) this.height = 32;
@@ -189,8 +191,10 @@ namespace XonoticGodot.Common.Gameplay
             this_.SetActive = VectormamamamSetActive;                       // QC: this.setactive = func_vectormamamam_setactive;
             VectormamamamSetActive(this_, MapMover.ActiveActive);           // QC: this.setactive(this, ACTIVE_ACTIVE);
 
-            // QC: IL_PUSH(g_initforplayer, this); this.init_for_player = ... — per-player ambient resend. The port
-            // has no live client roster at this layer; the ambient plays through the facade in setactive instead.
+            // QC: IL_PUSH(g_initforplayer, this); this.init_for_player = func_vectormamamam_init_for_player — the
+            // per-player MSG_ONE ambient resend for late joiners. The port reproduces the net effect without a
+            // client roster: VectormamamamSetActive starts a PERSISTENT loop (MapMover.LoopAmbient), which the
+            // facade keeps as part of the entity's sound state and replays to any client that connects later.
 
             MapMover.IndexRegister(this_);
 
@@ -297,12 +301,14 @@ namespace XonoticGodot.Common.Gameplay
 
             if (this_.Active == MapMover.ActiveNot)
             {
-                if (Api.Services is not null)
-                    Api.Sound.Stop(this_, SoundChannel.Voice);             // QC: stopsound(this, CH_TRIGGER_SINGLE);
+                MapMover.StopAmbient(this_);                               // QC: stopsound(this, CH_TRIGGER_SINGLE);
             }
-            else if (!string.IsNullOrEmpty(this_.Noise))
+            else
             {
-                MapMover.Sound(this_, SoundChannel.Voice, this_.Noise);    // QC: _sound(this, CH_TRIGGER_SINGLE, noise, ...);
+                // QC: _sound(this, CH_TRIGGER_SINGLE, noise, VOL_BASE, ATTEN_IDLE) — a persistent loop, so a
+                // late-joining player still hears the ambient (the headless analogue of QC's per-player
+                // func_vectormamamam_init_for_player MSG_ONE resend; no separate client roster at this layer).
+                MapMover.LoopAmbient(this_, this_.Noise);
             }
         }
 

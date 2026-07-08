@@ -43,7 +43,20 @@ public partial class ProjectileRenderer : Node3D
         public ProjectilePredictor Predictor; // CSQC Projectile_Draw: snap-to-server + local velocity extrapolation
         public string? SegmentTrail;          // faithful per-segment trail effect (DP CL_ParticleTrail); null = legacy emitters
         public NVec3 TrailPos;                // Quake-space tail of the last emitted trail segment
+
+        /// <summary>
+        /// Client clock time the entity is expected to expire (QC <c>death_time</c>) — the anchor for the electro
+        /// orb's <c>(ltime-time)</c> shrink pulse. The orb's <c>death_time</c> isn't networked, so it's cached at
+        /// spawn as <c>now + g_balance_electro_secondary_lifetime</c> (the orb's <c>NextThink = now + lifetime</c>
+        /// in <see cref="XonoticGodot.Common.Gameplay.Weapons.Electro"/>). 0 = no scale pulse for this visual.
+        /// </summary>
+        public float DeathTime;
     }
+
+    /// <summary>The electro secondary orb's lifetime (QC <c>g_balance_electro_secondary_lifetime</c>, default 4s) —
+    /// the orb's <c>NextThink = now + lifetime</c>, used to seed <see cref="Visual.DeathTime"/> for the shrink pulse
+    /// when the entity carries no networked death time.</summary>
+    private const float ElectroOrbLifetime = 4f;
 
     private readonly Dictionary<int, Visual> _visuals = new();
 
@@ -120,6 +133,13 @@ public partial class ProjectileRenderer : Node3D
             body.Scale = Vector3.One * desc.ModelScale;
         root.AddChild(body);
 
+        // QC Projectile_Draw tints the PROJECTILE_ROCKETMINSTA_LASER body to the firer's team palette
+        // (projectile.qc:504-506: colormod = colormapPaletteColor(colormap & 0x0F) when colormap > 0). The bolt
+        // networks the owner's team in Colormap → ClientEntityView puts it on Entity.Team; apply the team color to
+        // the body (the real elaser model's meshes via the skin colormod, or the procedural glow sprite's modulate).
+        if (type == PType.RocketMinstaLaser)
+            ApplyTeamColormod(body, (int)entity.Team);
+
         // Trail. Preferred: the FAITHFUL per-segment path (DP CL_ParticleTrail) — each frame the follow loop
         // feeds the flight segment to the faithful sim, whose trailspacing stepping + shared accumulator
         // reproduce DP's exact trail density (the electro plasma line is one particle every 2qu — a rate-based
@@ -170,6 +190,9 @@ public partial class ProjectileRenderer : Node3D
             Predictor = predictor,
             SegmentTrail = segmentTrail,
             TrailPos = entity.Origin,
+            // Electro orb only: anchor the (ltime-time) shrink pulse. The orb's death_time isn't networked, so
+            // cache spawn-time + g_balance_electro_secondary_lifetime (the orb's NextThink). Other types: 0 (no pulse).
+            DeathTime = type == PType.Electro ? Now() + ElectroOrbLifetime : 0f,
         };
         _visuals[entity.Index] = visual;
 
@@ -181,8 +204,29 @@ public partial class ProjectileRenderer : Node3D
     /// <summary>Pull one projectile's current origin/velocity onto its visual (called per network update).</summary>
     public void OnUpdate(Entity entity)
     {
-        if (entity is not null && _visuals.TryGetValue(entity.Index, out Visual? v))
-            v.Entity = entity; // _Process does the actual transform follow (smooth interpolation)
+        if (entity is null || !_visuals.TryGetValue(entity.Index, out Visual? v))
+            return;
+        v.Entity = entity; // _Process does the actual transform follow (smooth interpolation)
+
+        // CSQCProjectile(..., true) "change type" — the porto flips its networked type from PORTO_RED to
+        // PORTO_BLUE mid-flight when a combined shot lays its in-portal and continues as the out-portal
+        // (porto.qc:251). The classifier keys on the entity's EF_RED/EF_BLUE bits, so re-classify on each update
+        // and recolour the bolt's glow + light when it changes, so the blue variant renders mid-flight.
+        PType reclass = ProjectileCatalog.Classify(entity);
+        if (reclass != v.Type)
+        {
+            v.Type = reclass;
+            ApplyTypeGlow(v, ProjectileCatalog.DescOf(reclass));
+        }
+    }
+
+    /// <summary>Recolour a live visual's body glow + dynamic light to a new type descriptor (porto red->blue swap).</summary>
+    private static void ApplyTypeGlow(Visual v, ProjectileCatalog.Desc desc)
+    {
+        if (v.Body is Sprite3D sprite && GodotObject.IsInstanceValid(sprite))
+            sprite.Modulate = desc.GlowColor;
+        if (v.Light is { } light && GodotObject.IsInstanceValid(light))
+            light.LightColor = desc.GlowColor;
     }
 
     /// <summary>Stop rendering a projectile (it hit something / expired). Optionally play an impact effect.</summary>
@@ -305,6 +349,20 @@ public partial class ProjectileRenderer : Node3D
                 }
             }
 
+            // Electro orb expiry shrink (QC electro_orb_draw, electro.qc:32: ...*bound(0,(ltime-time)*4,1)).
+            // As the orb's remaining lifetime drops below 0.25s the body scales toward 0; outside that window the
+            // factor stays 1 so the static scale is unchanged. Guarded on PType.Electro so no other projectile's
+            // scale animates. Applied BEFORE the spin so the local roll keeps composing on the freshly-set scale.
+            if (v.Type == PType.Electro && v.Body is not null && v.DeathTime > 0f
+                && GodotObject.IsInstanceValid(v.Body))
+            {
+                float remaining = v.DeathTime - Now();
+                float scaleFactor = Mathf.Clamp(remaining * 4f, 0f, 1f);
+                float baseScale = ProjectileCatalog.DescOf(v.Type).ModelScale;
+                if (baseScale is <= 0f or 1f) baseScale = 1f;
+                v.Body.Scale = Vector3.One * (baseScale * scaleFactor);
+            }
+
             // Spin/tumble the body locally on top of the velocity-aligned root (QC Projectile_Draw rot /
             // avelocity): rocket rolls (z), bouncing grenade tumbles sideways (y), hookbomb pitches (x), …
             if (v.Body is not null && v.SpinDegPerSec != Vector3.Zero && GodotObject.IsInstanceValid(v.Body))
@@ -328,6 +386,12 @@ public partial class ProjectileRenderer : Node3D
             ? new XonoticGodot.Net.ProjectileTraceHit(true, tr.EndPos, tr.PlaneNormal)
             : new XonoticGodot.Net.ProjectileTraceHit(false, end, default);
     }
+
+    /// <summary>Current client clock time (mirrors <c>ClientWorld.Now</c>): the simulation clock the electro orb's
+    /// cached <see cref="Visual.DeathTime"/> is measured against. 0 in a headless/clockless harness — there the
+    /// orb's <see cref="Visual.DeathTime"/> is also seeded from this same 0, so the shrink stays inert (factor 1).</summary>
+    private static float Now()
+        => XonoticGodot.Common.Services.Api.Services?.Clock?.Time ?? 0f;
 
     private static void ApplySpin(Node3D body, Vector3 spinDegPerSec, float delta)
     {
@@ -430,6 +494,44 @@ public partial class ProjectileRenderer : Node3D
                 return sprite;
             }
         }
+    }
+
+    /// <summary>
+    /// Tint a projectile body to a team palette colormod — the QC <c>ROCKETMINSTA_LASER</c> case in
+    /// <c>Projectile_Draw</c> (projectile.qc:504-506: <c>colormod = colormapPaletteColor(colormap &amp; 0x0F)</c>
+    /// when <c>colormap &gt; 0</c>). A real model body (the elaser meshes) routes through the skin-shader
+    /// colormod (<see cref="ModelTint.SetColormod"/> over its <see cref="MeshInstance3D"/>s); the procedural glow
+    /// sprite multiplies its <see cref="Sprite3D.Modulate"/> by the team color. A colorless map (team 0 — FFA /
+    /// unknown) is left untinted, matching the QC <c>colormap &gt; 0</c> guard.
+    /// </summary>
+    private static void ApplyTeamColormod(Node3D body, int colormap)
+    {
+        if (body is null)
+            return;
+        Color team = ModelTint.TeamColor(colormap, out bool hasTeam);
+        if (!hasTeam)
+            return; // QC: only tints when colormap > 0
+        // Procedural glow sprite: multiply its modulate (the bolt billboard) by the team color.
+        if (body is Sprite3D sprite)
+        {
+            sprite.Modulate *= team;
+            return;
+        }
+        // Real model body: drive the skin-shader colormod uniform across its meshes (plain-material meshes
+        // ignore the unset uniform — harmless, exactly as for player models).
+        var meshes = new List<MeshInstance3D>();
+        CollectMeshes(body, meshes);
+        if (meshes.Count > 0)
+            ModelTint.SetColormod(meshes, team);
+    }
+
+    /// <summary>Depth-first collect every <see cref="MeshInstance3D"/> at or under <paramref name="node"/>.</summary>
+    private static void CollectMeshes(Node node, List<MeshInstance3D> dst)
+    {
+        if (node is MeshInstance3D mi)
+            dst.Add(mi);
+        foreach (Node child in node.GetChildren())
+            CollectMeshes(child, dst);
     }
 
     // Per-projectile-type cache of the trail's ParticleProcessMaterial + DrawPass mesh. Every projectile of a

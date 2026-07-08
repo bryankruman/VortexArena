@@ -41,26 +41,29 @@ public class CountdownAnnouncerTests : IDisposable
     // ---- WarmupController game-start countdown -----------------------------------------------------
 
     [Fact]
-    public void Warmup_GameStart_Countdown_Fires_Each_Second_5_Down_To_0()
+    public void Warmup_GameStart_Countdown_Fires_Each_Second_10_Down_To_0()
     {
         var w = new WarmupController { Roster = () => System.Array.Empty<Player>() };
         var ticks = new List<int>();
         w.OnCountdownTick = ticks.Add;
 
-        // g_warmup off -> Begin arms a 5s countdown (RestartCountdown) to GameStartTime = now + 5.
+        // QC world.qc:2221 -> Begin (no warmup) only arms the join window (game_starttime = now + g_start_delay,
+        // 0 on a listen server). The live countdown is armed by ReadyRestart_force (vote.qc:460):
+        // game_starttime = now + RESTART_COUNTDOWN (vote.qh:66 = 10s).
         Api.Cvars.Set("g_warmup", "0");
         w.Begin();
-        Assert.Equal(5f, w.GameStartTime, 3);
+        w.ReadyRestart(forceWarmupEnd: true);
+        Assert.Equal(WarmupController.RestartCountdown, w.GameStartTime, 3);
 
         // step the clock one second at a time; Think() drives the announcer.
-        for (int sec = 0; sec <= 6; sec++)
+        for (int sec = 0; sec <= 11; sec++)
         {
             _clock.Time = sec;
             w.Think();
         }
 
-        // QC countdown_rounded: 5,4,3,2,1 then 0 (BEGIN). (At t=0 remaining=5 -> 5; t=1 -> 4; ...; t=5 -> 0.)
-        Assert.Equal(new[] { 5, 4, 3, 2, 1, 0 }, ticks);
+        // QC countdown_rounded: 10,9,..,1 then 0 (BEGIN). (At t=0 remaining=10 -> 10; ...; t=10 -> 0.)
+        Assert.Equal(new[] { 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 }, ticks);
     }
 
     [Fact]
@@ -71,14 +74,15 @@ public class CountdownAnnouncerTests : IDisposable
         w.OnCountdownTick = ticks.Add;
         Api.Cvars.Set("g_warmup", "0");
         w.Begin();
+        w.ReadyRestart(forceWarmupEnd: true); // arms the RESTART_COUNTDOWN (10s) game-start countdown.
 
-        // many frames inside the first second -> exactly one tick (for "5"), not one per frame.
+        // many frames inside the first second -> exactly one tick (for "10"), not one per frame.
         for (int frame = 0; frame < 10; frame++)
         {
             _clock.Time = frame * 0.05f; // 10 frames within the first 0.5s
             w.Think();
         }
-        Assert.Equal(new[] { 5 }, ticks);
+        Assert.Equal(new[] { 10 }, ticks);
     }
 
     [Fact]
@@ -88,7 +92,8 @@ public class CountdownAnnouncerTests : IDisposable
         w.OnCountdownTick = n => GameStartCountdownBroadcast(n);
         Api.Cvars.Set("g_warmup", "0");
         w.Begin();
-        for (int sec = 0; sec <= 6; sec++) { _clock.Time = sec; w.Think(); }
+        w.ReadyRestart(forceWarmupEnd: true); // arms the RESTART_COUNTDOWN (10s) game-start countdown.
+        for (int sec = 0; sec <= 11; sec++) { _clock.Time = sec; w.Think(); }
 
         // NUM_GAMESTART_5..1 fire (the registry enables n<=5) + COUNTDOWN_GAMESTART centers + BEGIN at 0.
         Assert.Contains(_rec.Log, d => d.Notification.RegistryName == "ANNCE_NUM_GAMESTART_5");

@@ -1,5 +1,6 @@
 using System.Numerics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay.Damage;
 using XonoticGodot.Common.Math;
 using XonoticGodot.Common.Services;
 
@@ -38,29 +39,38 @@ public sealed class MachinegunTurret : Turret
     // QC machinegun scoring biases (turrets.cfg): range 0.25, same 0.25, angle 0.5, player 1, missile 0.
     private const float RangeBias = 0.25f, SameBias = 0.25f, AngleBias = 0.5f, PlayerBias = 1f, MissileBias = 0f;
 
-    // QC machinegun.qc tr_setup: players, range-limited, team-checked, angle-limited. Hitscan, lead aim.
+    // QC machinegun.qc tr_setup: target_select_flags = PLAYERS | RANGELIMITS | TEAMCHECK. Note Base does NOT
+    // set TFL_TARGETSELECT_ANGLELIMITS — the machinegun acquires out-of-cone targets at selection time and
+    // then slews to them; the angle gate at validate_target:780 only fires when that flag is present.
     private const int Select = TurretAI.SelectPlayers | TurretAI.SelectRangeLimits
-                             | TurretAI.SelectTeamCheck | TurretAI.SelectAngleLimits;
+                             | TurretAI.SelectTeamCheck;
 
     public MachinegunTurret()
     {
         NetName = "machinegun";
         DisplayName = "Machinegun Turret";
         Model = "models/turrets/base.md3";
+        // machinegun.qh head_model ATTRIB — the separate machinegun.md3 head-bone model on top of the base body.
+        // No client turret render attaches it at tag_head yet (whole-family presentation gap), but carrying it as
+        // data matches Base identity AND feeds the death-gib toss (TurretAI.Die tosses the head_model as a gib).
+        HeadModel = "models/turrets/machinegun.md3";
         StartHealth = 256f;
         Range = TargetRange;
     }
 
     public override void Spawn(Entity e)
+        // machinegun.qc tr_setup: damage_flags |= TFL_DMG_HEADSHAKE (a hit jitters the head off-aim).
         => TurretSpawn.Init(this, e, new Vector3(-32f, -32f, 0f), new Vector3(32f, 32f, 64f),
-            AmmoMax, AmmoRecharge, ShotVolly);
+            AmmoMax, AmmoRecharge, ShotVolly, energyAmmo: false, headShake: true);
 
     public override void Think(Entity e)
     {
         var p = new TurretParams(Select, TargetRangeMin, TargetRange, ShotDamage, ShotRefire,
             AimSpeed, FireTolerance, lead: true, ShotVolly, ShotVollyRefire,
             rangeOptimal: TargetRangeOptimal, shotSpeed: ShotSpeed, aimMaxPitch: AimMaxPitch, aimMaxRot: AimMaxRot,
-            shotTimeCompensate: true, zPredict: true,
+            // machinegun.qc tr_setup aim_flags = TFL_AIM_LEAD | TFL_AIM_SHOTTIMECOMPENSATE. No TFL_AIM_ZPREDICT,
+            // so the machinegun does NOT lead the gravity arc of airborne targets (zPredict stays false).
+            shotTimeCompensate: true, zPredict: false,
             rangeBias: RangeBias, sameBias: SameBias, angleBias: AngleBias,
             missileBias: MissileBias, playerBias: PlayerBias,
             trackType: TurretAI.TrackFluidInertia, trackAccelPitch: 0.4f, trackAccelRot: 0.9f, trackBlendRate: 0.2f);
@@ -78,12 +88,23 @@ public sealed class MachinegunTurret : Turret
         Vector3 dir = QMath.Normalize(st.AimPos - st.ShotOrg);
         if (dir == Vector3.Zero) dir = QMath.Forward(TurretAI.HeadWorldAngles(turret));
 
-        TurretCombat.FireBullet(turret, st.ShotOrg, dir, ShotSpread, ShotDamage, ShotForce, RegistryId);
+        // machinegun_weapon.qc:22 — fireBullet(..., EFFECT_BULLET) with DEATH_TURRET_MACHINEGUN. The
+        // EFFECT_BULLET tracer is OUTSIDE the `if (isPlayer)` gate, so it is emitted on the turret path
+        // (turret-visible bullet trail). Server-side emit via the same EffectEmitter seam the player
+        // Machinegun uses (tracerEffect "BULLET" = EFFECT_BULLET), networked to clients.
+        TurretCombat.FireBullet(turret, st.ShotOrg, dir, ShotSpread, ShotDamage, ShotForce,
+            DeathTypes.TurretMachinegun, tracerEffect: "BULLET");
 
-        if (Api.Services is not null)
-            Api.Sound.Play(turret, SoundChannel.Weapon, "weapons/uzi_fire.wav");
+        // machinegun_weapon.qc:23 — W_MuzzleFlash_Model(MDL_MACHINEGUN_MUZZLEFLASH). Also OUTSIDE the
+        // `if (isPlayer)` gate, so the turret shows a muzzle flash at the fire tag. Base attaches a muzzle
+        // model at tag_fire; we have no tag_head/tag_fire sub-entity, so emit the flash effect at the muzzle
+        // origin along the shot dir — the same MACHINEGUN_MUZZLEFLASH the player path emits.
+        EffectEmitter.Emit("MACHINEGUN_MUZZLEFLASH", st.ShotOrg, dir * 1000f, 1);
 
-        // NOTE (client-render): EFFECT_BULLET tracer, MDL_MACHINEGUN_MUZZLEFLASH at tag_fire, head frame anim.
-        // The server-side fire (machinegun_weapon.qc) is done above.
+        // NO fire sound on the turret path: in machinegun_weapon.qc wr_think the only sound emitter
+        // (W_SetupShot_Dir → SND_MachineGunTurretAttack_FIRE) is inside the `if (isPlayer)` block, and a
+        // turret actor is not a player, so Base fires SILENTLY. fireBullet/W_MuzzleFlash_Model emit none.
+
+        // NOTE (client-render, still deferred): head-bone frame anim (no tur_head sub-entity / tag_fire).
     }
 }

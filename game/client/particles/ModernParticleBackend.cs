@@ -84,7 +84,7 @@ public partial class ModernParticleBackend : Node3D
     /// block produced a visible emitter (e.g. all decal/beam blocks, which the modern path leaves to the shared
     /// CPU subsystems).
     /// </summary>
-    public Node3D? Spawn(IReadOnlyList<EffectInfoEmitter> blocks, NVec3 origin, NVec3 velocity, int count,
+    public Node3D? Spawn(IReadOnlyList<EffectInfoEmitter> blocks, NVec3 origin, NVec3 velocity, float count,
         ModernPreset preset, bool collisionEnabled)
     {
         if (blocks is null || blocks.Count == 0)
@@ -145,7 +145,7 @@ public partial class ModernParticleBackend : Node3D
     //  Per-block emitter build
     // =================================================================================================
 
-    private GpuParticles3D? BuildEmitter(EffectInfoEmitter info, NVec3 velocity, int requestedCount,
+    private GpuParticles3D? BuildEmitter(EffectInfoEmitter info, NVec3 velocity, float requestedCount,
         ModernPreset preset, bool collisionEnabled, NVec3 fwd, NVec3 right, NVec3 up)
     {
         // --- count: DP cnt = countabsolute + pcount*countmultiplier*quality (no trail term here — the modern

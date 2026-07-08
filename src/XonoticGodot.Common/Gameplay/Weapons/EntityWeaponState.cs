@@ -49,6 +49,20 @@ public partial class Entity
     public float BounceStop;
 
     /// <summary>
+    /// QC <c>.damagedbycontents</c> (server/damage.qh:45) — when true this entity is enrolled in the
+    /// <c>g_damagedbycontents</c> per-frame sweep (server/main.qc CreatureFrame_All): a projectile resting in
+    /// lava/slime (or a fully-submerged drowner) takes content damage. Set on an electro orb when
+    /// <c>g_balance_electro_secondary_damagedbycontents</c> is on (default 1). Default false.
+    /// </summary>
+    public bool DamagedByContents;
+
+    /// <summary>
+    /// QC <c>.contents_damagetime</c> (server/main.qc CreatureFrame_hotliquids) — the next sim time this entity
+    /// may take liquid content damage (rate-limited by <c>g_balance_contents_damagerate</c>). 0 = ready now.
+    /// </summary>
+    public float ContentsDamageTime;
+
+    /// <summary>
     /// QC <c>.event_damage</c> for shootable PROJECTILES (rockets/grenades/mines/orbs/tags/bolts). When a
     /// projectile's HP drops to 0 from being shot, it explodes via this handler (QC W_*_Damage ->
     /// W_PrepareExplosionByDamage). The weapons install this when they spawn a damageable projectile; the
@@ -150,6 +164,11 @@ public sealed class WeaponSlotState
     /// <summary>QC <c>PHYS_INPUT_BUTTON_ATCK2(actor)</c> for THIS slot's frame (see <see cref="ButtonAttack"/>).</summary>
     public bool ButtonAttack2;
 
+    /// <summary>QC <c>PHYS_INPUT_BUTTON_ZOOM(actor) | PHYS_INPUT_BUTTON_ZOOMSCRIPT(actor)</c> for THIS slot's
+    /// frame (see <see cref="ButtonAttack"/>). The rifle reads it inside its fire path to re-aim a scoped shot
+    /// straight from the eye (rifle.qc:16-20).</summary>
+    public bool ButtonZoom;
+
     /// <summary>QC <c>.prevdryfire</c> — last server time the dry-fire CLICK played (throttles it to ~1/s).</summary>
     public float PrevDryFire;
 
@@ -195,6 +214,13 @@ public sealed class WeaponSlotState
     /// not lose the rounds that were already in the gun).
     /// </summary>
     public int OldClipLoad;
+
+    /// <summary>
+    /// QC <c>.buff_ammo_prev_clipload</c> (buffs/buff/ammo.qc): the slot's clip load saved when the ammo buff was
+    /// applied (which then force-fills the clip so reload weapons never run dry). Restored on the buff's removal.
+    /// 0 = nothing saved.
+    /// </summary>
+    public int BuffAmmoPrevClipLoad;
 
     /// <summary>
     /// QC <c>.weapon_load[REGISTRY_MAX(Weapons)]</c> (weaponsystem.qh): the per-weapon persistent magazine store,
@@ -325,10 +351,16 @@ public sealed class WeaponSlotState
     public float BeamHeat;
     /// <summary>QC <c>.arc_overheat</c> — server time the overheat jam lasts until.</summary>
     public float ArcOverheat;
+    /// <summary>QC <c>.arc_cooldown</c> — the cooldown speed latched when the beam ended (HUD heat-% scale).</summary>
+    public float ArcCooldown;
+    /// <summary>QC <c>.beam_bursting</c> — latched once the burst beam starts; keeps bursting until the beam ends.</summary>
+    public bool BeamBursting;
     /// <summary>QC <c>.beam_dir</c> — the current beam direction (lags the aim, curving toward it).</summary>
     public Vector3 BeamDir;
     /// <summary>Whether <see cref="BeamDir"/> has been seeded yet (QC beam_initialized).</summary>
     public bool BeamInitialized;
+    /// <summary>QC <c>actor.arc_smoke_sound</c> — whether the overheat-fire loop (SND_ARC_LOOP_OVERHEAT) is playing.</summary>
+    public bool ArcSmokeSound;
 
     // --- Rifle (rifle.qc) ---
     /// <summary>QC <c>.rifle_accumulator</c> — burst-cost accumulator gating the bullethail.</summary>
@@ -344,6 +376,16 @@ public sealed class WeaponSlotState
     public Entity? TubaNote;
     public float TubaSmokeTime;
 
+    // QC tuba.qc MAX_TUBANOTES = 32: the melody-recognition ring buffer (per weapon slot, like QC stores
+    // tuba_lastnotes[] / tuba_lastnotes_last / tuba_lastnotes_cnt on actor.(weaponentity)). Each entry is the
+    // just-ended note as vec3(on=start time, off=end time, pitch=note); W_Tuba_HasPlayed walks it backwards.
+    /// <summary>QC <c>.tuba_lastnotes_last</c> — index of the most-recently recorded note in the ring.</summary>
+    public int TubaLastNotesLast;
+    /// <summary>QC <c>.tuba_lastnotes_cnt</c> — how many notes are valid in the ring (capped at MAX_TUBANOTES).</summary>
+    public int TubaLastNotesCount;
+    /// <summary>QC <c>.tuba_lastnotes[MAX_TUBANOTES]</c> — ring of (on, off, pitch) note records.</summary>
+    public Vector3[] TubaLastNotes = new Vector3[Tuba.MaxTubaNotes];
+
     // --- Hook grapple (server/hook.qc) ---
     /// <summary>QC <c>actor.(weaponentity).hook</c> — the live grapple chain entity.</summary>
     public Entity? Hook;
@@ -356,6 +398,11 @@ public sealed class WeaponSlotState
     // --- Porto (porto.qc) ---
     public Vector3 PortoVAngle;
     public bool PortoVAngleHeld;
+
+    // --- BallStealer / Nexball (sv_weapon.qc) ---
+    /// <summary>QC <c>NB_METERSTART(actor)</c> — server time the basketball power-meter charge started; 0 = not
+    /// charging. Set when the primary button is first pressed while carrying; cleared on shot or steal.</summary>
+    public float NbMeterStart;
 }
 
 /// <summary>QC hook_state bitset (mutators/mutator/hook + server/hook.qh).</summary>

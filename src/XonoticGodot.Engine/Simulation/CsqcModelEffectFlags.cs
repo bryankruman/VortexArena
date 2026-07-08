@@ -80,4 +80,31 @@ public static class CsqcModelEffectFlags
 
     /// <summary>The trail EF_BRIGHTFIELD sets (csqcmodel_hooks.qc:554-555: <c>tref = EFFECT_TR_NEXUIZPLASMA</c>).</summary>
     public const string BrightFieldTrail = "TR_NEXUIZPLASMA";
+
+    /// <summary>
+    /// The role-glow EF_* bits a Wave-2/3 presentation driver sets on a player to tint its dynamic light by
+    /// team/powerup role (csqcmodel_hooks.qc Effects_Apply consumes EF_BLUE → blue light, EF_RED → red light;
+    /// the Powerups mutator sets EF_BLUE for Strength and EF_RED for Shield, strength.qc:31 / shield.qc:31). This
+    /// returns the EF_* bit-set for a role so a caller can OR it into the per-player forced-effects channel
+    /// (<see cref="ForcedEffectFlags"/>) without re-deriving the constant. <paramref name="strength"/> → EF_BLUE,
+    /// <paramref name="shield"/> → EF_RED (both → both bits, matching a double powerup).
+    /// </summary>
+    public static int RoleGlowFlags(bool strength, bool shield)
+    {
+        int e = 0;
+        if (strength) e |= EF_BLUE;
+        if (shield) e |= EF_RED;
+        return e;
+    }
+
+    /// <summary>
+    /// The full set of EF_* bits a per-player presentation override is allowed to FORCE on (OR into) a model's
+    /// effect field via the per-player forced-effects channel: the role-glow lights (EF_BLUE/EF_RED), the
+    /// powerup/flame visuals (EF_FLAME/EF_STARDUST/EF_SHOCK), the additive/fullbright render-flags, and the
+    /// no-shadow/no-depth-test flags. Used to MASK an incoming forced-effects value so a presentation driver can
+    /// never accidentally force engine-meaningful bits (NODRAW/SELECTABLE/MUZZLEFLASH) that aren't its concern.
+    /// </summary>
+    public const int ForcedEffectFlags =
+        EF_BLUE | EF_RED | EF_FLAME | EF_STARDUST | EF_SHOCK |
+        EF_ADDITIVE | EF_FULLBRIGHT | EF_BRIGHTLIGHT | EF_DIMLIGHT | EF_NOSHADOW | EF_NODEPTHTEST;
 }

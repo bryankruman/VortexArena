@@ -36,9 +36,18 @@ public sealed class NixMutator : MutatorBase
 
     public NixMutator() => NetName = "nix";
 
-    // QC: expr_evaluate(cvar_string("g_nix")) && !instagib && !ok && !weaponarena.
+    // QC: expr_evaluate(cvar_string("g_nix")) && !MUTATOR_IS_ENABLED(mutator_instagib)
+    //     && !MUTATOR_IS_ENABLED(ok) && !MapInfo_LoadedGametype.m_weaponarena.
+    // The port has no cross-mutator MUTATOR_IS_ENABLED helper, so the exclusion is expressed against the
+    // underlying cvars (the same stand-in NewToys/Vampire/instagib/melee_only use): a direct `g_nix 1`
+    // can't double-activate alongside instagib (g_instagib), overkill (g_overkill) or a weapon-arena
+    // gametype (g_weaponarena), not just the menu radio-group.
     public override bool IsEnabled =>
-        Api.Services is not null && Api.Cvars.GetFloat("g_nix") != 0f;
+        Api.Services is not null
+        && Api.Cvars.GetFloat("g_nix") != 0f
+        && Api.Cvars.GetFloat("g_instagib") == 0f
+        && Api.Cvars.GetFloat("g_overkill") == 0f
+        && Api.Cvars.GetFloat("g_weaponarena") == 0f;
 
     // QC globals (one world per process — these are the C# successors to nix_weapon/nix_nextchange/etc.).
     private int _nixWeapon;       // currently-active weapon RegistryId (0/none until first round)
@@ -50,6 +59,7 @@ public sealed class NixMutator : MutatorBase
     private HookHandler<MutatorHooks.ForbidRandomStartWeaponsArgs>? _onForbidRandom;
     private HookHandler<MutatorHooks.PlayerSpawnArgs>? _onPlayerSpawn;
     private HookHandler<MutatorHooks.PlayerPreThinkArgs>? _onPreThink;
+    private HookHandler<MutatorHooks.OnEntityPreSpawnArgs>? _onEntityPreSpawn;
 
     public override void Hook()
     {
@@ -58,12 +68,14 @@ public sealed class NixMutator : MutatorBase
         _onForbidRandom ??= OnForbidRandomStartWeapons;
         _onPlayerSpawn ??= OnPlayerSpawn;
         _onPreThink ??= OnPlayerPreThink;
+        _onEntityPreSpawn ??= OnEntityPreSpawn;
 
         MutatorHooks.FilterItemDefinition.Add(_onFilterItemDef);
         MutatorHooks.ForbidThrowCurrentWeapon.Add(_onForbidThrow);
         MutatorHooks.ForbidRandomStartWeapons.Add(_onForbidRandom);
         MutatorHooks.PlayerSpawn.Add(_onPlayerSpawn);
         MutatorHooks.PlayerPreThink.Add(_onPreThink);
+        MutatorHooks.OnEntityPreSpawn.Add(_onEntityPreSpawn);
 
         // MUTATOR_ONADD: reset the rotation clock.
         _nixWeapon = 0;
@@ -79,6 +91,15 @@ public sealed class NixMutator : MutatorBase
             if (rt != 0f) RoundTime = rt;
             float it = Api.Cvars.GetFloat("g_balance_nix_incrtime");
             if (it != 0f) IncrTime = it;
+
+            // QC sv_nix.qc:43: FOREACH(Weapons, it != WEP_Null && NIX_CanChooseWeapon(it.m_id), it.wr_init(it)).
+            // In Base this warm pass precaches client-side resources (reticle images, shot origins) for the
+            // choosable weapons. The port's equivalents run at asset-load time, so WrInit() is a no-op for all
+            // current weapons; the call structure is present here for completeness and future overrides.
+            foreach (Weapon w in Weapons.All)
+            {
+                if (CanChooseWeapon(w)) w.WrInit();
+            }
         }
     }
 
@@ -89,18 +110,43 @@ public sealed class NixMutator : MutatorBase
         if (_onForbidRandom is not null) MutatorHooks.ForbidRandomStartWeapons.Remove(_onForbidRandom);
         if (_onPlayerSpawn is not null) MutatorHooks.PlayerSpawn.Remove(_onPlayerSpawn);
         if (_onPreThink is not null) MutatorHooks.PlayerPreThink.Remove(_onPreThink);
+        if (_onEntityPreSpawn is not null) MutatorHooks.OnEntityPreSpawn.Remove(_onEntityPreSpawn);
 
-        // MUTATOR_ONREMOVE: as PlayerSpawn no longer runs, restore the normal start loadout for live players
-        // so they aren't stuck with a NIX weapon. (Ammo restore is best-effort against the start defaults.)
+        // MUTATOR_ONREMOVE (sv_nix.qc:51): as the PlayerSpawn hook will no longer run, NIX is turned off by
+        // this — so restore each live player's NORMAL start loadout. QC re-applies start_ammo_shells/nails/
+        // rockets/cells/fuel, sets STAT(WEAPONS)=start_weapons, and switches each slot to the best owned weapon
+        // when the current one isn't owned. We source start_ammo_*/start_weapons from the same SetStartItems
+        // seam the spawn path uses (ComputeStartItems), so arena/loadout mutators are honoured.
         if (Api.Services is not null)
+        {
+            StartLoadout start = SpawnSystem.ComputeStartItems();
             foreach (Entity p in Api.Entities.FindByClass("player"))
             {
                 if ((p.Flags & EntFlags.Client) == 0 || p.DeadState != DeadFlag.No) continue;
-                Weapon? blaster = Weapons.ByName("blaster");
+
+                p.SetResource(ResourceType.Shells,  start.AmmoShells);
+                p.SetResource(ResourceType.Bullets, start.AmmoBullets);
+                p.SetResource(ResourceType.Rockets, start.AmmoRockets);
+                p.SetResource(ResourceType.Cells,   start.AmmoCells);
+                p.SetResource(ResourceType.Fuel,    start.AmmoFuel);
+
+                // STAT(WEAPONS, it) = start_weapons — reset the owned set to the start loadout. Keep the
+                // canonical WepSet (Entity.OwnedWeaponSet, via Inventory) and the NetName string set (on Player,
+                // used by status/HasWeapon checks) in sync, mirroring SpawnSystem.ApplyStartLoadout.
                 Inventory.ClearWeapons(p);
-                if (blaster is not null) Inventory.GiveWeapon(p, blaster);
-                Inventory.SwitchToBest(p);
+                if (p is Player pl) pl.OwnedWeapons.Clear();
+                foreach (string wn in start.Weapons)
+                {
+                    if (p is Player pl2) pl2.OwnedWeapons.Add(wn);
+                    if (Weapons.ByName(wn) is { } wep) Inventory.GiveWeapon(p, wep);
+                }
+
+                // QC: for each slot, if the current weapon isn't owned, switch to w_getbestweapon.
+                Weapon? cur = Inventory.CurrentWeapon(p);
+                if (cur is null || !p.OwnedWeaponSet.Has(cur))
+                    Inventory.SwitchToBest(p);
             }
+        }
     }
 
     // MUTATOR_HOOKFUNCTION(nix, FilterItemDefinition) — delete all items except optionally health/armor/powerups.
@@ -125,18 +171,34 @@ public sealed class NixMutator : MutatorBase
     private bool OnForbidThrow(ref MutatorHooks.ForbidThrowCurrentWeaponArgs args) => true;
     private bool OnForbidRandomStartWeapons(ref MutatorHooks.ForbidRandomStartWeaponsArgs args) => true;
 
+    // MUTATOR_HOOKFUNCTION(nix, OnEntityPreSpawn) — sv_nix.qc:253. target_items triggers cannot work in NIX
+    // (they change weapons/ammo and would fight the rotation), so delete them before they spawn (return true).
+    private bool OnEntityPreSpawn(ref MutatorHooks.OnEntityPreSpawnArgs args) =>
+        args.Entity.ClassName == "target_items";
+
     // MUTATOR_HOOKFUNCTION(nix, PlayerSpawn) — overrides the spawn loadout with the current NIX weapon.
     private bool OnPlayerSpawn(ref MutatorHooks.PlayerSpawnArgs args)
     {
         Entity player = args.Player;
         player.NixLastChangeId = -1f;     // force a fresh ammo/weapon sync this frame
         GiveCurrentWeapon(player);
+        // QC sv_nix.qc:282 — player.items |= IT_UNLIMITED_SUPERWEAPONS, so a superweapon NIX weapon never
+        // expires under the per-frame superweapon-timeout pass (PlayerFrameLogic.SuperweaponTimeout). Latent in
+        // stock play (no superweapon enters the rotation — they lack WEP_FLAG_NORMAL), but faithful and cheap.
+        player.Items |= (int)ItemFlag.UnlimitedSuperweapons;
         return false;
     }
 
     // MUTATOR_HOOKFUNCTION(nix, PlayerPreThink) — keep every live player on the current NIX weapon.
     private bool OnPlayerPreThink(ref MutatorHooks.PlayerPreThinkArgs args)
     {
+        // QC sv_nix.qc:265-268 gates on !game_stopped && !IS_DEAD && IS_PLAYER. The shared PlayerPreThink
+        // dispatch site fires unconditionally, so the game_stopped freeze (intermission / match-ended) has to
+        // be honoured here — otherwise the rotation clock would keep advancing and re-forcing the weapon set
+        // during intermission. VehicleCommon.GameStopped is the host's game_stopped mirror (same flat-namespace
+        // signal instagib/buffs/powerups read).
+        if (VehicleCommon.GameStopped) return false;
+
         Entity player = args.Player;
         if ((player.Flags & EntFlags.Client) != 0 && player.DeadState == DeadFlag.No)
             GiveCurrentWeapon(player);
@@ -198,6 +260,11 @@ public sealed class NixMutator : MutatorBase
 
         ResourceType ammoType = AmmoTypeOf(wpn.NetName);
 
+        // QC: branch the ammo refill on IT_UNLIMITED_AMMO — when set, fill to g_pickup_<type>_max and skip the
+        // trickle entirely; otherwise fill to g_balance_nix_ammo_<type> and trickle. IT_UNLIMITED_AMMO is not set
+        // in stock NIX, so default play is unchanged.
+        bool unlimitedAmmo = (player.Items & (int)ItemFlag.UnlimitedAmmo) != 0;
+
         // Once-per-round per-player sync: wipe ammo, refill the current weapon's ammo type, reset the
         // trickle timer, and notify of the new weapon.
         if (_nixNextChange != player.NixLastChangeId)
@@ -209,12 +276,45 @@ public sealed class NixMutator : MutatorBase
             player.SetResource(ResourceType.Fuel, 0f);
 
             if (ammoType != ResourceType.None)
-                player.SetResource(ammoType, AmmoStart(ammoType));
+                player.SetResource(ammoType, unlimitedAmmo ? AmmoPickupMax(ammoType) : AmmoStart(ammoType));
 
             player.NixNextIncr = now + IncrTime;
 
-            if (!(dt >= 1f && dt <= 5f))
+            // QC sv_nix.qc:161-164: if this once-per-round sync lands inside the last-5s countdown window
+            // (e.g. a respawn near the end of a round), suppress the NEWWEAPON notification AND force the
+            // countdown block below to fire by poisoning the de-dupe sentinel (nix_lastinfotime = -42, which
+            // can never equal a real dt in [1,5]); otherwise announce the new weapon.
+            if (dt >= 1f && dt <= 5f)
+                player.NixLastInfoTime = -42f;
+            else
                 NotificationSystem.Center(player, "NIX_NEWWEAPON", _nixWeapon);
+
+            // QC sv_nix.qc:166: wpn.wr_resetplayer(wpn, this) — reset the weapon's per-player think state
+            // on every round flip (same reset SpawnSystem calls on respawn). Hagar clears its loaded-rocket
+            // counter, Porto drops the single-portal latch, Vaporizer clears its streak, etc.
+            // Slot 0 is always the active weapon slot in the current single-slot model.
+            wpn.WrResetPlayer(player, new WeaponSlot(0));
+
+            // QC sv_nix.qc:168-176: a reloadable weapon must start fully loaded when the round flips —
+            // weapon_load[nix_weapon] = wpn.reloading_ammo across every slot. The port models wr_resetplayer
+            // lazily (the fire driver seeds the slot on raise), so reproduce the observable clip prefill here:
+            // seed slot 0's weapon_load[nix_weapon] to the full clip and mark it seeded so the lazy driver
+            // doesn't re-seed (or refill it for free) later. If the weapon is the one in hand, top its live clip.
+            if ((wpn.SpawnFlags & WeaponFlags.Reloadable) != 0)
+            {
+                int full = (int)wpn.ReloadingAmmo();
+                if (full > 0)
+                {
+                    WeaponSlotState slot0 = player.WeaponState(new WeaponSlot(0));
+                    Weapon.SetWeaponLoad(slot0, _nixWeapon, full);
+                    (slot0.WeaponLoadSeeded ??= new HashSet<int>()).Add(_nixWeapon);
+                    if (player.ActiveWeaponId == _nixWeapon)
+                    {
+                        slot0.ClipLoad = full;
+                        slot0.ClipSize = full;
+                    }
+                }
+            }
 
             player.NixLastChangeId = _nixNextChange;
         }
@@ -227,8 +327,9 @@ public sealed class NixMutator : MutatorBase
                 NotificationSystem.Center(player, "NIX_COUNTDOWN", _nixNextWeapon, dt);
         }
 
-        // Ammo trickle: top up the current weapon's ammo a little, every IncrTime seconds.
-        if (now > player.NixNextIncr)
+        // Ammo trickle: top up the current weapon's ammo a little, every IncrTime seconds. QC gates this on
+        // !(items & IT_UNLIMITED_AMMO) — an unlimited-ammo player was max-filled above and never trickles.
+        if (!unlimitedAmmo && now > player.NixNextIncr)
         {
             if (ammoType != ResourceType.None)
                 player.GiveResource(ammoType, AmmoIncr(ammoType));
@@ -236,20 +337,22 @@ public sealed class NixMutator : MutatorBase
         }
 
         // Force the owned set to exactly {current weapon (+ blaster if with_blaster)} every frame, mirroring
-        // QC's STAT(WEAPONS) rewrite. Preserve the player's active choice between those when it's still valid
-        // (so with_blaster players can keep firing the blaster); otherwise switch to the NIX weapon.
-        Weapon? prevActive = Inventory.CurrentWeapon(player);
+        // QC's STAT(WEAPONS) = wpn.m_wepset (+ blaster) rewrite.
         Weapon? blasterWep = WithBlaster ? Weapons.ByName("blaster") : null;
 
         player.OwnedWeaponSet.Clear();
         if (blasterWep is not null) player.OwnedWeaponSet.Add(blasterWep);
         player.OwnedWeaponSet.Add(wpn);
 
-        bool keepActive = prevActive is not null
-            && (prevActive == wpn || (blasterWep is not null && prevActive == blasterWep));
-        if (keepActive)
-            Inventory.SwitchWeapon(player, prevActive!);
-        else
+        // QC sv_nix.qc:207-219 switch guard: only FORCE a switch to the NIX weapon when the player's current
+        // switch target is NOT itself an owned weapon AND the player owns wpn. This makes a manual mid-round
+        // switch sticky under g_nix_with_blaster (switching to the blaster keeps the blaster, since it's owned),
+        // instead of re-asserting the switch every frame.
+        int switchId = player.SwitchWeaponId >= 0 ? player.SwitchWeaponId : player.ActiveWeaponId;
+        Weapon? switchTarget = switchId >= 0 && switchId < Registry<Weapon>.Count
+            ? Registry<Weapon>.ById(switchId) : null;
+        bool switchTargetOwned = switchTarget is not null && player.OwnedWeaponSet.Has(switchTarget);
+        if ((switchTarget != wpn) && !switchTargetOwned && player.OwnedWeaponSet.Has(wpn))
             Inventory.SwitchWeapon(player, wpn);
     }
 
@@ -274,6 +377,18 @@ public sealed class NixMutator : MutatorBase
         _ => 0f,
     };
 
+    /// <summary>QC autocvar_g_pickup_&lt;type&gt;_max — the IT_UNLIMITED_AMMO max-fill target (matches the item
+    /// pickup caps in ItemPickupRules / the balance defaults).</summary>
+    private float AmmoPickupMax(ResourceType t) => t switch
+    {
+        ResourceType.Shells  => Cvar("g_pickup_shells_max", 60f),
+        ResourceType.Bullets => Cvar("g_pickup_nails_max", 320f),
+        ResourceType.Rockets => Cvar("g_pickup_rockets_max", 160f),
+        ResourceType.Cells   => Cvar("g_pickup_cells_max", 180f),
+        ResourceType.Fuel    => Cvar("g_pickup_fuel_max", 100f),
+        _ => 0f,
+    };
+
     private float AmmoIncr(ResourceType t) => t switch
     {
         ResourceType.Shells  => Cvar("g_balance_nix_ammoincr_shells", 2f),
@@ -290,4 +405,15 @@ public sealed class NixMutator : MutatorBase
         float v = Api.Cvars.GetFloat(name);
         return v != 0f ? v : fallback;
     }
+
+    // MUTATOR_HOOKFUNCTION(nix, BuildMutatorsString) — sv_nix.qc:227.
+    public override string BuildMutatorsString(string s) => s + ":NIX";
+
+    // MUTATOR_HOOKFUNCTION(nix, BuildMutatorsPrettyString) — sv_nix.qc:232.
+    public override string BuildMutatorsPrettyString(string s) => s + ", NIX";
+
+    // MUTATOR_HOOKFUNCTION(nix, SetModname, CBC_ORDER_LAST) — sv_nix.qc:285: override the server modname
+    // to "NIX" so the server browser and client connection banner reflect the active game mode.
+    // Returns overridden=true so the chain stops here (QC: return true via CBC_ORDER_ANY early-exit).
+    public override (string name, bool overridden) SetModname(string name) => ("NIX", true);
 }

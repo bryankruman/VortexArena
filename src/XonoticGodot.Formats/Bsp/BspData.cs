@@ -48,6 +48,15 @@ public sealed class BspData
     public BspLeaf[] Leafs { get; init; } = Array.Empty<BspLeaf>();
 
     /// <summary>
+    /// Lump 5 — leaf→face references: a flat array of face indices. Each leaf owns the slice
+    /// <c>[FirstLeafFace, FirstLeafFace+LeafFaceCount)</c> (see <see cref="BspLeaf"/>); a face index can appear in
+    /// several leaves (it bounds them all). Lets the §12.8 PVS culler label a face by the clusters of EVERY leaf
+    /// that references it — DP's exact per-surface vis — instead of approximating from a sampled point. Empty on
+    /// a BSP without the lump (some minimal/test maps), in which case the culler degrades to all-visible.
+    /// </summary>
+    public int[] LeafFaces { get; init; } = Array.Empty<int>();
+
+    /// <summary>
     /// Lump 16 — the potentially-visible-set bit matrix (compiled by the map's vis stage). Empty on an unvised
     /// map, in which case every cluster is conservatively treated as visible (DP behaviour).
     /// </summary>
@@ -128,12 +137,17 @@ public sealed class BspData
     public const int LightmapSize = 128;
 
     // --- Lumps intentionally left as raw byte ranges (TODO for later passes) ---
-    // LeafFaces(5), LeafBrushes(6) index leaf geometry; Effects/Fog(12), LightGrid(15) are renderer hints.
+    // LeafBrushes(6) indexes leaf collision brushes; Effects/Fog(12) are renderer hints.
     // BspReader exposes their raw [offset,length) slices via RawLumps so a later pass can parse them without
-    // re-reading the header.
+    // re-reading the header. (LeafFaces(5) and LightGrid(15) are now parsed.)
 
     /// <summary>Raw, unparsed slices of every lump in the directory, indexed by lump number (see <see cref="BspLump"/>).</summary>
     public RawLump[] RawLumps { get; init; } = Array.Empty<RawLump>();
+
+    /// <summary>The parsed lightgrid (lump 15) — the baked per-position MODEL light probes DP samples for
+    /// entity lighting (<c>Mod_Q3BSP_LightPoint</c>). Null when the map ships none or the lump length doesn't
+    /// match the derived grid dims. (playtest r12 #41)</summary>
+    public LightGridData? LightGrid { get; init; }
 }
 
 /// <summary>Q3 BSP lump indices (the 17-entry directory). See <c>model_q3bsp.h</c>.</summary>

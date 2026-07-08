@@ -92,10 +92,17 @@ public static class Cvars
         new("sv_step_upspeed_scale", "1", "step-up upward-velocity multiplier (1 = vanilla launch, 0 = step up without launching)"),
         new("sv_step_upspeed_max", "-1", "step-up upward-velocity hard cap in u/s (-1 = disabled/uncapped)"),
 
+        // Global time scale (Darkplaces host_timescale / Xonotic slowmo): the real->sim time mapping for the WHOLE
+        // simulation. <1 = slow motion, >1 = fast, 1 = real time, 0 = paused. ServerNet.StepWorld feeds it to
+        // SimulationLoop.TimeScale and NetGame scales the client's input cadence + render clock by the same value,
+        // so prediction stays in lockstep (this is the same time-mapping that makes movement frame-rate-independent).
+        // Registered (like the step-up knobs) so the console/menu can set it and the listen-server cvar bridge applies it.
+        new("slowmo", "1", Notify, "global time scale: <1 slow-motion, >1 fast, 1 = real time, 0 = paused"),
+
         // [T45] warpzone self-targeting (lib/warpzone/server.qc WarpZone_InitStep_FindTarget). Behaviour is already
         // correct without this entry (Warpzone.cs reads it via Api.Cvars.GetFloat, which returns 0 when unset), but
         // registering it makes it visible to cvarlist/the menu and lets the listen-server `set` bridge apply changes.
-        new("sv_warpzone_allow_selftarget", "0", Save, "1 = a warpzone may target itself (default 0: never self-link)"),
+        new("sv_warpzone_allow_selftarget", "0", "1 = a warpzone may target itself (default 0: never self-link)"),
 
         // ---- match flow / limits (mapinfo + xonotic-server.cfg) ----
         new("timelimit", "20", Notify, "match time limit in minutes (0 = none)"),
@@ -104,35 +111,87 @@ public static class Cvars
         // overtime / sudden death (xonotic-server.cfg:273-275; gametypes-server.cfg leadlimit_and_fraglimit).
         // Read by OverTimeManager (QC world.qc InitiateSuddenDeath / InitiateOvertime / WinningCondition_Scores):
         // a tied timed match adds normal overtimes (up to timelimit_overtimes) then enters suddendeath.
-        new("timelimit_overtime", "2", Save, "duration in minutes of one added overtime, added to the timelimit"),
-        new("timelimit_overtimes", "0", Save, "how many overtimes to add at max"),
-        new("timelimit_suddendeath", "5", Save, "minutes suddendeath lasts after all overtimes are added and still no winner"),
-        new("leadlimit_and_fraglimit", "0", Save, "both leadlimit AND fraglimit must be reached"),
-        new("g_maxplayers", "0", Save, "0 = unlimited player slots"),
-        new("minplayers", "0", Save, "fill FFA up to this many with bots"),
-        new("minplayers_per_team", "0", Save, "fill each team up to this many with bots"),
+        new("timelimit_overtime", "2", "duration in minutes of one added overtime, added to the timelimit"),
+        new("timelimit_overtimes", "0", "how many overtimes to add at max"),
+        new("timelimit_suddendeath", "5", "minutes suddendeath lasts after all overtimes are added and still no winner"),
+        new("leadlimit_and_fraglimit", "0", "both leadlimit AND fraglimit must be reached"),
+        new("g_maxplayers", "0", "0 = unlimited player slots"),
+        new("minplayers", "0", "fill FFA up to this many with bots"),
+        new("minplayers_per_team", "0", "fill each team up to this many with bots"),
 
         // ---- warmup / ready-restart (xonotic-server.cfg) ----
-        new("g_warmup", "0", Save, "enable warmup stage"),
-        new("g_warmup_limit", "-1", Save, "warmup time limit (-1 = until ready, 0 = off)"),
-        new("g_warmup_allow_timeout", "0", Save),
-        new("g_warmup_majority_factor", "0.8", Save, "fraction of players that must ready up"),
-        new("sv_ready_restart", "0", Save),
-        new("sv_ready_restart_after_countdown", "1", Save),
-        new("sv_ready_restart_repeatable", "0", Save),
+        new("g_warmup", "0", "enable warmup stage"),
+        new("g_warmup_limit", "180", "warmup time limit in seconds (-1 = until ready, 0 = use timelimit)"),
+        new("g_warmup_allow_timeout", "0"),
+        new("g_warmup_majority_factor", "0.8", "fraction of players that must ready up"),
+        new("sv_ready_restart", "0"),
+        new("sv_ready_restart_after_countdown", "0", "reset players and map items after the countdown ended, instead of at the beginning of the countdown"),
+        new("sv_ready_restart_repeatable", "0"),
+        // QC map_minplayers (world.qc:697): per-map worldspawn key, the g_warmup<0 minimum-player lower bound (0 = none).
+        new("map_minplayers", "0", "minimum players for the map (g_warmup -1 lower bound)"),
+        // QC g_start_delay (xonotic-common.cfg:185-186): the pre-match join window (0 listen / 15 dedicated). Listen
+        // server default; a dedicated server raises it to 15 in its config.
+        new("g_start_delay", "0", "delay before the game starts, so everyone can join (15 recommended on a public server)"),
 
         // ---- intermission / map change (xonotic-server.cfg) ----
-        new("sv_mapchange_delay", "5", Save, "scoreboard hold before map change"),
-        new("g_maplist_votable", "6", Save, "candidates on the end-of-match map vote"),
-        new("g_maplist_votable_timeout", "30", Save, "map vote duration"),
-        new("g_maplist_votable_abstain", "0", Save),
+        new("sv_mapchange_delay", "5", "scoreboard hold before map change"),
+        new("sv_intermission_cdtrack", "", "music track(s) looped at intermission (empty = keep none); a random word is chosen"),
+        new("sv_autoscreenshot", "0", "force clients with cl_autoscreenshot to screenshot the end-of-match scoreboard"),
+        new("g_maplist_votable", "6", "candidates on the end-of-match map vote"),
+        new("g_maplist_votable_timeout", "30", "map vote duration"),
+        new("g_maplist_votable_abstain", "0"),
 
         // ---- teamplay / balance (xonotic-server.cfg) ----
         new("teamplay", "0", Notify),
-        new("g_balance_teams", "1", Save, "automatic team balance"),
-        new("g_balance_teams_prevent_imbalance", "1", Save),
-        new("g_balance_teams_skill", "1", Save, "weigh balance by player skill, not just count"),
-        new("g_changeteam_bantime", "30", Save),
+        new("g_balance_teams", "1", "automatic team balance"),
+        new("g_balance_teams_prevent_imbalance", "1"),
+        // QC server/teamplay.qc QueueNeeded / TeamBalance_QueuedPlayersTagIn (xonotic-server.cfg): during a match
+        // (not warmup/campaign, >=2 humans) a joiner whose chosen team would unbalance the teams is held as an
+        // observer in a join queue and tagged in only when a deficit opens. Default off in Base. (The join-queue
+        // tag-in machinery itself is not yet ported — registering the cvar gives the gate real data; see
+        // sv-teamplay.queue.)
+        new("g_balance_teams_queue", "0", "hold joiners in a queue during the match to keep teams balanced"),
+        // QC server/teamplay.qc TeamBalance_RemoveExcessPlayers (xonotic-server.cfg:295-296): on a leave that
+        // unbalances a 2-team match, move the NEWEST joiner on the overfull team to spectators — after a
+        // g_balance_teams_remove_wait-second warning (0 = immediately). Default off in Base.
+        new("g_balance_teams_remove", "0", "move the newest excess player to spectators on a leave (2-team)"),
+        new("g_balance_teams_remove_wait", "10", "seconds to warn before moving an excess player to spectators"),
+        new("g_balance_teams_skill", "1", "weigh balance by player skill, not just count"),
+        // QC xonotic-server.cfg:297-298: skill-weighting tuning. The significance threshold is the z-score (in
+        // standard deviations) a team-vs-player skill gap must exceed before it is treated as real; the unranked
+        // factor scales the assumed skill of clients with no rating relative to the server average.
+        new("g_balance_teams_skill_significance_threshold", "1.645",
+            "team/player skill differences count as significant past this many standard deviations"),
+        new("g_balance_teams_skill_unranked_factor", "0.666",
+            "assumed skill of unranked clients as a fraction of the server-average skill"),
+        new("g_changeteam_bantime", "30"),
+        // QC xonotic-server.cfg:446 g_balance_kill_delay: the countdown (seconds) between a `kill` command / team
+        // change and the player actually dying — the kill-indicator/announcer countdown reads this.
+        new("g_balance_kill_delay", "2", "delay (seconds) before a `kill` command actually kills you"),
+        // QC xonotic-server.cfg:447 g_balance_kill_antispam: added to the next-allowed-kill time on a repeat `kill`
+        // (clientkill_nexttime carry-forward) so mashing `kill` keeps extending the countdown. XPM/XDF set 0.
+        new("g_balance_kill_antispam", "5", "time added to the next allowed `kill` when you mash the command"),
+        // QC sv_teamnagger (xonotic-server.cfg:300): team-size gap threshold for the unbalanced-teams nag; g_warmup
+        // won't end while it's tripped. The warmup badteams gate (ReadyCount) reads this via Teamplay.
+        new("sv_teamnagger", "2", "team size difference threshold for the unbalanced-teams nag (0 = off)"),
+        // The engine `teamplay` cvar (DP exposes it as the QC global every QC teamplay read compiles to). Base's
+        // InitGameplayMode sets it per gametype; the port mirrors it at GameWorld boot. RUNTIME state — never set
+        // it by hand. (playtest #35: it was never written at all, so every Cvars.Teamplay reader was silently
+        // non-team — bots attacked CTF teammates, warmup's teamplay_lockonrestart was dead.)
+        new("teamplay", "0", "team game in progress (set by the gametype at match boot)"),
+        // QC autocvar_bot_typefrag: allow bots to shoot players who are typing (BUTTON_CHAT). Base default 0 =
+        // spare typing players (bot_shouldattack, bot/default/aim.qc:120).
+        new("bot_typefrag", "0", "allow bots to shoot players who are typing in chat"),
+        // QC teamplay_lockonrestart (xonotic-server.cfg:29): lock teams once the match restarts (ReadyRestart_force).
+        new("teamplay_lockonrestart", "0", "lock teams once all players readied up and the game restarted"),
+        // QC server/teamplay.qc:41-44 + xonotic-server.cfg: the forced-team id/IP lists. Player_DetermineForcedTeam
+        // matches a connecting client's crypto-id/IP against these space-separated lists to pin them to a team;
+        // g_forced_team_otherwise (red|blue|yellow|pink|spectate|default) is the fallback for unlisted clients.
+        new("g_forced_team_red", "", "space-separated id/IP list forced onto the red team"),
+        new("g_forced_team_blue", "", "space-separated id/IP list forced onto the blue team"),
+        new("g_forced_team_yellow", "", "space-separated id/IP list forced onto the yellow team"),
+        new("g_forced_team_pink", "", "space-separated id/IP list forced onto the pink team"),
+        new("g_forced_team_otherwise", "default", "forced-team action for unlisted clients (red|blue|yellow|pink|spectate|default)"),
 
         // ---- health / armor regen + rot (balance-xonotic.cfg; values match stock so regen works without
         //      a loaded balance cfg — the port's old 0 defaults left health regen OFF out of the box) ----
@@ -184,22 +243,28 @@ public static class Cvars
         new("g_teamdamage_threshold", "40", Notify, "team damage before mirror punishment kicks in"),
         new("g_teamdamage_resetspeed", "20", Notify),
         new("g_maxpushtime", "8", Notify, "credited-attacker window for environmental deaths"),
+        // teleporter telefrag rules (xonotic-server.cfg:59-61; common/mapobjects/teleporters.qh autocvar_g_telefrags*).
+        // Registered so a server override (set g_telefrags 0, etc.) actually applies — the port's Teleporters.cs
+        // previously used hardcoded fallbacks that matched these defaults but were inert. Stock defaults: all 1.
+        new("g_telefrags", "1", Notify, "enable telefragging (kill anyone standing on a teleport/portal exit)"),
+        new("g_telefrags_teamplay", "1", Notify, "1 = never telefrag teammates"),
+        new("g_telefrags_avoid", "1", Notify, "random-destination teleporters avoid exits where a telefrag would occur"),
         new("g_weapondamagefactor", "1", Notify, "global weapon damage multiplier"),
         new("g_weaponforcefactor", "1", Notify, "global weapon force multiplier"),
         new("g_balance_selfdamagepercent", "0.65", Notify, "self-damage (rocket/blaster-jump) scale"),
         new("g_balance_damagepush_speedfactor", "2.5", Notify),
         new("g_player_damageforcescale", "2", Notify, "knockback multiplier vs players"),
-        new("g_spawnshieldtime", "1", Save, "seconds of spawn invulnerability (0 = none; lost on fire)"),
+        new("g_spawnshieldtime", "1", "seconds of spawn invulnerability (0 = none; lost on fire)"),
         new("g_spawnshield_blockdamage", "1", Notify, "1 = spawn shield fully blocks damage"),
-        new("g_spawn_alloweffects", "3", Save, "spawn FX: 1=particles, 2=sound, 3=both"),
-        new("g_spawn_furthest", "0.5", Save, "fraction of spawns biased far from players"),
-        new("g_spawn_useallspawns", "0", Save),
+        new("g_spawn_alloweffects", "3", "spawn FX: 1=particles, 2=sound, 3=both"),
+        new("g_spawn_furthest", "0.5", "fraction of spawns biased far from players"),
+        new("g_spawn_useallspawns", "0"),
         new("sv_gibhealth", "100", Notify, "health below -N gibs the corpse"),
         new("sv_gentle", "0", Notify, "1 = suppress gore + pain/death voices"),
-        new("g_forced_respawn", "0", Save, "1 = auto-respawn at g_respawn_delay_max even without pressing fire"),
+        new("g_forced_respawn", "0", "1 = auto-respawn at g_respawn_delay_max even without pressing fire"),
 
         // ---- warmup loadout (balance-xonotic.cfg g_warmup_start_*; only used while g_warmup is on) ----
-        new("g_warmup_allguns", "1", Save, "warmup gives all weapons"),
+        new("g_warmup_allguns", "1", "warmup gives all weapons"),
         new("g_warmup_start_health", "100", Notify),
         new("g_warmup_start_armor", "100", Notify),
         new("g_warmup_start_ammo_shells", "30", Notify),
@@ -225,124 +290,171 @@ public static class Cvars
         new("g_maxspeed", "0", Notify, "shooting-star kill speed (0 = off)"),
 
         // ---- respawn timing (xonotic-server.cfg) ----
-        new("g_respawn_delay_small", "2", Save),
-        new("g_respawn_delay_small_count", "0", Save, "players-per-team at which the small delay applies (<=0 = min)"),
-        new("g_respawn_delay_large", "2", Save),
-        new("g_respawn_delay_large_count", "8", Save, "players-per-team at which the large delay applies"),
-        new("g_respawn_delay_max", "5", Save, "max wait before forced respawn (needs g_forced_respawn 1)"),
-        new("g_respawn_delay_forced", "0", Save),
-        new("g_respawn_waves", "0", Save),
-        new("g_respawn_ghosts", "1", Save),
+        new("g_respawn_delay_small", "2"),
+        new("g_respawn_delay_small_count", "0", "players-per-team at which the small delay applies (<=0 = min)"),
+        new("g_respawn_delay_large", "2"),
+        new("g_respawn_delay_large_count", "8", "players-per-team at which the large delay applies"),
+        new("g_respawn_delay_max", "5", "max wait before forced respawn (needs g_forced_respawn 1)"),
+        new("g_respawn_delay_forced", "0"),
+        new("g_respawn_waves", "0"),
+        new("g_respawn_ghosts", "1"),
 
         // ---- bot management (bot cvars; defaults = SHIPPED xonotic-server.cfg:120-195 values — these matter
         //      when the real cfg tree isn't mounted, so they must not drift from stock) ----
-        new("bot_number", "0", Save, "how many bots to keep on the server"),
-        new("bot_vs_human", "0", Save, "force bots onto one team vs humans"),
-        new("bot_join_empty", "0", Save),
-        new("bot_prefix", "[BOT]", Save),
-        new("bot_suffix", "", Save),
-        new("bot_usemodelnames", "0", Save),
-        new("bot_config_file", "bots.txt", Save, "name and path of the bot configuration file"),
-        new("skill", "8", Save, "bot skill 0..10 (>100 = superbot); xonotic-server.cfg ships 8"),
-        new("skill_auto", "0", Save),
-        new("bot_god", "0", Save),
-        new("bot_nofire", "0", Save),
-        new("bot_ignore_bots", "0", Save),
-        new("bot_typefrag", "0", Save),
-        new("bot_wander_enable", "1", Save),
+        new("bot_number", "0", "how many bots to keep on the server"),
+        new("bot_vs_human", "0", "force bots onto one team vs humans"),
+        new("bot_join_empty", "0"),
+        new("bot_prefix", "[BOT]"),
+        new("bot_suffix", ""),
+        new("bot_usemodelnames", "0"),
+        new("bot_config_file", "bots.txt", "name and path of the bot configuration file"),
+        new("skill", "8", "bot skill 0..10 (>100 = superbot); xonotic-server.cfg ships 8"),
+        new("skill_auto", "0"),
+        new("bot_god", "0"),
+        new("bot_nofire", "0"),
+        new("bot_ignore_bots", "0"),
+        new("bot_typefrag", "0"),
+        new("bot_wander_enable", "1"),
 
         // ---- bot AI tuning (bot cvars; defaults from xonotic-server.cfg:135-183) ----
-        new("bot_ai_thinkinterval", "0.05", Save),
-        new("bot_ai_strategyinterval", "7", Save),
-        new("bot_ai_strategyinterval_movingtarget", "5.5", Save),
-        new("bot_ai_enemydetectioninterval", "2", Save),
-        new("bot_ai_enemydetectioninterval_stickingtoenemy", "4", Save),
-        new("bot_ai_enemydetectionradius", "10000", Save),
-        new("bot_ai_chooseweaponinterval", "0.5", Save),
-        new("bot_ai_dangerdetectioninterval", "0.25", Save),
-        new("bot_ai_dangerdetectionupdates", "64", Save),
-        new("bot_ai_friends_aware_pickup_radius", "500", Save),
-        new("bot_ai_ignoregoal_timeout", "3", Save),
-        new("bot_ai_keyboard_distance", "250", Save),
-        new("bot_ai_keyboard_threshold", "0.57", Save),
-        new("bot_ai_timeitems", "1", Save, "let bots time item respawns"),
-        new("bot_ai_timeitems_minrespawndelay", "25", Save),
-        new("bot_ai_weapon_combo", "1", Save),
-        new("bot_ai_weapon_combo_threshold", "0.4", Save),
-        new("bot_ai_aimskill_offset", "1.8", Save),
-        new("bot_ai_aimskill_think", "1", Save),
-        new("bot_ai_aimskill_mouse", "1", Save),
-        new("bot_ai_aimskill_fixedrate", "15", Save),
-        new("bot_ai_aimskill_blendrate", "2", Save),
-        new("bot_ai_aimskill_firetolerance", "1", Save),
-        new("bot_ai_bunnyhop_skilloffset", "7", Save, "skill at/above which bots bunnyhop"),
-        new("bot_ai_bunnyhop_dir_deviation_max", "20", Save),
-        new("bot_ai_bunnyhop_downward_pitch_max", "30", Save),
-        new("bot_ai_bunnyhop_turn_angle_min", "4", Save),
-        new("bot_ai_bunnyhop_turn_angle_max", "80", Save),
-        new("bot_ai_bunnyhop_turn_angle_reduction", "40", Save),
-        new("bot_ai_custom_weapon_priority_distances", "300 850", Save),
-        new("bot_ai_custom_weapon_priority_far", "", Save),
-        new("bot_ai_custom_weapon_priority_mid", "", Save),
-        new("bot_ai_custom_weapon_priority_close", "", Save),
-        new("bot_navigation_ignoreplayers", "0", Save),
+        new("bot_ai_thinkinterval", "0.05"),
+        new("bot_ai_strategyinterval", "7"),
+        new("bot_ai_strategyinterval_movingtarget", "5.5"),
+        new("bot_ai_enemydetectioninterval", "2"),
+        new("bot_ai_enemydetectioninterval_stickingtoenemy", "4"),
+        new("bot_ai_enemydetectionradius", "10000"),
+        new("bot_ai_chooseweaponinterval", "0.5"),
+        new("bot_ai_dangerdetectioninterval", "0.25"),
+        new("bot_ai_dangerdetectionupdates", "64"),
+        new("bot_ai_friends_aware_pickup_radius", "500"),
+        new("bot_ai_ignoregoal_timeout", "3"),
+        new("bot_ai_keyboard_distance", "250"),
+        new("bot_ai_keyboard_threshold", "0.57"),
+        new("bot_ai_timeitems", "1", "let bots time item respawns"),
+        new("bot_ai_timeitems_minrespawndelay", "25"),
+        new("bot_ai_weapon_combo", "1"),
+        new("bot_ai_weapon_combo_threshold", "0.4"),
+        new("bot_ai_aimskill_offset", "1.8"),
+        new("bot_ai_aimskill_think", "1"),
+        new("bot_ai_aimskill_mouse", "1"),
+        new("bot_ai_aimskill_fixedrate", "15"),
+        new("bot_ai_aimskill_blendrate", "2"),
+        new("bot_ai_aimskill_firetolerance", "1"),
+        new("bot_ai_bunnyhop_skilloffset", "7", "skill at/above which bots bunnyhop"),
+        new("bot_ai_bunnyhop_dir_deviation_max", "20"),
+        new("bot_ai_bunnyhop_downward_pitch_max", "30"),
+        new("bot_ai_bunnyhop_turn_angle_min", "4"),
+        new("bot_ai_bunnyhop_turn_angle_max", "80"),
+        new("bot_ai_bunnyhop_turn_angle_reduction", "40"),
+        new("bot_ai_custom_weapon_priority_distances", "300 850"),
+        new("bot_ai_custom_weapon_priority_far", ""),
+        new("bot_ai_custom_weapon_priority_mid", ""),
+        new("bot_ai_custom_weapon_priority_close", ""),
+        new("bot_navigation_ignoreplayers", "0"),
+
+        // ---- idle kick (QC server/client.qc PlayerFrame sv_maxidle block) ----
+        // sv_maxidle: seconds before an idle PLAYER or join-queue client is kicked (0 = disabled, the default).
+        // sv_maxidle_playertospectator: if > 0 and a player is idle, move-to-spec instead of kick (Base 60).
+        // sv_maxidle_minplayers: minimum human clients before the idle kick is active (Base 2; 0 = always active).
+        // sv_maxidle_alsokickspectators: also apply the idle kick to observers/spectators (source default 0).
+        // sv_maxidle_slots: free-slot threshold — if > 0 AND sv_dedicated, only kick when free slots <= this.
+        // sv_maxidle_slots_countbots: count bots when computing the free-slot occupancy.
+        new("sv_maxidle", "0", "seconds of player inactivity before kick (0 = off)"),
+        // Source autocvar defaults (server/client.qh:38-39): playertospectator 60, minplayers 2 — the port had
+        // shipped both at 0, which silently disabled move-to-spec and let the idle kick arm with no humans present.
+        new("sv_maxidle_playertospectator", "60", "move-to-spec instead of kick when >0 (seconds)"),
+        new("sv_maxidle_minplayers", "2", "minimum players before the idle kick activates"),
+        // Source autocvar default is 0 (the shipped xonotic-server.cfg:452 overrides it to 1); we keep the source
+        // default like the rest of this table so a loaded cfg still wins — registry marks this row match:true.
+        new("sv_maxidle_alsokickspectators", "0", "also idle-kick spectators/observers"),
+        new("sv_maxidle_slots", "0", "free-slot threshold for dedicated-server idle kick (0 = always)"),
+        new("sv_maxidle_slots_countbots", "0", "count bots toward sv_maxidle_slots occupancy"),
+        // g_maxplayers_spectator_blocktime: spectator grace before the sv_spectate=0 kick fires (xonotic-server.cfg:33 ships 10).
+        new("g_maxplayers_spectator_blocktime", "10", "grace period (s) before kicking spectators when sv_spectate=0"),
 
         // ---- server identity / admin (xonotic-server.cfg) ----
         new("sv_dedicated", "0", CvarFlags.ReadOnly),
-        new("sv_spectate", "1", Save),
+        new("sv_spectate", "1"),
         new("hostname", "Xonotic XonoticGodot Server", Save),
         new("g_maplist", "", Save, "the map rotation"),
+        // QC server/client.qh:53 / xonotic-server.cfg:5: max player name length (not counting color codes)
+        // enforced by PlayerFrame; a longer name is truncated and the player warned. 0 = no limit.
+        new("sv_name_maxlength", "64", "max player name length (not counting color codes) allowed by the server"),
+        // QC xonotic-server.cfg:370 / 503: the welcome-screen MOTD + mutator message shown to joining players
+        // (SendWelcomeMessage, server/client.qc:1130/1132). Both default empty (no extra welcome text).
+        new("sv_motd", "", "additional information to show on the welcome screen that greets joining players"),
+        new("g_mutatormsg", "", "mutator message shown on the welcome screen"),
 
         // ---- voting (server/command/vote.qc) ----
-        new("sv_vote_call", "1", Save, "allow players to call votes"),
-        new("sv_vote_change", "0", Save, "allow changing a vote after casting"),
-        new("sv_vote_commands", "restart fraglimit chmap gotomap nextmap endmatch reducematchtime extendmatchtime allready kick kickban cointoss shuffleteams", Save, "votable command whitelist"),
-        new("sv_vote_master", "0", Save, "allow vote-master subsystem"),
-        new("sv_vote_master_callable", "0", Save, "allow calling a vote to become master"),
-        new("sv_vote_master_commands", "movetoauto movetored movetoblue movetoyellow movetopink movetospec", Save, "extra commands the master may run"),
-        new("sv_vote_master_password", "", Save, "password to log in as vote master ('' = disabled)"),
-        new("sv_vote_master_playerlimit", "2", Save, "min players for a master vote to pass"),
-        new("sv_vote_singlecount", "0", Save, "don't recount on each vote (only at timeout)"),
-        new("sv_vote_timeout", "30", Save, "seconds a called vote stays open"),
-        new("sv_vote_wait", "120", Save, "cooldown after calling a vote"),
-        new("sv_vote_stop", "5", Save, "cooldown after stopping your own vote"),
-        new("sv_vote_majority_factor", "0.5", Save, "overall yes-fraction to pass"),
-        new("sv_vote_majority_factor_of_voted", "0.5", Save, "yes-fraction of those who voted (at timeout)"),
-        new("sv_vote_no_stops_vote", "0", Save, "caller voting no cancels their own vote"),
-        new("sv_vote_nospectators", "0", Save, "0=spectators vote, 1=except warmup/intermission, 2=never"),
-        new("sv_vote_gamestart", "0", Save, "allow vote calling before the match starts"),
-        new("sv_vote_limit", "80", Save, "max votable command length (0 = no limit)"),
-        new("sv_vote_debug", "0", Save, "include bots as voters; print debug banner"),
-        new("sv_vote_override_mostrecent", "0", Save, "allow voting a recently-played map"),
+        new("sv_vote_call", "1", "allow players to call votes"),
+        new("sv_vote_change", "0", "allow changing a vote after casting"),
+        new("sv_vote_commands", "restart fraglimit chmap gotomap nextmap endmatch reducematchtime extendmatchtime allready kick kickban cointoss shuffleteams", "votable command whitelist"),
+        new("sv_vote_master", "0", "allow vote-master subsystem"),
+        new("sv_vote_master_callable", "0", "allow calling a vote to become master"),
+        new("sv_vote_master_commands", "movetoauto movetored movetoblue movetoyellow movetopink movetospec", "extra commands the master may run"),
+        new("sv_vote_master_password", "", "password to log in as vote master ('' = disabled)"),
+        new("sv_vote_master_playerlimit", "2", "min players for a master vote to pass"),
+        new("sv_vote_singlecount", "0", "don't recount on each vote (only at timeout)"),
+        new("sv_vote_timeout", "30", "seconds a called vote stays open"),
+        new("sv_vote_wait", "120", "cooldown after calling a vote"),
+        new("sv_vote_stop", "5", "cooldown after stopping your own vote"),
+        new("sv_vote_majority_factor", "0.5", "overall yes-fraction to pass"),
+        new("sv_vote_majority_factor_of_voted", "0.5", "yes-fraction of those who voted (at timeout)"),
+        new("sv_vote_no_stops_vote", "0", "caller voting no cancels their own vote"),
+        new("sv_vote_nospectators", "0", "0=spectators vote, 1=except warmup/intermission, 2=never"),
+        new("sv_vote_gamestart", "0", "allow vote calling before the match starts"),
+        new("sv_vote_limit", "160", "max votable command length (0 = no limit)"), // commands.cfg:361
+        new("sv_vote_debug", "0", "include bots as voters; print debug banner"),
+        new("sv_vote_override_mostrecent", "0", "allow voting a recently-played map"),
+        new("sv_status_privacy", "1", Save, "hide IP/crypto_id from who/status replies shown to clients"), // commands.cfg:157
 
         // ---- cheats (server/cheats.qc) ----
         new("sv_cheats", "0", Notify, "0=off, 1=cheats, 2=cheats for non-players + wider teleport"),
-        new("g_grab_range", "200", Save, "non-cheat object drag range"),
-        new("g_max_info_autoscreenshot", "60", Save),
-        new("sv_clones", "0", Save, "max clones a player may spawn (cheat)"),
-        new("g_allow_checkpoints", "0", Save, "speedrun checkpoint teleport is not a cheat"),
+        new("g_grab_range", "200", "non-cheat object drag range"),
+        new("g_max_info_autoscreenshot", "3"), // xonotic-server.cfg:643
+        new("sv_clones", "0", "max clones a player may spawn (cheat)"),
+        new("g_allow_checkpoints", "0", "speedrun checkpoint teleport is not a cheat"),
 
         // ---- bans (server/ipban.qc + command/banning.qc) ----
-        new("g_banned_list", "", Save, "serialized local ban list"),
-        new("g_banned_list_idmode", "1", Save, "IP bans only apply to clients without a crypto id"),
-        new("g_ban_telluser", "1", Save, "tell a kicked client they are banned"),
-        new("g_ban_default_bantime", "5400", Save, "default ban duration (s)"),
-        new("g_ban_default_masksize", "3", Save, "default IP mask size (1..4)"),
-        new("g_chatban_list", "", Save, "muted players (IP/id prefixes)"),
-        new("g_playban_list", "", Save, "forced-spectate players (IP/id prefixes)"),
-        new("g_voteban_list", "", Save, "vote-banned players (IP/id prefixes)"),
-        new("g_playban_minigames", "1", Save, "also remove play-banned players from minigames"),
+        new("g_banned_list", "", "serialized local ban list"),
+        new("g_banned_list_idmode", "1", "IP bans only apply to clients without a crypto id"),
+        new("g_ban_telluser", "1", "tell a kicked client they are banned"),
+        new("g_ban_default_bantime", "5400", "default ban duration (s)"),
+        new("g_ban_default_masksize", "3", "default IP mask size (1..4)"),
+        new("g_chatban_list", "", "muted players (IP/id prefixes)"),
+        new("g_playban_list", "", "forced-spectate players (IP/id prefixes)"),
+        new("g_voteban_list", "", "vote-banned players (IP/id prefixes)"),
+        // QC xonotic-server.cfg:436 — default 0 (play-banned players ARE allowed into minigames out of the box).
+        new("g_playban_minigames", "0", "disallow playbanned players (forced to spectate) from minigames"),
 
         // ---- event log + player stats (server/gamelog.qc + common/playerstats.qc) ----
-        new("sv_eventlog", "0", Save, "enable the event log"),
-        new("sv_eventlog_console", "0", Save, "echo the event log to the console"),
-        new("sv_eventlog_files", "0", Save, "write the event log to files"),
-        new("sv_eventlog_files_counter", "0", Save, "match counter for log filenames"),
-        new("sv_eventlog_files_nameprefix", "ServerLog-", Save),
-        new("sv_eventlog_files_namesuffix", ".log", Save),
-        new("sv_eventlog_files_timestamps", "1", Save),
-        new("sv_eventlog_ipv6_delimiter", "0", Save, "replace ':' with '_' in logged IPs"),
-        new("g_playerstats_gamereport_uri", "", Save, "stats upload endpoint ('' = disabled)"),
+        new("sv_eventlog", "0", "enable the event log"),
+        new("sv_eventlog_console", "0", "echo the event log to the console"),
+        new("sv_eventlog_files", "0", "write the event log to files"),
+        new("sv_eventlog_files_counter", "0", "match counter for log filenames"),
+        new("sv_eventlog_files_nameprefix", "ServerLog-"),
+        new("sv_eventlog_files_namesuffix", ".log"),
+        new("sv_eventlog_files_timestamps", "1"),
+        new("sv_eventlog_ipv6_delimiter", "0", "replace ':' with '_' in logged IPs"),
+        new("g_playerstats_gamereport_uri", "", "stats upload endpoint ('' = disabled)"),
+        // ---- score log (server/world.qc DumpStats / sv_cmd.qc printstats) ----
+        new("sv_logscores_console", "0", "print scores to server console"), // xonotic-server.cfg:336
+        new("sv_logscores_file", "0", "print scores to file"),              // xonotic-server.cfg:337
+        new("sv_logscores_filename", "scores.log", "score-log filename"),   // xonotic-server.cfg:338
+        new("sv_logscores_bots", "0", "exclude bots by default"),           // xonotic-server.cfg:339 (Base default 0, NOT 1)
+        // QC g_score_resetonjoin (xonotic-server.cfg:302): 0 = keep score on (re)join (default), 1 = always wipe,
+        // -1 = wipe unless the PreferPlayerScore_Clear hook vetoes. Read by GameScores.ClearPlayerOnJoin on the
+        // spectator→player join path; MUST be registered so an admin's 1/-1 override actually applies.
+        new("g_score_resetonjoin", "0",
+            "reset players' scores when they rejoin the match (-1 = only where speccing+rejoining could be abused)"),
+
+        // ---- serverflags sources (server/world.qc readlevelcvars → the networked `serverflags` global, the
+        //      client gates fullbright + the pickup timer off these). Defaults from xonotic-server.cfg:611/614. ----
+        new("sv_allow_fullbright", "1", "allow clients to use r_fullbright without the night-vision overlay"),
+        new("sv_forbid_pickuptimer", "0", "disallow clients from seeing item pickup timers"),
+        // The published serverflags bitfield (GameWorld.ReadLevelCvars mirrors ServerFlags.Value here); the
+        // shared-store client reads it where QC reads the engine `serverflags` global.
+        new("serverflags", "0", "computed server flags (SERVERFLAG_* bits); set by the server at map init"),
 
         // ---- diagnostics / logging (engine cvar; gates lib/log.qh → XonoticGodot.Common.Diagnostics.Log) ----
         // QC autocvar_developer: 0 = off, 1 = LOG_TRACE + LOG_INFO headers, 2 = + LOG_DEBUG and full source
@@ -351,14 +463,14 @@ public static class Cvars
 
         // ---- client physics selection (server/command/cmd.qc ClientCommand_physics). Ships 0 → the `physics`
         //      command prints "disabled" unless an admin opts in (physics.cfg). Options string is physics.cfg's. ----
-        new("g_physics_clientselect", "0", Save, "allow clients to select their physics set"),
-        new("g_physics_clientselect_options", "xonotic nexuiz vecxis quake quake2 quake3 cpma bones xdf", Save, "the selectable physics sets"),
+        new("g_physics_clientselect", "0", "allow clients to select their physics set"),
+        new("g_physics_clientselect_options", "xonotic nexuiz vecxis quake quake2 quake3 cpma bones xdf", "the selectable physics sets"),
 
         // ---- monster editor (server/command/common.qc editmob). monsters.cfg ships g_monsters_edit 0,
         //      g_monsters_max 20, g_monsters_max_perplayer 0 — so editmob spawn is OFF by default (per-player 0). ----
-        new("g_monsters_edit", "0", Save, "0=off, 1=edit own monsters, 2=edit any (admin)"),
-        new("g_monsters_max", "20", Save, "max monsters alive server-wide"),
-        new("g_monsters_max_perplayer", "0", Save, "max monsters a single player may have (0 = none)"),
+        new("g_monsters_edit", "0", "0=off, 1=edit own monsters, 2=edit any (admin)"),
+        new("g_monsters_max", "20", "max monsters alive server-wide"),
+        new("g_monsters_max_perplayer", "0", "max monsters a single player may have (0 = none)"),
 
         // ---- campaign (server/campaign.qc) ----
         new("g_campaign", "0", "in-campaign master switch"),
@@ -369,30 +481,40 @@ public static class Cvars
         new("_campaign_testrun", "0", "campaign test run (instant win)"),
 
         // ---- timeout / timein (server/command/common.qc) ----
-        new("sv_timeout", "0", Save, "allow players to pause via timeout"),
-        new("sv_timeout_leadtime", "4", Save, "countdown before a timeout begins"),
-        new("sv_timeout_length", "120", Save, "max timeout duration"),
-        new("sv_timeout_number", "2", Save, "timeouts allowed per player"),
-        new("sv_timeout_resumetime", "3", Save, "countdown when resuming"),
+        new("sv_timeout", "0", "allow players to pause via timeout"),
+        new("sv_timeout_leadtime", "4", "countdown before a timeout begins"),
+        new("sv_timeout_length", "120", "max timeout duration"),
+        new("sv_timeout_number", "2", "timeouts allowed per player"),
+        new("sv_timeout_resumetime", "3", "countdown when resuming"),
 
         // ---- map rotation / map vote (server/intermission.qc + mapvoting.qc) ----
-        new("g_maplist_index", "0", Save, "rotation cursor into g_maplist"),
-        new("g_maplist_mostrecent", "", Save, "recently played maps (excluded from rotation)"),
-        new("g_maplist_mostrecent_count", "3", Save, "how many recent maps to remember"),
-        new("g_maplist_shuffle", "1", Save, "shuffle the rotation on load"),
-        new("g_maplist_selectrandom", "0", Save, "pick the next map at random"),
-        new("g_maplist_votable_keeptwotime", "15", Save, "seconds before the ballot is reduced"),
-        new("g_maplist_votable_suggestions", "2", Save, "player-suggested map slots on the ballot"),
-        new("g_maplist_votable_suggestions_override_mostrecent", "0", Save),
-        new("sv_vote_gametype", "0", Save, "run a gametype vote before the map vote"),
-        new("sv_vote_gametype_timeout", "20", Save),
-        new("sv_vote_gametype_options", "dm tdm ctf", Save),
+        new("g_maplist_index", "0", "rotation cursor into g_maplist"),
+        new("g_maplist_mostrecent", "", "recently played maps (excluded from rotation)"),
+        new("g_maplist_mostrecent_count", "3", "how many recent maps to remember"),
+        new("g_maplist_shuffle", "1", "shuffle the rotation on load"),
+        new("g_maplist_selectrandom", "0", "pick the next map at random"),
+        new("g_maplist_votable_reduce_time", "15", "reduce the number of options shown after this amount of time during the vote; 0 = disable"),
+        new("g_maplist_votable_reduce_count", "2", "options kept after reduce; if < 2, keep all maps that got any votes (if at least 2 did)"),
+        new("g_maplist_votable_show_suggester", "1", "show which player suggested a map"),
+        new("g_maplist_votable_suggestions", "2", "player-suggested map slots on the ballot"),
+        new("g_maplist_votable_suggestions_override_mostrecent", "0"),
+        new("sv_vote_gametype", "0", "run a gametype vote before the map vote"),
+        new("sv_vote_gametype_timeout", "20"),
+        // QC xonotic-server.cfg ships "dm tdm ca ctf" (ca was missing here).
+        new("sv_vote_gametype_options", "dm tdm ca ctf"),
+        new("sv_vote_gametype_reduce_time", "10", "reduce gametype options after this many seconds; 0 = disable"),
+        new("sv_vote_gametype_reduce_count", "2", "gametype options kept after reduce"),
+        new("sv_vote_gametype_detail", "1", "show vote counts during the gametype vote"),
+        new("sv_vote_gametype_default_current", "1", "the current gametype wins a tie among 0-vote options"),
+        new("sv_vote_gametype_maplist_reset", "1", "reset g_maplist when the gametype changes"),
         new("samelevel", "0", "restart the same map instead of rotating"),
         new("lastlevel", "0"),
-        new("timelimit_increment", "5", Save, "minutes added by extendmatchtime"),
-        new("timelimit_decrement", "5", Save, "minutes removed by reducematchtime"),
-        new("timelimit_min", "5", Save),
-        new("timelimit_max", "60", Save),
+        new("quit_when_empty", "0", "if set, the server quits at match end when only bots remain"),
+        new("quit_and_redirect", "", "if set to a server address, all clients are redirected there at match end"),
+        new("timelimit_increment", "5", "minutes added by extendmatchtime"),
+        new("timelimit_decrement", "5", "minutes removed by reducematchtime"),
+        new("timelimit_min", "5"),
+        new("timelimit_max", "60"),
 
         // ---- demo recording (engine sv_autodemo; host-driven) ----
         // DELIBERATE deviation from DP/Xonotic (which ship sv_autodemo 0): we default the omniscient server demo
@@ -407,7 +529,7 @@ public static class Cvars
         //      which needs a per-gametype computation the headless port doesn't do — so we seed 1 (force-spawn)
         //      here so stock maps spawn their items + powerups out of the box. A host can set 0 / -1 over the top.
         new("g_pickup_items", "1", "force item spawning (-1 = gametype default; seeded 1 so items spawn)"),
-        new("g_weapon_stay", "0", Save, "1 = ghost weapons (no ammo), 2 = ghost weapons refill ammo"),
+        new("g_weapon_stay", "0", "1 = ghost weapons (no ammo), 2 = ghost weapons refill ammo"),
         new("g_items_dropped_lifetime", "20", "seconds a dropped loot item survives before despawning"),
         new("g_pickup_weapons_anyway", "0", "always pick up a weapon even if already owned"),
 
@@ -447,14 +569,42 @@ public static class Cvars
         new("g_pickup_fuel_jetpack", "100", Notify, "fuel a Jetpack pickup grants"),
 
         // respawn times (xonotic-server.cfg / balance). Per-class for health/armor; shared for ammo; long for powerups.
-        new("g_pickup_respawntime_health_small", "15", Save), new("g_pickup_respawntime_health_medium", "15", Save),
-        new("g_pickup_respawntime_health_big", "20", Save), new("g_pickup_respawntime_health_mega", "30", Save),
-        new("g_pickup_respawntime_armor_small", "15", Save), new("g_pickup_respawntime_armor_medium", "20", Save),
-        new("g_pickup_respawntime_armor_big", "30", Save), new("g_pickup_respawntime_armor_mega", "30", Save),
-        new("g_pickup_respawntime_ammo", "10", Save),
-        new("g_pickup_respawntime_powerup", "120", Save),
-        new("g_pickup_respawntime_weapon", "10", Save),
-        new("g_pickup_respawntime_superweapon", "120", Save),
+        new("g_pickup_respawntime_health_small", "15"), new("g_pickup_respawntime_health_medium", "15"),
+        new("g_pickup_respawntime_health_big", "20"), new("g_pickup_respawntime_health_mega", "30"),
+        new("g_pickup_respawntime_armor_small", "15"), new("g_pickup_respawntime_armor_medium", "20"),
+        new("g_pickup_respawntime_armor_big", "30"), new("g_pickup_respawntime_armor_mega", "30"),
+        new("g_pickup_respawntime_ammo", "10"),
+        new("g_pickup_respawntime_powerup", "120"),
+        new("g_pickup_respawntime_weapon", "10"),
+        new("g_pickup_respawntime_superweapon", "120"),
+
+        // (§12.8) DP-faithful networking entity culling (DP sv_send.c SV_MarkWriteEntityStateToClient): the
+        // server stops SENDING a client the entities whose bounds fall outside that client's PVS — the bandwidth
+        // + draw-call win, and the half of DP's entity culling we were missing (we only used PVS for bot LOS).
+        // Box-tested per recipient (conservative: a model spanning a cluster boundary stays sent; a viewer in
+        // solid / unvised map / dead-or-spectating recipient sends everything). Default 1 = DP's default.
+        // See ServerNet.BuildEntitySet/RelevantEntitiesFor.
+        new("sv_cullentities_pvs", "1", "PVS-cull networked entities per client (DP SV_MarkWriteEntityStateToClient)"),
+
+        // ---- itemstime mutator (common/mutators/mutator/itemstime/itemstime.qc) ----
+        // The itemstime mutator tracks respawn times for "timed" items (Mega/Big Health+Armor, Strength, Shield,
+        // Superweapons) and sends them to clients so the HUD panel can draw countdowns. sv_itemstime (xonotic-
+        // server.cfg:421, default 1) is the SERVER gate: 0 off / 1 spectators+warmup / 2 also alive players. It
+        // gates both the HUD respawn-time table (ItemstimeMutator/ServerNet.SendItemsTime) AND the per-peer
+        // visibility of the SPRITERULE_SPECTATOR respawn waypoint sprites that Item_RespawnCountdown spawns for
+        // the SpectatorOnly set (Mega/Big health+armor) — see ServerNet.WaypointVisible, a faithful port of QC
+        // WaypointSprite_visible_for_player (waypointsprites.qc:982). MUST be registered: it is read with a
+        // default-0 fallback, so leaving it unregistered would read 0 and disable the whole mutator in production.
+        //
+        // NOTE: Base ALSO has a separate CLIENT draw-side cvar g_waypointsprite_itemstime (xonotic-client.cfg:518,
+        // default 2) used by Draw_WaypointSprite's SPRITERULE_SPECTATOR case (waypointsprites.qc:495) to decide
+        // whether a *received* spectator sprite is actually drawn. These are NOT the same cvar and do NOT share a
+        // default (server 1 vs client 2). The port has not ported the client-side g_waypointsprite_itemstime gate;
+        // it relies on the server-side sv_itemstime gate alone, which under stock cvars yields the same observable
+        // result (the server won't network a spectator sprite to a live player in a live round unless sv_itemstime
+        // ==2). Residual gap: a client overriding g_waypointsprite_itemstime to a non-default value has no effect,
+        // because the client never receives the sprite's rule to re-filter on (the rule is resolved server-side).
+        new("sv_itemstime", "1", "0 off / 1 spectators/warmup only / 2 also playing players (item respawn HUD + waypoint visibility)"),
     };
 
     /// <summary>
@@ -488,6 +638,10 @@ public static class Cvars
 
     /// <summary>QC <c>autocvar_NAME</c> as a string ("" if unset). Equivalent to <c>cvar_string(name)</c>.</summary>
     public static string String(string name) => Api.Services is not null ? Api.Cvars.GetString(name) : "";
+
+    /// <summary>Does this cvar exist in the live table? (QC the engine's command-vs-cvar dispatch check —
+    /// used by the console/rcon cvar-set fallback so a whitelisted cvar-style vote actually applies).</summary>
+    public static bool Has(string name) => Api.Services is not null && Api.Cvars.Has(name);
 
     /// <summary>QC <c>cvar(name) != 0</c> — the common bool-cvar idiom.</summary>
     public static bool Bool(string name) => Float(name) != 0f;

@@ -1,0 +1,27 @@
+# Known/accepted asset references for tools/parity-asset-check.py (fnmatch patterns, matched
+# case-insensitively against the literal ref). Same discipline as cvar-diff-known.yaml: suppress
+# only after confirming the ref is a doc placeholder, a probe, or an accepted divergence —
+# a suppressed genuine missing asset stays broken silently.
+
+known:
+  # --- documentation/probe placeholders (not real lookups) ---
+  - path: "*foo*"
+    note: "doc-comment / unit-probe placeholder paths (maps/foo.bsp, env/foo/foo, ...)"
+  - path: "models/x.ext"
+    note: "CsqcModelLod doc-comment example"
+  - path: "models/x_lodN.ext"
+    note: "CsqcModelLod doc-comment example"
+  - path: "env/sky_1.5"
+    note: "AssetPaths doc-comment example"
+  - path: "textures/exomorph/exo_floor"
+    note: "AssetPaths doc-comment example"
+  - path: "scripts/x.shader"
+    note: "AssetPaths doc-comment example"
+  - path: "scripts_old/x"
+    note: "VirtualFileSystem doc-comment example"
+  - path: "maps/campaign"
+    note: "campaign file stem — resolved with language/extension variants by Campaign.Load"
+
+  # --- engine-virtual shader names (never files by design) ---
+  - path: "textures/common/*"
+    note: "Q3 common shaders (nodraw/trigger/clip) are virtual — matched by name, no file expected"

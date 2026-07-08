@@ -107,4 +107,41 @@ public class InvasionVariantsTests
         // round 5 => 5 + 1 = 6
         Assert.Equal(6, inv.ComputeMonsterSkill(5));
     }
+
+    [Fact]
+    public void PointLimit_ExplicitZero_MeansNoLimit()
+    {
+        // QC GameRules_limit_score(0) sets fraglimit=0; WinningCondition_Scores gate is
+        // (limit && score>=limit) — when limit=0 that is always false → no limit ever fires.
+        // The port must return 0 from PointLimit (not the mapinfo default 50) so CheckPointLimit
+        // skips the check (limit<=0 → return early).
+        var f = Facade();
+        f.Cvars.Set("g_invasion_point_limit", "0");
+        var inv = new Invasion();
+        Assert.Equal(0, inv.PointLimit); // explicit 0 = no kill cap
+    }
+
+    [Fact]
+    public void PointLimit_NegativeSentinel_FallsBackToDefault50()
+    {
+        // QC: g_invasion_point_limit default -1 → GameRules_limit_score(-1) returns early (no fraglimit write)
+        // → mapinfo pointlimit=50. With no fraglimit cvar set the port returns the 50 default.
+        var f = Facade();
+        f.Cvars.Set("g_invasion_point_limit", "-1");
+        var inv = new Invasion();
+        Assert.Equal(50, inv.PointLimit);
+    }
+
+    [Fact]
+    public void HuntType_EmptyMap_InstaWins()
+    {
+        // QC: "NOTE: this ends the round if no monsters are placed" — Base WINNING_YES immediately on 0 found.
+        var f = Facade();
+        f.Cvars.Set("g_invasion_type", "1"); // INV_TYPE_HUNT
+        var inv = new Invasion();
+        inv.Activate();
+        // No monsters placed/spawned; LiveMonsters is empty; world entity scan returns 0.
+        inv.Tick();
+        Assert.True(inv.MatchEnded); // empty HUNT map → insta-win (matches Base behavior)
+    }
 }

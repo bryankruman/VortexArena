@@ -106,6 +106,15 @@ public sealed class Bumblebee : Vehicle
             vehicle.VehGun2 = NewSlot(vehicle, 2, "cannon_left");
             vehicle.VehGun3 = NewSub(vehicle, "bumblebee_raygun", "raygun");
             vehicle.VehicleFlags |= VehicleFlags.MultiSlot;
+
+            // QC vr_spawn (bumblebee.qc:878-880): the three cosmetic cannon models — gun1 = CANNON_RIGHT
+            // (bumblebee_plasma_right.dpm), gun2 = CANNON_LEFT (bumblebee_plasma_left.dpm), gun3 = CANNON_CENTER
+            // (bumblebee_ray.dpm), attached at the cannon_right/cannon_left/raygun tags. So the side cannons and
+            // the center raygun render their real plasma/ray models while the airframe is alive (previously these
+            // model strings were only assigned at death, leaving the live gunship's guns invisible).
+            SetGunModel(vehicle.VehGun1, "models/vehicles/bumblebee_plasma_right.dpm");
+            SetGunModel(vehicle.VehGun2, "models/vehicles/bumblebee_plasma_left.dpm");
+            SetGunModel(vehicle.VehGun3, "models/vehicles/bumblebee_ray.dpm");
         }
 
         vehicle.MaxHealth = StartHealth;
@@ -125,17 +134,34 @@ public sealed class Bumblebee : Vehicle
         if (Api.Services is not null)
             Api.Entities.SetSize(vehicle, new Vector3(-245f, -130f, -130f), new Vector3(230f, 130f, 130f));
 
-        vehicle.VehicleFlags |= VehicleFlags.HasShield | VehicleFlags.MoveFly | VehicleFlags.MultiSlot | VehicleFlags.DmgShake;
-        if (EnergyRegen > 0f) vehicle.VehicleFlags |= VehicleFlags.EnergyRegen;
-        if (ShieldRegen > 0f) vehicle.VehicleFlags |= VehicleFlags.ShieldRegen;
-        if (HealthRegen > 0f) vehicle.VehicleFlags |= VehicleFlags.HealthRegen;
+        // vr_setup flag derivation — QC gates each flag on its OWN cvar(s), not a generic ">0" of the
+        // descriptor field: VHF_ENERGYREGEN needs the PAIR (energy && energy_regen); VHF_HASSHIELD on shield;
+        // VHF_SHIELDREGEN on shield_regen; VHF_HEALTHREGEN on health_regen. MoveFly|DmgShake stay hardcoded.
+        vehicle.VehicleFlags |= VehicleFlags.MoveFly | VehicleFlags.MultiSlot | VehicleFlags.DmgShake;
+        if (MaxEnergy != 0f && EnergyRegen != 0f) vehicle.VehicleFlags |= VehicleFlags.EnergyRegen;
+        if (MaxShield != 0f) vehicle.VehicleFlags |= VehicleFlags.HasShield;
+        if (ShieldRegen != 0f) vehicle.VehicleFlags |= VehicleFlags.ShieldRegen;
+        if (HealthRegen != 0f) vehicle.VehicleFlags |= VehicleFlags.HealthRegen;
+
+        // QC vr_spawn: when g_vehicle_bumblebee_swim is FALSE the airframe collides with liquids
+        // (dphitcontentsmask |= DPCONTENTS_LIQUIDSMASK). At the swim=true default the mask is left alone.
+        if (Cvar("g_vehicle_bumblebee_swim", 1f) == 0f)
+            vehicle.DpHitContentsMask |= SuperContentsLiquidsMask;
 
         vehicle.Think = self => Think(self);
         vehicle.NextThink = Time;
 
+        // QC vr_spawn tail: setorigin(instance, instance.origin + '0 0 25') — lift the airframe 25u off its
+        // spawn point so it doesn't clip the floor it was placed on.
+        if (Api.Services is not null)
+            Api.Entities.SetOrigin(vehicle, vehicle.Origin + new Vector3(0f, 0f, 25f));
+
         // TODO(port,client): qcsrc/common/vehicles/vehicle/bumblebee.qc vr_spawn — networked BRG_* heal-beam
         //                    entity, shield entity, cockpit/viewport offsets, gun cosmetic models, scale 1.5.
     }
+
+    // QC DPCONTENTS_LIQUIDSMASK — the SUPERCONTENTS bits for water/slime/lava (CONTENTS_WATER|SLIME|LAVA).
+    private const int SuperContentsLiquidsMask = 0x00000010 | 0x00000020 | 0x00000040;
 
     // METHOD(Bumblebee, vr_enter) — bumblebee.qc (the PILOT enters here).
     public override void Enter(Entity vehicle, Entity player)
@@ -157,7 +183,13 @@ public sealed class Bumblebee : Vehicle
         // would yank them into a gunner seat. Use-key gunner boarding works via VehicleBoarding.Enter's MULTISLOT branch.
         if (Cvar("g_vehicles_enter", 1f) != 0f) return;
         // Both gunner seats taken -> behave like a normal vehicle touch (no more seats).
-        if (vehicle.VehGunner1 is not null && vehicle.VehGunner2 is not null) return;
+        if (vehicle.VehGunner1 is not null && vehicle.VehGunner2 is not null)
+        {
+            // QC: vehicles_touch(this, toucher); return; — fall through to the shared dispatcher
+            // (crush / vr_impact bounce-pain / pilot touch-board).
+            VehicleCommon.Touch(vehicle, toucher);
+            return;
+        }
 
         if (ValidPilot(vehicle, toucher) && Time >= toucher.VehicleEnterDelay
             && (Time >= (vehicle.VehGun1?.VehPhase ?? 0f) || Time >= (vehicle.VehGun2?.VehPhase ?? 0f)))
@@ -165,7 +197,10 @@ public sealed class Bumblebee : Vehicle
             if (GunnerEnter(vehicle, toucher))
                 return;
         }
-        // else: the body is free (no pilot) -> the engine's normal vehicles_touch enters as pilot.
+
+        // QC bumblebee_touch tail: vehicles_touch(this, toucher) — the body is free (no pilot) enters as pilot,
+        // or (while piloted) the shared dispatcher runs the vr_impact bounce-pain.
+        VehicleCommon.Touch(vehicle, toucher);
     }
 
     // void bumblebee_exit(entity this, int eject) — bumblebee.qc (PILOT exit; gunners exit separately).
@@ -210,6 +245,11 @@ public sealed class Bumblebee : Vehicle
         if (VehicleCommon.FreezeIfGameStopped(vehicle))
             return;
 
+        // QC engine .oldvelocity = last-tick velocity; vr_impact (vehicles_impact) measures the touch
+        // speed-change against it. Snapshot BEFORE this tick's physics so a touch dispatched this frame
+        // sees the real delta (matches racer_think).
+        vehicle.OldVelocity = vehicle.Velocity;
+
         Entity? player = vehicle.Owner;
 
         // vr_think: ease body roll/pitch; if there's no pilot but a gunner is still aboard, promote a gunner
@@ -253,6 +293,9 @@ public sealed class Bumblebee : Vehicle
             player.OldOrigin = player.Origin;
             player.Velocity = vehicle.Velocity;
         }
+
+        // QC vehicles_think: vehicles_painframe(this) runs after vr_think every tick — low-health smoke + jitter.
+        VehicleCommon.PainFrame(vehicle);
     }
 
     /// <summary>Port of <c>bumblebee_regen</c>: per-gun cannon ammo + the body shield/energy/health.</summary>
@@ -328,14 +371,24 @@ public sealed class Bumblebee : Vehicle
         if (HealgunLockTime > 0f && vehicle.VehGun3 is not null)
         {
             Entity g3 = vehicle.VehGun3;
-            if (g3.VehLockTime < Time || (g3.Enemy is not null && VehicleCommon.IsDead(g3.Enemy))) g3.Enemy = null;
+            // QC bumblebee.qc:519: drop the lock when expired/dead OR the locked teammate is FROZEN (freezetag —
+            // a frozen player can't be healed; force a re-lock so the beam stops topping them up).
+            if (g3.VehLockTime < Time || (g3.Enemy is not null && (VehicleCommon.IsDead(g3.Enemy) || IsFrozen(g3.Enemy)))) g3.Enemy = null;
             Entity? te = tr.Ent;
-            if (te is not null && te.MoveType != MoveType.None && te.TakeDamage != DamageMode.No && !VehicleCommon.IsDead(te))
+            // QC bumblebee.qc:524: skip a FROZEN candidate when acquiring (don't lock onto a frozen teammate).
+            if (te is not null && te.MoveType != MoveType.None && te.TakeDamage != DamageMode.No
+                && !VehicleCommon.IsDead(te) && !IsFrozen(te))
             {
                 bool ok = VehiclePhysics.SameTeam(te, vehicle) || vehicle.Team == 0f;
                 if (ok) { g3.Enemy = te; g3.VehLockTime = Time + HealgunLockTime; }
             }
             if (g3.Enemy is not null) beamAim = g3.Enemy.Origin;
+
+            // Auxiliary heal-lock crosshair (QC bumblebee_pilot_frame draws aux xhair '0 0.75 0' over the locked
+            // target). The bumblebee's heal lock is binary (locked or not — no build-up ramp), so mirror it onto
+            // the shared VehLockTarget/VehLockStrength that the client aux-crosshair feeder already projects.
+            vehicle.VehLockTarget = g3.Enemy;
+            vehicle.VehLockStrength = g3.Enemy is not null ? 1f : 0f;
         }
 
         // --- aim the raygun turret (gun3) --------------------------------------------------------------
@@ -349,8 +402,31 @@ public sealed class Bumblebee : Vehicle
         if (firing && haveEnergy)
             FireRay(vehicle, player, beamAim, dt);
 
+        // Mirror the 0..100 vehicle stats onto the pilot for the in-vehicle HUD (QC bumblebee_pilot_frame:
+        // vehicle_health/shield/energy + vehicle_ammo1/2 = (gun1/2.vehicle_energy / cannon_ammo) * 100). The
+        // client feeder (NetGame.UpdateVehicleHud) reads these off the pilot each frame.
+        player.VehicleHealth = vehicle.GetResource(ResourceType.Health) / StartHealth * 100f;
+        player.VehicleShield = vehicle.VehicleShield / MaxShield * 100f;
+        player.VehicleEnergy = vehicle.VehicleEnergy / MaxEnergy * 100f;
+        player.VehicleAmmo1 = vehicle.VehGun1 is not null ? vehicle.VehGun1.VehicleEnergy / CannonAmmoMax * 100f : 0f;
+        player.VehicleAmmo2 = vehicle.VehGun2 is not null ? vehicle.VehGun2.VehicleEnergy / CannonAmmoMax * 100f : 0f;
+
         // TODO(port,client): qcsrc/common/vehicles/vehicle/bumblebee.qc bumblebee_pilot_frame — engine sound,
-        //                    networked BRG_* heal-beam visual, aux crosshair lock color, vehicle_ammo/HUD %.
+        //                    networked BRG_* heal-beam visual (remote spectators), the gunner cockpit HUD.
+    }
+
+    // METHOD(Bumblebee, vr_impact) — bumblebee.qc: a hard bounce jolts the pilot (vehicles_impact).
+    /// <summary>
+    /// Port of <c>vr_impact</c>: on a hard collision (the velocity change exceeds the bouncepain minspeed)
+    /// deal <c>min(speedfac * speedDelta, maxpain)</c> DEATH_FALL pain to the airframe, debounced 0.25s.
+    /// Bouncepain <c>'1 100 200'</c> = minspeed 1, factor 100, max 200. Dispatched from the shared
+    /// <c>vehicles_touch</c> path (<see cref="VehicleCommon.Touch"/> -> <see cref="VehicleCommon.Impact"/>);
+    /// <see cref="Entity.OldVelocity"/> is the last-tick velocity snapshotted by <see cref="Think"/>.
+    /// </summary>
+    public override void Impact(Entity vehicle)
+    {
+        // QC: vector autocvar_g_vehicle_bumblebee_bouncepain = '1 100 200' (minspeed, speedfac, maxpain).
+        VehicleCommon.Impact(vehicle, 1f, 100f, 200f);
     }
 
     // void bumblebee_land(entity this) — bumblebee.qc.
@@ -380,29 +456,87 @@ public sealed class Bumblebee : Vehicle
         vehicle.Solid = Solid.Not;
         vehicle.MoveType = MoveType.None;
         vehicle.Velocity = Vector3.Zero;
-        vehicle.Touch = null;
 
-        // QC bumblebee_blowup: a big radius blast after a short tumble, then respawn.
+        // QC vr_death: Send_Effect(EFFECT_EXPLOSION_MEDIUM, findbetterlocation(origin, 16), '0 0 0', 1) — the
+        // medium blast that marks the airframe dying (the port has no findbetterlocation wall-nudge, so emit at
+        // the origin directly — the helper only pushes the FX clear of a surface, not a gameplay difference).
+        EffectEmitter.Emit("EXPLOSION_MEDIUM", vehicle.Origin, Vector3.Zero, 1);
+
+        // QC vr_death (bumblebee.qc:816-819): fixedmakevectors(angles); toss the three gun gibs off the wreck —
+        // each cannon flung outward along the body axes + jitter, spinning, 50/50 burning and 50/50 exploding,
+        // over a 6s window. The gun gibs carry their cannon model strings so the debris is the real plasma/ray
+        // models. This is the per-piece wreckage the descriptors' single death EXPLOSION couldn't show.
+        QMath.AngleVectors(vehicle.Angles, out Vector3 vf, out Vector3 vr, out Vector3 vu);
+        Entity? g1 = vehicle.VehGun1, g2 = vehicle.VehGun2, g3 = vehicle.VehGun3;
+        if (g1 is not null)
+        {
+            g1.Model = "models/vehicles/bumblebee_plasma_right.dpm"; // MDL_VEH_BUMBLEBEE_CANNON_RIGHT (gun1)
+            VehicleCommon.TossGib(vehicle, g1, vehicle.Velocity + 300f * vr + 100f * vu + 200f * Prandom.Vec(),
+                "cannon_right", Prandom.Float() < 0.5f, Prandom.Float() < 0.5f, 6f, Prandom.Vec() * 200f);
+        }
+        if (g2 is not null)
+        {
+            g2.Model = "models/vehicles/bumblebee_plasma_left.dpm"; // MDL_VEH_BUMBLEBEE_CANNON_LEFT (gun2)
+            VehicleCommon.TossGib(vehicle, g2, vehicle.Velocity + -300f * vr + 100f * vu + 200f * Prandom.Vec(),
+                "cannon_left", Prandom.Float() < 0.5f, Prandom.Float() < 0.5f, 6f, Prandom.Vec() * 200f);
+        }
+        if (g3 is not null)
+        {
+            g3.Model = "models/vehicles/bumblebee_ray.dpm"; // MDL_VEH_BUMBLEBEE_CANNON_CENTER (gun3/raygun)
+            VehicleCommon.TossGib(vehicle, g3, vehicle.Velocity + 300f * vf + -100f * vu + 200f * Prandom.Vec(),
+                "raygun", Prandom.Float() < 0.5f, Prandom.Float() < 0.5f, 6f, Prandom.Vec() * 300f);
+        }
+
+        // QC vr_death tail: a 50% chance the tossed body blows up early on contact (bumblebee_dead_touch). The
+        // port keeps the body in place rather than spawning a separate gib, so model the contact-blowup on the
+        // body's own .Touch: a fired/bumped corpse detonates immediately into bumblebee_blowup.
+        bool deadTouch = Prandom.Float() > 0.5f;
+
+        // QC bumblebee_blowup: a big radius blast after a short tumble (wait = time + 2 + random*8), then respawn.
         float when = Time + 2f + Prandom.Range(0f, 8f);
+
+        // bumblebee_blowup — the final death detonation (DEATH_VH_BUMB_DEATH) + SND_ROCKET_IMPACT + EXPLOSION_BIG.
+        void Blowup(Entity self)
+        {
+            WeaponSplash.RadiusDamage(self, self.Origin, 500f, 100f, 500f, self.Enemy, 0, 600f, deathTag: DeathTypes.VhBumbDeath);
+            // QC: sound(this, CH_SHOTS, SND_ROCKET_IMPACT, ...); Send_Effect(EFFECT_EXPLOSION_BIG, origin + '0 0 100' + randomvec()*80, ...).
+            if (Api.Services is not null) Api.Sound.Play(self, SoundChannel.ShotsAuto, "weapons/rocket_impact.wav");
+            EffectEmitter.Emit("EXPLOSION_BIG", self.Origin + new Vector3(0f, 0f, 100f) + Prandom.Vec() * 80f, Vector3.Zero, 1);
+
+            self.DeadState = DeadFlag.Dead;
+            self.Touch = null;
+            if (Api.Services is not null) Api.Entities.SetOrigin(self, self.SpawnPos);
+            self.NextThink = Time + RespawnTime;
+            self.Think = s => Spawn(s);
+        }
+
+        // QC bumblebee_dead_touch: settouch(_body, bumblebee_dead_touch) on the 50% branch — blow up on contact.
+        vehicle.Touch = deadTouch ? (self, _) => Blowup(self) : null;
+
+        // bumblebee_diethink — tumble: 10% per 0.1s tick a small explosion + impact sound; at `wait` -> blowup.
         vehicle.Think = self =>
         {
             if (Time >= when)
             {
-                WeaponSplash.RadiusDamage(self, self.Origin, 500f, 100f, 500f, self.Enemy, RegistryId, 600f);
-                self.DeadState = DeadFlag.Dead;
-                if (Api.Services is not null) Api.Entities.SetOrigin(self, self.SpawnPos);
-                self.NextThink = Time + RespawnTime;
-                self.Think = s => Spawn(s);
+                Blowup(self);
+                return;
             }
-            else
+
+            // QC bumblebee_diethink: if (random() < 0.1) { sound SND_ROCKET_IMPACT; Send_Effect(EFFECT_EXPLOSION_SMALL,
+            // randomvec()*80 + (origin + '0 0 100'), '0 0 0', 1); }.
+            if (Prandom.Float() < 0.1f)
             {
-                self.NextThink = Time + 0.1f;
-                // TODO(port,client): random EFFECT_EXPLOSION_SMALL + SND_ROCKET_IMPACT during the tumble.
+                if (Api.Services is not null) Api.Sound.Play(self, SoundChannel.ShotsAuto, "weapons/rocket_impact.wav");
+                EffectEmitter.Emit("EXPLOSION_SMALL", Prandom.Vec() * 80f + (self.Origin + new Vector3(0f, 0f, 100f)), Vector3.Zero, 1);
             }
+            self.NextThink = Time + 0.1f;
         };
         vehicle.NextThink = Time;
-        // TODO(port,client): qcsrc/common/vehicles/vehicle/bumblebee.qc vr_death — gib the gun1/gun2/gun3 + body
-        //                    via vehicle_tossgib, hide heal-ray beam (visual only).
+        // NOTE: the gun1/gun2/gun3 wreckage gibs ARE now tossed (above, via VehicleCommon.TossGib — the
+        // vehicle_gib physics-entity subsystem). Base also replaces the BODY with a separate tossgib that runs the
+        // diethink; the port keeps the diethink/blowup + respawn on the original body in place (functionally
+        // equivalent for the death->blowup->respawn cycle, with one fewer throwaway entity). The heal-ray beam
+        // hide (gun3.enemy EF_NODRAW) is a client-only visual and remains deferred.
     }
 
     // ============================ MULTI-SEAT ============================
@@ -446,6 +580,9 @@ public sealed class Bumblebee : Vehicle
         player.Velocity = Vector3.Zero;
         player.ViewOfs = Vector3.Zero;
         player.Flags &= ~EntFlags.OnGround;
+        // QC bumblebee_gunner_enter:334 — mirror the body's reload state onto the gunner (drives the aux-crosshair
+        // reload color). The bumblebee body never sets vehicle_reload1, so this is 0 (always "ready"/green).
+        player.VehicleReload1 = vehicle.VehicleReload1;
         gun.VehSlotPlayer = player;
         gun.Owner = vehicle;
         return true;
@@ -467,6 +604,8 @@ public sealed class Bumblebee : Vehicle
 
         gun.VehSlotPlayer = null;
         gun.VehPhase = Time + 5f; // re-entry delay
+        gun.VehGunnerLeadValid = false; // stop drawing this gun's aux crosshairs once the seat is empty
+        gun.VehGunnerHitValid = false;
 
         if (player is not null)
         {
@@ -508,9 +647,12 @@ public sealed class Bumblebee : Vehicle
         // Per-gun lock + lead.
         if (CannonLock != 0)
         {
-            if (gun.VehLockTime < Time || (gun.Enemy is not null && VehicleCommon.IsDead(gun.Enemy))) gun.Enemy = null;
+            // QC bumblebee.qc:113: drop the lock when expired/dead OR the locked enemy is FROZEN (freezetag).
+            if (gun.VehLockTime < Time || (gun.Enemy is not null && (VehicleCommon.IsDead(gun.Enemy) || IsFrozen(gun.Enemy)))) gun.Enemy = null;
             Entity? te = tr.Ent;
-            if (te is not null && te.MoveType != MoveType.None && te.TakeDamage != DamageMode.No && !VehicleCommon.IsDead(te))
+            // QC bumblebee.qc:119: skip a FROZEN candidate when acquiring (don't lock onto a frozen enemy).
+            if (te is not null && te.MoveType != MoveType.None && te.TakeDamage != DamageMode.No
+                && !VehicleCommon.IsDead(te) && !IsFrozen(te))
             {
                 bool diff = !VehiclePhysics.SameTeam(te, gunner) || vehic.Team == 0f;
                 if (diff) { gun.Enemy = te; gun.VehLockTime = Time + (vehic.Team != 0f ? 2.5f : 0.5f); }
@@ -519,8 +661,24 @@ public sealed class Bumblebee : Vehicle
             {
                 float distance = QMath.VLen(gun.Enemy.Origin - gun.Origin);
                 float impact = distance / CannonSpeed;
-                aimAt = gun.Enemy.Origin + gun.Enemy.Velocity * impact; // lead
+                // QC bumblebee_gunner_frame: a ground (MOVETYPE_WALK) target's vertical velocity is damped *0.1
+                // before leading (footstep bob shouldn't throw the aim up/down).
+                Vector3 lead = gun.Enemy.Velocity;
+                if (gun.Enemy.MoveType == MoveType.Walk) lead.Z *= 0.1f;
+                aimAt = gun.Enemy.Origin + lead * impact; // lead
+
+                // QC bumblebee.qc:153 — the magenta '1 0 1' LEAD aux crosshair at the predicted impact point.
+                gun.VehGunnerLeadPoint = aimAt;
+                gun.VehGunnerLeadValid = true;
             }
+            else
+            {
+                gun.VehGunnerLeadValid = false;
+            }
+        }
+        else
+        {
+            gun.VehGunnerLeadValid = false;
         }
 
         VehiclePhysics.AimTurret(vehic, aimAt, gun, "fire",
@@ -534,9 +692,34 @@ public sealed class Bumblebee : Vehicle
             gun.VehWeaponDelay = Time; // QC: gun.delay = time (ammo regen pause)
             gun.VehAttackFinished = Time + CannonRefire;
         }
-        // TODO(port,client): qcsrc/common/vehicles/vehicle/bumblebee.qc bumblebee_gunner_frame — aux crosshairs,
-        //                    vehicle_ammo/HUD % mirroring to the gunner + pilot.
+
+        // QC bumblebee_gunner_frame tail (VEHICLE_UPDATE_PLAYER_RESOURCE/VEHICLE_UPDATE_PLAYER): mirror the
+        // body's 0..100 health/shield % + the gun's own cannon ammo % onto the GUNNER for their cockpit HUD.
+        gunner.VehicleHealth = vehic.GetResource(ResourceType.Health) / StartHealth * 100f;
+        if ((vehic.VehicleFlags & VehicleFlags.HasShield) != 0)
+            gunner.VehicleShield = vehic.VehicleShield / MaxShield * 100f;
+        gunner.VehicleAmmo1 = gun.VehicleEnergy / CannonAmmoMax * 100f; // QC this.vehicle_energy mirror
+        gunner.VehicleEnergy = gun.VehicleEnergy / CannonAmmoMax * 100f;
+
+        // QC bumblebee.qc:180-186 — the READY/reload aux crosshair (aux slot 0 on the gunner, slot 1/2 on the
+        // pilot) at the cannon's STRAIGHT-LINE hit point, tinted red*reload1 + green*(1-reload1). Trace from the
+        // "fire" tag straight ahead and publish the hit so both the gunner HUD and the pilot mirror can draw it.
+        var (fireOrg, fireFwd) = VehiclePhysics.TagOriginForward(gun, "fire");
+        Vector3 hit = fireOrg + fireFwd * 8192f;
+        if (Api.Trace is not null)
+        {
+            TraceResult ft = Api.Trace.Trace(fireOrg, Vector3.Zero, Vector3.Zero, hit, MoveFilter.Normal, gun);
+            hit = ft.EndPos;
+        }
+        gun.VehGunnerHitPoint = hit;
+        gun.VehGunnerHitValid = true;
     }
+
+    /// <summary>QC <c>STAT(FROZEN, e)</c> — true while a player is frozen (freezetag). Frozen targets cannot be
+    /// locked, healed, or led; the bumblebee lock guards drop/skip them (bumblebee.qc:113/119/519/524).</summary>
+    private static bool IsFrozen(Entity? e)
+        => e is not null && (e.FrozenStat != 0
+            || (StatusEffectsCatalog.Frozen is { } fz && StatusEffectsCatalog.Has(e, fz)));
 
     // ============================ WEAPONS ============================
 
@@ -548,11 +731,18 @@ public sealed class Bumblebee : Vehicle
         QMath.AngleVectors(QMath.VecToAngles(fwd), out Vector3 f, out Vector3 r, out Vector3 u);
         Vector3 vel = Prandom.Spread(f, r, u, CannonSpread) * CannonSpeed;
 
+        // QC vehicles_projectile fires EFFECT_BIGPLASMA_MUZZLEFLASH at the muzzle (the projectile origin),
+        // velocity = the bolt's velocity, count 1 — the networked Send_Effect that paints the plasma flash.
+        EffectEmitter.Emit("BIGPLASMA_MUZZLEFLASH", org, vel, 1);
+
         VehicleCommon.SpawnProjectile(vehicle, gunner, org, vel,
             CannonDamage, CannonRadius, CannonForce, size: 0f,
-            DeathTypes.FromWeapon("bumblebee"), RegistryId, health: 0f, lifetime: 0f,
-            fireSound: "vehicles/bumblebee_fire.wav");
-        // TODO(port,client): EFFECT_BIGPLASMA_MUZZLEFLASH + CSQCProjectile visual.
+            DeathTypes.VhBumbGun, health: 0f, lifetime: 0f, // bumblebee_weapons.qc: DEATH_VH_BUMB_GUN
+            // QC bumblebee_weapons.qc passes SND_VEH_BUMBLEBEE_FIRE = W_Sound("flacexp3") = weapons/flacexp3.
+            // The prior literal "vehicles/bumblebee_fire.wav" is a non-existent asset (silent cannon); the
+            // real Base sample is weapons/flacexp3 (ships as weapons/flacexp3.ogg).
+            fireSound: "weapons/flacexp3.wav");
+        // TODO(port,client): the CSQCProjectile (PROJECTILE_BUMBLE_GUN) networked trail/model visual.
     }
 
     // bumblebee_pilot_frame() center-gun block — bumblebee.qc: the pilot's heal-ray / damage-ray.
@@ -571,10 +761,11 @@ public sealed class Bumblebee : Vehicle
         TraceResult tr = Api.Trace.Trace(start, Vector3.Zero, Vector3.Zero, end, MoveFilter.Normal, vehicle);
         Entity? target = tr.Ent;
 
-        // BRG_* beam: the visible heal/damage ray from gun3 to where it landed (green heal vs hot damage).
+        // BRG_* beam: the visible heal/damage ray from gun3 to where it landed. Base's bumble_raygun_draw
+        // tints by colormod = (count ? '1 0 0' : '0 1 0') — pure red in damage mode, pure green when healing.
         // Emitted each tick the ray is held; the short overlapping beams read as one continuous ray.
         if (RaygunDamage)
-            EffectEmitter.TeBeam("damage_beam", start, tr.EndPos, new Vector3(1f, 0.5f, 0.2f));
+            EffectEmitter.TeBeam("damage_beam", start, tr.EndPos, new Vector3(1f, 0f, 0f));
         else
             EffectEmitter.TeHealBeam(start, tr.EndPos);
 
@@ -595,10 +786,11 @@ public sealed class Bumblebee : Vehicle
 
             if (HealgunHps > 0f)
             {
+                // QC: hplimit = IS_PLAYER ? healgun_hmax : RES_LIMIT_NONE; Heal() = GiveResourceWithLimit(Health),
+                // which leaves RES_LIMIT_NONE uncapped — so a non-player (e.g. a friendly vehicle's health pool)
+                // tops up unbounded rather than being clamped to its MaxHealth.
                 float hpLimit = (target.Flags & EntFlags.Client) != 0 ? HealgunHmax : Resources.LimitNone;
-                float effLimit = hpLimit == Resources.LimitNone ? target.MaxHealth : hpLimit;
-                if (target.GetResource(ResourceType.Health) < effLimit)
-                    target.GiveResourceWithLimit(ResourceType.Health, HealgunHps * dt, effLimit);
+                target.GiveResourceWithLimit(ResourceType.Health, HealgunHps * dt, hpLimit);
             }
 
             // Friendly vehicle: top up its shield instead of armor.
@@ -638,6 +830,14 @@ public sealed class Bumblebee : Vehicle
         g.VehicleEnergy = CannonAmmoMax;
         if (Api.Services is not null) Api.Models.SetAttachment(g, vehicle, tag);
         return g;
+    }
+
+    // QC setmodel(gun, MDL_VEH_BUMBLEBEE_CANNON_*) — assign a cosmetic cannon model to a gun sub-entity so it
+    // renders attached at its tag. Used at spawn (live guns) and reused as the gib model at death.
+    private static void SetGunModel(Entity gun, string model)
+    {
+        gun.Model = model;
+        if (Api.Services is not null) Api.Entities.SetModel(gun, model);
     }
 
     private Entity NewSub(Entity vehicle, string cls, string tag)

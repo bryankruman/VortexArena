@@ -190,6 +190,8 @@ public partial class DialogSettingsVideo : SettingsTab
             "Show your rendered frames per second"));
         box.AddChild(Widgets.CheckBox("showping", "Show ping",
             "Show your round-trip latency to the server, just above the FPS counter"));
+        box.AddChild(Widgets.CheckBox("showposition", "Show position",
+            "Show your map coordinates (x y z), stacked above the FPS/ping counters"));
 
         box.AddChild(Ui.Spacer());
         box.AddChild(applyButton); // "Apply immediately" — vid_restart

@@ -10,10 +10,12 @@ namespace XonoticGodot.Game.Hud;
 /// texture through the existing <see cref="TextureCache"/> and issues the nine <see cref="CanvasItem"/>
 /// region blits that make up a stretched 9-slice frame.
 ///
-/// All the per-panel <c>bg</c> names in the luma skin (<c>border_default_south</c>, <c>border_tab_south</c>,
-/// <c>border_corner_northwest</c>, …) are <em>virtual variants</em> the engine synthesised by directionally
-/// cropping the single <c>border_default</c> atlas. For phase 1 we render the full 9-slice frame for every
-/// variant (visually close); the suffix→edge masking is a fidelity follow-up.
+/// The per-panel <c>bg</c> names in the luma skin (<c>border_default_south</c>, <c>border_tab_south</c>,
+/// <c>border_corner_northwest</c>, …) are <em>separate texture files</em> shipped by the skin, NOT engine
+/// crops — QC's <see cref="DrawBorderPicture"/> (<c>draw_BorderPicture</c>) always renders the full 9-slice of
+/// whatever <c>pic</c> resolved; the directional look comes from the texture's own art, not from masking. So
+/// rendering the full 9-slice for every variant name is the faithful behavior; this resolver just selects the
+/// right texture by name (skin → default → <c>border_default</c>), exactly as <c>HUD_Panel_GetBg</c> does.
 /// </summary>
 public static class HudSkin
 {
@@ -43,10 +45,12 @@ public static class HudSkin
     /// <summary>
     /// Draw a 9-slice border picture into <paramref name="ci"/> over the (panel-local) <paramref name="rect"/>
     /// with corner thickness <paramref name="border"/> px, tinted <paramref name="color"/> at
-    /// <paramref name="alpha"/>. The source texture is divided on the {0,.25,.75,1} UV grid (the Xonotic border
-    /// atlas convention): the outer quarter on each side is the corner/edge, the central half stretches. When
-    /// <paramref name="border"/> ≤ 0 the whole texture is stretched to the rect (no frame expansion). Returns
-    /// false when no texture resolved so the caller can paint its translucent fallback.
+    /// <paramref name="alpha"/>. Line-for-line port of QC <c>draw_BorderPicture</c> (lib/draw.qh:43-116): the
+    /// source texture is divided on the {0,.25,.75,1} UV grid — the outer quarter on each side is the corner/edge,
+    /// the central half stretches. The two "not wide/high enough" branches (panel smaller than two corners) crop
+    /// the cap UVs proportionally (<c>bW = 0.25 * size/(2*border)</c>) instead of stretching the whole atlas, so a
+    /// thin/short bg-enabled panel shows the correct partial frame Base draws. Returns false when no texture
+    /// resolved so the caller can paint its translucent fallback.
     /// </summary>
     public static bool DrawBorderPicture(CanvasItem ci, Rect2 rect, string bg, Color color, float alpha, float border)
     {
@@ -60,19 +64,60 @@ public static class HudSkin
         float x = rect.Position.X, y = rect.Position.Y, w = rect.Size.X, h = rect.Size.Y;
         if (w <= 0f || h <= 0f) return false;
 
-        // No border, or the panel is too small to hold two corners → just stretch the whole atlas.
+        // QC: theBorderSize.x == 0 && .y == 0 → draw only the central part (no frame expansion).
         float t = border;
-        if (t <= 0f || w < 2f * t || h < 2f * t)
+        if (t <= 0f)
         {
-            if (t > 0f) t = Mathf.Min(t, Mathf.Min(w, h) * 0.5f);
-            if (t <= 0f)
-            {
-                ci.DrawTextureRect(tex, rect, false, mod);
-                return true;
-            }
+            // central-part only (UV 0.25..0.75 stretched over the whole rect).
+            Blit(ci, tex, mod, rect, new Rect2(0.25f, 0.25f, 0.5f, 0.5f));
+            return true;
         }
 
-        // Destination columns/rows (px) and the source UV grid (fraction → px).
+        bool narrow = w <= t * 2f;   // QC: theSize.x <= theBorderSize.x * 2
+        bool shortH = h <= t * 2f;   // QC: theSize.y <= theBorderSize.y * 2
+
+        if (narrow)
+        {
+            float bW = 0.25f * w / (t * 2f); // QC bW = 0.25 * size.x / (border*2)
+            if (shortH)
+            {
+                // not wide AND not high → four cropped corners only (QC:71-74).
+                float bH = 0.25f * h / (t * 2f);
+                float hw = w * 0.5f, hh = h * 0.5f;
+                Blit(ci, tex, mod, new Rect2(x,      y,      hw, hh), new Rect2(0f,       0f,       bW, bH));
+                Blit(ci, tex, mod, new Rect2(x + hw, y,      hw, hh), new Rect2(1f - bW,  0f,       bW, bH));
+                Blit(ci, tex, mod, new Rect2(x,      y + hh, hw, hh), new Rect2(0f,       1f - bH,  bW, bH));
+                Blit(ci, tex, mod, new Rect2(x + hw, y + hh, hw, hh), new Rect2(1f - bW,  1f - bH,  bW, bH));
+            }
+            else
+            {
+                // not wide enough → left+right columns, full height in 3 rows (QC:79-84). dY = border in px.
+                float hw = w * 0.5f;
+                Blit(ci, tex, mod, new Rect2(x,      y,         hw, t),         new Rect2(0f,      0f,    bW, 0.25f));
+                Blit(ci, tex, mod, new Rect2(x + hw, y,         hw, t),         new Rect2(1f - bW, 0f,    bW, 0.25f));
+                Blit(ci, tex, mod, new Rect2(x,      y + t,     hw, h - 2f * t), new Rect2(0f,      0.25f, bW, 0.5f));
+                Blit(ci, tex, mod, new Rect2(x + hw, y + t,     hw, h - 2f * t), new Rect2(1f - bW, 0.25f, bW, 0.5f));
+                Blit(ci, tex, mod, new Rect2(x,      y + h - t, hw, t),         new Rect2(0f,      0.75f, bW, 0.25f));
+                Blit(ci, tex, mod, new Rect2(x + hw, y + h - t, hw, t),         new Rect2(1f - bW, 0.75f, bW, 0.25f));
+            }
+            return true;
+        }
+
+        if (shortH)
+        {
+            // not high enough → top+bottom rows, full width in 3 columns (QC:94-99). dX = border in px.
+            float bH = 0.25f * h / (t * 2f);
+            float hh = h * 0.5f;
+            Blit(ci, tex, mod, new Rect2(x,         y,      t,         hh), new Rect2(0f,    0f,      0.25f, bH));
+            Blit(ci, tex, mod, new Rect2(x + t,     y,      w - 2f * t, hh), new Rect2(0.25f, 0f,      0.5f,  bH));
+            Blit(ci, tex, mod, new Rect2(x + w - t, y,      t,         hh), new Rect2(0.75f, 0f,      0.25f, bH));
+            Blit(ci, tex, mod, new Rect2(x,         y + hh, t,         hh), new Rect2(0f,    1f - bH, 0.25f, bH));
+            Blit(ci, tex, mod, new Rect2(x + t,     y + hh, w - 2f * t, hh), new Rect2(0.25f, 1f - bH, 0.5f,  bH));
+            Blit(ci, tex, mod, new Rect2(x + w - t, y + hh, t,         hh), new Rect2(0.75f, 1f - bH, 0.25f, bH));
+            return true;
+        }
+
+        // Full 9-slice (QC:105-113). Destination columns/rows (px) and the source UV grid (fraction).
         float[] dx = { x, x + t, x + w - t, x + w };
         float[] dy = { y, y + t, y + h - t, y + h };
         float[] ux = { 0f, 0.25f, 0.75f, 1f };
@@ -90,5 +135,16 @@ public static class HudSkin
             ci.DrawTextureRectRegion(tex, dst, src, mod);
         }
         return true;
+    }
+
+    /// <summary>Blit a 0..1 UV sub-region (QC <c>drawsubpic</c>) of <paramref name="tex"/> into the (panel-local)
+    /// destination <paramref name="dst"/>, converting the UV rect to the texture's pixel rect.</summary>
+    private static void Blit(CanvasItem ci, Texture2D tex, Color mod, Rect2 dst, Rect2 srcUv)
+    {
+        if (dst.Size.X <= 0f || dst.Size.Y <= 0f) return;
+        Vector2 ts = tex.GetSize();
+        var srcPx = new Rect2(srcUv.Position.X * ts.X, srcUv.Position.Y * ts.Y,
+                              srcUv.Size.X * ts.X, srcUv.Size.Y * ts.Y);
+        ci.DrawTextureRectRegion(tex, dst, srcPx, mod);
     }
 }

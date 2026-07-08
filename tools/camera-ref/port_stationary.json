@@ -1,0 +1,7 @@
+{
+  "map": "stormkeep",
+  "gametype": "dm",
+  "frames": 720,
+  "cvars": { "cl_movement_smoothing_faithful": "0", "cl_movement_errorcompensation": "1" },
+  "input": { "f": 0, "s": 0, "u": 0, "yaw": 0, "pitch": 0, "roll": 0, "buttons": 0 }
+}

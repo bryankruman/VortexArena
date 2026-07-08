@@ -33,12 +33,13 @@ public partial class DialogSettingsGame : Control
         var tabs = new TabContainer { Name = "GameTabs" };
         tabs.SetAnchorsPreset(LayoutPreset.FullRect);
 
-        AddInner(tabs, "Crosshair", new DialogSettingsGameCrosshair());
-        AddInner(tabs, "HUD",       new DialogSettingsGameHud());
-        AddInner(tabs, "Models",    new DialogSettingsGameModel());
-        AddInner(tabs, "View",      new DialogSettingsGameView());
-        AddInner(tabs, "Weapons",   new DialogSettingsGameWeapons());
-        AddInner(tabs, "Messages",  new DialogSettingsGameMessages());
+        AddInner(tabs, "Crosshair",   new DialogSettingsGameCrosshair());
+        AddInner(tabs, "HUD",         new DialogSettingsGameHud());
+        AddInner(tabs, "Models",      new DialogSettingsGameModel());
+        AddInner(tabs, "View",        new DialogSettingsGameView());
+        AddInner(tabs, "Weapons",     new DialogSettingsGameWeapons());
+        AddInner(tabs, "Messages",    new DialogSettingsGameMessages());
+        AddInner(tabs, "Damage Text", new DialogSettingsGameDamageText());
 
         AddChild(tabs);
     }
@@ -785,3 +786,99 @@ public partial class DialogSettingsGameMessages : SettingsTab
 // The crosshair custom-color rows above now use the faithful HSL image picker (HslColorPicker.ForStringCvar),
 // the C# port of makeXonoticColorpickerString. The Godot-picker stand-in CvarColorButton still backs the HUD
 // panel color rows (out of this task's scope) — see Widgets.ColorButton in game/menu/framework/CvarControls.cs.
+
+// =============================================================================================================
+//  Damage Text  —  common/mutators/mutator/damagetext/ui_damagetext.qc (XonoticDamageTextSettings_fill)
+// =============================================================================================================
+
+/// <summary>
+/// Damage Text sub-tab — port of <c>XonoticDamageTextSettings_fill</c> (ui_damagetext.qc), which in QC is
+/// <c>REGISTER_SETTINGS(damagetext, …)</c>: a standalone Game-settings tab sitting alongside the six tabs above.
+/// Exposes the floating-damage-number cvars read live by <see cref="XonoticGodot.Game.Client.DamageTextConfig"/>:
+/// the master toggle (cl_damagetext), the friendly-fire toggle, font size min/max, the enemy color (with a
+/// per-weapon override), initial opacity + fade time, and the two accumulate gates. Every widget binds the same
+/// cvar its QC counterpart does, in QC order, with the same dependencies (all gated on cl_damagetext==1).
+/// </summary>
+public partial class DialogSettingsGameDamageText : SettingsTab
+{
+    protected override void Fill(VBoxContainer box)
+    {
+        box.AddChild(Ui.Header("Damage Text"));
+
+        // QC: makeXonoticCheckBox(0, "cl_damagetext", _("Draw damage numbers")).
+        box.AddChild(Widgets.CheckBox("cl_damagetext", "Draw damage numbers"));
+
+        // QC: makeXonoticCheckBox(0, "cl_damagetext_friendlyfire", ...); setDependent(e, "cl_damagetext", 1, 1).
+        var ff = Widgets.CheckBox("cl_damagetext_friendlyfire", "Draw damage numbers for friendly fire");
+        box.AddChild(ff);
+        Dependent.Bind(ff, "cl_damagetext", 1, 1);
+
+        box.AddChild(Ui.Spacer());
+
+        // QC: slider(0, 50, 1, "cl_damagetext_size_min"); dep cl_damagetext==1.
+        var sizeMin = Widgets.Slider("cl_damagetext_size_min", 0f, 50f, 1f);
+        var sizeMinRow = Ui.Row("Font size minimum:", sizeMin);
+        box.AddChild(sizeMinRow);
+        Dependent.Bind(sizeMinRow, "cl_damagetext", 1, 1);
+
+        // QC: slider(0, 50, 1, "cl_damagetext_size_max"); dep cl_damagetext==1.
+        var sizeMax = Widgets.Slider("cl_damagetext_size_max", 0f, 50f, 1f);
+        var sizeMaxRow = Ui.Row("Font size maximum:", sizeMax);
+        box.AddChild(sizeMaxRow);
+        Dependent.Bind(sizeMaxRow, "cl_damagetext", 1, 1);
+
+        // QC: makeXonoticColorpickerString("cl_damagetext_color", ...); deps cl_damagetext==1 AND
+        // cl_damagetext_color_per_weapon==0. Use the faithful HSL image picker (the C# makeXonoticColorpickerString).
+        var color = HslColorPicker.ForStringCvar("cl_damagetext_color");
+        var colorRow = Ui.Row("Color:", color);
+        box.AddChild(colorRow);
+        Dependent.Bind(colorRow, "cl_damagetext_color_per_weapon", 0, 0); // primary gate: enabled only when not per-weapon
+
+        // QC: makeXonoticCheckBox(0, "cl_damagetext_color_per_weapon", _("Per weapon")); dep cl_damagetext==1.
+        var perWeapon = Widgets.CheckBox("cl_damagetext_color_per_weapon", "Per weapon");
+        box.AddChild(perWeapon);
+        Dependent.Bind(perWeapon, "cl_damagetext", 1, 1);
+
+        box.AddChild(Ui.Spacer());
+
+        // QC: slider(0.25, 1, 0.05, "cl_damagetext_alpha_start") formatString "%"; dep cl_damagetext==1.
+        var alphaStart = Widgets.Slider("cl_damagetext_alpha_start", 0.25f, 1f, 0.05f, format: Percent);
+        var alphaStartRow = Ui.Row("Initial opacity:", alphaStart);
+        box.AddChild(alphaStartRow);
+        Dependent.Bind(alphaStartRow, "cl_damagetext", 1, 1);
+
+        // QC: slider(1, 5, 0.5, "cl_damagetext_alpha_lifetime") formatString "S"; dep cl_damagetext==1.
+        var fadeTime = Widgets.Slider("cl_damagetext_alpha_lifetime", 1f, 5f, 0.5f, format: Seconds);
+        var fadeTimeRow = Ui.Row("Fade time:", fadeTime);
+        box.AddChild(fadeTimeRow);
+        Dependent.Bind(fadeTimeRow, "cl_damagetext", 1, 1);
+
+        box.AddChild(Ui.Spacer());
+
+        // QC: header label "Accumulate:"; dep cl_damagetext==1.
+        var accumLabel = Ui.Label("Accumulate:");
+        box.AddChild(accumLabel);
+        Dependent.Bind(accumLabel, "cl_damagetext", 1, 1);
+
+        // QC: makeXonoticMixedSlider("cl_damagetext_accumulate_lifetime") formatString "S":
+        //   addText("Never", 0); addRange(0.5, 3, 0.5); addText("Always", -1). dep cl_damagetext==1.
+        var accumLifetime = Widgets.MixedSlider("cl_damagetext_accumulate_lifetime")
+            .Add("Never", 0f)
+            .AddRange(0.5f, 3f, 0.5f)
+            .Add("Always", -1f)
+            .Finish();
+        var accumLifetimeRow = Ui.Row("If younger than:", accumLifetime);
+        box.AddChild(accumLifetimeRow);
+        Dependent.Bind(accumLifetimeRow, "cl_damagetext", 1, 1);
+
+        // QC: slider(0, 1, 0.05, "cl_damagetext_accumulate_alpha_rel") formatString "%";
+        //   setDependentNOT(e, "cl_damagetext_accumulate_lifetime", 0) AND cl_damagetext==1.
+        var accumAlpha = Widgets.Slider("cl_damagetext_accumulate_alpha_rel", 0f, 1f, 0.05f, format: Percent);
+        var accumAlphaRow = Ui.Row("Or opacity greater than:", accumAlpha);
+        box.AddChild(accumAlphaRow);
+        Dependent.BindNot(accumAlphaRow, "cl_damagetext_accumulate_lifetime", 0); // primary gate (AND cl_damagetext==1)
+    }
+
+    private static string Percent(float v) => $"{Mathf.RoundToInt(v * 100f)}%";
+    private static string Seconds(float v) => $"{v.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)}s";
+}

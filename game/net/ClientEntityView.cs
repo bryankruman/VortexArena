@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using Godot;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Gameplay;
 using XonoticGodot.Game.Client;
 using XonoticGodot.Net;
 using NVec3 = System.Numerics.Vector3;
@@ -77,9 +78,15 @@ public sealed partial class ClientEntityView : Node
         if (!_net.Accepted)
             return;
 
+        using var _prof = FrameProfiler.Scope("cev.process");
+
         // Interpolate remote entities at the latest server time (a one-snapshot delay falls out of the lerp).
         float now = _net.LatestServerTime;
         _seen.Clear();
+
+        // (perf-investigation) the remote-entity count drives this whole loop's cost; surface it as a marker so
+        // the profiler shows how many entities catharsis carries at the spawn (estimates diverged 20x).
+        XonoticGodot.Common.Diagnostics.Prof.Mark("remote.ents", _net.RemoteIds.Count);
 
         foreach (int id in _net.RemoteIds)
         {
@@ -120,9 +127,59 @@ public sealed partial class ClientEntityView : Node
         e.Skin = s.Skin;
         e.ModelIndex = s.ModelIndex;
         e.Effects = s.Effects;
+        // [W5-cloaked] Decode the networked render alpha (QC csqcmodel m_alpha) onto the proxy so PlayerModel/
+        // EntityNode renders the Cloaked / Invisibility / fade transparency. ServerNet.QuantizeAlpha sends 0 for
+        // a fully-opaque entity (costs nothing on the wire), 1..254 for a real fade (= byte/255), and 255 for the
+        // QC -1 "do not render" sentinel (Running Guns hides the player model). Mirror that mapping back to the
+        // float Entity.Alpha (1 = opaque; -1 = hidden, which ApplyAlpha clamps to fully transparent).
+        e.Alpha = s.Alpha switch { 0 => 1f, 255 => -1f, _ => s.Alpha / 255f };
         e.Health = s.Health;
         e.Team = s.Colormap;
+        e.Colors = s.Colors; // [r15 #43] packed clientcolors → shirt/pants/glow on the body + held weapon
         e.ActiveWeaponId = s.Weapon;
+        // [W14a-anim] decode the upper-body action overlay (QC csqcmodel animdecide getupperanim) onto the proxy so a
+        // future torso-overlay render (LI3) plays the server-decided SHOOT/PAIN/DRAW/TAUNT/DEAD action over the
+        // velocity-derived legs. RESERVED — no server producer yet, so these are 0/idle until LI1 lands.
+        e.UpperAction = s.UpperAction;
+        e.AnimActionTime = s.AnimActionTime;
+        // [W14a-wepent] decode the exterior-weapon block (QC common/wepent.qh) onto the proxy: the remote third-person
+        // held weapon's switch target / in-transition weapon / raise-drop phase / skin / align, plus the gun's own
+        // alpha (mapped exactly like the body Alpha: 0 = opaque, 255 = hidden -1, else byte/255). Drives the remote
+        // weapon switch raise/lower tween + exterior-weapon transparency (QW5; ViewEntityRenderer reads them).
+        e.SwitchWeapon = s.SwitchWeapon;
+        e.SwitchingWeapon = s.SwitchingWeapon;
+        e.WepPhase = s.WepPhase;
+        e.ViewmodelSkin = s.ViewmodelSkin;
+        e.GunAlign = s.GunAlign;
+        e.WepAlpha = s.WepAlpha switch { 0 => 1f, 255 => -1f, _ => s.WepAlpha / 255f };
+        // [W-wepent-view] decode the per-player wepent HUD view-state (charge/clip/heat/beam) onto the proxy so a
+        // spectator following this player and any third-person beam consumer can read the watched player's live
+        // weapon state — the all-clients counterpart of the owner-block rings.
+        e.WepentView = s.WepentView;
+        // [W-vehicleview] decode the spectator-follow vehicle view-state (health/shield/energy/ammo/reload bars +
+        // veh kind + weapon-2 mode + lock strength/flags) onto the proxy so a spectator FOLLOWING this player can
+        // read the watched pilot's live vehicle HUD — the all-clients counterpart of the owner block. The LOCAL
+        // pilot does not read this; it reads its own decoded slice off ClientNet.LocalState (captured wholesale in
+        // ClientNet.HandleSnapshot). VehicleViewState.None (VehKind 0 = on-foot/observing) keeps the bit clear.
+        e.VehicleView = s.VehicleView;
+        // [W-nadeclient] decode the owner-only nade feedback fields (QC STAT(NADE_DARKNESS_TIME / NADE_BONUS /
+        // NADE_BONUS_TYPE / NADE_BONUS_SCORE)) onto the proxy. These are 0 on every non-owner entity (the Feedback
+        // bit stays clear for remotes), so they only carry data on the local player's own delta — NetGame reads them
+        // off the local proxy to drive the darkness overlay + the HUD bonus-nade count/score ring.
+        e.NadeDarknessTime = s.NadeDarknessTime;
+        e.NadeBonus = s.NadeBonus;
+        e.NadeBonusType = s.NadeBonusType;
+        e.NadeBonusScore = s.NadeBonusScore;
+        // [W-objstream] decode the turret-head + objective view-state onto the per-id proxy each frame (decode only;
+        // no render work here). These feed the Phase-3 turret-head node (HeadWorldAngles = Entity.Angles +
+        // (TurHeadPitch,TurHeadYaw,0); integrate TurHeadAVelYaw*dt for the idle head spin) and the objective HUD
+        // healthbar/build-bar. ObjHealthFrac defaults to full (1f) unless the entity is an active/damaged objective.
+        e.TurHeadPitch = s.TurHeadPitch;
+        e.TurHeadYaw = s.TurHeadYaw;
+        e.TurHeadAVelYaw = s.TurHeadAVelYaw;
+        e.TurActive = (s.TurFlags & 1) != 0;
+        e.ObjState = s.ObjState;
+        e.ObjHealthFrac = (s.ObjState != 0 || s.ObjHealthByte != 0) ? s.ObjHealthByte / 255f : 1f;
         // QC ITS_EXPIRING (item snapshot flag): drives ClientWorld's loot despawn animation. Refreshed every
         // frame so it tracks the networked status (only ever set by the server on an expiring loot item).
         e.ItemExpiringFx = (s.Flags & NetEntityFlags.ItemExpiring) != 0;
@@ -135,6 +192,10 @@ public sealed partial class ClientEntityView : Node
                       : (s.Flags & NetEntityFlags.ItemAnimate2) != 0 ? (byte)2 : (byte)0;
         // QC FL_DUCKED: a remote player's crouch drives LocomotionBlend (duck legs) + the lowered hull/nameplate.
         e.IsDucked = (s.Flags & NetEntityFlags.Crouched) != 0;
+        // QC IT_USING_JETPACK (common/physics/player.qc:878): a firing jetpack → the client derives
+        // csqcmodel_modelflags |= MF_ROCKET, which drives the looping jetpack-fly sound + rocket trail. Carried on
+        // the proxy so ClientWorld's effects pass can compose the per-player MF_ROCKET forced appearance.
+        e.UsingJetpack = (s.Flags & NetEntityFlags.UsingJetpack) != 0;
         // QC FL_ONGROUND: the skeletal PlayerModel's LocomotionBlend.SelectLegs picks the JUMP clip whenever the
         // player is airborne — so without copying the networked on-ground flag onto the proxy (Entity.OnGround is
         // derived from EntFlags.OnGround), every remote player reads as in-air and is frozen in the jump pose
@@ -145,6 +206,10 @@ public sealed partial class ClientEntityView : Node
         // checks Health, but the proxy carries no MaxHealth, so drive the dead state straight off the networked
         // flag so a killed remote player poses dead instead of idling.
         e.DeadState = (s.Flags & NetEntityFlags.Dead) != 0 ? DeadFlag.Dead : DeadFlag.No;
+        // QC ENT_CLIENT_STATUSEFFECTS read: decode the networked status-effect bitmap onto the proxy so a remote
+        // entity carries the same frozen/burning/buff set the server has — the data ClientWorld's overlay pass
+        // (and any consumer of Entity.StatusEffects) reads to draw the burning particles / frozen tint.
+        ApplyStatusEffects(e, s.StatusEffects);
         ApplyIdentity(e, s);
 
         switch (s.Kind)
@@ -181,6 +246,21 @@ public sealed partial class ClientEntityView : Node
             case NetEntityKind.Gib:
                 // Animated networked actors: drive the model frame straight from the network (autoupdate).
                 _render.OnEntityUpdate(e, frameDriven: true);
+                break;
+
+            case NetEntityKind.NadeOrb:
+                // [W-nadeclient] heal/ammo/entrap/veil/darkness orb effect entity. Map the networked orb block onto
+                // the proxy and route it to the dedicated NadeOrbRenderer (wired through ClientWorld like the
+                // ProjectileRenderer). The orb is otherwise static — its Origin rides the normal Origin field, so use
+                // the RAW server origin (no two-snapshot interp) the same way projectiles do.
+                e.NadeBonusType = s.OrbType;
+                e.NadeOrbExpire = s.OrbExpire;
+                e.OrbRadiusClient = s.OrbRadius;
+                e.Origin = s.Origin;
+                // NadeOrbs is wired by NetGame.SetupCameraAndHud, which runs right after SetupRender (where this
+                // view is built); a stray orb delta before that wiring is a no-op rather than a null deref.
+                _render.NadeOrbs?.OnSpawn(e);
+                _render.NadeOrbs?.OnUpdate(e);
                 break;
 
             case NetEntityKind.Item:
@@ -221,6 +301,32 @@ public sealed partial class ClientEntityView : Node
         };
     }
 
+    /// <summary>
+    /// Decode the networked status-effect bitmap (QC <c>ENT_CLIENT_STATUSEFFECTS</c>) onto a proxy entity: rebuild
+    /// its <see cref="Entity.StatusEffects"/> list from the full snapshot the server packed. The blob is the full
+    /// bitmap each time it's networked (delta-resent only on change), so a clear-and-refill is correct — a null or
+    /// empty blob (the "no effects" / "effects cleared" case) leaves the list empty. The per-effect
+    /// <c>Strength</c> isn't networked (the QC wire carries only time + flags), so it's defaulted; the overlays
+    /// only need the effect's PRESENCE + timer, which round-trip exactly.
+    /// </summary>
+    private static void ApplyStatusEffects(Entity e, byte[]? blob)
+    {
+        List<ActiveStatusEffect> list = e.StatusEffects;
+        if (list.Count == 0 && (blob is null || blob.Length == 0))
+            return; // common case: no effects either side — nothing to do
+        list.Clear();
+        if (blob is null || blob.Length == 0)
+            return;
+        foreach (KeyValuePair<int, (float Time, StatusEffectFlags Flags)> kv in StatusEffectsCatalog.Read(blob))
+            list.Add(new ActiveStatusEffect
+            {
+                DefId = kv.Key,
+                ExpireTime = kv.Value.Time,
+                Flags = kv.Value.Flags,
+                Strength = 1f,
+            });
+    }
+
     private Entity GetOrCreateProxy(int id)
     {
         if (!_proxies.TryGetValue(id, out Entity? e))
@@ -244,6 +350,10 @@ public sealed partial class ClientEntityView : Node
             int id = _stale[i];
             Entity e = _proxies[id];
             _viewEntities.Remove(id);
+            // [W-nadeclient] tear down the orb render state for a departed id. The NadeOrbRenderer only tracks
+            // nade_orb ids, so this is a harmless no-op for any non-orb entity — same idempotent contract as
+            // ProjectileRenderer's removal path.
+            _render.NadeOrbs?.OnRemove(id);
             _render.OnEntityRemove(id, e.Origin);
             _proxies.Remove(id);
         }

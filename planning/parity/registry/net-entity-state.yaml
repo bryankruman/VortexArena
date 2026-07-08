@@ -1,0 +1,789 @@
+unit: net-entity-state
+category: net
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 24
+  worst_gaps:
+    - "Coverage fold 2026-07-02 (CSQCProjectile + lib/net wire contracts): projectile fade-out (fade_time/fade_rate, sf 0x20) is NOT networked or rendered (port_refs empty); the projectile no-trail/teleport bit (sf 0x08, UpdateCSQCProjectileAfterTeleport) has no analog so a warpzone-jumped projectile's faithful trail draws a straight segment across the discontinuity; STAT(FRAGLIMIT) (stats.qh magic slot 235) has no networked client consumer (TIMELIMIT/MOVEVARS/etc. all have live typed channels); WriteApproxPastTime is ported in Quantize/BitWriter but DEAD (no caller — times ride raw floats)."
+    - "FIX since baseline (Wave-14a): wepent switch/alpha is now NETWORKED + LIVE — EntityField.Wepent (BIT19) carries m_switchweapon/m_switchingweapon + a derived WS_RAISE/WS_DROP phase + the exterior-weapon m_alpha; ServerNet (1970-1983) produces them from the live slot-0 weapon state machine, ClientEntityView (148-153) decodes them, ViewEntityRenderer renders the remote weapon raise/lower dip + per-instance gun transparency on the live Player snapshot path (ClientEntityView.cs:213). Residual missing wepent fields: m_gunalign (field exists, NO producer -> default 0), skin/ViewmodelSkin (NO producer), porto_v_angle_held, tuba_instrument. Tracked in net-entity-state.wepent.switch_alpha_misc."
+    - "csqcmodel m_alpha (per-entity render transparency, BIT17) is NETWORKED + LIVE (NetEntityState.Alpha; ServerNet QuantizeAlpha at 1931/2264; ClientEntityView.cs:135 maps 0->opaque/255->hidden/else byte/255) — drives Cloaked/Running Guns/Invisibility/death-fade. Wire coding x255 vs Base x254 (intended divergence). Tracked in net-entity-state.csqcmodel.alpha."
+    - "ent_cs enemy-privacy mask LIVE (Wave-6c ba3ae47): ServerNet.RelevantEntitiesFor strips enemy HEALTH/ARMOR per-recipient via the radar_showenemies/SAME_TEAM gate — the anti-cheat HP/armor leak is CLOSED. Residual: origin/angles privacy is handled by whole-entity PVS culling rather than a coarse stripped-GPS send (intended divergence)"
+    - "FIX since baseline (uncommitted wave 2026-06-28): the wepent charge/clip/heat HUD rings are now NETWORKED + LIVE across ALL clients — one authoritative WepentResolver.Resolve feeds (a) the per-player WepentView entity block (EntityField.WepentView BIT20) so a spectator following another player draws that player's rings, and (b) the owner-block OwnerWeaponRings (9 floats) so a pure remote / dedicated client draws its own rings; the host slot-scratch branch is unchanged. liveness partial(host-only)->live. Residual = the Phase-2 ViewmodelFrame/BeamState reserved fields have no render consumer yet. Tracked in net-entity-state.wepent.charges_clip_heat. (NOTE: wave is uncommitted in the working tree; HEAD is the warpzone branch.)"
+    - "FIX since baseline (Wave-14b): the networked UPPER-body anim ACTION (anim_upper_action + start time) is now LIVE — EntityField.AnimAction (BIT18) carries UpperAction/AnimActionTime; server producers latch the action at the live gameplay sites (WeaponFireGate SHOOT/MELEE, DamageSystem PAIN1/PAIN2 + DIE1/DIE2, WeaponFireDriver DRAW, SoundSystem TAUNT), ServerNet (1918-1924/1977-1982) networks the expiry-resolved id, ClientEntityView (142-143) decodes it, and PlayerModel (214-234) renders it as a torso overlay (LocomotionBlend.SelectTorsoAction) over the velocity-derived legs, driven by the live ServerTimeProvider (NetGame.cs:1224). Residual missing: anim_state byte (BIT7) + the lower-body anim_lower_action split (BIT8) are still NOT separately networked — legs locomotion is reconstructed client-side from velocity. Tracked in net-entity-state.csqcmodel.anim_state."
+    - "No out-of-PVS teammate GPS: Base keeps sending a teammate's coarse ent_cs origin out of PVS (radar blip persists); the port's relevance cull drops the entity entirely"
+    - "Replicate cvars (NARROWED 2026-06-27): g_xonoticversion has a live server-side consumer — Commands.CheckClientVersion reads the per-client replicated g_xonoticversion and sends the VERSION_OUTDATED/OLD/BETA mismatch notification, armed on connect (ClientManager.cs:229 VersionNagTime) and fired on the live PlayerPreThink path (src/XonoticGodot.Server/GameWorld.cs:2255). Residual = ONLY cl_autoscreenshot (driven client-locally off the networked intermission flag, not the per-client replicated value) is allowlisted+stored but not honored off the replicated value per-player."
+features:
+  - id: net-entity-state.csqcmodel.change_mask
+    name: "csqcmodel SendFlags change-mask delta channel"
+    layer: [shared]
+    base_refs:
+      - "lib/csqcmodel/sv_model.qc:CSQCModel_Send"
+      - "lib/csqcmodel/cl_model.qc:ENT_CLIENT_MODEL"
+      - "lib/csqcmodel/common.qh:ALLPROPERTIES"
+    port_refs:
+      - "src/XonoticGodot.Net/NetEntity.cs:EntityField"
+      - "src/XonoticGodot.Net/NetEntity.cs:EntityStateCodec.WriteDelta"
+      - "src/XonoticGodot.Net/NetEntity.cs:EntityStateCodec.ReadDelta"
+    constants:
+      - { name: "mask_width_bits", base: "24 (WriteInt24_t)", port: "32 (uint)", match: false }
+      - { name: "origin_quantization", base: "WriteVector 13.3 coord", port: "NetPrecision.Low", match: false }
+      - { name: "angle_quantization", base: "WriteAngle 8-bit", port: "NetPrecision.Low", match: false }
+      - { name: "only_changed_fields_on_wire", base: "true", port: "true", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Unified NetEntityState delta-codec replaces QC's per-entity SendEntity/ReadEntity funcs (csqcmodel + ent_cs + wepent + CSQCProjectile + generic stream) with one change-masked table; the port has no QCVM SendEntity machinery, and DP's own entity delta already works this way. Wire bit-layout differs (32-bit mask, NetPrecision.Low coords) but the only-changed-fields contract and precision class match."
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "NetEntity.cs Diff/WriteDelta/ReadDelta vs CSQCModel_Send", result: pass }
+    confidence: high
+    notes: "Verified by reading NetEntity.cs in full (re-audited 2026-06-28): EntityField is a 32-bit mask now using bits 0..22; WriteDelta/ReadDelta emit only set fields; Diff compares per field; StatusEffects (bit 16) widened the mask past ushort. Field set: Alpha (BIT17), AnimAction (BIT18, UpperAction/AnimActionTime — LIVE-fed, see net-entity-state.csqcmodel.anim_state), Wepent (BIT19, SwitchWeapon/SwitchingWeapon/WepPhase/ViewmodelSkin/WepAlpha/GunAlign), and NEW this wave WepentView (BIT20, the per-player wepent HUD view-state block via WepentViewCodec — closes the charges_clip_heat cross-client gap), plus TurretHead (BIT21) and ObjState (BIT22). Field set = a SUBSET of csqcmodel ALLPROPERTIES + entcs radar slice + wepent block. STILL not in NetEntityState: scale, modelflags/traileffect, colormod/glowmod (resolved locally by the appearance hook), v_angle pitch (folded into Angles), tag_entity/viewloc, dphitcontentsmask, move_movetype, anim_state byte + anim_lower_action (legs reconstructed client-side), and the wepent porto_v_angle_held/tuba_instrument. SnapshotDeltaTests.cs covers the codec round-trip."
+
+  - id: net-entity-state.snapshot.delta_baseline
+    name: "Per-client delta baseline / ack history (DP EntityFrame)"
+    layer: [authority, shared]
+    base_refs:
+      - "lib/csqcmodel/sv_model.qc:CSQCModel_LinkEntity"
+    port_refs:
+      - "src/XonoticGodot.Net/SnapshotDelta.cs:ServerSnapshotHistory"
+      - "src/XonoticGodot.Net/SnapshotDelta.cs:ClientSnapshotHistory"
+      - "game/net/ServerNet.cs:EncodeSnapshot"
+      - "game/net/ClientNet.cs:HandleSnapshot"
+    constants:
+      - { name: "history_capacity_snapshots", base: "engine (DP)", port: "64 (~0.9s@72Hz)", match: unknown }
+      - { name: "delta_against_last_acked", base: "true (DP)", port: "true", match: true }
+    status:
+      logic: faithful
+      values: unknown
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Explicit C# per-client ack/baseline ring replacing DP's engine-side EntityFrame; required because the port has a real client/server split with no shared QCVM. Behavioral contract (deltas vs last acked baseline; lost packet never corrupts; full snapshot when baseline lost) matches DP."
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "SnapshotDelta.cs Encode/Decode + Ack/IsNewer", result: pass }
+    confidence: high
+    notes: "Local player delta-EXCLUDED (excludeEntNum) — mirrors Base never SendEntity-ing the player body so engine prediction stays authoritative."
+
+  - id: net-entity-state.csqcmodel.interpolation
+    name: "Two-snapshot origin/angle interpolation + teleport/stall snap"
+    layer: [presentation]
+    base_refs:
+      - "lib/csqcmodel/interpolate.qc:InterpolateOrigin_Note"
+      - "lib/csqcmodel/interpolate.qc:InterpolateOrigin_Do"
+    port_refs:
+      - "src/XonoticGodot.Net/SnapshotInterpolation.cs:InterpolationBuffer.Note"
+      - "src/XonoticGodot.Net/SnapshotInterpolation.cs:InterpolationBuffer.Sample"
+    constants:
+      - { name: "teleport_snap_dist_u", base: "1000", port: "1000 (TeleportDistance)", match: true }
+      - { name: "stall_snap_interval_s", base: "0.2 (dt>=0.2)", port: "0.2 (MaxInterval)", match: true }
+      - { name: "lerp_excess_clamp", base: "1 + cl_lerpexcess", port: "1 + lerpExcess arg", match: true }
+      - { name: "auto_velocity", base: "IFLAG_AUTOVELOCITY (origin delta)", port: "AutoVelocity=true", match: true }
+      - { name: "angle_blend", base: "fixedvectoangles2 basis blend", port: "BlendAngles fwd/up basis", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Animation frame-group cross-fade (cl_lerpanim_maxdelta_framegroups/cl_nolerp) not networked; replaced by client-side LocomotionBlend — remote animation FRAME blending diverges from Base's networked 2-frame lerp. (The separate networked anim ACTION state is tracked in net-entity-state.csqcmodel.anim_state.)"
+    verification:
+      - { kind: code_read, ref: "InterpolationBuffer.cs constants (TeleportDistance=1000, MaxInterval=0.2, lerpExcess clamp, AutoVelocity, BlendAngles) vs interpolate.qc lines 109-125/133-141 — exact match", result: pass }
+      - { kind: code_read, ref: "ClientNet.cs:961 re.Interp.Note(snap, teleported, ...) — Note is driven per snapshot; SampleRemote (993) samples the render pose", result: pass }
+    confidence: high
+    notes: "Per-remote-entity InterpolationBuffer.Note/Sample, driven each snapshot in ClientNet.HandleSnapshot (verified line 961) and sampled by SampleRemote (line 993). Seam-safe angle blend is the fixedvectoangles2 port. Origin/angle interp is faithful; the animation FRAME-group cross-fade is the partial dimension."
+
+  - id: net-entity-state.csqcmodel.teleport_bit
+    name: "Teleport bit cancels interpolation (EF_TELEPORT_BIT)"
+    layer: [shared]
+    base_refs:
+      - "lib/csqcmodel/sv_model.qc:CSQCModel_CheckUpdate"
+      - "lib/csqcmodel/cl_model.qc:ENT_CLIENT_MODEL (CSQCMODEL_PROPERTY_TELEPORTED)"
+    port_refs:
+      - "src/XonoticGodot.Net/NetEntity.cs:NetEntityFlags.Teleported"
+      - "game/net/ServerNet.cs:teleported (one-tick origin-jump detect)"
+      - "game/net/ClientNet.cs:HandleSnapshot (Teleported -> Interp.Note)"
+    constants:
+      - { name: "tick_jump_threshold", base: "EF_TELEPORT_BIT (explicit on teleport/respawn)", port: "TeleportTickDistance (origin-jump detect)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base sets the bit explicitly at the teleport/respawn site (EF_TELEPORT_BIT); the port re-derives it from a one-tick origin-jump past a distance threshold in the snapshot builder. Same observable effect (client snaps instead of lerping) and it also clears the antilag ring (parity with PutPlayerInServer antilag_clear)."
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "ServerNet teleported detect + ClientNet teleported read", result: pass }
+    confidence: medium
+    notes: "Threshold-based detect could miss a small-distance teleport or false-positive a fast mover; acceptable for the snap-vs-lerp decision."
+
+  - id: net-entity-state.csqcmodel.force_updates
+    name: "Forced periodic origin keepalive (CSQCPLAYER_FORCE_UPDATES)"
+    layer: [authority]
+    base_refs:
+      - "lib/csqcmodel/sv_model.qc:CSQCModel_CheckUpdate (CSQCPLAYER_FORCE_UPDATES)"
+      - "common/csqcmodel_settings.qh:CSQCPLAYER_FORCE_UPDATES"
+    port_refs: []
+    constants:
+      - { name: "force_updates_per_sec", base: "4", port: "none (full owner block + deltas every broadcast tick)", match: false }
+      - { name: "CL_MAX_USERCMDS", base: "128", port: "n/a", match: false }
+    status:
+      logic: partial
+      values: missing
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: true
+    divergence_rationale: "The port broadcasts a full owner block + entity deltas every server broadcast tick, which is denser than 4 origin sends/sec, so the symptom the keepalive prevents (stale replay buffer / vanishing tag) does not arise on the live path. No explicit keepalive constant is ported."
+    gaps:
+      - "No out-of-PVS teammate GPS: Base keeps sending a teammate's coarse ent_cs origin out of PVS (radar blip persists); the port's relevance cull drops the entity entirely, plus there is no CSQCPLAYER_FORCE_UPDATES keepalive — relies on the dense per-tick broadcast instead."
+    verification:
+      - { kind: grep, ref: "no CSQCPLAYER_FORCE_UPDATES analog in port", result: pass }
+    confidence: medium
+    notes: "The relevance cull (ServerNet.RelevantEntitiesFor) drops the whole entity out of PVS rather than degrading to a GPS-only origin send."
+
+  - id: net-entity-state.entcs.radar_shownames_slice
+    name: "ent_cs GPS slice for radar + shownames teammate health/armor"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/ent_cs.qc:_entcs_send"
+      - "common/ent_cs.qc:entcs_think"
+      - "common/ent_cs.qh:entcs_GetTeam/GetName/GetClientColors"
+    port_refs:
+      - "src/XonoticGodot.Net/NetEntity.cs:NetEntityState (Origin/Health/Armor/Colormap/Model)"
+      - "game/hud/RadarPanel.cs:DrawBlip"
+      - "game/client/ShowNamesLayer.cs"
+    constants:
+      - { name: "health_coding", base: "RES_HEALTH /10 byte, bound 0..255", port: "full short", match: false }
+      - { name: "armor_coding", base: "RES_ARMOR /10 byte", port: "full short", match: false }
+      - { name: "angles_y_coding", base: "/(360/64) byte", port: "NetPrecision.Low full angles", match: false }
+      - { name: "entcs_think_hz", base: "64 (0.015625s)", port: "per broadcast tick", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: partial
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "ent_cs is folded into the unified NetEntityState (Origin/Health/Armor/Colormap/Model) rather than a separate GPS sender; the radar + shownames read it via ClientNet.TryGetRemoteState/SampleRemote. Coding differences (full short vs /10 byte) are cosmetic precision, not a behavioral gap."
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "RadarPanel.DrawBlip + ShowNamesLayer read NetEntityState (Colormap/Health/Armor/Origin)", result: pass }
+    confidence: high
+    notes: "T68 networked the ARMOR slice specifically for the shownames teammate status bar. Spec-state inference (frags/solid) is carried by other channels, not entcs."
+
+  - id: net-entity-state.entcs.privacy_mask
+    name: "ent_cs public/private mask (radar_showenemies / SAME_TEAM)"
+    layer: [authority]
+    base_refs:
+      - "common/ent_cs.qc:_entcs_send (ENTCS_PUBLICMASK gating, lines 213-240)"
+      - "common/ent_cs.qc:ENTCS_PUBLICMASK/ENTCS_PRIVATEMASK"
+    port_refs:
+      - "game/net/ServerNet.cs:RelevantEntitiesFor (radarShowEnemies/teamplay/applyPrivacy gate + Health/Armor strip)"
+      - "game/net/ServerNet.cs:BroadcastSnapshots (reads radar_showenemies + TeamGame once per broadcast, passes per-recipient)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:432 (sets radar_showenemies=1)"
+    constants:
+      - { name: "private_fields", base: "origin, angles_y, health, armor", port: "health, armor stripped; origin/angles PVS-governed (folded model channel)", match: partial }
+      - { name: "public_fields", base: "name, model, skin, colors, frags, handicap, wantsjoin, solid", base_note: "always sent", port: "all sent", match: true }
+      - { name: "enemy_gate", base: "radar_showenemies || SAME_TEAM || !(IS_PLAYER(to)||INGAME(to))", port: "!radar_showenemies && !recipient.IsObserver && !sameTeam (teamplay?colormap==team) && Kind==Player", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "FIXED (Wave-6c ba3ae47): ServerNet.RelevantEntitiesFor now applies the ent_cs enemy-privacy gate per-recipient, mirroring _entcs_send's break-condition (radar_showenemies || SAME_TEAM || recipient-not-active-player => send private; else strip). It zeroes the HEALTH/ARMOR resource slice for an enemy recipient of a live remote Player entity. Intended divergence on ORIGIN/ANGLES: Base marks those private too, but in QC the visible player MODEL is a SEPARATE csqcmodel channel sent (PVS-gated) regardless of the entcs mask — the mask only hides the out-of-PVS radar GPS. The port folds model+entcs into one state whose origin IS the render position and already PVS-culls the whole entity when out of view, so an enemy's origin is governed by PVS exactly as QC's csqcmodel origin is; freezing it here would wrongly stall a visible enemy's model. So only HEALTH/ARMOR (no csqcmodel counterpart, otherwise leaked even for visible enemies) are stripped. The residual out-of-PVS coarse-GPS degrade remains its own tracked gap (csqcmodel.force_updates)."
+    gaps:
+      - "Origin/angles privacy not separately enforced: Base's ENTCS_PRIVATEMASK also covers origin/angles_y (the out-of-PVS radar GPS), which the port governs by whole-entity PVS culling instead of a coarse stripped-GPS send. Anti-cheat critical HEALTH/ARMOR leak is now closed; the GPS-degrade nuance is folded into the csqcmodel.force_updates gap."
+    verification:
+      - { kind: code_read, ref: "ServerNet.RelevantEntitiesFor: applyPrivacy=!radarShowEnemies&&!owner.IsObserver; per-entity sameTeam=teamplay&&ownerTeam!=0&&state.Colormap==ownerTeam; Kind==Player gate; Health=0/Armor=0 strip — matches _entcs_send break-condition + ENTCS private resource set", result: pass }
+      - { kind: code_read, ref: "Base common/ent_cs.qc:213-240 _entcs_send gate + lines 100-151 prop ispublic flags (ORIGIN/ANGLES/HEALTH/ARMOR=false; name/model/skin/colors/frags/handicap/wantsjoin/solid=true)", result: pass }
+      - { kind: code_read, ref: "Race.cs:432 Api.Cvars.Set(radar_showenemies,1); ServerNet reads radar_showenemies cvar per broadcast (ServerNet.cs:1628) — gate driven live", result: pass }
+    confidence: high
+    notes: "FIX (Wave-6c ba3ae47): baseline had this fully missing (every enemy's exact HP/armor on the wire). Now LIVE: a modified client can no longer read enemy health/armor. logic missing->faithful, values missing->partial, liveness na->live, intended_divergence false->true. NetEntityState is a struct so Health/Armor are zeroed on a copy per-recipient before EncodeSnapshot (delta sends one zero on first sight then silent — equivalent to QC ANDing the bit out of SendFlags). Residual = origin/angles privacy handled via PVS rather than a coarse stripped-GPS send (deliberate, see rationale)."
+
+  - id: net-entity-state.wepent.active_weapon
+    name: "wepent active/held weapon (local viewmodel + remote third-person)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/wepent.qc:WEPENT_NETPROPS (m_weapon)"
+      - "common/wepent.qc:wepent_link"
+    port_refs:
+      - "src/XonoticGodot.Net/NetEntity.cs:NetEntityState.Weapon"
+      - "game/net/ServerNet.cs:WriteOwnerState (ActiveWeaponId)"
+      - "game/net/ClientNet.cs:ActiveWeaponId"
+      - "game/net/ClientEntityView.cs:Player branch -> ViewEntityRenderer"
+      - "game/net/ViewEntityRenderer.cs"
+    constants:
+      - { name: "weapon_id_coding", base: "WriteRegistered(Weapons)", port: "short (registry id)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Local viewmodel weapon rides the full-precision owner block (ActiveWeaponId) rather than a per-slot wepent sender; remote players' held weapon rides NetEntityState.Weapon and is attached third-person by ViewEntityRenderer. Same observable result (correct viewmodel locally, correct held weapon on remotes)."
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "WriteOwnerState + ClientEntityView Player/ViewModel branch", result: pass }
+    confidence: high
+    notes: "The NetEntityKind.ViewModel + Nameplate enum branches in ClientEntityView are DEAD — ServerNet.Classify never returns those kinds; remote weapons attach to the Player entity instead."
+
+  - id: net-entity-state.wepent.charges_clip_heat
+    name: "wepent charge/clip/heat HUD fields (vortex/oknex charge+pool, clip_load/size, hagar_load, minelayer_mines, arc_heat)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/wepent.qc:WEPENT_NETPROPS (vortex_charge, oknex_charge, vortex_chargepool_ammo, oknex_chargepool_ammo, clip_load, clip_size, hagar_load, minelayer_mines, arc_heat_percent)"
+      - "common/wepent.qh"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WepentResolver.cs:Resolve (THE single authoritative resolver — engine-free; feeds all three sinks)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WepentViewState.cs (per-player view-state DATA struct, ×255 unit coding)"
+      - "src/XonoticGodot.Net/WepentViewCodec.cs:Write/Read (per-player WIRE codec, 13-byte block)"
+      - "src/XonoticGodot.Net/OwnerWeaponRings.cs:Write/Read (owner-block 9-float ring scalars — local player's own rings on a remote/dedicated client)"
+      - "src/XonoticGodot.Net/NetEntity.cs:EntityField.WepentView (BIT20) + NetEntityState.WepentView + WriteDelta/ReadDelta (453)"
+      - "game/net/ServerNet.cs:2133 (per-player producer WepentView=WepentResolver.Resolve on the live snapshot loop) + ResolveOwnerWeaponRings (2676, delegates to WepentResolver) + WriteOwnerState (2818-2831 OwnerWeaponRings tail)"
+      - "game/net/ClientNet.cs:HandleSnapshot (LocalWeaponRings=OwnerWeaponRings.Read, 1042) + LocalWeaponRings prop (188)"
+      - "game/net/ClientEntityView.cs:157 (e.WepentView=s.WepentView per-player decode)"
+      - "game/net/NetGame.cs:UpdateCrosshairWeaponRings (3 branches: spectatee per-player WepentView 3312-3325, pure-remote owner rings 3332-3340, host LocalServerPlayer slot scratch 3354+; called unconditionally each HUD frame, hoisted out of the host-only block)"
+      - "game/hud/CrosshairPanel.cs:ClipLoad/ClipSize/ChargeFraction/ChargePool/HagarLoad/MineCount/ArcHeat (ring setters)"
+    constants:
+      - { name: "vortex_charge_coding", base: "x255 byte (networked)", port: "WepentViewState ×255 byte (per-player) / OwnerWeaponRings float (owner)", match: true }
+      - { name: "oknex_charge_coding", base: "x16 byte (networked)", port: "WepentViewState ×255 byte (port uses ×255 uniformly, intended)", match: false }
+      - { name: "clip_load/size_coding", base: "short (networked)", port: "WepentViewState signed short (per-player) / OwnerWeaponRings float (owner)", match: true }
+      - { name: "hagar_load_coding", base: "byte (networked)", port: "WepentViewState byte (per-player); load_max cap owner-only", match: true }
+      - { name: "arc_heat_percent_coding", base: "x255 byte (networked)", port: "WepentViewState ×255 byte; overheat-decay latch resolved server-side", match: true }
+      - { name: "minelayer_mines_coding", base: "byte (networked)", port: "WepentViewState byte; live g_mines scan server-side (CountLiveMines delegate)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "FIXED (uncommitted wave, working tree 2026-06-28): the wepent charge/clip/heat fields are now NETWORKED and LIVE across all clients, closing the prior host-only gap. ONE authoritative resolver (WepentResolver.Resolve, engine-free in .Common — mirrors QC client/hud/crosshair.qc 471-557 + Arc_GetHeat_Percent) feeds THREE sinks that previously drifted: (1) the per-player WepentView entity-state block (EntityField.WepentView BIT20, ×255 unit byte / signed-short clip, decoded onto Entity.WepentView at ClientEntityView.cs:157) so a SPECTATOR following another player draws that player's rings; (2) the owner-block OwnerWeaponRings (9 floats appended to WriteOwnerState, read by ClientNet→LocalWeaponRings) so a PURE remote / dedicated-server client draws its OWN rings; (3) the host slot-scratch branch (LocalServerPlayer) unchanged. NetGame.UpdateCrosshairWeaponRings now picks the right source per role. Intended divergence (consistent with the unit's other coding divergences): the port codes every [0,1] charge/pool/heat at ×255 uniformly (Base codes some at ×16); HagarLoadMax/MineLimit caps stay owner-only (per-player client clamps against the same CrosshairPanel defaults 4/3); ViewmodelFrame/BeamState fields are RESERVED on the per-player wire for a Phase-2 viewmodel/beam consumer (currently default 0 — Arc beam bit0 is the only BeamState bit set)."
+    gaps:
+      - "ViewmodelFrame and BeamState (electro beam bit2) are reserved on the per-player WepentView wire but have no live consumer yet (Phase-2): only the Arc-beam BeamState bit0 is produced, and ViewmodelFrame stays 0 — the networked viewmodel-frame / electro-beam-active overlay is not yet rendered. The charge/clip/load/heat/arc rings themselves are fully live across host/remote/spectator."
+    verification:
+      - { kind: code_read, ref: "ServerNet.cs:2133 WepentView=WepentResolver.Resolve(p,CountLiveMines,_world.Time) on the live per-player snapshot loop; ResolveOwnerWeaponRings (2691) delegates to the SAME resolver; WriteOwnerState (2818-2831) appends OwnerWeaponRings via the shared struct", result: pass }
+      - { kind: code_read, ref: "ClientEntityView.cs:157 e.WepentView=s.WepentView (per-player decode); ClientNet.cs:1042 LocalWeaponRings=OwnerWeaponRings.Read (owner decode, in lockstep with the WriteOwnerState tail); NetEntity.cs:453 WepentViewCodec.Read under EntityField.WepentView", result: pass }
+      - { kind: code_read, ref: "NetGame.cs:UpdateCrosshairWeaponRings — spectatee branch reads rs.WepentView (3315), pure-remote branch reads _client.LocalWeaponRings (3334), host branch reads slot scratch (3354); called unconditionally each HUD frame", result: pass }
+      - { kind: test, ref: "WepentViewStateTests + OwnerWeaponRingsTests (incl. stream-alignment sentinel-bracket) + SnapshotDelta — 34 passed/0 failed; Debug build green (Net+Common+Tests compile with the uncommitted wave)", result: pass }
+    confidence: high
+    notes: "FIX (uncommitted working-tree wave, 2026-06-28; prior baseline was liveness:partial host-only): the cross-client wepent charge/clip/heat stream — the registry's explicit follow-up — is now wired. Two new networked channels: per-player WepentView (EntityField.WepentView BIT20) for spectatee/third-person, and OwnerWeaponRings on the owner block for the local player's own rings on a remote/dedicated client. The c7470c5 commit also fixed a latent owner-block wire desync (the W16 ring floats were written but never read, misaligning every following section for a real remote client). liveness partial→live; confidence medium→high (build + 34 codec/alignment tests green). Residual = the Phase-2 ViewmodelFrame/BeamState consumers (reserved fields, no render yet). NOTE: this wave is UNCOMMITTED in the working tree; HEAD is on the warpzone branch."
+
+  - id: net-entity-state.wepent.switch_alpha_misc
+    name: "wepent switch/alpha/gunalign/porto/tuba/skin viewmodel fields"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/wepent.qc:WEPENT_NETPROPS (m_switchweapon, m_switchingweapon, m_alpha, m_gunalign, porto_v_angle_held, tuba_instrument, skin)"
+    port_refs:
+      - "src/XonoticGodot.Net/NetEntity.cs:EntityField.Wepent (BIT19) + NetEntityState.SwitchWeapon/SwitchingWeapon/WepPhase/ViewmodelSkin/WepAlpha/GunAlign"
+      - "src/XonoticGodot.Net/NetEntity.cs:EntityStateCodec WriteDelta/ReadDelta (Wepent block: 2 shorts + 4 bytes)"
+      - "game/net/ServerNet.cs:1970-1983 (producer: SwitchWeapon/SwitchingWeapon from slot-0 Switch*WeaponId, WepPhase from WeaponFireState, WepAlpha from QuantizeAlpha(DefaultWeaponAlpha))"
+      - "game/net/ClientEntityView.cs:148-153 (decode onto proxy Entity)"
+      - "game/net/ViewEntityRenderer.cs:92-143,194-218 (render: switch raise/lower dip + per-instance gun transparency; driven on the live Player path ClientEntityView.cs:213)"
+    constants:
+      - { name: "m_switchweapon", base: "WriteRegistered(Weapons)", port: "WriteShort(registry id, -1=none)", match: true }
+      - { name: "m_switchingweapon", base: "WriteRegistered(Weapons)", port: "WriteShort(registry id, -1=none)", match: true }
+      - { name: "m_alpha", base: "byte rint(bound(-1,254*a,254)+1)/254 (x254)", port: "WepAlpha byte: 0=opaque(not sent)/255=hidden(-1)/else a*255 (x255 + sentinels)", match: false }
+      - { name: "wep_phase", base: "implicit via m_switchingweapon + viewmodel_draw WS_RAISE/WS_DROP timing", port: "WepPhase byte (WS_RAISE=1, WS_DROP=2, else 0) derived from slot-0 WeaponFireState", match: partial }
+      - { name: "m_gunalign", base: "byte (this.m_gunalign)", port: "GunAlign byte field exists but NO producer -> default 0", match: false }
+      - { name: "porto_v_angle_held", base: "byte + WriteAngleVector2D", port: "none (not in NetEntityState)", match: false }
+      - { name: "tuba_instrument", base: "byte", port: "none (not in NetEntityState)", match: false }
+      - { name: "skin (viewmodel)", base: "WriteShort(this.skin)", port: "ViewmodelSkin byte field exists but NO producer -> default 0", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: true
+    divergence_rationale: "FIXED (Wave-14a): the wepent switch + exterior-weapon-alpha block is now NETWORKED (EntityField.Wepent BIT19) and LIVE. ServerNet (1970-1983) produces m_switchweapon/m_switchingweapon from the live slot-0 weapon state machine (Switch*WeaponId), derives a render-relevant WS_RAISE/WS_DROP phase from WeaponFireState, and sends the exterior-weapon alpha (QuantizeAlpha(DefaultWeaponAlpha)); ClientEntityView (148-153) decodes them and ViewEntityRenderer (92-143/194-218) renders the remote weapon raise/lower dip + per-instance gun transparency on the live Player snapshot path (ClientEntityView.cs:213). Intended divergence: the port carries a SINGLE compressed WepPhase byte rather than reproducing Base's exact viewmodel_draw raise/drop timing off m_switchingweapon, and the alpha wire is the port's x255+sentinel coding (vs Base x254). Residual MISSING (no server producer / not in struct): m_gunalign (GunAlign field defaults 0), viewmodel skin (ViewmodelSkin defaults 0), porto_v_angle_held, tuba_instrument."
+    gaps:
+      - "wepent m_gunalign not produced: the GunAlign field is networked in NetEntityState but no server producer sets it (cl_gunalign is a client-local concept the port doesn't model server-side), so it defaults 0 — the remote gun-align side is not reproduced."
+      - "viewmodel skin not produced: ViewmodelSkin field exists but no server producer; the exterior weapon's .skin variant is not networked."
+      - "wepent porto_v_angle_held (Porto held-angle viewmodel) and tuba_instrument are not in NetEntityState at all — Porto held-angle and @!#%'n Tuba instrument are not networked (low-impact, weapon-specific)."
+      - "Weapon-switch raise/lower timing is a port approximation: a single WS_RAISE/WS_DROP phase byte + a fixed-rate dip tween (ViewEntityRenderer SwitchRaiseTime/SwitchDropTime), not Base's m_switchingweapon-driven viewmodel_draw timing."
+    verification:
+      - { kind: code_read, ref: "NetEntity.cs EntityField.Wepent BIT19 + SwitchWeapon/SwitchingWeapon/WepPhase/ViewmodelSkin/WepAlpha/GunAlign in struct + WriteDelta/ReadDelta (2 shorts + 4 bytes, lines 315-323/370-378)", result: pass }
+      - { kind: code_read, ref: "ServerNet.cs:1970-1983 producer from slot-0 weapon state machine; ClientEntityView.cs:148-153 decode; ViewEntityRenderer.cs:92-143/194-218 render; driven live on the Player branch ClientEntityView.cs:213 + Process() at 110", result: pass }
+      - { kind: code_read, ref: "ServerNet comment 1984-1987: ViewmodelSkin/GunAlign have NO server producer (default 0); porto_v_angle_held/tuba_instrument absent from NetEntityState", result: pass }
+      - { kind: code_read, ref: "Base common/wepent.qc:9-79 WEPENT_NETPROPS = m_switchweapon/m_switchingweapon/m_weapon/m_alpha/m_gunalign/porto_v_angle_held/tuba_instrument/skin", result: pass }
+    confidence: high
+    notes: "FIX 2026-06-27 (Wave-14a, was fully missing at baseline): switch (m_switchweapon/m_switchingweapon) + a derived WS phase + the exterior-weapon m_alpha are now networked AND live (remote weapon-swap raise/lower + gun fade reproduced). missing->partial across all four sim dimensions, na->partial liveness, intended_divergence false->true. Residual missing = m_gunalign, viewmodel skin (both have a networked field but no producer -> default 0), porto_v_angle_held, tuba_instrument (not in struct). The remote weapon-swap anim — previously the user-visible gap — is now closed; the residuals are low-impact (gunalign/skin cosmetic, porto/tuba weapon-specific)."
+
+  - id: net-entity-state.csqcmodel.appearance_hook
+    name: "csqcmodel appearance hook (force model/colors, unique enemy colors, death-fade)"
+    layer: [presentation]
+    base_refs:
+      - "client/csqcmodel_hooks.qc:CSQCPlayer_ModelAppearance_Apply"
+    port_refs:
+      - "src/XonoticGodot.Engine/Simulation/CsqcModelAppearance.cs"
+      - "game/client/ModelTint.cs"
+    constants:
+      - { name: "unique_color_combo", base: "c1=num%15; c2=(c1+1+floor(num/15))%15; 1024+(c1<<4)+c2", port: "UniqueColormap (same)", match: true }
+      - { name: "deathglow_min_default", base: "cl_deathglow_min 0.5", port: "DeathGlowFactor (deathglowMin arg)", match: true }
+      - { name: "palette_table", base: "lib/color.qh colormapPaletteColor 0..15", port: "ColormapPaletteColor 0..15 (same)", match: true }
+      - { name: "force_color_gametype_gates", base: "1v1 {1,2,3,5}; 2-team {2,4,5}; FFA {1,2}", port: "ForcePlayerColorsEnabled (same)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Friend-color collision is checked against the LOCAL team only, not the full team list (port doesn't network the team list here) — a friend force equal to ANOTHER team's color isn't suppressed (self-documented in CsqcModelAppearance.cs:110). STILL OPEN."
+    verification:
+      - { kind: code_read, ref: "CsqcModelAppearance.cs vs csqcmodel_hooks.qc:141-363; header notes unit tests", result: pass }
+      - { kind: code_read, ref: "FIX (4be8357): ModelTint.ComputeAppearance now calls all 4 Wave-2 helpers — RespawnGhostClearsColors (early-out), BaseGlowmod (colored-model glow base), GuardGlowmodZero (post-fade black nudge), ApplyHdrGlowClamp (r_hdr_glowintensity div) — wired on the LIVE render path (ClientWorld.cs:1064 ApplyAppearance per-frame player pass; ghost/dead/deathTime are real entity-derived args, not hardcoded). The baseline 'dead helpers' gap is CLOSED.", result: pass }
+    confidence: high
+    notes: "Pure decision helpers (Godot-free, unit-tested per its header). FIX-UP (4be8357): the 4 glowmod/ghost helpers that Wave-2 (ec788f7) added but left dead are now invoked by ModelTint.ComputeAppearance, the shared math behind both ModelTint.ApplyAppearance overloads, which ClientWorld.cs:1064 drives every frame for player models — so respawn-ghost decoloring, the palette glowmod base, the glowmod-zero guard, and the HDR clamp are now applied live. Residual single gap = local-team-only friend-collision check (would need the team list networked here)."
+
+  - id: net-entity-state.replicate.client_cvars
+    name: "Client->server cvar replication (REPLICATE / cmd sentcvar)"
+    layer: [shared]
+    base_refs:
+      - "common/replicate.qc"
+      - "common/replicate.qh:REPLICATE set"
+      - "lib/replicate.qh:ReplicateVars/ReplicateVars_Start"
+    port_refs:
+      - "game/net/ClientNet.cs:PumpReplicatedCvars"
+      - "game/net/ClientNet.cs:ReplicatedCvars"
+      - "src/XonoticGodot.Server/Commands.cs:SentCvarAllowlist (179-198)"
+      - "src/XonoticGodot.Server/Commands.cs:Commands(GameWorld) provider wiring (342-396)"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:AutoswitchProvider/CtsAutoswitchProvider/CtsActiveProvider"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:VoluntaryHandicapProvider/HandicapTotal (381-384)"
+      - "game/net/ServerNet.cs (cl_noantilag consume)"
+    constants:
+      - { name: "poll_interval_s", base: "0.8 + random()*0.4", port: "0.8 + rand*0.4 (ClientNet.cs:724)", match: true }
+      - { name: "send_all_on_start", base: "ReplicateVars_Start (REPLICATEVARS_SEND_ALL)", port: "_replicateSendAll on accept", match: true }
+      - { name: "change_gated", base: "value != last", port: "value != _replicatedLastSent", match: true }
+      - { name: "client_send_set", base: "cl_autoswitch, cl_autoscreenshot, cl_clippedspectating, cl_autoswitch_cts, cl_handicap(+dmg given/taken), cl_noantilag, g_xonoticversion (+ weaponpriority, notification choices)", port: "full Base list + cl_weaponpriority + cl_physics + notification_CHOICE_*", match: true }
+      - { name: "server_honored_set", base: "all of the above consumed server-side", port: "cl_autoswitch, cl_autoswitch_cts, cl_handicap(+given/taken), cl_weaponpriority(+N), cl_noantilag, cl_physics, cl_clippedspectating, g_xonoticversion, notification choices now have live consumers; only cl_autoscreenshot (driven client-locally off the networked intermission flag, not the replicated value) is allowlisted+stored but not consumed off the replicated value server-side", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "ONE replicated cvar is stored server-side but not consumed off the replicated value: cl_autoscreenshot is in SentCvarAllowlist (Commands.cs:233) so it is accepted+stored per-client, but nothing on the server reads the REPLICATED value — autoscreenshot is driven CLIENT-locally off the networked intermission flag reading the client's own Api.Cvars cl_autoscreenshot (NetGame.cs), not the per-client replicated store. FIX 2026-06-27: g_xonoticversion left this list — it now has a live server consumer (Commands.CheckClientVersion reads the per-client replicated g_xonoticversion to send the version-mismatch notification, armed at ClientManager.cs:229, fired on the live PlayerPreThink path src/XonoticGodot.Server/GameWorld.cs:2255). FIX 2026-06-25: cl_clippedspectating left this list — live free-fly MOVETYPE consumer (ClientManager.ClippedSpectatingProvider)."
+    verification:
+      - { kind: code_read, ref: "ClientNet.cs ReplicatedCvars = full Base REPLICATE list + cl_weaponpriority/cl_physics; cadence 0.8+rand*0.4 + send-all-on-accept exact vs lib/replicate.qh:48 (unchanged by fix-up)", result: pass }
+      - { kind: code_read, ref: "FIX (4be8357): Commands.cs:191-197 SentCvarAllowlist EXPANDED with cl_autoscreenshot/cl_clippedspectating/cl_handicap(+given/taken)/g_xonoticversion — they are no longer dropped at Commands.cs:2036 gate.", result: pass }
+      - { kind: code_read, ref: "FIX (4be8357): Commands(GameWorld) ctor wires AutoswitchProvider, CtsAutoswitchProvider, CtsActiveProvider, DynamicHandicapMutator.HandicapDisabledProvider, DamageSystem.VoluntaryHandicapProvider; cl_autoswitch_cts LIVE via ItemPickupRules.ApplyAutoswitch; cl_handicap LIVE via DamageSystem.HandicapTotal in ApplyDamage (DamageSystem.cs:381-384).", result: pass }
+      - { kind: code_read, ref: "FIX (2026-06-25): Commands(GameWorld) ctor now ALSO wires ClientManager.ClippedSpectatingProvider = p => GetClientCvarFloat(p, cl_clippedspectating, 0) != 0 (Commands.cs:453); ClientManager.cs:454-457 consumes it on the live PlayerPreThink free-fly path (not-following spectator movetype = wouldClip ? MOVETYPE_FLY_WORLDONLY : MOVETYPE_NOCLIP, QC server/client.qc:2588-2593). cl_clippedspectating now honored per-player.", result: pass }
+      - { kind: code_read, ref: "FIX (2026-06-27): g_xonoticversion now HAS a live server consumer of the REPLICATED value: Commands.CheckClientVersion (Commands.cs:427-471) reads GetClientCvar(p, g_xonoticversion) — the per-client replicated store — compares it to the server's g_xonoticversion and sends VERSION_OUTDATED/VERSION_OLD/VERSION_BETA (QC server/client.qc:2925-2943). Armed on connect at ClientManager.cs:229 (VersionNagTime = Now + 10 + rand*10), fired on the live PlayerPreThink path src/XonoticGodot.Server/GameWorld.cs:2249-2256 (real clients only). [re-verified post-Waves 16/17: consumer + call site survive the state-producer/presentation refactors.]", result: pass }
+      - { kind: code_read, ref: "cl_autoscreenshot still has NO server consumer of the REPLICATED value: NetGame.cs reads the client's OWN Api.Cvars cl_autoscreenshot (client-local opt-in off the networked MatchIntermission flag), not the per-client server store.", result: pass }
+    confidence: high
+    notes: "FIX-UP history: 4be8357 closed cl_handicap + cl_autoswitch_cts; 2026-06-25 closed cl_clippedspectating (live free-fly-spectator consumer in ClientManager); 2026-06-27 closed g_xonoticversion (live version-nag consumer Commands.CheckClientVersion on the PlayerPreThink path). liveness live. values stays partial: ONLY cl_autoscreenshot (driven client-locally, not off the replicated value) remains stored-but-unconsumed-off-the-replicated-value server-side (down from 2 in the previous audit). Genuinely live+honored now: cl_autoswitch, cl_autoswitch_cts, cl_handicap(+given/taken), cl_weaponpriority(+N), cl_noantilag, cl_physics, cl_clippedspectating, g_xonoticversion, notification_CHOICE_*. cl_physics is a port-added preset cvar (T54), not Base."
+
+  - id: net-entity-state.csqcmodel.anim_state
+    name: "csqcmodel networked anim action state (upper/lower-body action split)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/csqcmodel_settings.qh:CSQCMODEL_EXTRAPROPERTIES (anim_state BIT7, anim_upper_action/anim_upper_time BIT9, anim_lower_action/anim_lower_time BIT8)"
+      - "common/animdecide.qc:animdecide_setaction"
+      - "common/animdecide.qc:animdecide_setstate"
+    port_refs:
+      - "src/XonoticGodot.Net/NetEntity.cs:EntityField.AnimAction (BIT18) + NetEntityState.UpperAction/AnimActionTime + codec (307-311/364-368) — now LIVE-fed"
+      - "game/net/ServerNet.cs:1918-1924 (resolve+expire via AnimDecideUnit.GetUpperAnim) + 1977-1982 (UpperAction/AnimActionTime producer from p.AnimUpperAction/AnimActionStart)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:163-173 (SHOOT/MELEE latch); src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:514-519 (PAIN1/PAIN2) + 733-736 (DIE1/DIE2); src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireDriver.cs:303-305 (DRAW); src/XonoticGodot.Common/Gameplay/Sounds/SoundSystem.cs:557-559 (TAUNT)"
+      - "game/net/ClientEntityView.cs:142-143 (decode UpperAction/AnimActionTime onto the proxy)"
+      - "game/client/PlayerModel.cs:214-234 (torso-overlay render via LocomotionBlend.SelectTorsoAction; serverNow from NetGame.cs:1224 ServerTimeProvider)"
+      - "src/XonoticGodot.Engine/Simulation/LocomotionBlend.cs:115-121 SelectTorsoAction + Split (legs reconstructed client-side from velocity — the LOWER-body half stays client-side)"
+    constants:
+      - { name: "anim_state_coding", base: "byte (per-player, BIT7)", port: "none (not networked; locomotion reconstructed client-side)", match: false }
+      - { name: "anim_upper_action_coding", base: "char + WriteApproxPastTime (BIT9)", port: "UpperAction byte + AnimActionTime float, LIVE-fed by server producer (raw-float start time = death_time-class divergence)", match: partial }
+      - { name: "anim_lower_action_coding", base: "char + WriteApproxPastTime (BIT8, non-local only)", port: "none (lower-body action not separately networked; legs reconstructed from velocity)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "FIXED (Wave-14b): the UPPER-body anim ACTION channel (animdecide getupperanim: SHOOT/MELEE/PAIN1/PAIN2/DRAW/TAUNT/DIE1/DIE2 + start time) is now NETWORKED + LIVE. The action is latched server-side at the real gameplay sites (WeaponFireGate fire commit, DamageSystem pain/death, WeaponFireDriver draw, SoundSystem taunt), ServerNet networks the expiry-RESOLVED id (AnimDecideUnit.GetUpperAnim with the action's numframes/framerate window), and PlayerModel plays it as a torso overlay over the velocity-derived legs (SelectTorsoAction), driven by the live ServerTimeProvider. Intended divergence remains on TWO sub-channels: (1) the discrete anim_state byte (BIT7) and (2) the per-player anim_lower_action split (BIT8) are NOT separately networked — the LEGS locomotion (run/walk/idle/jump/duck) is still reconstructed CLIENT-side from the networked velocity/onground/ducked (LocomotionBlend.SelectLegsDirectional), the port having no server-side animdecide_setstate machinery. AnimActionTime is a raw server-clock float (the death_time-class client-observed-time divergence) rather than QC's WriteApproxPastTime byte compression. So the torso ACTION overlay is now faithful+live; the legs split + anim_state byte stay client-reconstructed (values partial)."
+    gaps:
+      - "anim_state byte (BIT7) and the lower-body anim_lower_action split (BIT8) are not separately networked: the LEGS locomotion (run/walk/idle/jump/duck) is reconstructed client-side from velocity/onground/ducked (LocomotionBlend.SelectLegsDirectional), not the QC animdecide_setstate networked state — so a remote player's lower-body locomotion is inferred, not authoritative. The UPPER-body action overlay IS now networked + live."
+      - "AnimActionTime is a raw float (server clock) rather than QC's WriteApproxPastTime byte-quantized past-time — a deliberate death_time-class divergence (values: partial)."
+    verification:
+      - { kind: code_read, ref: "FIX 2026-06-27: ServerNet.cs:1918-1924 resolves+expires the action (AnimDecideUnit.GetUpperAnim from p.AnimUpperAction/AnimActionStart); 1977-1982 produces UpperAction=(byte)resolvedAction + AnimActionTime=p.AnimActionStart. Producers at WeaponFireGate.cs:163-173 (SHOOT/MELEE), DamageSystem.cs:514-519/733-736 (PAIN/DIE), WeaponFireDriver.cs:303-305 (DRAW), SoundSystem.cs:557-559 (TAUNT) — all on live gameplay paths.", result: pass }
+      - { kind: code_read, ref: "Consumer LIVE: ClientEntityView.cs:142-143 decodes onto the proxy; PlayerModel.cs:225-234 plays the torso overlay via LocomotionBlend.SelectTorsoAction (115-121) when serverNow is valid + UpperAction!=0; serverNow fed by NetGame.cs:1224 _render.ServerTimeProvider = LatestServerTime. _actionClips populated PlayerModel.cs:466-475.", result: pass }
+      - { kind: code_read, ref: "csqcmodel_settings.qh:71-80 networks anim_state(BIT7)/anim_upper_action+time(BIT9)/anim_lower_action+time(BIT8) for players; port networks ONLY the upper action — legs still reconstructed via LocomotionBlend.SelectLegsDirectional (PlayerModel.cs:205-206).", result: pass }
+    confidence: high
+    notes: "FIX 2026-06-27 (Wave-14b; baseline had this RESERVED/UNFED with no producer + no LI3 consumer): the upper-body anim ACTION channel is now PRODUCED server-side at the live gameplay sites, networked (EntityField.AnimAction BIT18), decoded, and RENDERED as a torso overlay on the live PlayerModel path. logic partial->faithful, presentation partial(now real overlay, not single-frame aim)->partial(still no anim_state/lower split but the action overlay is faithful — kept partial to reflect the un-networked legs/state), timing missing->faithful (the action window timing is the resolved animdecide spec), liveness partial->live. values stays partial: anim_state byte + anim_lower_action are still not networked (legs reconstructed client-side) and AnimActionTime is a raw float vs QC WriteApproxPastTime. Distinct from the FRAME-group cross-fade gap (interpolation row): that is lerping between two frames; THIS is the discrete action overlay, now closed for the upper body."
+
+  - id: net-entity-state.csqcmodel.alpha
+    name: "csqcmodel per-entity render alpha (m_alpha / .alpha transparency channel)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/csqcmodel_settings.qh:CSQCMODEL_EXTRAPROPERTIES (ALPHA m_alpha, BIT3, CSQCMODEL_PROPERTY_SCALED 254/-1/254)"
+      - "lib/csqcmodel/cl_model.qc:ENT_CLIENT_MODEL (alpha apply)"
+    port_refs:
+      - "src/XonoticGodot.Net/NetEntity.cs:EntityField.Alpha / NetEntityState.Alpha"
+      - "src/XonoticGodot.Net/NetEntity.cs:EntityStateCodec WriteDelta/ReadDelta (Alpha byte)"
+      - "game/net/ServerNet.cs:QuantizeAlpha (2264) + producers at 1830 (player p.Alpha) / 1944 (entity e.Alpha)"
+      - "game/net/ClientEntityView.cs:135 (s.Alpha -> Entity.Alpha: 0=>opaque, 255=>hidden(-1), else byte/255)"
+    constants:
+      - { name: "alpha_quantization", base: "WriteByte rint(bound(-1,254*alpha,254)+1) — -1..1 -> 0..255 (x254 + offset)", port: "QuantizeAlpha: >=1 -> 0 (opaque, not networked); <0 -> 255 (hidden); else clamp(round(alpha*255),1,254)", match: false }
+      - { name: "opaque_sentinel", base: "alpha 1 (default, still in mask)", port: "0 = opaque, mask bit stays clear (costs nothing)", match: false }
+      - { name: "hidden_sentinel", base: "-1 -> wire 0 (rint(bound(-1,-254,254)+1)=0)... mapped (ReadByte-1)/254", port: "255 = hidden(-1), DISTINCT from opaque", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The csqcmodel per-entity render alpha is now networked in the unified NetEntityState.Alpha channel (not present at the last audit). Wire coding diverges deliberately: Base uses CSQCMODEL_PROPERTY_SCALED x254 over the -1..1 range and folds the default (1.0) into a normal value, whereas the port quantizes to a byte with two reserved sentinels (0 = fully opaque, NOT networked so an opaque entity costs nothing; 255 = the QC -1 'do not render' marker) and 1..254 = alpha/255. Observable result matches Base: transparent entities (Cloaked default_player_alpha 0.25, Running Guns invisible-player/visible-gun, the Invisibility powerup, death/spawn fades) render at the right alpha, and the -1 'hide model' sentinel is preserved as a distinct hidden state. Producers feed it live from p.Alpha (players) and e.Alpha (entities); the client maps it back to Entity.Alpha each decode."
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "NetEntity.cs:96 EntityField.Alpha=1<<17; Diff compares Alpha (177); WriteDelta/ReadDelta carry it as a byte (231/272). ServerNet QuantizeAlpha (2264) produces it from p.Alpha(1830)/e.Alpha(1944); ClientEntityView.cs:135 maps 0/255/byte back to Entity.Alpha", result: pass }
+      - { kind: grep, ref: "Base csqcmodel_settings.qh ALPHA=m_alpha BIT3 CSQCMODEL_PROPERTY_SCALED(254,-1,254) — the per-entity .alpha channel, distinct from the wepent VIEWMODEL m_alpha (wepent.qc:21, viewmodels[slot].m_alpha) tracked in net-entity-state.wepent.switch_alpha_misc", result: pass }
+    confidence: high
+    notes: "NEW row 2026-06-25 (the previous audit had no alpha feature). This is the csqcmodel WHOLE-ENTITY render alpha (Cloaked/Running Guns/Invisibility/death-fade), NOT the wepent viewmodel m_alpha (that field stays missing in net-entity-state.wepent.switch_alpha_misc). Fully live: server-produced + codec-carried + client-applied. Wire coding intentionally differs (x255 + reserved 0/255 sentinels vs Base x254) but is observably faithful."
+
+  - id: net-entity-state.projectile.wire_channel
+    name: "CSQCProjectile server wire contract (SendFlags byte: origin/type/silent/no-trail/gravity/fade/onground/clientanimate)"
+    layer: [authority, shared]
+    base_refs:
+      - "server/weapons/csqcprojectile.qc:CSQCProjectile_SendEntity"
+      - "server/weapons/csqcprojectile.qc:CSQCProjectile"
+      - "server/weapons/csqcprojectile.qh"
+    port_refs:
+      - "game/net/ServerNet.cs:2187-2311 (entity snapshot loop: projectile branch — networks even with empty model)"
+      - "game/net/ServerNet.cs:1978 (ProjectileCatalogKey: classname+netname -> catalog key in the model field, the QC csqcprojectile_type byte analog)"
+      - "src/XonoticGodot.Net/NetEntity.cs:NetEntityState (Origin/Velocity/Model/Owner/Colormap delta fields)"
+      - "game/net/ClientEntityView.cs:216-224 (Projectile branch -> ProjectileRenderer)"
+      - "src/XonoticGodot.Common/Framework/EntityProjectileGate.cs:CsqcProjectileBouncing (the PROJECTILE_GRENADE_BOUNCING sub-variant token)"
+    constants:
+      - { name: "type_coding", base: "byte csqcprojectile_type (sf & 2)", port: "catalog key string in the (otherwise unused) model field, classified by ProjectileCatalog.Classify", match: false }
+      - { name: "origin_resend", base: "sf |= 0x01 on UpdateCSQCProjectile / CSQCProjectile_Check onground-move", port: "per-tick NetEntityState.Diff re-sends origin whenever it changed (subsumes the explicit resend)", match: true }
+      - { name: "silent_flag", base: "sf bit 4 from !sound_allowed -> client suppresses fly loop", port: "none — LoopSounds attaches the catalog fly loop unconditionally (ProjectileRenderer.cs:176-178)", match: false }
+      - { name: "onground_flag", base: "sf 0x40 (IS_ONGROUND)", port: "none (not networked)", match: false }
+      - { name: "bouncing_grenade_subtype", base: "PROJECTILE_GRENADE vs GRENADE_BOUNCING type ids", port: "' bouncing' token appended to the catalog key (ServerNet.cs:2218-2221)", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: partial
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The dedicated CSQCProjectile SendEntity channel is folded into the unified NetEntityState delta snapshot (same rationale as net-entity-state.csqcmodel.change_mask): a projectile is just an entity whose model field carries a catalog key instead of a model path, and the per-field delta mask replaces the hand-rolled sf byte. Origin/velocity/type/owner-team reach the client with the same observable result; the sf sub-flags that exist only to compress the QC wire (0x01 origin, 0x02 type, 0x40 onground) are subsumed by the delta codec."
+    gaps:
+      - "silent flag (sf bit 4, !sound_allowed) not networked: the client attaches the catalog fly-sound loop unconditionally, so a projectile the server intends silent still hums (low impact — sound_allowed is rarely false for projectiles)."
+      - "onground bit (0x40) not networked (Base uses it for the client mover's ground state; the port predictor doesn't model ground rest, a resting grenade just receives its unchanged origin)."
+    verification:
+      - { kind: code_read, ref: "ServerNet.cs:2201-2231 projectile empty-model exemption + ProjectileCatalogKey; ClientEntityView.cs:216-224 raw-origin Projectile branch; ProjectileCatalog.Classify keys on classname/model/netname", result: pass }
+      - { kind: code_read, ref: "Base csqcprojectile.qc:14-74 sf byte layout (0x01 origin+vel+fade+team, 0x02 type, 4 silent, 0x08 no-trail, 0x10 gravity, 0x20 fade, 0x40 onground, 0x80 clientanimate)", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). The projectile wire channel is LIVE end-to-end on the play path (server entity loop -> snapshot -> ClientEntityView -> ProjectileRenderer, exercised every match). Sub-flags fade (0x20) and gravity (0x10) and the teleport/no-trail bit (0x08) are tracked in their own rows (projectile.fade, projectile.clientanimate_prediction, projectile.teleport_resend)."
+
+  - id: net-entity-state.projectile.clientanimate_prediction
+    name: "Client-animated projectile motion (velocity/gravity networking + client extrapolation vs two-snapshot interpolation)"
+    layer: [shared, presentation]
+    base_refs:
+      - "server/weapons/csqcprojectile.qc:CSQCProjectile_SendEntity (sf 0x80 clientanimate; velocity + gravity written only then)"
+      - "server/weapons/csqcprojectile.qc:CSQCProjectile (gravity default 1 for TOSS/BOUNCE)"
+      - "server/weapons/csqcprojectile.qc:CSQCProjectile_Check"
+      - "client/weapons/projectile.qh (Projectile entityclass: iorigin1/iorigin2 interp fields, gravity, count 0x80; autocvar_cl_projectiles_sloppy)"
+    port_refs:
+      - "src/XonoticGodot.Net/ProjectilePredictor.cs:Step (snap-to-server + local velocity extrapolation + world-trace stop/bounce)"
+      - "game/client/ProjectileRenderer.cs:308-333 (Predict path per frame; cl_projectile_prediction toggle via ClientWorld)"
+      - "game/net/ClientEntityView.cs:216-224 (feeds the RAW authoritative origin, bypassing InterpolationBuffer)"
+      - "game/net/ClientEntityView.cs:125 (e.Velocity = s.Velocity — velocity networked for every entity via the delta mask)"
+    constants:
+      - { name: "velocity_networked", base: "only when clientanimate (sf 0x80 & 0x01)", port: "always (NetEntityState.Velocity, delta-gated)", match: true }
+      - { name: "gravity_networked", base: "WriteCoord gravity when sf 0x10", port: "none — straight-line extrapolation; per-snapshot velocity refresh bounds the error to the second-order gravity term (ProjectilePredictor doc)", match: false }
+      - { name: "clientanimate_split", base: "per-projectile flag: 0x80 = client-moved (Movetype_Physics_MatchServer), else two-snapshot interpolated (iorigin1/2)", port: "ALL projectiles predicted (snap+extrapolate); no interpolated projectile class", match: false }
+      - { name: "cl_projectiles_sloppy", base: "false (bare default; exact sub-tick trace continuation in Movetype_Physics_MatchServer, projectile.qc:104)", port: "none — predictor advances by raw render dt with a world-only trace for collide/bounce catalog types", match: false }
+      - { name: "bounce_reflect", base: "_Movetype_ClipVelocity v -= (1+bounce)(v.n)n", port: "identical formula (ProjectilePredictor.cs:122)", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The port promotes EVERY projectile to the client-animated contract (snap to each authoritative origin, extrapolate locally by the held velocity, world-trace stop/bounce) instead of Base's two-class split — the unified snapshot networks velocity for all entities anyway, and the CSQC behaviour this reproduces (instant full-speed muzzle exit, no interp delay) is the reason the predictor was built (ProjectilePredictor header documents the QC path it ports). Gravity is deliberately NOT networked: the per-snapshot velocity refresh captures the trajectory's first order, bounding the between-snapshot sag to ~1u at normal rates. cl_projectiles_sloppy has no analog because the port has no MatchTicrate sub-tick mover (that whole layer is tracked in physics-movetypes.matchticrate.interp)."
+    gaps:
+      - "Ballistic arc between snapshots is straight-line (gravity not networked/applied client-side): a grenade/mortar shell renders as a chord of its true parabola between snapshots (~1u error at normal snapshot rates, larger under packet loss)."
+      - "No interpolated (non-clientanimate) projectile class: Base renders a server-moved projectile via iorigin1/iorigin2 two-snapshot interp; the port predicts everything, so a projectile whose server motion is NOT ballistic/linear (scripted movers) can wobble between snap corrections."
+    verification:
+      - { kind: code_read, ref: "ProjectilePredictor.cs:93-132 (snap on netOrigin change, extrapolate + trace otherwise, ClipVelocity bounce); ProjectileRenderer.cs:316-321 CollisionFor -> Step; ClientEntityView.cs:221-222 raw origin", result: pass }
+      - { kind: test, ref: "tests/XonoticGodot.Tests/ProjectilePredictorTests.cs exists (codec-level predictor coverage)", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). CSQCProjectile_Check (server re-send when an onground client-animated projectile moves) is subsumed by the per-tick delta diff — the origin re-sends whenever it changes, onground or not."
+
+  - id: net-entity-state.projectile.fade
+    name: "Projectile fade-out networking (fade_time/fade_rate bytes, sf 0x20) + client alpha ramp"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/weapons/csqcprojectile.qc:CSQCProjectile_SendEntity (ft/fr bytes in sys_frametime units when sf 0x20)"
+      - "client/weapons/projectile.qh (Projectile.fade_time/fade_rate/alphamod)"
+    port_refs: []
+    constants:
+      - { name: "fade_coding", base: "ft=(fade_time-time)/sys_frametime byte, fr=(1/fade_rate)/sys_frametime byte (sent only when both fit 1..255)", port: "none", match: false }
+      - { name: "client_alpha", base: "a = 1 - (time - fade_time) * fade_rate (projectile.qc:158), also scales trail particle alpha", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Projectile fade-out is not networked and not rendered: a Base projectile with fade_time/fade_rate set alpha-fades (body + trail) before expiring; the port's NetEntityState carries a per-entity Alpha channel (csqcmodel.alpha) but no projectile producer sets a fade ramp, and ProjectileRenderer has no fade path (grep: no fade symbol) — such projectiles pop out at removal instead of fading."
+    verification:
+      - { kind: grep, ref: "no fade_time/fade_rate/alphamod analog in game/client/ProjectileRenderer.cs or ServerNet projectile branch (only the electro-orb shrink pulse exists, DeathTime)", result: pass }
+    confidence: medium
+    notes: "added 2026-07-02 (coverage fold). Could be closed cheaply by driving the EXISTING NetEntityState.Alpha channel from a server-side fade ramp — no new wire field needed. Confidence medium: which live port weapons set a Base fade (seeker flares, hook gravity bomb, ...) was not enumerated."
+
+  - id: net-entity-state.projectile.team_color
+    name: "Projectile owner team/clientcolors byte (team-tinted bolt body/trail)"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/weapons/csqcprojectile.qc:CSQCProjectile_SendEntity (teamplay ? realowner.team : realowner.clientcolors byte)"
+    port_refs:
+      - "game/net/ServerNet.cs:2253 (Colormap = e.Team on the entity snapshot)"
+      - "game/net/ClientEntityView.cs:137 (e.Team = s.Colormap)"
+      - "game/client/ProjectileRenderer.cs:136-141 + 500-524 (ApplyTeamColormod — QC projectile.qc:504-506 colormapPaletteColor, RocketMinstaLaser body)"
+    constants:
+      - { name: "ffa_coding", base: "realowner.clientcolors byte when !teamplay", port: "e.Team only (0 in FFA -> no tint)", match: false }
+      - { name: "team_coding", base: "realowner.team byte when teamplay", port: "Colormap = e.Team", match: true }
+      - { name: "palette", base: "colormapPaletteColor(colormap & 0x0F)", port: "ModelTint.TeamColor (same palette helper family)", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "FFA tint source missing: Base sends the owner's clientcolors when !teamplay so the RocketMinstaLaser bolt tints per-player in FFA; the port networks only e.Team (0 outside teamplay), so the FFA per-player tint never applies."
+    verification:
+      - { kind: code_read, ref: "ProjectileRenderer.cs:140-141 applies ApplyTeamColormod only for PType.RocketMinstaLaser — matching Base projectile.qc:504-506, the only colormap consumer in Projectile_Draw", result: pass }
+    confidence: medium
+    notes: "added 2026-07-02 (coverage fold). Observable surface is small (the RocketMinsta laser is a mutator weapon); liveness 'live' = the Colormap field + colormod path are on the live snapshot/render path, verified by code read, not an in-match RocketMinsta observation."
+
+  - id: net-entity-state.projectile.teleport_resend
+    name: "Projectile teleport full-resend + no-trail bit (UpdateCSQCProjectileAfterTeleport, warpzone pass-through)"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/weapons/csqcprojectile.qc:UpdateCSQCProjectileAfterTeleport (SendFlags |= 0x01|0x02|0x08)"
+      - "server/weapons/csqcprojectile.qc:CSQCProjectile_SendEntity (sf &= 0x0F; 0x08 = no trail/teleport bit)"
+    port_refs:
+      - "src/XonoticGodot.Net/ProjectilePredictor.cs:102-108 (snap on ANY authoritative origin change — the position half needs no explicit bit)"
+    constants:
+      - { name: "teleport_bit", base: "sf 0x08 explicit at the warpzone/teleport site", port: "implicit — predictor snaps on origin change regardless of distance", match: partial }
+      - { name: "no_trail_suppression", base: "0x08 suppresses the trail segment across the jump", port: "none — ProjectileRenderer.cs:341-350 emits the faithful trail segment from the pre-jump TrailPos to the post-jump position with no discontinuity gate", match: false }
+      - { name: "full_resend", base: "0x02 re-sends type (SUB_Stop warpzone workaround)", port: "n/a (client keeps its catalog classification; no client-side touch function to erroneously fire)", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No trail discontinuity gate: a projectile passing a warpzone/teleporter draws its per-segment trail (EffectSystem.SpawnTrailSegment) as one straight streak from the entry point to the exit point across the map — Base's 0x08 bit suppresses exactly this. A max-segment-length or Teleported-flag check in ProjectileRenderer.Process would close it."
+    verification:
+      - { kind: code_read, ref: "ProjectileRenderer.cs:341-350: segment emitted whenever |seg|^2 > 0.01 with no upper bound / teleport check; ServerNet's Teleported flag is produced for players (2165) but the entity loop sets no Teleported for projectiles", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). The POSITION half (snap, don't lerp) is inherently faithful via the predictor's snap-on-change; the TRAIL half is the real gap. Relevant on any warpzone map (fired rockets crossing zones)."
+
+  - id: net-entity-state.wire.message_registry
+    name: "Network message-id registries (REGISTER_NET_TEMP/LINKED/C2S, renumbered id spaces, NET_HANDLE guard)"
+    layer: [shared]
+    base_refs:
+      - "lib/net.qh:REGISTER_NET_TEMP/REGISTER_NET_LINKED/REGISTER_NET_C2S"
+      - "lib/net.qh:TempEntities/LinkedEntities/C2S_Protocol registries (renumber: Temp 80+, Linked 1+, C2S 0+)"
+      - "lib/net.qh:Net_LinkEntity/Net_UnlinkEntity/SetCustomizer"
+    port_refs:
+      - "game/net/NetProtocol.cs:NetControl (the LIVE top-level frame-kind byte: handshake/snapshot/input/event bundles + typed channels)"
+      - "src/XonoticGodot.Net/NetMessages.cs:NetMessageId/NetChannel/NetMessageRanges (C2S 1-31, Linked 32-159, Temp 160-255 — the QC three-registry partition as one byte space)"
+      - "src/XonoticGodot.Net/NetDispatcher.cs (id->handler dispatch — DEAD: no caller outside its own file)"
+    constants:
+      - { name: "temp_id_base", base: "80 (TempEntities renumber)", port: "160 (NetMessageRanges.TempFirst)", match: false }
+      - { name: "linked_id_base", base: "1", port: "32 (LinkedFirst)", match: false }
+      - { name: "id_width", base: "byte", port: "byte (NetMessageId) / byte (NetControl)", match: true }
+      - { name: "parse_guard", base: "0xDEADBEEF net_guard_marker (NDEBUG-gated debug framing check)", port: "none (BitReader bounds-checks; no per-message sentinel)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: true
+    divergence_rationale: "The QC message registries exist to multiplex many gameplay messages through the engine's single svc_tempentity/SendEntity pipe. The port owns the transport, so the LIVE equivalent is the NetControl frame-kind byte + hand-written typed channels (snapshot/event/sound/matchstate/waypoints/...) dispatched in ServerNet.HandlePacket / ClientNet's switch — one enum instead of three renumbered registries. NetMessageId/NetChannel/NetDispatcher preserve the three-registry partition for a future source-generated message set (ADR-0003) but are NOT on the live path (sample-grade, self-documented)."
+    gaps:
+      - "NetDispatcher + NetMessageId are DEAD scaffolding: grep shows no caller outside NetDispatcher.cs (NetProtocol.cs references them in docs only, and BuildParity folds NetMessageId.Temp_Explosion as a hash constant). The live dispatch is the NetControl switch — fine behaviorally, but the 'registry' half of the port exists without a live consumer."
+    verification:
+      - { kind: grep, ref: "NetDispatcher referenced only by NetDispatcher.cs + NetProtocol.cs doc comments; NetControl cases live in ServerNet.cs:687-697 (HandshakeRequest/Auth/InputFrame/ClientCommand) and ClientNet.cs:554 (MatchState) etc.", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). Net_LinkEntity/SetCustomizer (per-recipient customize gating) map onto ServerNet.RelevantEntitiesFor + PhysNetSuppressed (the setSendEntity(func_null) analog, ServerNet.cs:2195) — already audited under entcs.privacy_mask / csqcmodel.change_mask."
+
+  - id: net-entity-state.wire.c2s_yenc
+    name: "Client->server message framing (cmd c2s string tunnel + yEnc byte encoding)"
+    layer: [shared]
+    base_refs:
+      - "lib/net.qh:Net_ClientCommand/Net_Flush (c2s \"...\" console-string tunnel, over/underflow checks)"
+      - "lib/net.qh:WriteByte(MSG_C2S)/ReadByte (yenc_single per byte)"
+      - "lib/yenc.qh:yenc_single/ydec_single (+42 offset, = escape for 0/\\n/\\r/=)"
+    port_refs:
+      - "game/net/NetProtocol.cs:NetControl.InputFrame + NetControl.ClientCommand (binary C2S frames on the ENet transport)"
+      - "src/XonoticGodot.Net/InputCommand.cs (the C2S input payload, BitWriter-serialized)"
+      - "game/net/ServerNet.cs:693-697 (HandleInputFrame / ClientCommand dispatch — live)"
+    constants:
+      - { name: "byte_encoding", base: "yEnc (+42, '=' escape) so binary rides a console string", port: "raw binary (BitWriter/ENet) — no text tunnel exists to escape for", match: false }
+      - { name: "overflow_check", base: "strlen under/overflow warns (net.qh:238-240)", port: "BitReader bounds-checked reads", match: true }
+    status:
+      logic: faithful
+      values: na
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base must smuggle binary C2S messages through the engine's TEXT console-command pipe ('cmd c2s ...'), which is the sole reason yEnc exists (lib/yenc.qh's only consumer is net.qh's WriteByte/ReadByte). The port owns a binary transport (ENet channels), so C2S messages are plain BitWriter frames (InputFrame, ClientCommand = the DP clc_stringcmd analog) and the entire yEnc layer is intentionally without counterpart — nothing to encode around."
+    gaps: []
+    verification:
+      - { kind: grep, ref: "Base: lib/yenc.qh consumed only by lib/net.qh (yenc_single/ydec_single in WriteByte/ReadByte). Port: ServerNet.cs:693-697 dispatches InputFrame/ClientCommand live; no yenc symbol anywhere in src/ or game/", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). This row covers BOTH lib/net.qh's c2s tunnel and lib/yenc.qh (whole file = the tunnel's byte codec). The sentcvar cvar-replication CONTENT that rides this channel is audited separately in net-entity-state.replicate.client_cvars."
+
+  - id: net-entity-state.wire.primitives
+    name: "Wire serialization primitives (WriteInt24_t, WriteApproxPastTime, Writebits, WriteRegistered, ReadCSQCEntity)"
+    layer: [shared]
+    base_refs:
+      - "lib/net.qh:WriteInt24_t/ReadInt24_t"
+      - "lib/net.qh:WriteApproxPastTime/ReadApproxPastTime (APPROXPASTTIME_ACCURACY_REQUIREMENT 0.05)"
+      - "lib/net.qh:Writebits/ReadRegistered/WriteRegistered/ReadCSQCEntity"
+    port_refs:
+      - "src/XonoticGodot.Net/Quantize.cs (Int24, ApproxPastTime curve, Coord13i/Angle8i scales — QC arithmetic ported verbatim incl. the K=3.2 correction note)"
+      - "src/XonoticGodot.Net/BitWriter.cs:171-251 + BitReader.cs:153-234 (WriteInt24/ReadInt24, WriteBits, WriteApproxPastTime/ReadApproxPastTime)"
+      - "src/XonoticGodot.Net/ScoreboardBlock.cs:133-207 (LIVE Int24 consumer — score columns/team scores/rankings on the snapshot)"
+    constants:
+      - { name: "int24_coding", base: "short(val>>8) + byte", port: "Quantize.EncodeInt24 (same split)", match: true }
+      - { name: "approxpasttime_curve", base: "dt=256*(dt/(MAX/256+dt)), MAX=819.2", port: "identical (Quantize.cs:33-42)", match: true }
+      - { name: "registered_coding", base: "WriteRegistered: byte or short by registry count", port: "registry ids as short (weapon ids) per-field — no generic helper", match: partial }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "WriteApproxPastTime/ReadApproxPastTime are ported (Quantize + BitWriter/BitReader) but DEAD — no caller in game/ or src/ outside the codec files; every networked past-time (AnimActionTime, OrbExpire, respawn times) rides a raw float instead. Already flagged per-consumer (csqcmodel.anim_state values:partial); this row tracks the unused primitive itself."
+      - "ReadCSQCEntity (entnum -> entity lookup) has no generic analog; entity references are per-field net-ids (e.g. NetEntityState.Owner) resolved by the consumer."
+    verification:
+      - { kind: grep, ref: "WriteApproxPastTime callers: only BitWriter.cs definition (+ Quantize); WriteInt24 callers: ScoreboardBlock.cs (live snapshot path) + IntegrationSmokeTests round-trip", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). Int24 half is LIVE (scoreboard block); ApproxPastTime half is dead-but-correct (unit-visible in Quantize.cs with the QC-comment discrepancy documented). liveness: partial reflects that split."
+
+  - id: net-entity-state.wire.registry_checksum
+    name: "Registry-hash compatibility handshake (client/server content sync check at connect)"
+    layer: [shared]
+    base_refs:
+      - "lib/registry_net.qh:REGISTER_NET_TEMP(registry)/Registry_send/NET_HANDLE(registry) (id+hash strings -> Registry_check)"
+    port_refs:
+      - "game/net/NetProtocol.cs:134-156 (BuildParity: FNV-1a fold of ProtocolVersion + Effects.Hash + Notifications.Hash + NetMessageId sentinel)"
+      - "game/net/ClientNet.cs:424 (client sends BuildParity in HandshakeRequest)"
+      - "game/net/ServerNet.cs:1377-1388 (server compares, Reject('build mismatch ...') on disagreement)"
+    constants:
+      - { name: "check_direction", base: "server -> client per-registry (Registry_send id+hash, client Registry_check fatals)", port: "client -> server single folded hash, server rejects at handshake", match: partial }
+      - { name: "registry_set", base: "every REGISTRY_CHECK'd registry (weapons, effects, notifs, stats, ...)", port: "Effects + Notifications + ProtocolVersion + NetMessageId max-id (append-only registries hash-gated; others covered by ProtocolVersion bumps by convention)", match: partial }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Same contract (a client and server whose ordered gameplay registries disagree must not play together), different mechanics: QC sends each registry's id+hash after connect and the client fatals on mismatch; the port folds the order-sensitive registry hashes + the wire protocol version into ONE uint carried in the very first handshake packet and rejects before admission — strictly earlier and cheaper, and NetProtocol.cs:128 documents itself as the registry_net.qh analog. Residual honesty: registries not yet folded (weapons, items) rely on the manual ProtocolVersion bump convention rather than a content hash."
+    gaps:
+      - "Hash coverage is narrower than Base: only Effects + Notifications are content-hashed; a client/server pair differing ONLY in another ordered registry (e.g. weapon registry order) passes the gate unless someone remembered the ProtocolVersion bump."
+    verification:
+      - { kind: code_read, ref: "ClientNet.cs:424 WriteULong(BuildParity) in HandshakeRequest; ServerNet.cs:1380-1388 compare + Reject; NetProtocol.cs:126-131 self-cites registry_net.qh", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). Covers lib/registry_net.qh in full (25 lines, single feature)."
+
+  - id: net-entity-state.stats.stat_registry
+    name: "STAT registry server->client stat slots (magic MOVEVARS_* 220-255, FRAGLIMIT 235, TIMELIMIT 236, engine reserve 32)"
+    layer: [authority, shared]
+    base_refs:
+      - "lib/stats.qh:MAGIC_STATS (hard-coded slots 220-255 incl. FRAGLIMIT 235 / TIMELIMIT 236)"
+      - "lib/stats.qh:REGISTER_STAT/addstat/stats_get (per-player engine stat fields, 256 - STATS_ENGINE_RESERVE slots)"
+      - "lib/stats.qh:Stats_renumber/MAGIC_STATS_FIX"
+    port_refs:
+      - "src/XonoticGodot.Net/MoveVarsBlock.cs (the MOVEVARS_* slots 220-234/237-255: 48 movement cvars, positional floats, hash-gated per snapshot + per-peer preset-resolved block)"
+      - "game/net/ServerNet.cs:1842-1883 (Capture/Hash/Serialize on the live snapshot) + game/net/ClientNet.cs:1065-1082 (Deserialize/Apply into the client cvar store)"
+      - "game/net/NetProtocol.cs:NetControl.MatchState (TIMELIMIT/GAMESTARTTIME/WARMUP/OVERTIMES — QC STAT slots as a typed channel) + game/net/ClientNet.cs:617-645 HandleMatchState"
+      - "game/net/ServerNet.cs:WriteOwnerState (per-player stats: respawn time, spectatee status, accuracy, rings — the addstat per-player field analog)"
+    constants:
+      - { name: "slot_model", base: "one 256-slot engine stat array, magic ids hard-coded, rest renumbered around holes", port: "no stat array — each stat rides a typed channel (MoveVarsBlock positional vector / MatchState frame / owner block / NetEntityState field)", match: false }
+      - { name: "movevars_set", base: "MOVEVARS_* slots 220-234, 237-255", port: "MoveVarsBlock.MovementCvars 48 entries (full stats.qh MOVEVARS breadth + port step-up extension; TICRATE/TIMESCALE/ENTGRAVITY deliberately excluded — MoveVarsBlock.cs:53-55)", match: true }
+      - { name: "TIMELIMIT_236", base: "STAT(TIMELIMIT)", port: "MatchState.MatchTimeLimit (ClientNet.cs:632)", match: true }
+      - { name: "FRAGLIMIT_235", base: "STAT(FRAGLIMIT)", port: "none located — no networked fraglimit consumer in game/ (grep hits only menu/Shell cvar writes)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The engine 256-slot stat array is a DP transport detail; the port replaces the MECHANISM with typed channels while keeping the CONTRACT per stat: MOVEVARS_* -> MoveVarsBlock (hash-gated, prediction-critical, with the absent-cvar default symmetry fix), TIMELIMIT/GAMESTARTTIME/WARMUP/OVERTIMES -> MatchState, per-player stats -> the owner block, per-entity stats -> NetEntityState fields. Individual gameplay STATs are audited in their owning units; this row owns the registry-level contract."
+    gaps:
+      - "STAT(FRAGLIMIT) (slot 235) has no located networked counterpart: the client cannot display the server's frag/point limit on the play path (Base HUD score panel shows it from the stat). TIMELIMIT made it into MatchState; FRAGLIMIT did not."
+      - "No generic late-registration guard: QC's Stats_renumber + REGISTRY_CHECK make a stat-set mismatch a connect-time error; the port's typed channels are only guarded by ProtocolVersion bumps (see wire.registry_checksum gap)."
+    verification:
+      - { kind: code_read, ref: "MoveVarsBlock.MovementCvars maps the full stats.qh MOVEVARS list (each v7 addition annotated with its stats.qh slot); ServerNet.cs:1883 serializes it on every broadcast; ClientNet.cs:1068 applies to the client cvar store", result: pass }
+      - { kind: grep, ref: "fraglimit in game/: only Shell.cs:519 + CreateGameScreen (menu-side cvar writes); no client networked read", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). MOVEVARS liveness verified at both ends (serialize 1883 / apply 1065-1068). The per-stat gameplay audits (ITEMSTIME, NADE_*, VEHICLESTAT_*, ...) live in their owning units — this row does not re-claim them."

@@ -35,6 +35,14 @@ public static class DpmBuilder
     /// <summary>Godot caps skinning at four bone influences per vertex; we clamp DPM's variable set to this.</summary>
     private const int MaxBonesPerVertex = 4;
 
+    /// <summary>
+    /// Meta key under which <see cref="Build"/> stores the built model's frame-group clip names IN FRAME-GROUP
+    /// ORDER (a <see cref="Godot.Collections.Array"/> of strings). The client's <c>DpmFrameDriver</c> reads it to
+    /// map a networked frame-GROUP ordinal (DarkPlaces <c>Mod_FrameGroupify</c>: <c>self.frame = N</c> plays the
+    /// Nth group) to the corresponding <see cref="AnimationPlayer"/> clip. Absent on models with no clips.
+    /// </summary>
+    public const string FrameGroupClipsMeta = "xon_dpm_clips";
+
     // The Quake->Godot basis change M (= Coords.ToGodot applied to each axis, as Basis columns) and its
     // inverse, used to conjugate bone WORLD transforms into Godot space (W_godot = M * W_quake * M^-1).
     // A bone transform is expressed IN model space, so converting it to Godot model space is a similarity
@@ -134,7 +142,20 @@ public static class DpmBuilder
         // Bone-track paths are "Skeleton3D:bone" — relative to the MODEL ROOT (the skeleton is a child of it),
         // so RootNode must be the model root (= the player's parent), not the skeleton itself.
         player.RootNode = player.GetPathTo(root);
-        BuildAnimations(dpm, skeleton, player, framegroups);
+        // Bake the frame-group clips and capture their names IN FRAME-GROUP ORDER. DarkPlaces' Mod_FrameGroupify
+        // makes a skeletal model's networked `.frame = N` select the Nth frame GROUP (not a raw pose), so the
+        // server stamps Entity.Frame with the group ORDINAL (QC mr_anim: spider idle '5', walk '10', bite '0',
+        // shoot '3', pain1/2 '7'/'8', die1/2 '1'/'2'). Stash the ordered clip names on the root as metadata so a
+        // frame-driver (DpmFrameDriver, wired in ClientWorld for frame-driven monster entities) can map that
+        // ordinal back to the clip and play it — the DPM analog of ModelAnimator.FollowEntityFrame for MD3.
+        List<string> clipNames = BuildAnimations(dpm, skeleton, player, framegroups);
+        if (clipNames.Count > 0)
+        {
+            var meta = new Godot.Collections.Array();
+            foreach (string n in clipNames)
+                meta.Add(n);
+            root.SetMeta(FrameGroupClipsMeta, meta);
+        }
 
         return root;
     }
@@ -269,11 +290,17 @@ public static class DpmBuilder
             WriteTopWeights(vert.Weights, worldBind.Length, boneIdx, boneWts, v * MaxBonesPerVertex);
         }
 
+        // (playtest r9) DPM triangles are wound OPPOSITE to the IQM/MD3 convention relative to Godot's
+        // cull_back — emitted verbatim, every DPM weapon rig rendered inside-out: front faces culled, interior
+        // faces visible ("see through the geometry", brightest on the devastator/mortar). Swap each triangle
+        // to (0,2,1) so the outside faces the camera, exactly like the other builders' file-order winding does.
         var indices = new int[mesh.Triangles.Length];
-        for (int i = 0; i < mesh.Triangles.Length; i++)
+        for (int t = 0; t + 2 < mesh.Triangles.Length; t += 3)
         {
-            int idx = mesh.Triangles[i];
-            indices[i] = (idx >= 0 && idx < vcount) ? idx : 0;
+            int a = mesh.Triangles[t], b = mesh.Triangles[t + 1], c = mesh.Triangles[t + 2];
+            indices[t] = (a >= 0 && a < vcount) ? a : 0;
+            indices[t + 1] = (c >= 0 && c < vcount) ? c : 0; // swapped
+            indices[t + 2] = (b >= 0 && b < vcount) ? b : 0; // swapped
         }
 
         var arrays = new Godot.Collections.Array();
@@ -373,15 +400,18 @@ public static class DpmBuilder
     /// pose in Godot space (the bone-local TRS the AnimationPlayer applies on top of rest). Clips come from
     /// <paramref name="framegroups"/>, or one full-range clip when none are supplied.
     /// </summary>
-    private static void BuildAnimations(
+    private static List<string> BuildAnimations(
         DpmData dpm,
         Skeleton3D skeleton,
         AnimationPlayer player,
         IReadOnlyList<FrameGroup>? framegroups)
     {
+        // Clip names emitted IN FRAME-GROUP ORDER (index i = the i'th group), so a frame-driver can address the
+        // clip by the networked frame-group ordinal.
+        var emittedNames = new List<string>();
         int frameCount = dpm.Frames.Length;
         if (frameCount == 0 || dpm.Bones.Length == 0)
-            return;
+            return emittedNames;
 
         var library = new AnimationLibrary();
 
@@ -403,6 +433,16 @@ public static class DpmBuilder
         }
 
         var usedNames = new HashSet<string>(StringComparer.Ordinal);
+        // (playtest r9) The weapon-hand slot contract, same as IqmBuilder: a NAMELESS 4-group `.framegroups`
+        // set is fire/fire2/idle/reload BY POSITION (CL_WeaponEntity_SetModel). The DPM hand rigs
+        // (h_electro/h_crylink/h_rl/h_gl/h_hagar) ship exactly that; the old `anim_{i}` synthesis meant
+        // ViewModel's fire/idle/reload lookups never matched a DPM rig — no viewmodel animation at all.
+        bool allNameless = true;
+        foreach (FrameGroup g in groups)
+            if (!string.IsNullOrEmpty(g.Name)) { allNameless = false; break; }
+        string[]? slotNames = allNameless && groups.Count == IqmBuilder.WeaponSlotNames.Length
+            ? IqmBuilder.WeaponSlotNames : null;
+
         int groupIndex = 0;
         foreach (FrameGroup group in groups)
         {
@@ -442,18 +482,25 @@ public static class DpmBuilder
                 }
             }
 
-            string name = ClipName(group, groupIndex, usedNames);
+            string name = slotNames is not null && groupIndex < slotNames.Length
+                ? UniqueName(slotNames[groupIndex], usedNames)
+                : ClipName(group, groupIndex, usedNames);
             library.AddAnimation(name, anim);
+            emittedNames.Add(name);
             groupIndex++;
         }
 
         player.AddAnimationLibrary("", library);
+        return emittedNames;
     }
 
     /// <summary>Resolve a unique, sensible clip name for a frame group (its name, or a synthesised one).</summary>
     private static string ClipName(FrameGroup group, int index, HashSet<string> used)
+        => UniqueName(string.IsNullOrEmpty(group.Name) ? $"anim_{index}" : group.Name, used);
+
+    /// <summary>De-duplicate a clip name against the already-emitted set (`name`, `name_1`, …).</summary>
+    private static string UniqueName(string baseName, HashSet<string> used)
     {
-        string baseName = string.IsNullOrEmpty(group.Name) ? $"anim_{index}" : group.Name;
         string name = baseName;
         int suffix = 1;
         while (!used.Add(name))

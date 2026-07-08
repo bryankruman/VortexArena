@@ -470,34 +470,12 @@ public partial class HealthArmorPanel : HudPanel
     private void DrawProgressBar(Vector2 origin, Vector2 size, float lengthRatio, bool vertical, bool baralign,
         Color color, float alpha, string art = "progressbar")
     {
-        if (lengthRatio <= 0f || alpha <= 0f) return;
-        if (lengthRatio > 1f) lengthRatio = 1f;
-        if (size.X <= 0f || size.Y <= 0f) return;
-
-        Rect2 fill;
-        if (vertical)
-        {
-            float h = size.Y * lengthRatio;
-            float y = baralign ? origin.Y + (size.Y - h) : origin.Y; // bottom-align vs top-align
-            fill = new Rect2(origin.X, y, size.X, h);
-        }
-        else
-        {
-            float w = size.X * lengthRatio;
-            float x = baralign ? origin.X + (size.X - w) : origin.X; // right-align vs left-align
-            fill = new Rect2(x, origin.Y, w, size.Y);
-        }
-
-        var tint = new Color(color.R, color.G, color.B, alpha);
-        // QC: the vertical bar uses the "<name>_vertical" art; both fall back to the engine default pic.
         if (string.IsNullOrWhiteSpace(art)) art = "progressbar";
-        string pic = vertical ? art + "_vertical" : art;
-        if (!DrawSkinPic(pic, fill, tint) && !(vertical && DrawSkinPic("progressbar_vertical", fill, tint))
-            && !DrawSkinPic("progressbar", fill, tint))
-        {
-            // Fallback so the bar is never invisible (QC always has the precached pic).
-            DrawRect(fill, tint);
-        }
+        // Delegate to the shared faithful primitive (HudPanel.DrawProgressBar): the QC 3-slice cap render
+        // (drawsubpic square/middle/cap → rounded ends) + the clamp/skin-resolve rules. The panel's bool
+        // align maps to QC baralign 0 (left/top) vs 1 (right/bottom).
+        DrawProgressBar(new Rect2(origin, size), art, lengthRatio, vertical, baralign ? 1 : 0,
+            color, alpha);
     }
 
     /// <summary>The skin progress-bar art name for health / armor (QC string cvars

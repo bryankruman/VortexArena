@@ -1,0 +1,6 @@
+{
+  "map": "stormkeep",
+  "gametype": "dm",
+  "frames": 720,
+  "input": { "f": 0, "s": 0, "u": 0, "yaw": 0, "pitch": 0, "roll": 0, "buttons": 0 }
+}

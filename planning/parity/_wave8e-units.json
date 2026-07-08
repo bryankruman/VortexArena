@@ -1,0 +1,538 @@
+[
+ {
+  "unit": "bot-waypoints",
+  "tier": "haiku",
+  "notes": [
+   "[presentation] bot-waypoints.editor: No in-game waypoint editor: cannot place/remove/hardwire/mirror waypoints (g_waypointeditor*); no editor visualization (waypoint model, link lightning beams, colormod by flag). ; No runtime auto-waypointing toward players (botframe_autowaypoints) or useless-waypoint pruning (botframe_deleteuselesswaypoints): the loaded graph is static."
+  ]
+ },
+ {
+  "unit": "damage-pipeline",
+  "tier": "sonnet",
+  "notes": [
+   "[presentation] damage-pipeline.resource.player_damage: Bot-aim shake (QC player.qc, v_angle jitter scaled by damage/skill) is not ported — bots are not visually staggered by taking damage. Unchanged. ; IsTypeFrag is still hardwired false in PlayerDamage (DamageSystem.cs:426/432/442/447) so the TYPEFRAG path never triggers, EVEN THOUGH Entity.ButtonChat (PHYS_INPUT_BUTTON_CHAT) is now modeled and wired from input (used by CampcheckMutator/SpawnNearTeammate). The credited-attacker block simply never adopts the available ButtonChat read. A consumer exi"
+  ]
+ },
+ {
+  "unit": "fx-deathtypes",
+  "tier": "opus",
+  "notes": [
+   "[presentation] fx-deathtypes.message.special_nade_misc: NADE family STILL OPEN: SelectSpecial still has no branch for nade/nade_napalm/nade_ice/nade_heal/nade_darkness; nade kills fall to DEATH_SELF_GENERIC / DEATH_MURDER_FRAG. The DEATH_*_NADE notification rows exist in NotificationsList.cs but are never selected -> wrong obituary text for the most common 'special' death in nade play. The nade boom emitters remain live-when-g_nades. ; cheat/rot/shooting_star/touchexplode STILL OPEN: no SelectSpecial branch and no live emitter found in the port (no r",
+   "[presentation] fx-deathtypes.message.betrayal_suicide_text: KILL (/kill command, LIVE via Commands.cs) still uses the generic 'died' line instead of Base's DEATH_SELF_SUICIDE ('couldn't take it anymore'). Observable on every manual /kill. STILL OPEN. ; MIRRORDAMAGE self obituary (LIVE via DamageSystem.cs reflected teamdamage Apply call) still uses generic 'died' instead of Base's DEATH_SELF_BETRAYAL ('you were betrayed'). Both target notif rows exist in NotificationsList.cs but are unused by SelectSpecial. STILL OPEN. ; Base still suppresses the /kill ob",
+   "[presentation] fx-deathtypes.message.teamchange: SelectSpecial still has no teamchange/autoteamchange case, so an auto-team-balance kill (Teamplay.cs KillPlayerForTeamChange emits DeathTypes.AutoTeamChange through Combat.Damage, LIVE) prints DEATH_SELF_GENERIC instead of DEATH_SELF_AUTOTEAMCHANGE. The DEATH_SELF_AUTOTEAMCHANGE notif rows exist with a death_team float arg, but EmitObituary's suicide branch never special-cases these or passes targ.team as f1. STILL OPEN. ; Base's SUICIDE branch routes TEAMCHANGE/AUTOTEAMCHANGE specially (f1=targ",
+   "[presentation] fx-deathtypes.message.mapper_custom: DEATH_CUSTOM (deathmessage) is STILL unwired: Base's ACCIDENT branch formats a mapper-supplied deathmessage into DEATH_SELF_CUSTOM ('You were %s'); the port has no DEATH_CUSTOM deathtype constant, no emitter, and no SelectSpecial case. The DEATH_SELF_CUSTOM rows exist (Info 705, Center 917, Multi 1117) but are never sent.",
+   "[presentation/audio] fx-deathtypes.special.suicide_special_routing: Port still collapses Base's SUICIDE (targ==attacker) and ACCIDENT/TRAP (no player attacker) into one branch. The HURTTRIGGER msg_from_ent sub-case is now handled (VOID_ENT, Wave-5), but the rest of the per-deathtype SUICIDE switch (TEAMCHANGE f1=team, MIRRORDAMAGE) is still flattened into SelectSpecial (see teamchange/betrayal_suicide_text rows). ; ACCIDENT-path ANNCE_ACHIEVEMENT_BOTLIKE (announced when an accident drives the player's score to -5) is STILL not emitted by EmitObituary (the ACHIEV"
+  ]
+ },
+ {
+  "unit": "fx-effectinfo",
+  "tier": "opus",
+  "notes": [
+   "[presentation] fx-effectinfo.emit.by_name_fallback: The Effect=null engine-fallback request (unregistered effectinfo name) records the name but there is no DP-engine __pointparticles equivalent client-side; only names that also resolve in the effectinfo.txt catalog render. Used by te_csqc_lightningarc/te_beam (arc_lightning/heal_beam) which are handled by the beam renderer rather than the registry.",
+   "[presentation] fx-effectinfo.model.baseline_defaults: stainsize baseline default diverges (DP {2,2} vs port {1,1}). 22 of the 30 staintex-declaring blocks in the shipped file OMIT stainsize, so they inherit the baseline and render at half size — NOT a minor edge case. ; staincolor baseline default + semantics diverge: DP defaults to {0xFFFFFFFF,0xFFFFFFFF} and treats staincolor as a MODDING FACTOR on the particle's own colour (0x808080 = neutral); the port defaults 0xFFFFFF and consumes StainMidColor as an ABSOLUTE tint. Wrong splat tint for blocks",
+   "[presentation] fx-effectinfo.emit.te_builtins: The te_* helper -> registry-name mapping (e.g. TeSmallflash -> BLASTER_MUZZLEFLASH, TeGunshot -> MACHINEGUN_IMPACT) is a port convention, not a 1:1 DP te_* semantic; not verified that every live caller hits these wrappers vs emitting the registry effect directly. Beam/arc temp-effects route to BeamRenderer, not the particle catalog."
+  ]
+ },
+ {
+  "unit": "fx-notifications",
+  "tier": "haiku",
+  "notes": [
+   "[presentation] fx-notifications.args.tokens: STILL OPEN (NotificationTokens.cs untouched this wave): CvarBool fallback-polarity defects: ShowLocation uses CvarBool(\"notification_show_location\", true) — Base default is 0/false, so an UNSET cvar makes the port force the location suffix ON. Likewise both *_specialonly are read with fallback=false but Base defaults them to 1/true, so an unset cvar makes the port print generic 'N frag spree!' / 'N frags in a row!' lines that Base suppresses. Masked at runtime when notifications.cfg is exec'd, b",
+   "[presentation] fx-notifications.info.killfeed: MULTIICON_INFO (icon derived from args via iconargs) has no port path; the only Base user is MINIGAME_INVITE (minigames not a port priority). ; notification_allow_chatboxprint (MSG_INFO -> chatbox routing) not modelled; benign — Base disables it in code (default 0)."
+  ]
+ },
+ {
+  "unit": "fx-sounds",
+  "tier": "sonnet",
+  "notes": [
+   "[audio] fx-sounds.emit.sound_allowed: sound_allowed owner-walk (body->enemy / realowner / owner re-home) not implemented: corpse and projectile sounds aren't re-homed to the originating player. ; bot_sound_monopoly is a dead cvar: no gate silences real-client sounds when set to 1.",
+   "[audio] fx-sounds.emit.play2_family: play2 (per-client 2D send) and play2team (per-team 2D send) have no port equivalent. ; spamsound's per-entity time-step rate limit (e.spamtime) has no equivalent: callers (NadeProjectile bounce, VehicleCommon hit, MonsterAI body-impact) emit directly with no rate-cap, so a touch-spam source could over-emit.",
+   "[presentation] fx-sounds.voice.globalsound_dispatch: Per-recipient cl_voice_directional read is still stubbed: directional cases always use ATTEN_MIN (QC: ATTEN_MIN only when ==1, else ATTEN_NONE), and the taunt-attenuation bound(cl_voice_directional_taunt_attenuation) is not applied. ; AUTOTAUNT probability roll (tauntrand < cl_autotaunt) still omitted -> autotaunts always play (when sv_autotaunt is on). ; TAUNT does not trigger animdecide_setaction(ANIMACTION_TAUNT) on the living speaker.",
+   "[presentation/audio] fx-sounds.presentation.hitsound_sample: STILL OPEN: HitSound.cs:117/121 loads misc/hitconfirm (and res://sound/misc/hitconfirm.ogg) which does not exist; the registered/shipped hit sound is misc/hit (sound/misc/hit.wav). Net effect: the local hit-confirmation beep is SILENT. NOT fixed by Wave-1/2."
+  ]
+ },
+ {
+  "unit": "items-pickups",
+  "tier": "opus",
+  "notes": [
+   "[presentation/audio] items-pickups.respawn.scheduling: Item_RespawnCountdown does NOT spawn the WP_Item/WP_Weapon waypoint sprite, does NOT ping it, and does NOT play the per-second ITEMRESPAWNCOUNTDOWN sound to nearby clients — a long-respawn item gives no on-radar countdown cue (the item still reappears on time).",
+   "[presentation] items-pickups.show.visibility: ITS_ALLOWSI (sv_simple_items) and EF_NODEPTHTEST (g_nodepthtestitems) status bits not set/honored — no simple-item model swap, no depth-test-disabled rendering. ; ITS_GLOW for powerups + g_fullbrightitems is acknowledged but the EF_ADDITIVE additive-glow render isn't confirmed on the port's item models."
+  ]
+ },
+ {
+  "unit": "mapobject-func",
+  "tier": "opus",
+  "notes": [
+   "[presentation/audio] mapobject-func.door.keys: CENTER_DOOR_UNLOCKED / DOOR_LOCKED_NEED / DOOR_LOCKED_ALSONEED center notifications (with the item_keys_keylist string) are STILL not shown — DoorCheckKeys (Doors.cs:473-498) plays only the unlock/need SOUND (door.Noise / door.Noise3); it makes NO MapMover.Centerprint call on the key path, with a comment 'CENTER_DOOR_UNLOCKED is client-side' (Doors.cs:487). Note: the centerprint MECHANISM is now live this wave (the free-text .message path shows), but the key-door cpid notifications were never gi",
+   "[presentation] mapobject-func.button: the pressed-state alternate texture (Frame=1) is set on the entity but whether the brush model renders the alt frame in-engine is unverified (presentation). ; button_reset round-restart re-arm is STILL dead (see mapobject-func.reset) — despite the new Buttons.cs:15 comment that claims it is 'wired centrally in GameWorld.ResetMapObjects' (it is not).",
+   "[presentation] mapobject-func.plat: plat_reset is called inline at spawn (initial placement IS live + faithful: targeted->raised, untargeted->bottom) but is STILL NOT wired as the round-restart .reset — see mapobject-func.reset. ; plat_outside_touch (the CSQC-side outside trigger that sends a top plat down when a player leaves) is not ported — it is gated to CSQC in Base; minor. ; no CSQC ENT_CLIENT_PLAT draw/networking.",
+   "[presentation/audio] mapobject-func.train: no func_train reset (QC explicitly has `// TODO make a reset function for this one` — so this is faithful to Base's own omission, unlike door/plat/button). ; train moving-sound stop (stopsoundto MSG_BROADCAST on arrival) is not done; the moving noise plays but is not explicitly stopped at each dwell (cosmetic). Port uses SoundChannel.Voice vs QC ATTEN_IDLE (cosmetic). ; no CSQC ENT_CLIENT_TRAIN draw/networking.",
+   "[audio] mapobject-func.bobbing: the spawn-time soundto(MSG_INIT) looping ambient is not resent per-player; played through the facade where present.",
+   "[audio] mapobject-func.pendulum: ambient .noise not resent per-player (same reduction as bobbing).",
+   "[audio] mapobject-func.fourier: looping ambient .noise resent per-player (soundto MSG_INIT) reduced to a single facade Play.",
+   "[audio] mapobject-func.vectormamamam: looping ambient .noise per-player resend reduced to facade Play in setactive."
+  ]
+ },
+ {
+  "unit": "mapobject-misc",
+  "tier": "opus",
+  "notes": [
+   "[presentation] mapobject-misc.laser.beam_render: End-point particle bursts are still throttled to ~10 Hz per laser (EndFxInterval=0.1f) rather than emitted every frame (drawframetime*1000). ; Client trace runs at the server tick origin (no InterpolateOrigin_Do) — negligible since stock-map lasers are static.",
+   "[presentation] mapobject-misc.dynlight.render: No DP-style realtime dynamic-light consumer: a dynlight now ticks/toggles/follows/TRAVELS on the server but still emits no visible light. Where a map authored a moving or pulsing light, the player sees nothing.",
+   "[presentation] mapobject-misc.keys.item_key: item_key pickup centerprint ('You've picked up the X key!') is silently dropped: MapMover.Centerprint(toucher, this.Message) IS called (MapObjectsRegistry.cs:441) but MapObjectsCommon.CenterprintHandler (declared MapObjectsCommon.cs:782) is never assigned anywhere in game/ or src/ (grep = 0 assignments), so Centerprint no-ops on the live path. ; MF_ROTATE key spin is dropped — the port's Entity carries no ModelFlags field (grep for ModelFlags/MF_ROTATE on Entity = none), so the key model sits st",
+   "[presentation] mapobject-misc.bgmscript.adsr: No bgmscript ADSR envelope: a func_clientwall / func_pointparticles carrying a .bgmscript key does not animate its alpha / origin / angles / emission to the map's .bgs music script — the prop is static instead of pulsing to the soundtrack. doBGMScript / BGMScript_InitEntity / the .bgs loader are absent.",
+   "[presentation] mapobject-misc.models.clientwall_fade: func_clientwall distance-fade is not rendered: fade_start/fade_end/alpha_max/alpha_min/fade_vertical_offset are parsed onto the Entity (MapObjectFieldsExtra.cs) but NO renderer applies Ent_Wall_PreDraw's distance-fade alpha formula or its PVS alpha-cull — a clientwall meant to fade out with distance stays fully opaque. (The only FadeEndDist consumer is WeatherSystem.cs:166 for rain/snow draw distance, an unrelated coincidental field name.) ; The antiwall relay (g_clientmodel_use: trigger sets an"
+  ]
+ },
+ {
+  "unit": "mapobject-movers-platforms",
+  "tier": "sonnet",
+  "notes": [
+   "[audio] mapobject-movers-platforms.plat.q3compat_defaults: CPMA sound_start/sound_end + the pt1_strt/pt1_end default-file probe are not ported (require GetField_fullspawndata / FindFileInMapPack, unavailable headless). The medplat default still applies, so a Q3 plat is audible and correct — only the CPMA per-mapper sound OVERRIDE keys are skipped. Sole residual gap on this row; audio marked partial for it.",
+   "[audio] mapobject-movers-platforms.plat.state_machine: Plat go/hit sounds play on SoundChannel.Voice (=2) but Base _sound uses CH_TRIGGER_SINGLE (=3). Voice (=2) corresponds to the COMMENTED-OUT CH_VOICE_SINGLE in Base sound.qh; the port's Item=3 slot is the CH_TRIGGER_SINGLE equivalent. The cue sample is right (noise/noise1) but the channel number diverges so plat move/stop sounds won't stop/replace each other the way a true CH_TRIGGER_SINGLE plat would (low audible impact; single-shot either way). UNCHANGED."
+  ]
+ },
+ {
+  "unit": "mapobject-target",
+  "tier": "sonnet",
+  "notes": [
+   "[audio] mapobject-target.speaker.ambient_triggered: ACTIVATOR (BIT3) still plays to ALL players, not just the triggering client — SpeakerUseActivator gates on IsRealClient (a bot/world activator produces nothing, matching QC's early-out) and emits on the stacking CH_TRIGGER channel, but there is no MSG_ONE / per-client sound facade, so every client hears it (documented TODO at TargetSpeaker.cs:197). ; The *-prefixed per-player voice-message sample with argv(1) random count (GetVoiceMessageSampleField + random) is still unimplemented — ResolveNois"
+  ]
+ },
+ {
+  "unit": "mapobject-teleporters-portals",
+  "tier": "opus",
+  "notes": [
+   "[presentation] teleporters.core.teleport_player: EF_TELEPORT_BIT (player model dissolve/restart-anim flash) is still not toggled on teleport (BITXOR_ASSIGN(player.effects, EF_TELEPORT_BIT) at teleporters.qc:122 has no port equivalent). ; istypefrag (chat-held flag for the kill-credit window) is still not set on the player (Base sets player.istypefrag = PHYS_INPUT_BUTTON_CHAT).",
+   "[audio] teleporters.fx.sound: Sound channel is SoundChannel.Item (=3) with a comment claiming CH_TRIGGER, but Base CH_TRIGGER = -3 which is SoundChannel.TriggerAuto in this port (Services.cs:112). The chosen value is wrong (it now reads as a single channel 3 = item slot rather than the trigger stack channel). The previous audit's value (SoundChannel.Auto) was also non-CH_TRIGGER; this is a lateral change, not a fix, and the comment is misleading.",
+   "[presentation] portals.weapon.projectile: OnTouch still cannot read per-contact surface flags / impact plane in the headless sim: IsSlickOrClip() and IsNoImpact() are hardcoded false (Q3SURFACEFLAG_SLICK / DPCONTENTS_PLAYERCLIP / NOIMPACT reflection/fail branches are best-effort), and the portal faces back along the negated projectile velocity (SurfaceNormal), not the real wall normal. ; porto_v_angle held-angle capture for the non-secondary combined shot is dormant in stock play (g_balance_porto_secondary defaults to 1, so that branch ",
+   "[presentation/audio] portals.entity.lifecycle: Porto portals are realised as a seamless two-way warpzone, so there is no portal health (g_balance_portal_health=200) — Base portals can be shot down (Portal_Damage). ; No 15s portal lifetime (g_balance_portal_lifetime) / fade-out (SUB_SetFade time,0.5) / recharge-to-200+reset-fade on each use; port warpzone portals persist for the whole match. ; No portal model (MDL_PORTAL) / skins (0/1/2) or EF_RED / EF_BLUE|EF_STARDUST / EF_ADDITIVE glow; a warpzone is a transparent window, not a Quake portal",
+   "[audio] portals.teleport.transform_and_amazing: ANNCE_ACHIEVEMENT_AMAZING on a portal telefrag within 1s of portal creation (portals.qc:193-194) is still never triggered — no teleport_time/tdeath_hit tracking on the warpzone path. ; portal_activatetime (0.1s) self-skip — the owner who just shot the in-portal can't immediately re-enter it (portals.qc:301-306) — is still not modeled; the warpzone teleports the owner immediately. ; Independent-player gating (IS_INDEPENDENT_PLAYER: you can't walk through someone else's portal, portals.qc:307-314 "
+  ]
+ },
+ {
+  "unit": "mapobject-triggers",
+  "tier": "opus",
+  "notes": [
+   "[presentation] mapobject-triggers.common.sub_usetargets: centerprint message TEXT is dropped (rendered client-side in CSQC); only the audible play2(actor, SND(TALK)) half is reproduced when noise == \"\"",
+   "[presentation] mapobject-triggers.push.trigger_push: message-jumppad center-print: Wave-2 added MapMover.Centerprint(targ, this.message) at the launch site, but MapObjectsCommon.CenterprintHandler is unwired (0 assignments), so the centerprint still produces no visible text on the live path ; no animdecide_setaction(ANIMACTION_JUMP) jump pose on launch (jumppads.qc:402) — needs the cross-file anim seam ; no jumppadcount / jumppadsused multi-pad bookkeeping (jumppads.qc:379-405) — affects multi-jumppad kill-credit + the jump anim gate ; q3compat gr",
+   "[presentation] mapobject-triggers.secret.trigger_secret: centerprint TEXT still not surfaced: Wave-2 added MapMover.Centerprint(toucher, this.message) ('You found a secret!') but MapObjectsCommon.CenterprintHandler is never assigned (0 assignments), so the call no-ops — the secret-found text is still invisible. (The audible misc/secret.wav still fires via SUB_UseTargets.) ; secrets_found / secrets_total are counted (MapObjectsState) but the count is never surfaced as a 'N secrets found' HUD line (Base also lacks a built-in surface — latent)",
+   "[presentation] mapobject-triggers.counter.trigger_counter: CENTER_SEQUENCE_COMPLETED / _COUNTER / _COUNTER_FEWMORE notifications: the center-print countdown TEXT ('N more..' / 'sequence complete') is still dropped — no localized-notification channel for these MSG_CENTER strings yet (presentation: missing)",
+   "[presentation] mapobject-triggers.keylock.trigger_keylock: unlock centerprint TEXT still not surfaced: Wave-2 added MapMover.Centerprint(toucher, this.message) ('Unlocked!') on the all-keys branch, but MapObjectsCommon.CenterprintHandler is unwired (0 assignments), so the call no-ops — the unlock text is still invisible (the sound + target fire are faithful) ; CENTER_DOOR_LOCKED_ALSONEED / _NEED notifications (with item_keys_keylist text) are still dropped — the port plays noise1/noise2 but not the 'you need the X key' center-print text ; PS(toucher) pe",
+   "[presentation] mapobject-triggers.music.target_music: fade curve approximated: the client uses a two-AudioStreamPlayer A/B crossfade rather than QC's per-source state easing by frametime/fade_time (in) and frametime/fade_rate (out) ; target_music_reset / trigger_music_reset handlers are now installed but NOT driven (ResetMapObjects does not dispatch .Reset), so the round-restart re-assert of the default track is dormant",
+   "[presentation] mapobject-triggers.viewloc.trigger_viewlocation: no client 2.5D side-scroller camera consumer: the server stamps player.ViewLoc each frame but the view is never locked to the start->end line, so the camera region has no visible effect (unchanged this wave)"
+  ]
+ },
+ {
+  "unit": "monster-framework",
+  "tier": "opus",
+  "notes": [
+   "[presentation] monster-framework.spawn.setup: g_fullbrightplayers->EF_FULLBRIGHT, g_nodepthtestplayers->EF_NODEPTHTEST and g_monsters_edit->grab presentation/cheat flags are not applied at setup (QC Monster_Spawn:1483-1485). ; view_ofs = 0.35*maxs.z, the drop-to-floor tracebox + nudgeoutofsolid, and FL_FLY/FL_SWIM-from-type are folded into each descriptor's Spawn rather than the shared Setup (faithful effect, different placement).",
+   "[presentation] monster-framework.presentation.team_colors: DRIFT FIX (2026-06-25): monster_setupcolors is now PORTED + LIVE — SetupColors (MonsterAI.cs:343) picks .colormap by team (1024+(team-1)*17) / owner / skill tier (1126/1075/1228/1092/1160) bit-faithful to QC, and is called from SpawnFromMap:475 for every natural (!RESPAWNED) monster (gated exactly as QC at sv_monsters.qc:1525). It writes Entity.ColorMapOverride with RENDER_COLORMAPPED set; the csqcmodel derives the glowmod from the colormap nibble client-side, so the QC .glowmod write is covered"
+  ]
+ },
+ {
+  "unit": "monster-golem",
+  "tier": "opus",
+  "notes": [
+   "[presentation] monster-golem.attack.melee_combo: Random anim_melee2/anim_melee3 swing-animation selection not done per-swing; the descriptor's Attack phase maps to a single representative frame group (melee2 '4') rather than alternating melee2/melee3 (presentation only).",
+   "[presentation] monster-golem.attack.smash: EFFECT_EXPLOSION_MEDIUM spawn (golem.qc:27) still not emitted by the port's Smash.",
+   "[presentation] monster-golem.attack.lightning: CSQC projectile model (models/ebomb.mdl, scale 2.5, PROJECTILE_GOLEM_LIGHTNING) not rendered (headless projectile).",
+   "[presentation] monster-golem.attack.lightning_explode: EFFECT_ELECTRO_IMPACT effect spawn (golem.qc:59) still not emitted by the port's onExplode (the te_csqc_lightningarc beam IS emitted via EffectEmitter.TeCsqcLightningArc — only the impact puff is missing).",
+   "[presentation] monster-golem.pain: Random anim_pain1/anim_pain2 selection not done: the descriptor maps the Pain phase to a single frame group (pain1 '7'); QC randomly picks pain1 '7'/pain2 '8' (presentation only).",
+   "[presentation] monster-golem.death: DropItem (MonsterFramework.cs:204-231) spawns a generic item_loot MARKER carrying the list name, not the real health_mega/electro item entities — full Item_RandomFromList instantiation deferred to the items subsystem.",
+   "[audio] monster-golem.audio.voice_cues: Full data-driven .sounds-file parse + skin-keyed Monster_Sounds_Update is still hardcoded per-descriptor (SoundCues set + SoundCueCount switch mirror golem.dpm_0.sounds by hand) rather than parsed from the model's .sounds at load; behaviorally faithful for golem but the general GlobalSound/Monster_Sounds_Update plumbing is a named no-op. ; QC spamsound(SND_BODYIMPACT1) pain placeholder (when a monster has no pain sample) not played — n/a for golem (golem has pain samples).",
+   "[presentation] monster-golem.anim_frames: AnimFrame stamps only the group START index onto Entity.Frame (server-side, per think via DriveAnimFrame). The animfixfps framecount/fps group resolution and the per-frame playback advance within a group are not driven — there is no true .dpm frame timeline; the client renders a single stamped frame per phase. ; Attack phase maps to a single representative group (melee2 '4') rather than selecting melee1/melee2/melee3 per attack type; Pain maps to pain1 '7' only (no random pain2 '8'); spawn group",
+   "[presentation] monster-golem.menu.describe: MENUQC describe() returns the golem's 3-paragraph monsterpedia entry; the port has no monster info-page system, so this text is not surfaced. Pure menu/UI flavor, no gameplay effect."
+  ]
+ },
+ {
+  "unit": "monster-mage",
+  "tier": "opus",
+  "notes": [
+   "[presentation] monster-mage.attack.spike: CSQC spike projectile model (PROJECTILE_MAGE_SPIKE) still not wired — spike has no client-visible model/trail in flight. ; Send_Effect(EFFECT_EXPLOSION_SMALL) on detonation (mage.qc:133) not emitted (CSQC particle).",
+   "[presentation] monster-mage.attack.push: Send_Effect(EFFECT_TE_EXPLOSION) particle on push not emitted by the port (CSQC).",
+   "[presentation] monster-mage.attack.teleport: Send_Effect(EFFECT_SPAWN) at both old and new origin (mage.qc:333-334,351-352) not emitted (CSQC). ; RandomRelocate is an approximation of QC's MoveToRandomLocationWithinBounds builtin: 32 biased samples + ground-drop + bbox-fit test, not the engine's content-mask sampler (maxtries 256, jitter/dist params). Behaviorally equivalent (place at a random clear grounded spot within +/-1200) but not bit-exact.",
+   "[presentation] monster-mage.defend.heal: Send_Effect(EFFECT_HEALING / AMMO_REGEN / ARMOR_REPAIR) particles per skin not emitted (CSQC). ; Waypoint-sprite health update for healed ally monsters (WaypointSprite_UpdateHealth, mage.qc:280-281) not invoked in the port.",
+   "[presentation] monster-mage.death.pain: mr_death random die1/die2 anim selection is not modeled per-mage (the port uses the shared death-anim phase MonsterAnim.Death, no mage-specific 50/50 die-anim pick).",
+   "[presentation] monster-mage.anim.frames: Port tracks only logical anim PHASES (MonsterAnim enum) in st.Anim for timing/gating; the concrete nanomage.dpm frame-group playback (idle/walk/run/shoot/duckjump/melee/pain/die frame ranges from mr_anim) is not wired to a real animation driver."
+  ]
+ },
+ {
+  "unit": "monster-spider",
+  "tier": "opus",
+  "notes": [
+   "[presentation/audio] monster-spider.attack.bite: QC bite picks a random melee anim (anim_melee vs anim_shoot via setanim); port sets only the generic Attack anim phase (no random selection, no client frame playback) — presentation only. ; QC NPC bite uses actor.attack_range (= g_monsters_attack_range 120); the player-wielded path forces attack_range 60. Port uses st.AttackRange for the NPC path (faithful); the 60 player path is part of the unported player-wielded SpiderAttack (see monster-spider.attack.player_wielded). ; MeleeAttack plays a co",
+   "[audio] monster-spider.attack.web_sound: QC plays the fire sound TWICE (W_SetupShot_Dir passes SND_SpiderAttack_FIRE during wr_think, then M_Spider_Attack_Web does an explicit sound() on CH_SHOTS); the port plays it once (single Api.Sound.Play in FireWeb). Unchanged by Wave-1/2. Likely intentional de-dup but a divergence from QC's double cue.",
+   "[presentation] monster-spider.anim.mr_anim: STILL OPEN. The spider's DPM frame-group mapping is not driven anywhere: monsters do not run a client animation decider (Monster_Anim / animdecide). The server tracks a logical MonsterAnim phase (Idle/Walk/Run/Attack/Pain/Death — set in MonsterAI.Move/MeleeAttack/MarkPain/MarkDead) but no client frame playback consumes it for monsters, so the rendered spider does not visibly walk/bite/web/die-animate. The Wave-2 CsqcModelAppearance / CsqcModelEffectFlags are PLAYER-model appearance (force-model/",
+   "[presentation/audio] monster-spider.pain.mr_pain: STILL OPEN: Spider mr_pain (random pain1/pain2 + pain_finished = animstate_endtime) is not specialised; the generic MarkPain sets a fixed 0.34s pain window and a generic Pain phase. The pain-window duration is decoupled from the (unported) anim length. ; Pain sound source still divergent: the port plays monsters/spider_pain.wav (via the Wave-2 throttled MonsterSound, 1.2s delaytoo gate matching QC Monster_Sound structure). QC's Monster_Sound(monstersound_pain,...) resolves the sample from the sp",
+   "[presentation/audio] monster-spider.death.mr_death: STILL OPEN: Spider mr_death (random die1/die2 frame group) is not specialised; generic MarkDead sets the Death phase with no client frame playback, so a killed spider does not play its death animation. ; Death sound source still divergent: the port plays monsters/spider_death.wav (via the Wave-2 MonsterSound(\"death\",0,false,Voice), QC-structural); QC's Monster_Sound(monstersound_death) resolves to \"\" for the Base spider (no .sounds file = silence). Port-invented cue.",
+   "[presentation] monster-spider.menu.describe: STILL OPEN (refined from 'unknown' to 'missing'). Confirmed: the spider's MENUQC describe() prose (\"The Spider is a large mechanically-enhanced arachnoid adept at hunting speedy enemies.\", spider.qc:256) is NOT surfaced in the port. DialogMonsterTools.cs is the spawn/edit tool (a radio group of monster netnames + Spawn/Remove/movetarget/recolor buttons, faithful to dialog_monstertools.qc) — it does NOT display any per-monster describe() tooltip text. No other port path surfaces the describe pros"
+  ]
+ },
+ {
+  "unit": "monster-zombie",
+  "tier": "sonnet",
+  "notes": [
+   "[presentation] monster-zombie.death.mr_death: die2 '12 1 0.5' is unreachable for the zombie: DriveAnimFrame selects die2 only when st.DeathLanded is true, set by a per-monster dead-think (only the wyvern's land flag, Wyvern.cs:130). The zombie installs no such dead-think, so it always plays die1 (frame 9). Base picks die1/die2 at random, so the zombie permanently drops the die2 death variant (presentation). ; Sound DELIVERY uses literal monsters/zombie/death.ogg (SoundExt='.ogg') with no GlobalSound table lookup / random sample; the death c"
+  ]
+ },
+ {
+  "unit": "net-entity-state",
+  "tier": "opus",
+  "notes": [
+   "[presentation] net-entity-state.csqcmodel.interpolation: Animation frame-group cross-fade (cl_lerpanim_maxdelta_framegroups/cl_nolerp) not networked; replaced by client-side LocomotionBlend — remote animation FRAME blending diverges from Base's networked 2-frame lerp. (The separate networked anim ACTION state is tracked in net-entity-state.csqcmodel.anim_state.)",
+   "[presentation] net-entity-state.wepent.switch_alpha_misc: Remote weapon switch animation coarse: only the resolved active weapon is networked, not wepent m_switchweapon/m_switchingweapon — a remote player's weapon raise/lower transition is not reproduced. ; wepent m_alpha (weapon fade), m_gunalign, porto_v_angle_held (Porto held-angle viewmodel), tuba_instrument, viewmodel skin are not networked."
+  ]
+ },
+ {
+  "unit": "physics-movetypes",
+  "tier": "opus",
+  "notes": [
+   "[presentation] physics-movetypes.matchticrate.interp: STILL OPEN: No Movetype_Physics_MatchTicrate equivalent and no tic_* snapshot fields on Entity (grep: zero hits in src/ for MatchTicrate/tic_origin/tic_velocity). Entities advance only on the fixed server tick, with no between-tick interpolation in this layer. In Base this smooths CSQC gibs/casings/projectiles/trains at render rate; whether visible in the port depends on its separate render-side interpolation (PredictionBuffer/ClientNet — out of this unit's scope).",
+   "[audio] physics-movetypes.checkwater: FIXED (Wave-2): CheckWater now returns `ent.WaterLevel > 1` (>= SWIMMING) (MoveTypePhysics.cs:490), matching Base `waterlevel > 1`. The previous off-by-one-level return (>=1 wetfeet) that made WalkMove skip gravity a level too early is corrected — a Walk/Step entity with only its feet wet now correctly gets gravity. ; STILL OPEN (re-verified 2026-06-25): CheckWaterTransition fires a hardcoded misc/water_in.wav (MoveTypePhysics.cs:241) on any water/slime crossing instead of routing through the en"
+  ]
+ },
+ {
+  "unit": "physics-player",
+  "tier": "haiku",
+  "notes": [
+   "[audio] physics-player.jump.playerjump: Base PlayerJump (SVQC) gates the jump grunt on autocvar_g_jump_grunt and plays it via PlayerSound(playersound_jump) AND calls animdecide_setaction(ANIMACTION_JUMP); the port plays a fixed player/jump.wav (server-only, prediction-gated) UNCONDITIONALLY — no g_jump_grunt gate (stock g_jump_grunt is 0, so Base plays NO jump grunt by default, but the port always does), and does not drive the jump anim-action. AUDIO divergence: the port emits a jump sound where stock Base is silent."
+  ]
+ },
+ {
+  "unit": "scoring",
+  "tier": "opus",
+  "notes": [
+   "[presentation] scoring.display.niceprint: The server-side `scores` (and `teamscores`) console command that prints a formatted text standings table to the requesting player (Score_NicePrint and its _Team/_Player/_Spectators helpers, score column-color via Score_NicePrint_ItemColor) is not ported. No equivalent console command exists in the port (grep NicePrint over src finds nothing). Low impact: this is the text-mode standings dump, distinct from the networked scoreboard HUD panel (scoring.net.replication), which is faithful."
+  ]
+ },
+ {
+  "unit": "sv-campaign",
+  "tier": "opus",
+  "notes": [
+   "[presentation] sv-campaign.welcome.levelnum: Presentation differs from Base: Base's CSQC net_handle_ServerWelcome (client/main.qc:1379) builds a full Welcome MENU DIALOG ('Level N: <level description>\\n\\nPress jump to enter the game') with the per-level description inserted by the menu. The port surfaces a single CHAT line ('^F1Level N:^7 ^BG<name>^7, press jump to enter the game') via Campaign.Log -> ChatBroadcast — the level number reaches the human correctly, but there is no Welcome menu dialog and no per-level description string. Funct"
+  ]
+ },
+ {
+  "unit": "sv-chat",
+  "tier": "haiku",
+  "notes": [
+   "[presentation] sv-chat.helpers.printtochat: The \\{1}^7-prefixed chat-line helpers (chat.qc:593-645) — single-client (PrintToChat), broadcast (PrintToChatAll), per-team (PrintToChatTeam), and their autocvar_developer>0 Debug* gates — are not ported as named helpers. Base callers in teamplay.qc and the random_items mutator rely on PrintToChatAll/PrintToChatTeam for in-band chat notices; the port emits the equivalent notices through other channels (NotificationSystem / direct sprints), but there is no 1:1 helper, so any future port of those "
+  ]
+ },
+ {
+  "unit": "sv-cheats",
+  "tier": "opus",
+  "notes": [
+   "[presentation] sv-cheats.impulse.clone: No CopyBody / corpse-clone mechanic; the clone impulses do nothing and sv_clones is unread. Unchanged by Wave-5.",
+   "[presentation] sv-cheats.cmd.particles_make: No pointparticles/trailparticles (effect emission along the crosshair/aim line), no make (spawn a func_breakable model at the aim point), no penalty (race penalty time). None have a Cheats.Command case. Unchanged by Wave-5.",
+   "[presentation] sv-cheats.frame.drag: No CheatFrame per-frame hook and no Drag subsystem: cannot pick up/carry/throw entities (cheat or normal-range), no te_lightning1 drag beam. Unchanged by Wave-5. ; No dragbox_spawn/dragpoint_spawn/drag_remove/drag_setcnt/drag_save/drag_saveraceent/drag_clear race-checkpoint map-editor commands. ; g_grab_range cvar exists (Cvars.cs:367) but is never read (no consumer)."
+  ]
+ },
+ {
+  "unit": "sv-client-lifecycle",
+  "tier": "opus",
+  "notes": [
+   "[presentation] sv-client-lifecycle.connect.fix_client_cvars_welcome: No server->client stuffcmd/welcome channel: FixClientCvars (cl_jumpspeedcap_min/max, cl_shootfromfixedorigin, prediction/gentle), clientstuff, cmd clientversion, set _teams_available, sv_notice_join/SendWelcomeMessage (MOTD/hostname/map/mutators), Send_NextMap_To_Player, and the ClientInit_misc per-client init entity (armor-blockpercent, damagepush speedfactor, fog, serverflags, g_trueaim_minrange, hook/arc shot origins) are all unmodeled. ; The port instead pushes a few physics-relevant cvars v",
+   "[presentation] sv-client-lifecycle.join.join_player: Join queue + team-selection ordering not modeled: the queued_join TeamBalance_AreEqual two-pass (queued-team dibs first pass + strongest-autoselect-by-skill second pass, player_with_dibs conflict) is absent; the port autoselects via a single connect-time AssignBestTeam. ; Campaign Join branch (campaign_bots_may_start / ReadyRestart) only partially modeled (CampaignHostAutojoin opts the host in); the bot-start ReadyRestart trigger is not in ClientManager.Join. ; Queue-conflict + queued-player bra",
+   "[presentation] sv-client-lifecycle.join.join_allowed: MIN_SPEC_TIME + (teamplay && lockteams) + Player_GetForcedTeamIndex==TEAM_FORCE_SPECTATOR + g_playban (ForcedSpectate host hook→Bans.IsPlayBanned) + a gametype ForbidSpawn/late-join gate (LMS lockout, GametypeJoinGate) ARE enforced. Still missing: version_mismatch, g_maxping (ping<=0 too-soon + ping>maxping), and the whole QueueNeeded/queuePlayer/ShowTeamSelection + nJoinAllowed/GetPlayerLimit/g_maxplayers/bots_would_leave capacity gate. ; No CENTER_JOIN_PREVENT / CENTER_JOIN_PREVENT_VERSIONMISM",
+   "[audio] sv-client-lifecycle.frame.drown_player: Surfaced-after-running-out-of-air gasp does not play playersound_gasp (the surface branch only resets AirFinished; QC plays PlayerSound(playersound_gasp) when AIR_FINISHED was set and < time).",
+   "[presentation] sv-client-lifecycle.frame.pressed_keys: The server never sets the networked PRESSED_KEYS stat (no GetPressedKeys-equivalent in the per-frame path). The local-player HUD pressedkeys/strafe panel works because PressedKeysPanel computes the bitmask CLIENT-SIDE from local bind state, but a SPECTATED player's held keys (PressedKeysPanel.PressedKeysOverride) are never fed by the net layer, and the QC observer-clears-PRESSED_KEYS rule (PlayerPostThink) is absent. ; GetPressedKeys mutator hook + the IS_DUCKED crouch-key workaround are not mod",
+   "[presentation/audio] sv-client-lifecycle.frame.idle_kick: Idle players are never kicked or demoted to spectator; the idle countdown bangs (SND TALK2 at countdown_time), CENTER_DISCONNECT_IDLING / CENTER_MOVETOSPEC_IDLING centerprints, and INFO_QUIT_KICK_IDLING / INFO_MOVETOSPEC_IDLING notifications never appear. ; The alivetime parm_idlesince afk-gate (pause alivetime accrual after 30s idle) is not modeled, so xonstat skill-per-second would be skewed by afk time.",
+   "[presentation] sv-client-lifecycle.frame.spectator_kick: When sv_spectate is disabled, QC warns then drops a client that stays a spectator/observer past g_maxplayers_spectator_blocktime (SPECTATE_WARNING MSG_MULTI then INFO_QUIT_KICK_SPECTATING + dropclient_schedule). The port reads sv_spectate only to gate the autojoin hold; it never warns or kicks a stuck spectator.",
+   "[presentation] sv-client-lifecycle.frame.name_and_version: Outdated/old-client/beta version-nag INFO notifications (INFO_VERSION_OUTDATED/OLD/BETA via vercmp + version_nagtime) never sent. ; Names are not truncated to sv_name_maxlength, invisible names not replaced with Player#<id>, the :name: event-log line and 'name was truncated/invisible' sprints are absent. ; GOD MODE info (INFO_GODMODE_OFF when FL_GODMODE drops) not modeled.",
+   "[presentation/audio] sv-client-lifecycle.frame.prethink_misc: UpdateChatBubble (the chatbubble.spr / minigame_busy bubble over a typing or minigame-busy player, ChatBubbleThink + ShowChatBubble hook) is not modeled — no visible 'is typing' bubble. ; The PlayerPreThink +use edge dispatch (PlayerUseKey) is not a single ported function: individual +use consumers (buttons/vehicles/ctf) read the button directly, but the usekeypressed edge tracker + PlayerUseKey routing (and its spectate/minigame branches) are scattered/absent. ; SetZoomState (server-side weapon"
+  ]
+ },
+ {
+  "unit": "sv-clientkill",
+  "tier": "opus",
+  "notes": [
+   "[presentation] sv-clientkill.indicator.entity: No floating numeric countdown model is attached above the player; nothing is networked for it (KillCountdown drives only the announcer + center-print, explicitly NOT the digit entity — KillCountdown.cs:12-14). ; Clones on g_clones ghosts (the IL_EACH(g_clones) killindicator copy on each non-respawnghost clone) are also absent. ; The digit-entity colormod tint (black / grey / Team_ColorRGB) is unmodeled."
+  ]
+ },
+ {
+  "unit": "sv-commands-votes",
+  "tier": "opus",
+  "notes": [
+   "[presentation/audio] sv-commands-votes.vote.call: MISSING the !IS_CLIENT(caller) guard in effect: VoteController.IsClient is still unwired in GameWorld (default _ => true), so the !IsClient branch (CmdCall:163) never fires. Low impact — the caller is generally already a connected client. ; ANNCE_VOTE_CALL announce + the networked Nagger vote HUD are not emitted by this core (broadcast text only).",
+   "[presentation/audio] sv-commands-votes.vote.resolve: ANNCE_VOTE_ACCEPT / ANNCE_VOTE_FAIL announcer cues are not played (presentation/audio handled in host, not invoked here). ; VoteSpam drops the QC 'didn't have to vote' wording variant (always prints 'didn't vote'); cosmetic broadcast-text divergence.",
+   "[presentation/audio] sv-commands-votes.timeout.state_machine: Presentation/audio carried as chat-broadcast lines, not the QC MSG_CENTER per-client overwriting center-print nor the real ANNCE_PREPARE sound cue: the Godot-free core has no networked center-print/announcer channel here. The BEGINNING countdown is surfaced in full but the ENDING countdown is throttled to only the final-stretch lines (<= sv_timeout_resumetime+1) to avoid flooding chat. The state/timing is faithful; only the delivery medium differs."
+  ]
+ },
+ {
+  "unit": "sv-impulse",
+  "tier": "haiku",
+  "notes": [
+   "[presentation] sv-impulse.action.drop: Dual-wield sideways offset (dv = v_right * -movedir.y) collapses to zero — the port drives a single weapon slot (documented). The FL_TOSSED flag + colormap/glowmod render nits on the thrown loot are not modeled (presentation partial)."
+  ]
+ },
+ {
+  "unit": "sv-intermission",
+  "tier": "opus",
+  "notes": [
+   "[presentation] sv-intermission.overtime.cascade: STAT(OVERTIMES) is not networked, so the persistent HUD 'OVERTIME' / overtime-count banner does not show. The one-shot CENTER_OVERTIME_TIME and CENTER_OVERTIME_FRAG center notifications ARE wired live (→ NotificationSystem.Send), so the begin-of-overtime / 'Overtime has begun!' messages do fire.",
+   "[presentation] sv-intermission.client.view_freeze: Camera lock missing: the local view is NOT locked to a FindIntermission intermission camera; the player keeps their first-person view (frozen by the server-side movement freeze, but no fixed intermission camera angle). ; The -2342 health sentinel is not set server-side at intermission (the value: dimension). The Chat.cs:615 -2342 read is the mapvote 'observing' sentinel, not an intermission view-freeze setter.",
+   "[presentation] sv-intermission.client.autoscreenshot: No autoscreenshot stuffcmd dance at intermission (the autoscreenshot timer + cl_autoscreenshot_screenshot stuffcmd in IntermissionThink): the server cannot force clients to capture the end-of-match scoreboard. ; sv_autoscreenshot is now registered as a server cvar default 0 (matches Base) and cl_autoscreenshot reaches the per-client store (Commands.SentCvarAllowlist), BUT there is still no server-side consumer, no intermission-time autoscreenshot timer, no cl_autoscreenshot_screenshot stuffcmd, ",
+   "[audio] sv-intermission.audio.cdtrack: No sv_intermission_cdtrack handling: the random intermission CD track (RandomSelection over the cdtrack words → 'cd loop <track>' stuffcmd) is never selected or looped. The cvar is registered (default empty, matches Base) but nothing reads it for the intermission loop."
+  ]
+ },
+ {
+  "unit": "sv-ipban",
+  "tier": "sonnet",
+  "notes": [
+   "[presentation] sv-ipban.enforce.roster: The bprint summary wording differs (port \"^1banned: <names> (<reason>)\" vs Base per-client \"^1NOTE:^7 banned client <name>^7 has to go\\n\" + the \": affects <name>, ...\" reason-append). Functionally equivalent; cosmetic.",
+   "[presentation] sv-ipban.view_delete: Ban_View footer wording differs: Base \"^2Done listing all active (N) bans.\" (+ a \"^2Listing all existing active bans:\" header), port \"{n} ban(s) active\" (no header). Per-line \"#i: <ip> is still banned for <secs> seconds\" matches. ; Ban_Delete's OnlineBanList_SendUnban side-effect is dropped (no online sync); slot deletion itself is faithful.",
+   "[presentation] sv-ipban.softban.playban.join_gate: STILL OPEN (presentation): the CENTER_JOIN_PLAYBAN center-print is registered (NotificationsList.cs:962) but is NOT emitted on a refused join. CmdJoin (Commands.cs:1344) surfaces only console text (\"You are banned from joining the game on this server.\") via ctx.Print — Base sends MSG_CENTER CENTER_JOIN_PLAYBAN to the joiner instead. ; Minor scope (liveness): the gate is on the `join` command path only. Base enforces in joinAllowed() which also covers the team-menu/selectteam/queue auto-join legs"
+  ]
+ },
+ {
+  "unit": "sv-mapvoting",
+  "tier": "sonnet",
+  "notes": [
+   "[presentation] sv-mapvoting.decide.reduce: Reduce dimming IS presented on the listen server: NetGame feeds availability each frame as a -1 vote count (NetGame.cs:3108-3113), and the panel's SetVotes maps v==-1 -> WithAvailable(false) (MapVotePanel.cs:267-277), so pruned options are drawn unavailable. ; The dedicated mv_top2_alpha reduce-FADE clock (_top2Time) is stamped only by SetReduce/SetAvailability, which NetGame does NOT call — so the specific top-2 reveal fade animation does not play; options just snap to unavailable (presentation",
+   "[presentation] sv-mapvoting.gametype_vote: No server-side gametype vote at all: no gametype ballot, no custom gametypes, no hook execution, no MapInfo_SwitchGameType, no maplist reset (grep: no GameTypeVote_Start/_Finished/_SetGametype/_AddVotable counterpart in src/ — only doc-comment references). ; NetGame.UpdateMapVotePanel always passes gametypeVote: false (NetGame.cs:3105), so the panel's GametypeVote draw path is never driven."
+  ]
+ },
+ {
+  "unit": "sv-spawnpoints",
+  "tier": "opus",
+  "notes": [
+   "[presentation] sv-spawnpoints.put.put_player_in_server: EF_TELEPORT_BIT | EF_RESTARTANIM_BIT are now SET on the (re)spawned player server-side (SpawnSystem.cs:743, OR'd into p.Effects, networked via EntityField.Effects), but NO client csqcmodel consumer reads them to play the teleport flash / restart the model animation. The authority half matches Base; the visible spawn flash still relies on the EFFECT_SPAWN particle burst (fx.spawn_event_particle). Residual presentation gap. STILL OPEN (presentation only).",
+   "[presentation] sv-spawnpoints.fx.spawn_event_particle: Team-coloring of the burst (Team_ColorRGB(teamnum) / entcs_GetColor in teamplay, client/spawnpoints.qc:58-60) is not networked through a SpawnEvent entity — the port emits an untinted EffectEmitter.Emit('SPAWN', origin). STILL OPEN. (Distinct from the idle-glow tint, which IS team-colored — see spawnpoint_idle_glow.)"
+  ]
+ },
+ {
+  "unit": "sv-teamplay",
+  "tier": "opus",
+  "notes": [
+   "[presentation] sv-teamplay.balance.prevent_imbalance: The rejection surfaces only as a sprint string (\"You cannot change to a larger team.\"); Base also sends INFO_TEAMCHANGE_STRONGERTEAM + CENTER_TEAMCHANGE_STRONGERTEAM notifications (center-print). No notification networked. ; Base's queue-aware clause (!g_balance_teams_queue || caller.team > 0) is absent since the join queue isn't ported; with no queue this is a no-op so behavior matches for stock servers. ; Admin moveplayer/shuffleteams intentionally bypass the gate (matches Base — Base's gate i",
+   "[presentation] sv-teamplay.remove.excess_players: On a player leave that unbalances 2-team play, Base moves the NEWEST joiner on the overfull team to spectators after a 10s countdown nag; the port does nothing. ; No Remove_Countdown timer, no CENTER_MOVETOSPEC_REMOVE / INFO_MOVETOSPEC_REMOVE notifications.",
+   "[presentation] sv-teamplay.nagger.team_nagger: No Nagger network entity / center-print: warmup is now HELD while teams are unbalanced, but players are never SENT the unbalanced-teams warning (no SendFlags bits 5/6, no center-print). The visible nag is absent. ; Warmup-hold uses SizeDifference over the full roster; Base TeamBalance_SizeDifference(NULL) is the same NULL-ignore form, so the hold trigger is faithful.",
+   "[presentation] sv-teamplay.color.set_player_colors: No clientcolors / pants+shirt color model: the 'color' command's non-teamplay re-color and the teamplay team-from-color derivation are absent. Team is set directly as a color code."
+  ]
+ },
+ {
+  "unit": "sv-world-rules",
+  "tier": "opus",
+  "notes": [
+   "[presentation] sv-world-rules.warmup.serverflags: readlevelcvars sets the SERVERFLAG_ALLOW_FULLBRIGHT / SERVERFLAG_FORBID_PICKUPTIMER bits in `serverflags` (networked to clients) from sv_allow_fullbright / sv_forbid_pickuptimer; the port has no `serverflags` global at all. The client cannot gate fullbright player rendering or hide the item-pickup timer accordingly.",
+   "[audio] sv-world-rules.checkrules.cascade: WinningCondition_RanOutOfSpawns (team spawn-exhaustion draw/win, g_spawn_useallspawns) is still not ported (confirmed absent, GameWorld.cs:2884 comment). ; leadlimit / leadlimit_and_fraglimit WIN semantics are still not evaluated in the world layer (the win comes from the gametype MatchEnded latch + tie report). The leadlimit math exists in GameScores.CountFragsRemaining but only feeds the frags-remaining announcer, not the end-of-match decision. ; The CheckRules_World mutator hook (M_ARGV statu",
+   "[presentation/audio] sv-world-rules.checkrules.overtime: STAT(OVERTIMES) is not networked to clients (the HUD OVERTIME banner has no server feed) — deferred per T42. ; race/qualifying race_StartCompleting branch deliberately omitted (those modes latch their own winner).",
+   "[presentation] sv-world-rules.nextlevel.intermission: DumpStats(true) final scores dump at NextLevel is not called (see sv-world-rules.eventlog.dumpstats); target_music_kill and the MatchEnd_BeforeScores/MatchEnd mutator hooks are also not invoked here. ; MatchEnd_RestoreSpectatorStatus (move match-joiners back to spectator at match end) is not called here (see new_unmapped). ; The bprint team/player 'wins the match' broadcast lines are handled by the notification layer, not this path (verify coverage in sv-notification).",
+   "[presentation] sv-world-rules.entity.randomseed: No shared server->client RNG seed: client-side random effects cannot be kept deterministic with the server.",
+   "[presentation] sv-world-rules.entity.pingplreport: No server->client ping / packet-loss / movement-loss report; scoreboard ping column and playerstats latency have no feed.",
+   "[presentation] sv-world-rules.boot.lightstyles: The 12 named animated lightstyles (flicker/pulse/candle/strobe, world.qc:882-920) plus style 63 are not installed at worldspawn: map lights driven by a style index will not animate."
+  ]
+ },
+ {
+  "unit": "turret-ewheel",
+  "tier": "opus",
+  "notes": [
+   "[presentation] turret-ewheel.identity.def: Head model (ewheel-gun1.md3) not instantiated as a separate head entity; no tag_head attachment. ; ROAM spawnflag not modeled as an explicit flag (the path-roaming behavior it gates is now implemented and live — see turret-ewheel.drive.path).",
+   "[presentation/audio] turret-ewheel.weapon.fire: No EFFECT_BLASTER_MUZZLEFLASH emitted on fire. ; No PROJECTILE_BLASTER client trail on the bolt. ; No two-cannon head-frame alternation (Base: tur_head.frame += 2, wrap > 3 -> 0).",
+   "[presentation] turret-ewheel.client.draw: CSQC ewheel_draw rolling integration not ported: the model does not client-side roll (origin += velocity*dt, head angles += avelocity*dt, MOVETYPE_BOUNCE+gravity). The server already networks origin/velocity, so the visible motion follows the netted transform rather than the client integration."
+  ]
+ },
+ {
+  "unit": "turret-flac",
+  "tier": "opus",
+  "notes": [
+   "[presentation] turret-flac.identity.spawn: head model models/turrets/flac.md3 not set (no head-bone attachment in port)",
+   "[presentation] turret-flac.fire.flak_shell: Presentation missing: PROJECTILE_HAGAR shell trail (turret_projectile spawns with className 'turret_projectile', so the client classifier never maps it to a Flac/FLAC_TRAIL projectile type), EFFECT_BLASTER_MUZZLEFLASH, head-frame cycle (++frame wrap 4).",
+   "[presentation] turret-flac.weapon.player_form: FlacWeapon is implemented but its [Weapon] registration is intentionally OFF (FlacTurret.cs:163): impulse 5 collides with the Raptor bomb-mode impulse and registering shifts WeaponById/MenuWeaponOrder, which would break those test contracts. So the hidden player FLAC weapon has NO live caller (liveness dead). ; presentation: EFFECT_BLASTER_MUZZLEFLASH muzzle flash deferred (client-render only), same as the turret form."
+  ]
+ },
+ {
+  "unit": "turret-framework",
+  "tier": "opus",
+  "notes": [
+   "[presentation/audio] turret-framework.projectile.generic: No CSQCProjectile client trail / proj_type animation (client presentation).",
+   "[presentation] turret-framework.net.sync: No turret networking: none of the TNSF_* send/parse / CSQC turret edict exists.",
+   "[presentation/audio] turret-framework.client.presentation: No client presentation at all: cl_turrets.qc unported (no head model/rotation, team recolor, low-HP sparks, death rocket+gib FX, waypoint sprite/healthbar)."
+  ]
+ },
+ {
+  "unit": "turret-fusionreactor",
+  "tier": "opus",
+  "notes": [
+   "[presentation] turret-fusionreactor.identity.def: head_model (reactor.md3) is not carried — no head entity exists in the port turret model. ; TUR_FLAG_SUPPORT/AMMOSOURCE are not stored as flags; support behavior is hardcoded in the C# class instead of derived from spawnflags. (Verified TUR_FLAG_AMMOSOURCE is declared but NEVER read anywhere in Base qcsrc — purely declarative — so its omission is functionally harmless; TUR_FLAG_SUPPORT only selects turret_targetscore_support, which the reactor never invokes since it has no targetscore-driven pat",
+   "[presentation] turret-fusionreactor.setup.tr_setup: Initial head spin (50 deg/s) and head scale 0.75 are not applied — no head entity / no client render.",
+   "[presentation] turret-fusionreactor.fx.attack: No client turret render (ENT_CLIENT_TURRET): the reactor renders no model and no head, so the ammo-scaled head spin (Base '0 250 0'*ammo/ammo_max, up to 250 deg/s) is computed onto TurretState.HeadAVelocity but never integrated/displayed. No waypoint sprite/healthbar/death FX either. ; te_smallflash now IS emitted at each recipient's bbox centre (EffectEmitter.TeSmallflash), but it resolves to a generic BLASTER_MUZZLEFLASH-style flash, not the networked DarkPlaces te_smallflash temp-entity — pre"
+  ]
+ },
+ {
+  "unit": "turret-hellion",
+  "tier": "opus",
+  "notes": [
+   "[presentation] turret-hellion.identity.def: Head model (hellion.md3) not instantiated as a separate spinning-launcher head entity; no tag attachment.",
+   "[presentation] turret-hellion.weapon.launch: No te_explosion launch puff at the muzzle. ; No two-cannon tag_fire/tag_fire2 muzzle alternation (single computed ShotOrg origin). The head-spin frame state that Base uses to SELECT the tag is now cycled (turret-hellion.anim.headspin) but there is no head-model bone, so the muzzle-tag alternation stays a client-render gap. ; No PROJECTILE_ROCKET CSQC trail / MIF_SPLASH|MIF_PROXY|MIF_GUIDED_HEAT flags (no visible smoke trail).",
+   "[presentation] turret-hellion.anim.headspin: Server-authoritative frame STATE is now cycled (idle 0 -> spinning 1..6 kicked per shot, wrap at >=7), but there is no separate head MODEL entity (hellion.md3) attached to a bone, so the cycling frame drives no VISIBLE spinning launcher and is not used to select the firing muzzle tag (tag_fire vs tag_fire2 / two-cannon alternation) — both remain client-render gaps tracked here + on turret-hellion.weapon.launch."
+  ]
+ },
+ {
+  "unit": "turret-hk",
+  "tier": "opus",
+  "notes": [
+   "[presentation] turret-hk.identity.def: Head model (hk.md3) not instantiated as a separate head entity; no tag_head attachment. ; TUR_FLAG_RECIEVETARGETS spawnflag not modeled (see turret-hk.target.recieve).",
+   "[presentation] turret-hk.weapon.fire: No muzzle te_explosion flash on launch (hk_weapon.qc:30). ; No PROJECTILE_ROCKET client trail/smoke on the rocket.",
+   "[presentation/audio] turret-hk.weapon.player: The hidden player weapon WEP_HK (HunterKillerAttack) — the player branch of wr_think (weapon_prepareattack / turret_initparams / W_SetupShot_Dir / weapon_thinkf WFRAME_FIRE1) that lets a given-the-weapon player fire the same guided rocket — is not ported at all (no WEP_HK / HunterKillerAttack symbol exists in the port).",
+   "[presentation] turret-hk.anim.head: Frame cycler runs on the turret edict's own .Frame (the port has no separate tur_head bone entity), and there is no hk.md3 head model instantiated, so the 0..5 load/cycle animation is computed but never visibly displayed."
+  ]
+ },
+ {
+  "unit": "turret-machinegun",
+  "tier": "opus",
+  "notes": [
+   "[presentation] turret-machinegun.spawn.identity: No separate tur_head sub-entity / head model attached at tag_head (Base turret_initialize:1344 spawns a turret_head entity and _setmodel(head_model)); the port's head is angle-state only (TurretState.HeadAngles), so the head model never renders or animates.",
+   "[presentation] turret-machinegun.weapon.firebullet: No muzzle flash model (W_MuzzleFlash_Model(MDL_MACHINEGUN_MUZZLEFLASH) at tag_fire, machinegun_weapon.qc:23) and no EFFECT_BULLET tracer (machinegun_weapon.qc:22) — BOTH are emitted on the turret (non-player) path, OUTSIDE the isPlayer gate, so they are turret-visible in Base. Client-render, still unported. Still open.",
+   "[presentation] turret-machinegun.lifecycle.damage: Headshake jitter is applied to the angle-state head (TurretState.HeadAngles) but there is no separate tur_head edict and no CSQC TNSF_ANG send, so the recoil flinch is server-state only — it will not be visible until a head model is attached and networked. Behaviour is faithful; visual is presentation-deferred.",
+   "[presentation/audio] turret-machinegun.lifecycle.die_respawn: No client death FX: the non-NORESPAWN branch in Base turret_die does NO sound/effect (only the NORESPAWN branch plays SND_ROCKET_IMPACT + EFFECT_ROCKET_EXPLODE before delete — the port does port that NORESPAWN branch at Die:927-932); base/head gib toss lives in cl_turrets.qc (client). Port emits no client FX/gibs on the normal respawn path. Still open. ; Respawn restores state but does not re-stamp a head model / send a full CSQC update (TNSF_FULL_UPDATE) — no networking layer. Still open."
+  ]
+ },
+ {
+  "unit": "turret-mlrs",
+  "tier": "opus",
+  "notes": [
+   "[presentation] turret-mlrs.identity.def: Head model (mlrs.md3) not instantiated as a separate tur_head entity; no tag_head attachment. The ammo-gauge frame now rides the turret's own .Frame (see turret-mlrs.anim.ammogauge) but the head model is not separately rendered/animated.",
+   "[presentation] turret-mlrs.anim.ammogauge: Frame formula now ported every think onto the turret edict's OWN .Frame (Bound(0, 6 - floor(0.1 + Ammo/ShotDamage), 6)) — logic/values/timing faithful. But Base writes it to the separate tur_head entity's .frame and nets that head; the port has no distinct head bone entity, so the gauge is not rendered on a separately-attached mlrs.md3 head. Presentation partial.",
+   "[presentation] turret-mlrs.weapon.fire: No muzzle te_explosion on rocket spawn (Base wr_think:26 calls te_explosion at missile.origin). ; Rocket is a bare projectile: no PROJECTILE_ROCKET CSQC trail / dynamic light.",
+   "[presentation/audio] turret-mlrs.damage.lifecycle: No client death presentation on the NORMAL (respawning) path: Base cl_turrets.qc turret_die plays SND_ROCKET_IMPACT + EFFECT_ROCKET_EXPLODE and tosses base-gibN.md3 + head_model gibs. The port fires the explosion sound + ROCKET_EXPLODE FX only on the NORESPAWN branch (Die:927-931); a respawning MLRS death emits no gib/effect/sound. ; No client turret_draw (cl_turrets.qc): the head does not visibly spin (angles += avelocity*dt) and a damaged MLRS emits no low-health sparks (<127 hp -> te_spark) o"
+  ]
+ },
+ {
+  "unit": "turret-phaser",
+  "tier": "opus",
+  "notes": [
+   "[presentation] turret-phaser.identity.model_hitbox: Head model (phaser.md3) is not attached as a separate tracking head bone; head frame animation is also absent (see tr_think feature).",
+   "[presentation] turret-phaser.presentation.beam_visual_and_head_anim: No PhaserTurret_beam model spawned/scaled to the impact distance (acknowledged TODO comment in Attack:115). ; No tr_think head-frame state machine: the head never plays the charge (1..10) or discharge (->15->0) animation. The fireflag concept is absent in the port."
+  ]
+ },
+ {
+  "unit": "turret-plasma",
+  "tier": "opus",
+  "notes": [
+   "[presentation] turret-plasma.identity.model_hitbox: head_model (plasma.md3/plasmad.md3) is never loaded or rendered — there is no tur_head sub-entity, only the base body.",
+   "[presentation] turret-plasma.track.fluid_inertia: Head angles live only in server TurretState and are never networked/rendered — the head never visibly aims (presentation).",
+   "[presentation] turret-plasma.attack.plasma_ball: Client-render only: PROJECTILE_ELECTRO_BEAM CSQC trail + EFFECT_BLASTER_MUZZLEFLASH are not emitted (NOTE comment).",
+   "[presentation] turret-plasma.attack.instagib_railgun: Client-render only: EFFECT_VORTEX_MUZZLEFLASH + the team-coloured EFFECT_VAPORIZER_BEAM hit beam are not emitted.",
+   "[presentation] turret-plasma.headspin.frame_anim: PRESENTATION only: the frame-cycle logic now runs server-side on the turret edict's e.Frame, but the body is a static base.md3 with no head-spin frames and there is no rendered tur_head sub-entity / CSQC turret net layer — so the spin is computed but never visibly shown.",
+   "[presentation/audio] turret-plasma.death.die_respawn: No death presentation: no client gibs (base-gib1..4 + head gib) and no EFFECT_ROCKET_EXPLODE / SND_ROCKET_IMPACT on death (the standard non-NORESPAWN turret path)."
+  ]
+ },
+ {
+  "unit": "turret-plasma_dual",
+  "tier": "opus",
+  "notes": [
+   "[presentation] turret-plasma_dual.attack.plasma_ball: EFFECT_BLASTER_MUZZLEFLASH and PROJECTILE_ELECTRO_BEAM CSQC trail are NOTE-only (not emitted).",
+   "[presentation] turret-plasma_dual.attack.instagib_rail: EFFECT_VORTEX_MUZZLEFLASH + team-coloured EFFECT_VAPORIZER_BEAM hit beam are NOTE-only (not emitted). ; FireBullet is a single trace; QC FireRailgunBullet penetration/distance falloff deferred (matches WeaponFiring/TurretCombat documented gaps).",
+   "[presentation/audio] turret-plasma_dual.damage.gating_die_respawn: Respawn EF_NODRAW hide-frame split not modeled: Base hides (EF_NODRAW) at time+0.2 then turret_respawn at respawntime-0.2; port schedules Respawn directly at now+RespawnTime. NET respawn timing is identical (0.2 + (60-0.2) = 60 == now+60) — only the intermediate EF_NODRAW hide-frame (a presentation detail) is unmodeled. ; Death FX/sound (SND_ROCKET_IMPACT + EFFECT_ROCKET_EXPLODE) only fire in Base on TFL_DMG_DEATH_NORESPAWN; plasma_dual always respawns so this branch never applies (port has it c",
+   "[presentation] turret-plasma_dual.damage.headshake: Server-side head-angle jolt is now applied, but the CLIENT-rendered head model (plasmad.md3) is not attached, so the visible flinch is not drawn (the head-angle state nudges the next shot's aim, which IS the gameplay effect). Base also nets TNSF_ANG to CSQC; the port has no turret CSQC net layer.",
+   "[presentation] turret-plasma_dual.presentation.head_frame_anim: Server-authoritative head-frame state (Entity.Frame) is now ported and live, but the CLIENT render of the spinning plasmad.md3 head bone is absent — the static base.md3 body has no spin frames and there is no tur_head sub-entity / CSQC turret net layer, so the wheel is not visibly drawn. ; Two-barrel tag_fire alternation (tag_fire on plasmad.md3) not modeled — single computed ShotOrg muzzle."
+  ]
+ },
+ {
+  "unit": "turret-tesla",
+  "tier": "opus",
+  "notes": [
+   "[presentation] turret-tesla.identity.def: Head model (tesla_head.md3) not instantiated as a separate head/coil entity; no tag_head attachment. TrThink computes head spin as state (HeadAngles) but grep confirms no head-bone node consumes HeadAngles, so the coil never visibly spins (see anim feature).",
+   "[presentation] turret-tesla.anim.tr_think: Head spin not rendered: TrThink computes HeadAVelocity ('0 45 0' low-ammo / '0 180 0' charged, scaled by ammo/shot_dmg, zeroed when inactive) and integrates HeadAngles, but grep confirms no head-bone/coil entity (tesla_head.md3) consumes HeadAngles — the coil never visibly spins. Server-side state only. ; Idle crackle arc reach distribution: Prandom.Vec() returns each component in [-1,1] (a cube) whereas QC randomvec() (DP builtin #91) rejection-samples a uniform direction inside the unit sphere"
+  ]
+ },
+ {
+  "unit": "turret-walker",
+  "tier": "opus",
+  "notes": [
+   "[presentation] turret-walker.identity.def: Head model (walker_head_minigun.md3) not instantiated as a separate tur_head entity; no tag attachment, so the minigun head never visibly tracks.",
+   "[presentation] turret-walker.drive.gaits_extra: No standalone STRAFE_L/R or PAIN gaits (Base never drives these from the SVQC brain either — they are leftover model anim states — so this is parity-by-omission, not a behavioral gap). ; JUMP/LAND/TURN gait cases exist in ApplyGait but are never assigned (same as Base — the brain never sets them).",
+   "[presentation] turret-walker.weapon.minigun: No EFFECT_BLASTER_MUZZLEFLASH at the head tag and no EFFECT_BULLET tracer on fire (client-render).",
+   "[presentation] turret-walker.weapon.rocket: No tag_rocket01/tag_rocket02 alternation (port has no head tags; all rockets fire from a single muzzle org). ; No EFFECT_BLASTER_MUZZLEFLASH presentation; only the te_explosion launch flash is emitted (Base's launch te_explosion IS now reproduced).",
+   "[presentation] turret-walker.client.draw: No walk/run/melee animation frames (turrets_setframe(animflag) + TNSF_MOVE net): the walker model never plays its gait animations. ; No CSQC walker_draw 4-point ground-align over terrain and no head avelocity spin (pure client render, still absent)."
+  ]
+ },
+ {
+  "unit": "vehicle-bumblebee",
+  "tier": "opus",
+  "notes": [
+   "[presentation] vehicle-bumblebee.spawn.vr_spawn: Shield hit-flash entity (vehicle_shieldent, MDL_VEH_BUMBLEBEE_SHIELD, scale=512/vlen(maxs-mins)), cosmetic gun models (CANNON_RIGHT/LEFT/CENTER), cockpit/viewport model offsets (body hudmodel '50 0 -5'/viewport '5 0 2'; gun1 '90 -27 -23'/'-85 0 50'; gun2 '90 27 -23'/'-85 0 50'), scale 1.5, and the networked BRG_* raygun entity (Net_LinkEntity + bumble_raygun_send) are NOT created.",
+   "[presentation] vehicle-bumblebee.pilot.raygun: The visible BRG_* beam is a placeholder EffectEmitter.TeHealBeam/TeBeam stub (Bumblebee.cs:698-700), not the networked CSQC bumble_raygun beam; the per-tick BRG_START/BRG_END send + `wait = time + 1` beam-hold + the bumble_raygun_draw multi-segment cylinder are not modeled. Beam COLOUR is bit-faithful (pure green heal / pure red damage).",
+   "[presentation] vehicle-bumblebee.gunner.frame: Gunner aux crosshairs + cockpit HUD are now LIVE (Wave-7): GunnerFrame writes VehGunnerLeadPoint/Valid + VehGunnerHitPoint/Valid (Bumblebee.cs:605/648) and mirrors gunner.VehicleHealth/Shield/Ammo1/Energy (632-636); NetGame.UpdateVehicleHud selects the BumblebeeGun art for a seated gunner and projects the magenta '1 0 1' LEAD (aux slot 1) + reload-color READY (aux slot 0) crosshairs, AND mirrors the gunner READY markers onto the PILOT (slots 1/2 via FeedPilotGunnerAux). RESIDUAL presentation: co",
+   "[presentation] vehicle-bumblebee.gunner.cannon: EFFECT_BIGPLASMA_MUZZLEFLASH + the CSQCProjectile (PROJECTILE_BUMBLE_GUN) visual NOT IMPLEMENTED.",
+   "[presentation/audio] vehicle-bumblebee.death: Gib toss (gun1/gun2/gun3 from their tags + body via vehicle_tossgib, scale 1.5) NOT IMPLEMENTED. ; Tumble + blowup FX (EFFECT_EXPLOSION_SMALL during diethink, EFFECT_EXPLOSION_MEDIUM at death, EFFECT_EXPLOSION_BIG at blowup) and the diethink/blowup SND_ROCKET_IMPACT NOT IMPLEMENTED. ; QC bumblebee_dead_touch (50% chance the tossed body blows up early on contact) NOT modeled (port body has Touch=null after death).",
+   "[presentation] vehicle-bumblebee.client.presentation: The networked BRG_* healray/damage beam (the signature green/red ray; ENT_CLIENT_BUMBLE_RAYGUN, bumble_raygun_send/NET_HANDLE) + bumble_raygun_draw multi-segment Draw_CylindricLine cylinder NOT IMPLEMENTED (placeholder EffectEmitter.TeHealBeam/TeBeam stub only; colour bit-faithful). ; Wave-7 LIVE NOW (in addition to the Wave-5 pilot HUD): the GUNNER cockpit HUD (VehicleHudKind.BumblebeeGun selected for a seated gunner, NetGame.cs:3001) + the two GUNNER aux crosshairs (magenta '1 0 1' lead + relo"
+  ]
+ },
+ {
+  "unit": "vehicle-framework",
+  "tier": "opus",
+  "notes": [
+   "[presentation] vehicle-framework.spawn.respawn: EFFECT_TELEPORT spawn flash, CSQCMODEL_AUTOINIT, hook-removal sweep, and vehicles_reset_colors are deferred (client/presentation).",
+   "[presentation] vehicle-framework.think.tick: VEHICLESTAT_W2MODE is STILL never mirrored to the owner: descriptors only write vehicle.VehW2Mode (grep), no owner.VehW2Mode = step. Harmless — the live VehicleHud does not read W2Mode. ; The painframe smoke particle (EFFECT_SMOKE_SMALL) is deferred (no headless particle emitter); the authoritative jitter IS produced (see combat.painframe).",
+   "[presentation] vehicle-framework.enter.handshake: MOVETYPE_NOCLIP + disableclientprediction=1 modeled as MoveType.None (player origin rewritten by the vehicle); behaviorally close but not the QC movetype. ; SVC_SETVIEWPORT/SETVIEWANGLES + CSQCVehicleSetup, the temp_wepent weaponslot swap, CENTER_VEHICLE_ENTER notification, and RemoveGrapplingHooks are deferred (cross-boundary). The VehicleHud panel (the client view of CSQCVehicleSetup) IS fed live — see hud_camera_xhair. antilag_clear is now wired (pl.AntilagNeedsClear set on enter).",
+   "[presentation] vehicle-framework.enter.steal: The CSQC presentation half is deferred: the WP_VehicleIntruder radar waypoint (g_vehicles_steal_show_waypoint) and the CENTER_VEHICLE_STEAL / _SELF centerprint notifications. The authoritative steal STATE (shield zero + flag backup/strip, restored on exit) is fully applied.",
+   "[presentation] vehicle-framework.exit.handshake: SVC_SETVIEWPORT/SETVIEWANGLES + CSQCVehicleSetup, temp_wepent switchweapon restore, Kill_Notification(CPID_VEHICLES), and last_vehiclecheck are deferred. (The HUD exits cleanly: UpdateVehicleHud calls hud.Exit() once p.Vehicle is null.) antilag_clear is now wired (pl.AntilagNeedsClear set on exit). ; The WP_Vehicle return waypoint (vehicles_showwp) itself is still CSQC-deferred (the return SCHEDULE is now set — see respawn.return_waypoint).",
+   "[presentation/audio] vehicle-framework.combat.damage: vehicle_shieldent hit flash (colormod/alpha angled to hitloc) is a CSQC visual — not drawn. ; antilag_clear on death is deferred (cross-boundary).",
+   "[presentation] vehicle-framework.combat.painframe: Smoke particle (EFFECT_SMOKE_SMALL at origin + randomvec()*80) is deferred (no headless particle/temp-entity emitter) — the only unported piece. The authoritative velocity/angle jitter IS produced.",
+   "[presentation] vehicle-framework.aim.locktarget: The cockpit aux-crosshair lock-color update is LIVE for the building/locked target (UpdateVehicleHud -> SetAuxiliaryXhairLock projects VehLockTarget tinted by VehLockStrength); the per-target-class lock SEMANTICS are now also complete.",
+   "[presentation] vehicle-framework.projectile.shared: CSQCProjectile networking + muzzle EFFECT_*, the g_bot_dodge list, and the owner==owner friendly-projectile pass-through filter are deferred. ; vehicles_projectile_damage (the shootable-projectile's OWN event_damage: take health, detonate at <1, ignore same-owner inflictor) is STILL not ported — a shootable vehicle projectile (health>0) sets TakeDamage=Aim (VehicleCommon.cs:608-612) but SpawnProjectile does not install GtEventDamage, whereas Base sets proj.event_damage=vehicles_projectile_damage",
+   "[presentation] vehicle-framework.respawn.return_waypoint: No WP_Vehicle return waypoint / radar icon is shown while a vehicle returns (still deferred, CSQC). Base spawns a separate vehicle_return entity with vehicles_showwp as think; the port re-arms the vehicle's own think directly (functionally equivalent for the return SCHEDULE, but no radar icon).",
+   "[presentation/audio] vehicle-framework.presentation.hud_camera_xhair: Cockpit/chase camera STILL dead: no client reads p.Vehicle to apply SVC_SETVIEWPORT (vehicle_viewport) — the pilot keeps the normal player view. ; Framework low-health/low-shield HUD alarm (SND_VEH_ALARM / SND_VEH_ALARM_SHIELD, cl_vehicles.qc:230-264, gated cl_vehicles_alarm default 0) never plays (no audio cue). (The Raptor's SEPARATE incoming-missile alarm at Raptor.cs:408 IS live.) ; Host-only feeder: UpdateVehicleHud reads LocalServerPlayer (host path). The cross-client VEHICLESTAT_* network"
+  ]
+ },
+ {
+  "unit": "vehicle-racer",
+  "tier": "opus",
+  "notes": [
+   "[presentation] vehicle-racer.identity.def: hud cockpit model + tag_viewport attachment and the scale-0.5 model hack are cosmetic-only and not instantiated (physics uses the real hitbox). ; view_ofs '0 0 50' + height 200 (camera view offset/dist) not set; affects the cockpit camera, not the sim.",
+   "[presentation] vehicle-racer.spawn.lifecycle: scale 0.5 (cosmetic model-shrink hack) still not applied; physics uses the real hitbox so this is presentation-only.",
+   "[presentation] vehicle-racer.drive.afterburn: Boost sound plays on the vehicle entity, not a tur_head sub-entity (the port has no tur_head); audibly equivalent (same origin). Booster/smoke particle FX still deferred (presentation). ; No EFFECT_RACER_BOOSTER puff (every 0.2s, gated on .wait) and no under-craft smoke trail (EFFECT_SMOKE_SMALL traceline).",
+   "[presentation] vehicle-racer.weapon.cannon: No EFFECT_RACER_MUZZLEFLASH muzzle effect and no CSQCProjectile (PROJECTILE_WAKICANNON) bolt trail (presentation).",
+   "[presentation] vehicle-racer.weapon.rocket: No EFFECT_RACER_ROCKETLAUNCH launch effect and no CSQCProjectile (PROJECTILE_WAKIROCKET) rocket trail (presentation).",
+   "[presentation] vehicle-racer.weapon.rockethud: Authority-side ammo2/reload2 % stats are now written each tick onto the pilot; the client HUD progressbar that READS them (Vehicles_drawHUD vehicle_icon_ammo2) is presentation/CSQC and not yet wired — a client-render concern, not an authority gap.",
+   "[presentation/audio] vehicle-racer.death.blowup: No EFFECT_EXPLOSION_MEDIUM (Send_Effect) on death and no colormod '-0.5 -0.5 -0.5' darken; setSendEntity(func_null) stop-networking is not modeled (presentation/net only). ; vehicles_setreturn's CSQC return waypoint / radar icon + EFFECT_TELEPORT return flash are presentation and unported (the authoritative return SCHEDULE is set by SetReturn)."
+  ]
+ },
+ {
+  "unit": "vehicle-raptor",
+  "tier": "opus",
+  "notes": [
+   "[presentation] raptor.spawn.setup: Cosmetic sub-entities not created: no raptor_spinner rotor entities (engine_left/right), no raptor_rotor_anglefix, no bomb1/bomb2/tur_head cosmetic models (gun1/gun2 ARE created for aim). ; mass=1 is set on the entity but has NO behavioral effect — the port's MoveTypePhysics solver never reads .Mass, so the QC bounce-missile mass tuning is inert (value set for fidelity only). ; FIXED (Wave-2 fixup): Spawn() no longer nulls vehicle.Touch, so the VehicleCommon.Touch dispatcher SpawnVehicle install",
+   "[presentation] raptor.enter: tur_head.exteriormodeltoclient owner-binding and CSQCVehicleSetup (client viewport/HUD) not done here (cross-boundary client/net). ; Carried-flag reparent ('-20 0 96') not modeled (CTF-on-raptor edge): a flag carried while boarding the raptor will not be repositioned to the cockpit mount.",
+   "[presentation/audio] raptor.takeoff: Animation frame ramp tracked (VehAnimFrame) but drives no visible model; rotor avelocity ramp (90 + frame/25*25000) absent (no rotor entities). ; Engine fly sound (SND_VEH_RAPTOR_SPEED every 7.955812s) not played during takeoff. ; Wave-2 added a button-clear (ATCK/ATCK2/CROUCH) at the end of Takeoff, but it writes vehicle.VehInput which GameWorld.cs:1104-1105 overwrites with fresh player input every tick BEFORE the next Think — so the clear is effectively a no-op on the live path. QC's per-tick ",
+   "[presentation/audio] raptor.flight_controller: Engine fly sound (every 7.955812s) not played. ; No visible model pitch/roll/yaw pose beyond entity angles; player glue origin+'0 0 32' done but no cockpit/exterior model.",
+   "[presentation] raptor.cannon_aim_lock: Aux lock crosshair color feedback (red==1 / green>0.5 / blue<0.5 by lock strength, UpdateAuxiliaryXhair) is client-only and not drawn. ; locktarget==2 alternate direct-trace lock path unimplemented (default is 1, so off the live path).",
+   "[presentation] raptor.cannon_fire: No EFFECT_RAPTOR_MUZZLEFLASH and no CSQCProjectile (PROJECTILE_RAPTORCANNON) visual for the cannon bolt (server hit logic only). ; Spread sampling differs from Base: QC does normalize(dir + randomvec()*spread) (a cube offset added to forward, perturbing forward too); the port uses Prandom.Spread (uniform-in-disc projected onto right/up). Distribution shape differs — negligible at spread 0.01 but not bit-faithful.",
+   "[presentation] raptor.bombs: No CSQCProjectile visual (PROJECTILE_RAPTORBOMB / RAPTORBOMBLET) for bomb/bomblet, no Damage_DamageInfo (DEATH_VH_RAPT_FRAGMENT) fragment effect on burst (presentation only).",
+   "[presentation] raptor.flares: No EF_FLAME flare glow / MDL_VEH_RAPTOR_FLARE model / scale 0.5 (decoy is invisible but functional). ; Flare damage uses Health<=0 -> remove inline rather than the dedicated raptor_flare_damage event_damage hook; behaviorally equivalent (a shot flare with health 20 dies). ; Seduction scan filters proj.VehGuideMode>=0; QC's raptor_flare_think scans g_projectiles by it.enemy==owner WITHOUT a guide-mode filter (the MIF_GUIDED_TRACKING gate is only on the incoming-alarm path, not the flare retarget)",
+   "[presentation] raptor.mode_switch: CSQCVehicleSetup (client HUD reticle update on mode change) not done (client concern).",
+   "[presentation] raptor.exit_land: Land animation frame from altitude (hgt<128: (hgt/128)*25) + rotor spin tracked-but-invisible (no model). ; antilag_clear on exit + CSQCVehicleSetup viewport restore are cross-boundary (net/client).",
+   "[audio] raptor.impact: CONFIRMED LIVE (fixup commit 4be8357, re-verified 2026-06-22): Raptor.Spawn no longer nulls vehicle.Touch, so the VehicleCommon.Touch dispatcher SpawnVehicle installs stands and calls vehic.VehicleDef.Impact on a hard touch (matches Racer.cs:217-219 / QC vr_spawn which does NOT reset .touch). Raptor.Think:231 snapshots vehicle.OldVelocity BEFORE the tick's physics (matches Racer.Think:296), and Spawn:141 seeds PlayTime = Time to clear the impact debounce on respawn — so vehicles_impact computes ",
+   "[presentation/audio] raptor.death: No EFFECT_EXPLOSION_MEDIUM on death (findbetterlocation), no per-think 5% EFFECT_EXPLOSION_SMALL + SND_ROCKET_IMPACT during the tumble (TODO marked in Death think).",
+   "[presentation] raptor.painframe: EFFECT_SMOKE_SMALL low-health smoke puff (origin + randomvec()*80) is not emitted — the headless Common layer has no particle/temp-entity emitter (noted VehicleCommon.cs PainFrame; presentation only)."
+  ]
+ },
+ {
+  "unit": "vehicle-spiderbot",
+  "tier": "opus",
+  "notes": [
+   "[presentation] vehicle-spiderbot.identity.registration: view_ofs '0 0 70' / height 170 (the seated camera offset + chase distance) are client-view concerns not modeled on the headless server descriptor.",
+   "[presentation] vehicle-spiderbot.weapon.minigun: Cosmetic barrel spin (QC gun1.angles.z += 45 / gun2.angles.z -= 45 with 360 wrap) is done client-side (Firing flag in VehicleVisuals); the server-state field is not advanced — functionally fine, non-1:1 split. ; EFFECT_SPIDERBOT_MINIGUN_MUZZLEFLASH is a client effect (Firing flag in VehicleVisuals), not the server Send_Effect QC uses.",
+   "[presentation] vehicle-spiderbot.weapon.rockets: ARTILLERY clearance-height traces use a headless WorldOnly trace; the h1/h2 (0.75 of the up/diagonal world clearance) are reproduced but the resulting arc was not in-game verified. ; Rocket-in-flight CSQCProjectile visual (PROJECTILE_SPIDERROCKET) + launch effect (EFFECT_SPIDERBOT_ROCKETLAUNCH) are client/net networking deferred to the shared projectile catalog.",
+   "[presentation] vehicle-spiderbot.death.blowup: Presentation still simplified: no 4 physics gib entities (head MF_ROCKET+EF_FLAME bounce+fade via spiderbot_headfade, 2 tossed guns body-vel v_forward*700, body frame 11) and no spiderbot_headfade (which also plays SND_ROCKET_IMPACT + EFFECT_EXPLOSION_BIG when the head finally fades). The per-burn EFFECT_EXPLOSION_SMALL visual + the head EF_FLAME stay a TODO. Client VehicleVisuals does an approximate scripted gib arc (GibCount 6) instead."
+  ]
+ },
+ {
+  "unit": "warpzones",
+  "tier": "opus",
+  "notes": [
+   "[presentation] warpzones.porto: Porto portals share the missing client portal render — they teleport correctly server-side but show as dark placeholders, same as map warpzones.",
+   "[presentation] warpzones.client.render: No Godot SubViewport+Camera3D renders the linked OUT side onto the portal surface; HeroMaterials.BuildPortal (HeroMaterials.cs:168) is a static dark near-black StandardMaterial3D mirror. The warpzone reads as an opaque/wavy wall — you cannot see through it. PVS-fade and the r_water enable HACK are also absent.",
+   "[presentation] warpzones.client.fixview: No client view rotate when the camera straddles a zone, no near-clip push-out (geometry clips at the seam), no roll-kill on a roll-changing crossing, no exterior-model hide. Crossing a warpzone is visually jarring.",
+   "[presentation] warpzones.client.teleported_view: Server never sends a warpzone_teleported entity and never re-rotates v_angle (WarpZone_PlayerPhysics_FixVAngle); the client never rotates VF_CL_VIEWANGLES / CL_RotateMoves on a crossing. The view does not carry through the seam.",
+   "[presentation] warpzones.client.prediction: Render/view side of the crossing still missing: a predicted warp relocates the carrier in lockstep with authority (no rubber-band) and stamps .fixangle, but the seamless view-rotate/portal render (warpzones.client.render / .fixview / .teleported_view) is unported — the camera still snaps visually across the seam even though the origin no longer corrects.",
+   "[presentation] warpzones.camera: No func_camera spawnfunc; security-camera dpcamera surfaces render as a dark mirror placeholder (HeroMaterials) rather than a fixed camera view of the target position.",
+   "[presentation] warpzones.combat.traceextras: Grenade/toss trajectory prediction (WarpZone_TraceToss) and projectile particle trails (WarpZone_TrailParticles[_WithMultiplier]) do not bend through portals — bot grenade aim and trail visuals are wrong across a warpzone. Minor."
+  ]
+ }
+]

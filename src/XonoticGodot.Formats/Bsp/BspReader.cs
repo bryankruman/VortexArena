@@ -79,6 +79,7 @@ public static class BspReader
         BspModel[] models = ReadModels(data, lumps[(int)BspLump.Models]);
         BspNode[] nodes = ReadNodes(data, lumps[(int)BspLump.Nodes]);
         BspLeaf[] leafs = ReadLeafs(data, lumps[(int)BspLump.Leafs]);
+        int[] leafFaces = ReadLeafFaces(data, lumps[(int)BspLump.LeafFaces]);
         BspVis vis = ReadVis(data, lumps[(int)BspLump.Pvs]);
         BspVertex[] vertices = ReadVertices(data, lumps[(int)BspLump.Vertices]);
         int[] triangles = ReadTriangles(data, lumps[(int)BspLump.Triangles], vertices.Length);
@@ -91,8 +92,19 @@ public static class BspReader
         // probe heuristic; even page = lightmap, odd page = light direction.)
         DeluxemapSplit split = DetectAndSplitDeluxemaps(rawLightmapPages, faces, entities, BspData.LightmapSize);
 
+        // Lightgrid (lump 15) — the baked per-position MODEL light probes (DP Mod_Q3BSP_LoadLightGrid).
+        // Dims derive from the world model's bounds; a length mismatch disables the grid (Build → null).
+        LightGridData? lightGrid = null;
+        {
+            RawLump gl = lumps[(int)BspLump.LightGrid];
+            if (gl.Length >= 8 && models.Length > 0)
+                lightGrid = LightGridData.Build(models[0].Mins, models[0].Maxs,
+                    data.Slice(gl.Offset, gl.Length).ToArray());
+        }
+
         return new BspData
         {
+            LightGrid = lightGrid,
             Version = version,
             EntitiesText = entText,
             Entities = entities,
@@ -102,6 +114,7 @@ public static class BspReader
             Models = models,
             Nodes = nodes,
             Leafs = leafs,
+            LeafFaces = leafFaces,
             Vis = vis,
             BrushSides = brushSides,
             Vertices = vertices,
@@ -232,6 +245,24 @@ public static class BspReader
             int leafBrushCount = BinaryUtil.ReadInt32(data, o + 44);
             outArr[i] = new BspLeaf(cluster, area, firstLeafFace, leafFaceCount, firstLeafBrush, leafBrushCount);
         }
+        return outArr;
+    }
+
+    /// <summary>
+    /// Read the leaf→face lump (lump 5): a flat <c>int[]</c> of face indices. Each leaf owns the slice
+    /// <c>[FirstLeafFace, FirstLeafFace+LeafFaceCount)</c> of this array (see <see cref="BspLeaf"/>); a face
+    /// index can appear in several leaves (it bounds them all). The PVS culler uses this to label a face by the
+    /// clusters of EVERY leaf that references it — DP's exact per-surface vis. Out-of-range values are left
+    /// as-is (consumers bounds-check); absent/sub-int lump (some minimal/test BSPs) → empty array.
+    /// </summary>
+    private static int[] ReadLeafFaces(ReadOnlySpan<byte> data, RawLump l)
+    {
+        if (l.Length < 4)
+            return Array.Empty<int>();
+        int n = l.Length / 4;
+        var outArr = new int[n];
+        for (int i = 0; i < n; i++)
+            outArr[i] = BinaryUtil.ReadInt32(data, l.Offset + i * 4);
         return outArr;
     }
 

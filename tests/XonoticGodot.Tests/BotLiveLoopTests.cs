@@ -326,6 +326,28 @@ public class BotLiveLoopTests
         Assert.True(world.Bots.Network!.Count > 0, "entity auto-graph is empty");
     }
 
+    [Fact]
+    public void CandidateModelPaths_ReturnsDistinctRosterModels_FromBotConfig()
+    {
+        // bots.txt is tab-separated (name, model, …); the client precaches exactly this distinct model set
+        // under the loading screen (NetGame perf §9.4) so the bots are texture-cache-hot at first render.
+        // Duplicate models collapse to one entry, empty-model rows are skipped, comments are ignored, and the
+        // bare model name becomes models/player/<model>.iqm (matching PickNameAndModel's .iqm append).
+        const string botsTxt =
+            "// roster\n" +
+            "Hellfire\tnyx\t0\n" +
+            "Toxic\tgakmasked\t0\n" +
+            "Scorcher\tnyx\t0\n" +   // duplicate model -> single entry
+            "Nameless\t\t0\n";       // empty model -> skipped
+        var world = new GameWorld(FlatFloor(), SpawnDicts(new Vector3(0f, 0f, 32f))) { MapName = "testmap" };
+        world.ConfigReader = path => path == "bots.txt" ? botsTxt : null;
+        world.Boot("dm");
+
+        Assert.Equal(
+            new[] { "models/player/nyx.iqm", "models/player/gakmasked.iqm" },
+            world.Bots.CandidateModelPaths());
+    }
+
     // =============================================================================================
     // BotDanger (QC havocbot_checkdanger)
     // =============================================================================================

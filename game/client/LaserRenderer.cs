@@ -4,18 +4,20 @@
 // Per visible laser it keeps ONE long-lived cross-ribbon mesh (two perpendicular textured quads — the
 // cheap stand-in for QC Draw_CylindricLine, same technique as BeamRenderer but UPDATED IN PLACE instead
 // of spawning/freeing a node per frame) plus ONE persistent OmniLight3D for the QC adddynamiclight at the
-// hit point. End-point particles (__pointparticles(cnt, endpos, normal, drawframetime*1000)) are
-// throttled to ~10 Hz per laser through EffectSystem.Spawn so the transient-node budget stays sane while
-// the per-second particle budget matches DP's.
+// hit point. End-point particles (__pointparticles(cnt, endpos, normal, drawframetime*1000)) are emitted
+// EVERY frame at count = frametime*1000 through EffectSystem.Spawn, exactly as Draw_Laser does, so the
+// per-second particle rate is frame-independent and matches DP's.
 //
 // Like TriggerTouch.Predict*Ambient / MusicPlayer, this scans the AMBIENT entity facade
 // (Api.Entities.FindByClass("misc_laser")) — so it lights up on the listen-server and demo paths, where
 // Api.Services is the live server world. A pure --connect client has no facade (and no BSP) yet, so it
 // stays idle there: the established seam, not a silent gap.
 //
-// Known approximations vs Draw_Laser: the beam texture's sliding texcoord (time*3) is not animated, and
-// the client-side trace runs at the SERVER tick origin (no InterpolateOrigin — lasers are static on all
-// shipped maps).
+// The beam texture's sliding texcoord (Draw_Laser's time*3) IS animated via the material's per-frame
+// Uv1Offset (tiled along the beam so it flows). End effects (particles + dlight) are gated on a real
+// surface hit, suppressed on SKY *or* NOIMPACT faces exactly as Draw_Laser:333 does.
+// Known approximation vs Draw_Laser: the client-side trace runs at the SERVER tick origin (no
+// InterpolateOrigin — lasers are static on all shipped maps).
 
 using System;
 using System.Collections.Generic;
@@ -37,19 +39,20 @@ public partial class LaserRenderer : Node3D
     /// <summary>Host texture loader (AssetSystem.LoadTexture) for particles/laserbeam.tga. Late-bindable.</summary>
     public Func<string, Texture2D?>? TextureLoader { get; set; }
 
+    /// <summary>Shared cross-ribbon line primitive (the Draw_CylindricLine successor), injected by <see cref="ClientWorld"/>.</summary>
+    public CylindricLine? Lines { get; set; }
+
     private const float RescanInterval = 2f;     // facade re-scan cadence (lasers can spawn via target_spawn)
-    private const float EndFxInterval = 0.1f;    // ~10 Hz end-effect bursts per laser
     private const int Q3SurfaceFlagSky = 0x4;    // Q3SURFACEFLAG_SKY
+    private const int Q3SurfaceFlagNoImpact = 0x1; // Q3SURFACEFLAG_NOIMPACT (laser.qc:333 gate)
+    private const float TexScrollRate = 3f;      // Draw_Laser texcoord = time*3 (the scrolling beam)
 
     private sealed class BeamNode
     {
         public Entity Entity = null!;
-        public Node3D Root = null!;              // positioned at the laser origin, +X aimed at the endpoint
-        public MeshInstance3D RibbonA = null!;   // the two crossed quads
-        public MeshInstance3D RibbonB = null!;
-        public StandardMaterial3D Material = null!;
+        public Node3D Root = null!;              // hosts the end-light (segment lives in the shared CylindricLine)
+        public CylindricLine.Segment Segment = null!; // the cross-ribbon beam, leased from the shared primitive
         public OmniLight3D Light = null!;
-        public float NextFxTime;
     }
 
     private readonly Dictionary<Entity, BeamNode> _beams = new();
@@ -59,8 +62,12 @@ public partial class LaserRenderer : Node3D
 
     public override void _Process(double delta)
     {
-        if (Api.Services is null)
+        // No server world (pure --connect client) or no shared line primitive wired yet => stay idle,
+        // the same established seam as the other ambient-facade renderers.
+        if (Api.Services is null || Lines is null)
             return;
+
+        using var _prof = FrameProfiler.Scope("clientmisc");
 
         _rescanIn -= (float)delta;
         if (_rescanIn <= 0f)
@@ -96,8 +103,10 @@ public partial class LaserRenderer : Node3D
         {
             foreach (Entity e in dead)
             {
-                if (GodotObject.IsInstanceValid(_beams[e].Root))
-                    _beams[e].Root.QueueFree();
+                BeamNode b = _beams[e];
+                b.Segment.Free();
+                if (GodotObject.IsInstanceValid(b.Root))
+                    b.Root.QueueFree();
                 _beams.Remove(e);
             }
         }
@@ -107,25 +116,11 @@ public partial class LaserRenderer : Node3D
     {
         var root = new Node3D { Name = $"laser#{e.Index}" };
 
-        // Cross-ribbon: two unit quads spanning local +X (0..1), crossed 90° about X, scaled per frame to
-        // (length, width). QuadMesh lies in the XY plane; orient it so its long edge runs along +X.
-        var mat = new StandardMaterial3D
-        {
-            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-            Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
-            BlendMode = BaseMaterial3D.BlendModeEnum.Add,   // QC default: DRAWFLAG_ADDITIVE at 0.5
-            CullMode = BaseMaterial3D.CullModeEnum.Disabled,
-            DisableReceiveShadows = true,
-        };
-        ApplyBeamTexture(mat);
-
-        var quad = new QuadMesh { Size = new Vector2(1f, 1f), Material = mat };
-        // A unit quad is centered at the origin; park it at +0.5 X so the root sits at the beam START.
-        var ribbonA = new MeshInstance3D { Mesh = quad, Position = new Vector3(0.5f, 0f, 0f) };
-        var ribbonB = new MeshInstance3D { Mesh = quad, Position = new Vector3(0.5f, 0f, 0f) };
-        ribbonB.RotationDegrees = new Vector3(90f, 0f, 0f); // cross plane
-        root.AddChild(ribbonA);
-        root.AddChild(ribbonB);
+        // The cross-ribbon beam is now a leased segment of the shared CylindricLine primitive (the
+        // Draw_CylindricLine successor) instead of a hand-rolled pair of crossed QuadMesh ribbons. The
+        // segment owns its own mesh/material/transform; we just feed it endpoints + texture per frame.
+        EnsureBeamTexture();
+        CylindricLine.Segment seg = Lines!.AcquireSegment();
 
         // The QC dlight at the hit point (adddynamiclight(endpos+normal, modelscale-based radius, color*5)).
         var light = new OmniLight3D
@@ -138,22 +133,16 @@ public partial class LaserRenderer : Node3D
         root.AddChild(light);
 
         AddChild(root);
-        return new BeamNode { Entity = e, Root = root, RibbonA = ribbonA, RibbonB = ribbonB, Material = mat, Light = light };
+        return new BeamNode { Entity = e, Root = root, Segment = seg, Light = light };
     }
 
-    private void ApplyBeamTexture(StandardMaterial3D mat)
+    private void EnsureBeamTexture()
     {
-        if (!_beamTexTried)
-        {
-            _beamTexTried = true;
-            _beamTex = TextureLoader?.Invoke("particles/laserbeam")
-                       ?? TextureLoader?.Invoke("particles/laserbeam.tga");
-        }
-        if (_beamTex is not null)
-        {
-            mat.AlbedoTexture = _beamTex;
-            mat.TextureFilter = BaseMaterial3D.TextureFilterEnum.Linear;
-        }
+        if (_beamTexTried)
+            return;
+        _beamTexTried = true;
+        _beamTex = TextureLoader?.Invoke("particles/laserbeam")
+                   ?? TextureLoader?.Invoke("particles/laserbeam.tga");
     }
 
     // =================================================================================================
@@ -169,7 +158,8 @@ public partial class LaserRenderer : Node3D
         // skip if ACTIVE_NOT (laser.qc:293)
         if (e.Active != MapMover.ActiveActive)
         {
-            b.Root.Visible = false;
+            b.Segment.Hide();
+            b.Light.Visible = false;
             return;
         }
 
@@ -187,7 +177,8 @@ public partial class LaserRenderer : Node3D
         }
         else if (finite)
         {
-            b.Root.Visible = false; // FINITE with no resolved endpoint: nothing to draw yet
+            b.Segment.Hide(); // FINITE with no resolved endpoint: nothing to draw yet
+            b.Light.Visible = false;
             return;
         }
         else
@@ -206,51 +197,48 @@ public partial class LaserRenderer : Node3D
             bool sky = (tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagSky) != 0;
             if (!finite && sky)
                 end = start + QMath.Normalize(target - start) * Laser.BeamMaxWorldSize; // beyond the sky
-            hitSurface = tr.Fraction < 1f && !sky;
+            // Draw_Laser:333 suppresses BOTH the end particles and the dlight on SKY *or* NOIMPACT faces.
+            bool noImpact = (tr.DpHitQ3SurfaceFlags & Q3SurfaceFlagNoImpact) != 0;
+            hitSurface = tr.Fraction < 1f && !sky && !noImpact;
         }
 
-        // --- ribbon transform ---
+        // --- beam segment update ---
         // QC wire decode: client beam width = 2 * server .scale; scale 0 draws no beam (laser.qc:322,369).
         float width = 2f * e.ScaleFactor;
         if (width <= 0f)
         {
-            b.Root.Visible = false;
+            b.Segment.Hide();
+            b.Light.Visible = false;
             return;
         }
 
-        Vector3 gStart = Coords.ToGodot(start);
-        Vector3 gEnd = Coords.ToGodot(end);
-        Vector3 seg = gEnd - gStart;
-        float len = seg.Length();
-        if (len < 1f)
+        if ((end - start).Length() < 1f)
         {
-            b.Root.Visible = false;
+            b.Segment.Hide();
+            b.Light.Visible = false;
             return;
         }
-
-        b.Root.Visible = true;
-        b.Root.Position = gStart;
-        // +X along the beam (same stable-basis trick as ProjectileRenderer.OrientToVelocity).
-        Vector3 x = seg / len;
-        Vector3 upRef = Mathf.Abs(x.Dot(Vector3.Up)) > 0.99f ? Vector3.Forward : Vector3.Up;
-        Vector3 z = x.Cross(upRef).Normalized();
-        Vector3 y = z.Cross(x).Normalized();
-        b.Root.Basis = new Basis(x, y, z);
-        b.RibbonA.Scale = new Vector3(len, width, 1f);
-        b.RibbonB.Scale = new Vector3(len, width, 1f);
 
         // --- color/blend (laser.qc:324-331): alpha key set => normal blend at .alpha, else additive 0.5 ---
         var color = new Color(e.BeamColor.X, e.BeamColor.Y, e.BeamColor.Z);
+        Color rgba;
+        BaseMaterial3D.BlendModeEnum blend;
         if (e.AlphaKey > 0f)
         {
-            b.Material.BlendMode = BaseMaterial3D.BlendModeEnum.Mix;
-            b.Material.AlbedoColor = new Color(color, Mathf.Clamp(e.AlphaKey, 0f, 1f));
+            blend = BaseMaterial3D.BlendModeEnum.Mix;
+            rgba = new Color(color, Mathf.Clamp(e.AlphaKey, 0f, 1f));
         }
         else
         {
-            b.Material.BlendMode = BaseMaterial3D.BlendModeEnum.Add;
-            b.Material.AlbedoColor = new Color(color, 0.5f);
+            blend = BaseMaterial3D.BlendModeEnum.Add;
+            rgba = new Color(color, 0.5f);
         }
+
+        // The shared cross-ribbon segment takes Quake-space endpoints + width directly and builds its own
+        // basis-aligned mesh; the old hand-rolled Godot basis math + per-ribbon scaling lives there now.
+        b.Segment.Update(start, end, width, rgba, blend);
+        // Sliding texcoord (Draw_Laser: time*3); the segment tiles + scrolls U so the beam visibly flows.
+        b.Segment.SetTexture(_beamTex, scrollTiled: true, scrollU: now * TexScrollRate);
 
         // --- end effects on a real surface hit (laser.qc:333-339) ---
         if (hitSurface)
@@ -270,12 +258,15 @@ public partial class LaserRenderer : Node3D
                 b.Light.Visible = false;
             }
 
-            // particles: DP spawns cnt-effect bursts EVERY frame at count=drawframetime*1000; one burst per
-            // 0.1 s at count=100 lands the same ~1000 count-units/sec without per-frame node churn.
-            if (!string.IsNullOrEmpty(e.LaserEndEffect) && Effects is not null && now >= b.NextFxTime)
+            // particles: Draw_Laser spawns the cnt-effect burst EVERY frame at count = drawframetime*1000
+            // (laser.qc:336), so the per-second emission rate is frame-independent. Emit per-frame here too,
+            // scaling the count by the real frame delta (drawframetime) exactly as DP does; the int floor of
+            // small per-frame counts is fine (EffectSystem sums them across frames, matching DP's accumulation).
+            if (!string.IsNullOrEmpty(e.LaserEndEffect) && Effects is not null)
             {
-                b.NextFxTime = now + EndFxInterval;
-                Effects.Spawn(e.LaserEndEffect, end, hitNormal, (int)(EndFxInterval * 1000f));
+                int count = (int)(Api.Clock.FrameTime * 1000f);
+                if (count > 0)
+                    Effects.Spawn(e.LaserEndEffect, end, hitNormal, count);
             }
         }
         else

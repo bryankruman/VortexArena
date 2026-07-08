@@ -29,8 +29,12 @@ public static class ProjectileCatalog
         Grenade, GrenadeBouncing, Mine, Blaster, ArcBolt, Hlac,
         PortoRed, PortoBlue, Hookbomb, Hagar, HagarBouncing,
         Fireball, Firemine, Tag, Flac, Seeker, MageSpike, GolemLightning,
-        SpiderRocket, WakiRocket, WakiCannon, BumbleGun, BumbleBeam,
+        SpiderRocket, WakiRocket, WakiCannon, RaptorCannon, BumbleGun, BumbleBeam,
         Rpc, RocketMinstaLaser, Plasma, Generic,
+        // Held-nade projectiles (cl_nades) — one per Nades registry type. The thrown nade renders on the
+        // standard projectile path with the grenademodel.md3 body tinted by the per-type NadeRegistry m_color.
+        NadeNormal, NadeNapalm, NadeIce, NadeTranslocate, NadeSpawn, NadeHeal,
+        NadeMonster, NadeEntrap, NadeVeil, NadeAmmo, NadeDarkness,
     }
 
     /// <summary>The body look a projectile draws with when it has no resolved model (QC setmodel fallback).</summary>
@@ -123,9 +127,11 @@ public static class ProjectileCatalog
         void Add(Desc d) => t[d.Type] = d;
 
         // SECONDARY orb: MDL_PROJECTILE_ELECTRO = models/ebomb.mdl (all.inc:50 — MD3 content despite the
-        // extension), EFFECT_TR_NEXUIZPLASMA, electro_fly loop, bounce (projectile.qc:346,405).
+        // extension), EFFECT_TR_NEXUIZPLASMA, electro_fly loop, bounce (projectile.qc:346,405). The orb spins
+        // with avelocity '7 0 11' (electro.qc:32 electro_orb_setup — pitch 7, roll 11 deg/s). Following the
+        // rocket convention (QC roll → the body's nose/X axis), map roll 11 → X and pitch 7 → Y.
         Add(new Desc { Type = ProjectileType.Electro, TrailEffect = "TR_NEXUIZPLASMA", Trail = BluePlasma,
-            Body = BodyFamily.GlowSprite, ModelPath = "models/ebomb.mdl",
+            Body = BodyFamily.GlowSprite, ModelPath = "models/ebomb.mdl", SpinDegPerSec = new Vector3(11f, 7f, 0f),
             GlowColor = ElectroBlue, HasLight = true, LoopSound = "weapons/electro_fly" });
         // PRIMARY bolt: MDL_PROJECTILE_ELECTRO_BEAM = models/elaser.mdl (all.inc:51), EFFECT_TR_NEXUIZPLASMA,
         // no fly loop (projectile.qc:350).
@@ -154,11 +160,17 @@ public static class ProjectileCatalog
             Body = BodyFamily.GrenadeMesh, ModelPath = "models/grenademodel.md3", SpinDegPerSec = new Vector3(0, -1000f, 0), GlowColor = GrenadeGreen });
         Add(new Desc { Type = ProjectileType.Mine, TrailEffect = "TR_GRENADE", Trail = GrenadeSmoke,
             Body = BodyFamily.GrenadeMesh, GlowColor = GrenadeGreen });
-        // EFFECT_Null — no trail (projectile.qc:354,356)
+        // EFFECT_Null — no trail (projectile.qc:354). MDL_PROJECTILE_BLASTER = models/laser.mdl (all.inc:63 —
+        // MD3 content despite the .mdl extension), scale 1, no fly loop and no dlight (PROJECTILE_BLASTER is
+        // absent from projectile.qc's second per-type switch). Falls back to the additive glow sprite when the
+        // laser model isn't mounted (headless / missing content / factory miss).
         Add(new Desc { Type = ProjectileType.Blaster, TrailEffect = "", Trail = null,
-            Body = BodyFamily.GlowSprite, GlowColor = BlasterYellow });
+            Body = BodyFamily.GlowSprite, ModelPath = "models/laser.mdl", GlowColor = BlasterYellow });
+        // EFFECT_Null — no trail. MDL_PROJECTILE_HLAC = models/hlac_bullet.md3 (all.inc:65). Falls back to the
+        // additive glow sprite when the bolt model isn't mounted (headless / missing content / factory miss),
+        // same convention as Blaster's models/laser.mdl.
         Add(new Desc { Type = ProjectileType.Hlac, TrailEffect = "", Trail = null,
-            Body = BodyFamily.GlowSprite, GlowColor = new Color(0.9f, 0.7f, 0.3f) });
+            Body = BodyFamily.GlowSprite, ModelPath = "models/hlac_bullet.md3", GlowColor = new Color(0.9f, 0.7f, 0.3f) });
         // EFFECT_TR_WIZSPIKE (projectile.qc:355,357-358)
         Add(new Desc { Type = ProjectileType.ArcBolt, TrailEffect = "TR_WIZSPIKE", Trail = WizSpike,
             Body = BodyFamily.GlowSprite, GlowColor = new Color(0.5f, 0.9f, 1.0f), HasLight = true });
@@ -185,15 +197,20 @@ public static class ProjectileCatalog
         // EFFECT_FLAC_TRAIL, scale 0.4 (projectile.qc:365)
         Add(new Desc { Type = ProjectileType.Flac, TrailEffect = "FLAC_TRAIL", Trail = SmallSmoke,
             Body = BodyFamily.GrenadeMesh, ModelScale = 0.4f, GlowColor = new Color(0.8f, 0.8f, 0.5f) });
-        // EFFECT_SEEKER_TRAIL, seeker_fly loop (projectile.qc:366,483)
+        // EFFECT_SEEKER_TRAIL, scale 2, seeker_fly loop (projectile.qc:366,483; seeker.qc W_Seeker_Fire_Missile:
+        // "missile.scale = 2" — the missile body is drawn at 2× the default size, matching rocket/devastator).
         Add(new Desc { Type = ProjectileType.Seeker, TrailEffect = "SEEKER_TRAIL", Trail = SmallSmoke,
-            Body = BodyFamily.RocketMesh, GlowColor = RocketOrange, LoopSound = "weapons/seeker_fly" });
+            Body = BodyFamily.RocketMesh, ModelScale = 2f, GlowColor = RocketOrange, LoopSound = "weapons/seeker_fly" });
         // EFFECT_TR_VORESPIKE (projectile.qc:368)
         Add(new Desc { Type = ProjectileType.MageSpike, TrailEffect = "TR_VORESPIKE", Trail = VoreSpike,
             Body = BodyFamily.GlowSprite, GlowColor = new Color(0.7f, 0.4f, 1.0f), HasLight = true });
-        // EFFECT_TR_NEXUIZPLASMA, scale 2.5, random tumble (projectile.qc:369,431-435)
+        // PROJECTILE_GOLEM_LIGHTNING = models/ebomb.mdl (the electro-orb mesh), scale 2.5, EFFECT_TR_NEXUIZPLASMA,
+        // random tumble (projectile.qc:369,431-435; golem.qc:145 gren.scale = 2.5). Carries the real ebomb model
+        // path (like Electro/RocketMinstaLaser) so the chunk renders the actual mesh, with graceful GlowSprite
+        // fallback when the model isn't mounted.
         Add(new Desc { Type = ProjectileType.GolemLightning, TrailEffect = "TR_NEXUIZPLASMA", Trail = BluePlasma,
-            Body = BodyFamily.GlowSprite, ModelScale = 2.5f, SpinDegPerSec = new Vector3(360f, 480f, 600f),
+            Body = BodyFamily.GlowSprite, ModelPath = "models/ebomb.mdl", ModelScale = 2.5f,
+            SpinDegPerSec = new Vector3(360f, 480f, 600f),
             GlowColor = new Color(0.5f, 0.7f, 1.0f), HasLight = true });
         // Vehicle projectiles (projectile.qc:373-380)
         Add(new Desc { Type = ProjectileType.SpiderRocket, TrailEffect = "SPIDERBOT_ROCKET_TRAIL", Trail = SmallSmoke,
@@ -202,16 +219,63 @@ public static class ProjectileCatalog
             Body = BodyFamily.RocketMesh, GlowColor = RocketOrange, LoopSound = "weapons/tag_rocket_fly" });
         Add(new Desc { Type = ProjectileType.WakiCannon, TrailEffect = "", Trail = null,
             Body = BodyFamily.GlowSprite, GlowColor = BlasterYellow });
+        // PROJECTILE_RAPTORCANNON (projectiles.inc) — the raptor's energy bolt registers the small blue energy
+        // trail (EFFECT_TR_NEXUIZPLASMA), already registered here as BluePlasma. Unlike the WakiCannon (which is
+        // genuinely trailless in QC), the raptor cannon carries an in-flight plasma trail + dlight.
+        Add(new Desc { Type = ProjectileType.RaptorCannon, TrailEffect = "TR_NEXUIZPLASMA", Trail = SmallSmoke,
+            Body = BodyFamily.GlowSprite, GlowColor = BlasterYellow, HasLight = true });
         Add(new Desc { Type = ProjectileType.BumbleGun, TrailEffect = "TR_NEXUIZPLASMA", Trail = BluePlasma,
             Body = BodyFamily.GlowSprite, GlowColor = ElectroBlue, HasLight = true });
         Add(new Desc { Type = ProjectileType.BumbleBeam, TrailEffect = "TR_NEXUIZPLASMA", Trail = BluePlasma,
             Body = BodyFamily.GlowSprite, GlowColor = ElectroBlue, HasLight = true });
-        // EFFECT_ROCKETMINSTA_LASER (projectile.qc:384)
+        // MDL_PROJECTILE_ROCKETMINSTA_LASER = models/elaser.mdl (all.inc:107), EFFECT_ROCKETMINSTA_LASER trail,
+        // team colormod applied per-bolt by the renderer (projectile.qc:384,504-506). Falls back to the GlowSprite
+        // when the elaser model isn't mounted (headless / missing content).
         Add(new Desc { Type = ProjectileType.RocketMinstaLaser, TrailEffect = "ROCKETMINSTA_LASER", Trail = LaserRed,
-            Body = BodyFamily.GlowSprite, GlowColor = new Color(1.0f, 0.3f, 0.3f), HasLight = true });
+            Body = BodyFamily.GlowSprite, ModelPath = "models/elaser.mdl",
+            GlowColor = new Color(1.0f, 0.3f, 0.3f), HasLight = true });
         // Generic plasma (Fireball/Vaporizer "plasma_prim") — blue energy bolt with a light.
         Add(new Desc { Type = ProjectileType.Plasma, TrailEffect = "TR_NEXUIZPLASMA", Trail = BluePlasma,
             Body = BodyFamily.GlowSprite, GlowColor = ElectroBlue, HasLight = true });
+        // Held-nade projectiles (cl_nades). QC draws the thrown nade with MDL_PROJECTILE_NADE = grenademodel.md3
+        // at scale 1.5 (cl_nades.qc Nade draw) with a random tumble avelocity, tinted by the per-type
+        // NadeRegistry m_color (nades.qh REGISTER_NADE m_color). The spin Vector3(0,-600,0) approximates QC's
+        // random avelocity tumble. Per-type GlowColor mirrors NadeRegistry.NadeDef.Color exactly. NadeNormal is
+        // grey/white with no trail; the elemental nades carry a small matching trail.
+        Add(new Desc { Type = ProjectileType.NadeNormal, TrailEffect = "", Trail = null,
+            Body = BodyFamily.GrenadeMesh, ModelPath = "models/grenademodel.md3", ModelScale = 1.5f,
+            SpinDegPerSec = new Vector3(0, -600f, 0), GlowColor = new Color(1f, 1f, 1f) });
+        // Napalm — fire trail (the EF_FLAME / FIREBALL_LASER analog), orange.
+        Add(new Desc { Type = ProjectileType.NadeNapalm, TrailEffect = "FIREBALL", Trail = FireSmall,
+            Body = BodyFamily.GrenadeMesh, ModelPath = "models/grenademodel.md3", ModelScale = 1.5f,
+            SpinDegPerSec = new Vector3(0, -600f, 0), GlowColor = new Color(1f, 0.5f, 0f) });
+        Add(new Desc { Type = ProjectileType.NadeIce, TrailEffect = "TR_NEXUIZPLASMA", Trail = BluePlasma,
+            Body = BodyFamily.GrenadeMesh, ModelPath = "models/grenademodel.md3", ModelScale = 1.5f,
+            SpinDegPerSec = new Vector3(0, -600f, 0), GlowColor = new Color(0f, 0.66f, 1f) });
+        Add(new Desc { Type = ProjectileType.NadeTranslocate, TrailEffect = "", Trail = null,
+            Body = BodyFamily.GrenadeMesh, ModelPath = "models/grenademodel.md3", ModelScale = 1.5f,
+            SpinDegPerSec = new Vector3(0, -600f, 0), GlowColor = new Color(1f, 0f, 1f) });
+        Add(new Desc { Type = ProjectileType.NadeSpawn, TrailEffect = "", Trail = null,
+            Body = BodyFamily.GrenadeMesh, ModelPath = "models/grenademodel.md3", ModelScale = 1.5f,
+            SpinDegPerSec = new Vector3(0, -600f, 0), GlowColor = new Color(1f, 0.9f, 0f) });
+        Add(new Desc { Type = ProjectileType.NadeHeal, TrailEffect = "", Trail = null,
+            Body = BodyFamily.GrenadeMesh, ModelPath = "models/grenademodel.md3", ModelScale = 1.5f,
+            SpinDegPerSec = new Vector3(0, -600f, 0), GlowColor = new Color(1f, 0f, 0f) });
+        Add(new Desc { Type = ProjectileType.NadeMonster, TrailEffect = "", Trail = null,
+            Body = BodyFamily.GrenadeMesh, ModelPath = "models/grenademodel.md3", ModelScale = 1.5f,
+            SpinDegPerSec = new Vector3(0, -600f, 0), GlowColor = new Color(0.1f, 0.65f, 0f) });
+        Add(new Desc { Type = ProjectileType.NadeEntrap, TrailEffect = "", Trail = null,
+            Body = BodyFamily.GrenadeMesh, ModelPath = "models/grenademodel.md3", ModelScale = 1.5f,
+            SpinDegPerSec = new Vector3(0, -600f, 0), GlowColor = new Color(0.4f, 0.85f, 0.15f) });
+        Add(new Desc { Type = ProjectileType.NadeVeil, TrailEffect = "", Trail = null,
+            Body = BodyFamily.GrenadeMesh, ModelPath = "models/grenademodel.md3", ModelScale = 1.5f,
+            SpinDegPerSec = new Vector3(0, -600f, 0), GlowColor = new Color(0.65f, 0.85f, 0.65f) });
+        Add(new Desc { Type = ProjectileType.NadeAmmo, TrailEffect = "", Trail = null,
+            Body = BodyFamily.GrenadeMesh, ModelPath = "models/grenademodel.md3", ModelScale = 1.5f,
+            SpinDegPerSec = new Vector3(0, -600f, 0), GlowColor = new Color(0.33f, 0.33f, 1f) });
+        Add(new Desc { Type = ProjectileType.NadeDarkness, TrailEffect = "", Trail = null,
+            Body = BodyFamily.GrenadeMesh, ModelPath = "models/grenademodel.md3", ModelScale = 1.5f,
+            SpinDegPerSec = new Vector3(0, -600f, 0), GlowColor = new Color(0.23f, 0f, 0.23f) });
         // Generic fallback — neutral glow, light smoke.
         Add(new Desc { Type = ProjectileType.Generic, TrailEffect = "", Trail = SmallSmoke,
             Body = BodyFamily.GlowSprite, GlowColor = new Color(0.85f, 0.85f, 0.9f) });
@@ -226,6 +290,10 @@ public static class ProjectileCatalog
     //  Classify an entity → ProjectileType (the server-spawned classname/model is the QC key)
     // ============================================================================================
 
+    /// <summary>DP EF_BLUE (dpextensions.qc:101) — set on a porto projectile rendering as the out-portal (blue)
+    /// variant; cleared (EF_RED) for the in-portal (red) variant. The combined shot flips it mid-flight.</summary>
+    private const int EfBlue = 64;
+
     /// <summary>
     /// Resolve a projectile entity to its <see cref="ProjectileType"/> from the server-assigned classname /
     /// model / netname (the same strings the QC keys on). The classnames are the ones the ported weapons set
@@ -239,30 +307,70 @@ public static class ProjectileCatalog
         // Vehicle rockets first (more specific than the generic "rocket"/"missile").
         if (Has(s, "spiderbot_rocket", "spiderrocket")) return ProjectileType.SpiderRocket;
         if (Has(s, "wakizashi_rocket", "wakirocket", "racer_rocket")) return ProjectileType.WakiRocket;
-        if (Has(s, "raptorcannon")) return ProjectileType.WakiCannon;
+        if (Has(s, "raptorcannon")) return ProjectileType.RaptorCannon;
 
         // electro_bolt is the PRIMARY (PROJECTILE_ELECTRO_BEAM: elaser model, no fly loop, electro_impact);
         // electro_orb the SECONDARY ball (PROJECTILE_ELECTRO: ebomb model, electro_fly loop, ballexplode).
         if (Has(s, "electro_bolt", "elaser")) return ProjectileType.ElectroBeam;
         if (Has(s, "electro_orb", "electro")) return ProjectileType.Electro;
+        // The RocketMinsta laser bolt networks netname "rocketminsta" (Vaporizer.RocketMinstaLaserBarrage); its
+        // distinct PROJECTILE_ROCKETMINSTA_LASER visual (elaser model + red ROCKETMINSTA_LASER trail + team
+        // colormod) MUST be matched BEFORE the generic "rocket" check below — otherwise the "rocket" substring
+        // inside "rocketminsta" misclassifies the bolt as a Devastator rocket (smoke trail + rocket-fly loop).
+        if (Has(s, "rocketminsta")) return ProjectileType.RocketMinstaLaser;
         if (Has(s, "devastator", "rocket")) return ProjectileType.Rocket;
         if (Has(s, "rpc")) return ProjectileType.Rpc;
+        // The mage spike sets NetName "mage_spike" (Mage.cs); the key string contains the substring "spike",
+        // so check "mage" BEFORE the generic crylink "spike" branch below — otherwise the in-flight spike is
+        // misclassified as a Crylink bolt (purple shards) instead of PROJECTILE_MAGE_SPIKE (TR_VORESPIKE).
+        if (Has(s, "mage")) return ProjectileType.MageSpike;
         if (Has(s, "spike", "crylink")) return ProjectileType.Crylink;
         if (Has(s, "hookbomb")) return ProjectileType.Hookbomb;
         if (Has(s, "grapplinghook", "hook")) return ProjectileType.Hookbomb;
         if (Has(s, "mine")) return ProjectileType.Mine;
-        if (Has(s, "grenade", "nade", "mortar")) return ProjectileType.Grenade;
+        // Held-nade projectiles (cl_nades). The server stamps the nade entity's classname "nade" and appends the
+        // per-type netname (ServerNet → key "nade <netname>"), so the key carries the Nades-registry token. This
+        // MUST be matched BEFORE the mortar "grenade" branch below: the mortar's classname is "grenade" (which
+        // contains the substring "nade"), so the held nade is told apart by its standalone "nade" classname (the
+        // mortar's "grenade" never yields a bare "nade" token) PLUS the per-type netname. A bare "nade" with no
+        // type token is the default NadeNormal.
+        if (HasNadeClass(s))
+        {
+            if (Has(s, "napalm")) return ProjectileType.NadeNapalm;
+            if (Has(s, "ice")) return ProjectileType.NadeIce;
+            if (Has(s, "translocate")) return ProjectileType.NadeTranslocate;
+            if (Has(s, "spawn")) return ProjectileType.NadeSpawn;
+            if (Has(s, "heal")) return ProjectileType.NadeHeal;
+            if (Has(s, "pokenade", "monster")) return ProjectileType.NadeMonster;
+            if (Has(s, "entrap")) return ProjectileType.NadeEntrap;
+            if (Has(s, "veil")) return ProjectileType.NadeVeil;
+            if (Has(s, "ammo")) return ProjectileType.NadeAmmo;
+            if (Has(s, "darkness")) return ProjectileType.NadeDarkness;
+            return ProjectileType.NadeNormal; // bare "nade"/"normal" — the default held nade
+        }
+        // The bouncing mortar grenade (type 1) networks a "bouncing" token (ServerNet) so it draws the
+        // sideways-tumbling PROJECTILE_GRENADE_BOUNCING model rather than the plain PROJECTILE_GRENADE.
+        if (Has(s, "grenade", "mortar"))
+            return Has(s, "bouncing") ? ProjectileType.GrenadeBouncing : ProjectileType.Grenade;
         if (Has(s, "hagar")) return ProjectileType.Hagar;
         if (Has(s, "seeker_tag", "tag_tracker", "tag")) return ProjectileType.Tag;
         if (Has(s, "seeker_missile", "seeker")) return ProjectileType.Seeker;
         if (Has(s, "flac")) return ProjectileType.Flac;
         if (Has(s, "firemine", "firemine")) return ProjectileType.Firemine;
+        // The wyvern's monster_projectile networks netname "wyvern"; QC wr_think draws it as
+        // CSQCProjectile(..., PROJECTILE_FIREMINE, ...) — the spinning fire-mine visual (FireSprite body,
+        // FireOrange glow + light, FIREMINE trail). Keyed before "fireball" so the netname resolves here.
+        if (Has(s, "wyvern")) return ProjectileType.Firemine;
         if (Has(s, "fireball")) return ProjectileType.Fireball;
-        if (Has(s, "porto")) return ProjectileType.PortoRed;
+        // The porto projectile networks its red (in-portal) / blue (out-portal) state in Entity.Effects via
+        // the DP EF_RED (128) / EF_BLUE (64) bits, flipped mid-flight when a combined shot lays its in-portal
+        // and continues as the out-portal (porto.qc:242-243, CSQCProjectile(...PROJECTILE_PORTO_BLUE)). The
+        // server seeds type<=0 as RED and type 1 as BLUE; we key on the effect bit so the blue variant renders.
+        if (Has(s, "porto"))
+            return (e.Effects & EfBlue) != 0 ? ProjectileType.PortoBlue : ProjectileType.PortoRed;
         if (Has(s, "arc")) return ProjectileType.ArcBolt;
         if (Has(s, "hlacbolt", "hlac")) return ProjectileType.Hlac;
-        if (Has(s, "rocketminsta")) return ProjectileType.RocketMinstaLaser;
-        if (Has(s, "mage")) return ProjectileType.MageSpike;
+        // (rocketminsta handled above, before the generic "rocket" check; mage handled above, before "spike")
         if (Has(s, "golem")) return ProjectileType.GolemLightning;
         if (Has(s, "plasma", "vaporizer", "minsta")) return ProjectileType.Plasma;
         if (Has(s, "blaster", "laser")) return ProjectileType.Blaster;
@@ -275,6 +383,15 @@ public static class ProjectileCatalog
             if (hay.Contains(n, StringComparison.Ordinal)) return true;
         return false;
     }
+
+    /// <summary>
+    /// True when the key carries a held-nade classname ("nade"/"fake_nade") rather than a mortar "grenade".
+    /// The mortar grenade's classname "grenade" contains the substring "nade", so a naive Contains("nade")
+    /// would misfire — we require a standalone "nade" token (start-of-key or space-prefixed) so only the held
+    /// nade's classname matches. (The key is "classname model netname", lowercased, space-separated.)
+    /// </summary>
+    private static bool HasNadeClass(string s)
+        => s.StartsWith("nade", StringComparison.Ordinal) || s.Contains(" nade", StringComparison.Ordinal);
 
     // ============================================================================================
     //  Client-side collision behaviour (ProjectilePredictor world trace)
@@ -311,6 +428,13 @@ public static class ProjectileCatalog
 
         ProjectileType.CrylinkBouncing or ProjectileType.ArcBolt or ProjectileType.HagarBouncing
             or ProjectileType.PortoRed or ProjectileType.PortoBlue => CollisionMode.Bounce,
+
+        // The held nades are MOVETYPE_BOUNCE gravity bouncers (like the grenade), so they stay None (straight
+        // + snapshot correction) until client-side gravity integration lands — same as grenade/mine.
+        ProjectileType.NadeNormal or ProjectileType.NadeNapalm or ProjectileType.NadeIce
+            or ProjectileType.NadeTranslocate or ProjectileType.NadeSpawn or ProjectileType.NadeHeal
+            or ProjectileType.NadeMonster or ProjectileType.NadeEntrap or ProjectileType.NadeVeil
+            or ProjectileType.NadeAmmo or ProjectileType.NadeDarkness => CollisionMode.None,
 
         _ => CollisionMode.None, // gravity TOSS/BOUNCE (grenade/mine/electro/hookbomb/firemine) + unknowns
     };

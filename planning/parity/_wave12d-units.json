@@ -1,0 +1,337 @@
+[
+ {
+  "unit": "bot-ai",
+  "tier": "opus",
+  "notes": [
+   "[logic] bot-ai.population.namemodel: shirt/pants color columns (argv3/argv4 → setcolor) and the 12 per-bot skill-modifier columns of bots.txt are still not parsed (name+model+skin+forced-team only); shirt/pants need a server-side player-color/colormap field the port lacks, and the skill columns drive the skill-modifier gap elsewhere.",
+   "[values] bot-ai.think.throttle: Simulated bot ping/aim-latency (CS(this).ping, bot_aimlatency) is not modeled; bots have zero network latency, so their lead/reaction is slightly sharper than stock at low skill.",
+   "[values] bot-ai.aim.fire: Long-range fire-hesitation chance still omits the bot_aggresskill modifier (port uses skill only), so per-bot aggression variance is lost. (UNCHANGED.)",
+   "[logic/values] bot-ai.aim.lead: Ballistic aim is a closed-form gravity-drop approximation, not QC's 10-trace tracetoss search; lobbed-weapon aim (mortar/nade) is less accurate, especially with obstacles in the arc, and never traces the world to confirm the toss lands. (UNCHANGED.) ; Shot speed is read from g_balance_<wep>_primary_speed/gravity for the single ChosenWeapon (now via a BotAimShotSpeed override hook), not per-weaponentity with W_WeaponSpeedFactor applied; weapons without those cvars are treated as hitscan (no lead)",
+   "[logic] bot-ai.target.chooseenemy: No second see-through-transparent (DPCONTENTS_OPAQUE) scan pass and no misc_breakablemodel secondary targeting; bots won't shoot breakables or acquire targets through transparent surfaces. (UNCHANGED.)",
+   "[logic/values] bot-ai.weapon.choose: Weapon picking is a hitscan-at-range / splash-up-close bucket choosing the highest-impulse owned weapon, not the QC ordered far/mid/close priority lists. (UNCHANGED — Wave 10 honestly deferred.) ; No weapon-combo behaviour (bot_ai_weapon_combo): bots don't hold a weapon for a follow-up combo shot. (UNCHANGED.) ; No bot_rangepreference shift, so per-bot 'sniper vs spammer' weapon-range personalities are absent. (UNCHANGED.)",
+   "[logic] bot-ai.weapon.wr_aim: Only the ChosenWeapon's wr_aim is consulted — there is no MAX_WEAPONSLOTS per-slot loop (Base runs wr_aim for every owned weapon slot each think). (NEW residual after Wave 10.) ; wr_aim is ported on only 8 of Base's 18 wr_aim weapons; the headline weapon COMBOS — mortar airburst, electro combo, hagar burst, vortex charge — are NOT ported, so bots still don't do those alt-fire combos. (NARROWED from 'never any secondary'.) ; lastfiredweapon combo bookkeeping is not modeled; combos that depend on ",
+   "[logic/values] bot-ai.roles.goalrating: Goal rating still uses straight-line inverse distance (f*rangebias/(rangebias+vlen(dist))) instead of the QC waypoint-cost (Dijkstra) field; bots can prefer a goal near in a straight line but far by path. (UNCHANGED — GoalRater.Rate is still vlen.) ; rangebias is still hardcoded 2000 for every rate call (items/enemies/roam) instead of the per-rating-call bias QC uses. (UNCHANGED.) ; No separate _movingtarget (5.5s) strategy interval for goals that can move. (UNCHANGED.) ; enemyplayers aggression",
+   "[logic] bot-ai.move.steer: QC's full movetogoal handling of teleport/ladder/box-volume waypoints, water swim-up, and the per-goal stop/turn logic is partially collapsed; complex waypoint traversal is less robust than stock. (UNCHANGED.) ; BotTracewalk (reachability test, separate from the brain danger check) still uses a hardcoded JumpStepHeight const = 48 rather than the live derivation; non-default physics doesn't adjust that one path. (Minor — the brain danger check and Steer reach are now live.)",
+   "[logic] bot-ai.move.danger: Danger evade is still brake-only: the QC lateral evadedanger vector (steer along the safe edge, distance scaled by skill) is collapsed into a reverse-velocity brake, so bots back straight off a ledge instead of sidestepping along it. (UNCHANGED.) ; Per-waypoint danger-cost ROUTING is inert: a Waypoint.Danger field exists and A* adds nb.Danger, but no botframe_updatedangerousobjects producer ever SETS Danger (it is always 0, BotPopulation.cs:203 notes it unported), so routing still does not avoid",
+   "[logic/values/timing] bot-ai.combat.dodge: Combat movement is invented (periodic strafe-direction flip + health-advantage close/flee bias), not QC havocbot_dodge which sidesteps specific incoming projectiles by their flight path. (UNCHANGED — Wave 10 honestly deferred havocbot_dodge.) ; The SUPERBOT random-direction combat jitter (havocbot_movetogoal:1280-1307) is not reproduced; only the generic strafe stands in. (UNCHANGED.)",
+   "[logic/values/timing] bot-ai.special.jetpack_rocketjump: Jetpack navigation (take off / fly to point / brake-land) is missing: bots can't cross jetpack-only gaps even with bot_ai_navigation_jetpack on. (UNCHANGED.) ; Skill>6 trigger_hurt escape (jetpack up, or Devastator rocketjump if HP allows) is missing: bots die in hurt volumes they could have escaped. (UNCHANGED.)",
+   "[logic/values/timing] bot-ai.scripting.commands: Bot scripting entirely missing: the bot_cmd command queue does nothing, so map/console bot scripts, cutscene-driven bots, and g_waypointeditor bot driving are inert. (UNCHANGED.)"
+  ]
+ },
+ {
+  "unit": "bot-waypoints",
+  "tier": "opus",
+  "notes": [
+   "[logic/values/timing/liveness] bot-waypoints.graph.autolink: No PVS cull: Base culls candidate links by checkpvs before tracewalking; the port does distance + tracewalk only (slower, may keep links Base culls). ; No crouch<->normal short-link special case (Base caps those at 100qu, not 1050qu). ; Box / JUMP / SUPPORT directional link forbidding not replicated: Base forbids specific outgoing/incoming directions for boxes, JUMP and SUPPORT (waypoints.qc:1212-1237); the port skips teleport/jump/ladder/custom/support sources wholesale instead.",
+   "[logic] bot-waypoints.file.load_hardwired: Hardwired links are marked with the CustomJp flag as a stand-in (no dedicated wphwXX mirror / hardwired concept), so links cannot be identified for save/round-trip; the special-link '*'-prefix is loaded the same as a normal link rather than getting Base's special-link source-type filter.",
+   "[logic/values/timing/liveness] bot-waypoints.auto.spawnforitem: Only runs in the no-.waypoints-file auto-generate path; on maps that ship a .waypoints file the port does NOT inject runtime item/teleporter waypoints (Base always does waypoint_spawnforitem at item spawn, snapping to the item). ; bot_waypoints_for_items (= g_waypoints_for_items) gate not honored; floor-snapping uses a fixed +24 z offset rather than Base's waypoint_fixorigin tracedown.",
+   "[logic/values/liveness] bot-waypoints.auto.spawnforteleporter: No warpzone-angle math (Base makevectors(warpzone_angles) src/dest projection) and no oblique-warpzone JUMP flag; jumppad push-time cost is approximated (Base uses trigger_push_get_push_time / the auto-link cost), the port uses the plain travel cost. ; Generated-graph path only; shipped maps use authored teleport waypoints from the file.",
+   "[logic] bot-waypoints.path.findnearest: No jumppad-fallback (Base returns a reachable jumppad's nearest waypoint when no plain waypoint is reachable); no walkfromwp (walk-TO vs walk-FROM) direction distinction in the reachability tracewalk.",
+   "[logic] bot-waypoints.path.routetogoal: Teleport-goal forcing (push wp00 destination, set goalentity), dynamic/moving-target shortcut (bot_ai_strategyinterval_movingtarget 5.5) and the item incoming-link walkability cache are simplified/absent; the port pushes the A* node chain + goal directly.",
+   "[logic] bot-waypoints.steer.movetogoal: Obstacle avoidance is a single forward step/jump-height tracebox probe rather than Base's steerlib trident/funnel sweep (see bot-waypoints.steer.steerlib); lateral evade is folded into a straight -velocity brake (BotBrain do_break), a documented simplification of Base's AI_STATUS_DANGER_AHEAD sidestep.",
+   "[logic] bot-waypoints.steer.bunnyhop: Base forbids bunnyhop when evadedanger || do_break is set this frame (havocbot.qc:1315); the port computes Bunnyhop inside Steer (BotNavigation.cs:318) before the BotBrain danger brake runs, so a braking bot can still have WantJump set from bunnyhop. The Steer-internal ledge brake (BotNavigation.cs:289-301) is separate from the BotBrain do_break/evadedanger gate and is not consulted by Bunnyhop.",
+   "[logic/values] bot-waypoints.steer.steerlib: No steerlib library: flocking/swarm/traceavoid/beamsteer primitives absent (group flocking, the trident/funnel traceavoid obstacle steering, and beamsteer). Bots do not flock and use the simpler single-probe avoidance in Steer + the BotDanger fall probe.",
+   "[logic/values/timing] bot-waypoints.editor: No in-game waypoint editor: cannot place/remove/hardwire/mirror waypoints (g_waypointeditor*); no editor visualization (waypoint model, link lightning beams, colormod by flag). ; No runtime auto-waypointing toward players (botframe_autowaypoints) or useless-waypoint pruning (botframe_deleteuselesswaypoints): the loaded graph is static."
+  ]
+ },
+ {
+  "unit": "cl-announcer",
+  "tier": "haiku",
+  "notes": [
+   "[liveness] cl-announcer.voice.cvars: Base AnnouncerFilename resolves the voice pack via AnnouncerOption() = autocvar_cl_announcer + the MUTATOR_CALLHOOK(AnnouncerOption) override (used to swap the announcer voice, e.g. overkill). The port reads the user cvar but has no AnnouncerOption mutator hook, so a mutator cannot override the announcer voice. (Also: AnnouncerResolver in NetGame captures the voice once at HUD setup, so a mid-match cl_announcer change isn't picked up — minor.)"
+  ]
+ },
+ {
+  "unit": "cl-crosshair",
+  "tier": "opus",
+  "notes": [
+   "[logic] cl-crosshair.core.master_gating: Port gates only on Visible + crosshair_enabled/size/alpha/number; Base's full suppress set (scoreboard/camera/intermission2/game-stopped/lockview/spectatee==-1/HEALTH<=0/DrawCrosshair mutator hook/viewloc/minigame menu/CAMERA_SPECTATOR==2/hud!=HUD_NORMAL) is reduced to the NetGame Visible toggle (havePlayer at NetGame:3366).",
+   "[logic/values] cl-crosshair.core.origin_chase: Crosshair is always drawn at the geometric panel centre (DrawPanel: center = Size2*0.5f). The chase-camera branch (trace from player org along view_forward MOVE_WORLDONLY, project the impact, fade the player body alpha toward crosshair_chase_playeralpha while it obstructs the view, restore on chase-off via the crosshair_chase_state latch) is not implemented. ; crosshair_chase and crosshair_chase_playeralpha are not even registered in RegisterDefaults (CrosshairPanel.cs:297-370).",
+   "[logic] cl-crosshair.color.special_modes: crosshair_color_special 3 (rainbow: randomvec()*brightness re-rolled every rainbow_delay, crosshair.qc:189-196) is not ported — ColorModeCvar (CrosshairPanel.cs:537-542) maps only 0/1/2, so mode 3 silently falls back to fixed color. The rainbow_brightness/delay cvars are registered but dead.",
+   "[liveness] cl-crosshair.anim.pickup_pulse: FIXED (host path): UpdatePickupFeed now calls CrosshairPanel.PulsePickup() (NetGame:2864) when a new weapon or a resource jump is detected on the LocalServerPlayer (re-baselined on respawn so the spawn loadout isn't counted). The crosshair bumps on item pickup on the host/listen-server. Still host-only: the detection reads LocalServerPlayer, so a pure remote client (LocalServerPlayer==null) gets no pulse — the networked STAT(LAST_PICKUP) equivalent is not read back into the panel client-side. ; ",
+   "[liveness] cl-crosshair.anim.hit_indication: Host-only: HitFlash=1 is set only inside `if (_server is not null)` (NetGame:2301, driven by the host-side damagetext mutator drain). A pure remote client gets no hit-indication bump/flash even though HitDamageDealtTotal is networked (ServerNet.cs) and the client diffs it for the hit SOUND — but not for the crosshair flash. ; Coupled to the damagetext mutator events rather than the Base path (UpdateDamage diffs STAT(HITSOUND_DAMAGE_DEALT_TOTAL) on STAT(HIT_TIME) advance); fires on local-player-d",
+   "[liveness] cl-crosshair.anim.switch_crossfade: Keyed on the resolved Texture2D changing rather than the wcross_name/resolution string pair; with the per-weapon dict unpopulated the trigger only fires on a `crosshair` cvar change, NOT on every weapon switch — so in normal play (one crosshair number for all weapons) the cross-fade effectively never runs.",
+   "[values] cl-crosshair.trueaim.teammate_blur_signal: Teammate shrink divisor diverges at DEFAULT cvars: Base `wcross_scale /= crosshair_hittest` divides by 1 (crosshair_hittest default 1 => NO shrink), but the port divides by a separate HitTestTeammateShrink property (default 1.25 => visibly shrinks). The port shrinks where Base does not. ; Blur is a 5x5 spread of 0.04-alpha texture copies (matches Base's CROSSHAIR_DO_BLUR for textured crosshairs, crosshair.qc:585-596); only applies to the textured path (DrawCrosshairTexture), not the vector fallb",
+   "[liveness] cl-crosshair.ring.vortex_charge: FIXED (host path): UpdateCrosshairWeaponRings now feeds CrosshairPanel.ChargeFraction = st.VortexCharge and .ChargePool = st.VortexChargePoolAmmo (NetGame:2905-06) while a vortex/vaporizer/*nex* weapon is active off the host-side slot-0 WeaponSlotState (the C# home of QC wepent.*). The Vortex charge ring + inner chargepool/moving-average ring now render for the host player. VortexCharge is genuinely produced server-side (Vortex.cs/OkNex.cs). Still host-only: read off LocalServerPlayer inside `if",
+   "[liveness] cl-crosshair.ring.reload_ammo: FIXED (host path): UpdateCrosshairWeaponRings now feeds CrosshairPanel.ClipLoad = st.ClipLoad and .ClipSize = st.ClipSize when the active slot has a clip (NetGame:2917-18). The ammo ring renders for every reloadable weapon on the host. ClipLoad/ClipSize are genuinely maintained on the slot by WeaponFireGate/WeaponFireDriver. Still host-only: read off LocalServerPlayer inside `if (_server is not null)`; remote clients get the -1/0 sentinel and no ring.",
+   "[liveness] cl-crosshair.ring.minelayer_hagar_arc: FIXED (host path): UpdateCrosshairWeaponRings now feeds CrosshairPanel.HagarLoad (st.HagarLoad, NetGame:2929), .MineCount (live g_mines scan of mines owned by the player, 2941-44), and .ArcHeat (st.BeamHeat/OverheatMax with the overheat-jam latch, 2960-63) when the matching weapon is active. Mine-count, Hagar burst-load, and Arc overheat rings now render for the host player. HagarLoad/BeamHeat/ArcOverheat are genuinely produced server-side (Hagar.cs/Arc.cs). Still host-only: read off LocalServer",
+   "[liveness] cl-crosshair.ring.switch_fade: Now reachable on the host path: with the weapon-stat rings fed (UpdateCrosshairWeaponRings), DrawStatRing produces rings and calls SwitchRingFade (DrawStatRing:943), so the switch fade runs when the host player swaps between ring-bearing weapons. Still dead for a pure remote client (no ring ever draws there).",
+   "[liveness] cl-crosshair.objring.nade_capture_revive: PARTIAL FIX: REVIVE_PROGRESS is now fed (NetGame:2328, _fullHud.Crosshair.ReviveProgress = LocalServerPlayer?.ReviveProgress) alongside NadeTimer (2327), both host-only inside `if (_server is not null)`. Player.ReviveProgress is genuinely mirrored each tick by FreezeTag (FreezeTag.cs), so the host player's thaw ring now renders. STILL OPEN: CAPTURE_PROGRESS is never assigned on any production path (grep finds only test-side .CaptureProgress= plus the networked NetEntity.CaptureProgress field whi",
+   "[logic/values/liveness] cl-crosshair.per_weapon_2d_vehicle: Per-weapon crosshair: PerWeaponNumber dict is never populated by any caller (grep finds zero assignments outside the property def CrosshairPanel.cs:97), so every weapon shows the same `crosshair` number (Base maps each weapon to its own w_crosshair pic + w_crosshair_size multiplier). ; crosshair_2d (side-scroller, default 54) is NOT registered and has no port. HUD_Crosshair_Vehicle (info.vr_crosshair) has no port."
+  ]
+ },
+ {
+  "unit": "cl-csqcmodel",
+  "tier": "opus",
+  "notes": [
+   "[logic] cl-csqcmodel.predraw.dispatch_order: Order is appearance->LOD->effects (skeletal anim runs in a separate PlayerModel.Pose pass, not interleaved here); the appearance-before-LOD ordering is moot because LOD is a no-op swap. ; AutoTagIndex recursion + drawmask=0 on null-model are not part of this pass (held weapons attach via ViewEntityRenderer).",
+   "[logic/values/timing/liveness] cl-csqcmodel.animdecide.state_machine: animdecide is NOT ported: the networked anim_state / anim_upper_action / anim_lower_action / anim_time inputs are not sent or read (grep confirms zero anim_* bits in NetEntity/ClientEntityView), so upper-body ACTIONS (shoot/melee/pain/draw/taunt overlays on the torso) never play on the third-person model. ; The 8-direction + duck-variant locomotion (~24 movement clips incl. runbackwards, strafeleft/right, forwardleft/right, backleft/right, duckwalk* directional set) is replaced by a coarse 6-sta",
+   "[liveness] cl-csqcmodel.fallbackframe.remap: Live only on the MD3 ModelAnimator player path; skeletal-IQM players drive frames via LocomotionBlend, which never produces the high-numbered melee/duckwalk frame ids that the remap targets, so the remap rarely fires in practice.",
+   "[logic/liveness] cl-csqcmodel.tagindex.weapon_attach: The QC h_/v_ model tag resolution cascade (weapon bone -> gettagindex weapon/tag_weapon -> shot/tag_shot, with recursive parent predraw and drawmask=0 when the tag can't resolve) is simplified to a tag_weapon marker attach; weapon-on-weapon and the shot-muzzle tag chain are not faithfully reproduced. ; No recursive predraw of the parent entity to fix forcemodel/LOD bone-index mismatch (forcemodel is live, so a forced-model bone-index mismatch on the held weapon attach is a possible edge case; LO",
+   "[logic/values/liveness] cl-csqcmodel.effects.ef_mf_trail_lights: FIX (Wave 5): the per-player forced-effects seam is now LIVE for MF_ROCKET. ClientWorld.DriveCsqcModelHooks composes ForcedAppearance(jetpackActive:true) from the networked e.UsingJetpack and passes it to CsqcModelEffects.Apply(...,forced); forced.ModelFlags ORs MF_ROCKET into modelFlags, driving both the rocket trail return and the jetpack loop. So MF_ROCKET trail + loop now fire for remote players. ; STILL OPEN: the OTHER MF trails (grenade/gib/tracer/zomgib/tracer2/tracer3) are mapped in Csqc",
+   "[logic/values/liveness] cl-csqcmodel.networking.csqcmodel_contract: FIX (Wave 5): ALPHA is now FULLY wired end-to-end (closed the baseline 'half-wired/dead-on-consume' gap). The producer (ServerNet.QuantizeAlpha for players + entities), codec (WriteByte/ReadByte at EntityField.Alpha 1<<17), the client consume (ClientEntityView: `e.Alpha = s.Alpha == 0 ? 1f : s.Alpha/255f`), and the render (PlayerModel.ApplyAlpha sets per-instance GeometryInstance3D.Transparency on every mesh) are all live. A Cloaked (0.25) / Invisibility / fading player now renders translucent o"
+  ]
+ },
+ {
+  "unit": "cl-hud",
+  "tier": "opus",
+  "notes": [
+   "[liveness] cl-hud.panel.radar: Maximized clickable mode (ons spawn / teleport select) is still unported; the discovered radar panel is force-hidden (StartHiddenIds) to avoid a double radar and the live radar is the standalone _radar.",
+   "[logic] cl-hud.panel.modicons: Mode coverage is now CA/FreezeTag/Keyhunt/Survival/Assault/Domination/CTF/Keepaway; the full per-gametype icon-art fidelity (dom point ownership icons, some flag transitions) is partial.",
+   "[liveness] cl-hud.panel.pressedkeys: Spectating-only enable gate + the key_*/key_*_inv art coverage not runtime-verified; only shows for the local/spectated pressed-keys stat.",
+   "[logic] cl-hud.panel.infomessages: Cycling group hints (spectate controls), team-unbalanced nag, spectator list and the full message set are partially covered (the eliminated-LMS line is now present).",
+   "[logic] cl-hud.panel.quickmenu: Nested quick-chat tree from a quickmenu file + translatecommands/server_is_default parity not verified.",
+   "[logic] cl-hud.panel.minigame: Board + status are merged into one MinigameRenderer (board square + team pieces + win-line + status line) rather than the QC BOARD/STATUS split; only the implemented minigame rule-sets are renderable. Per-game _hud_board/_hud_status art coverage not all runtime-verified."
+  ]
+ },
+ {
+  "unit": "cl-scoreboard",
+  "tier": "opus",
+  "notes": [
+   "[logic] cl-scoreboard.field.formatting: SP_FPS and SP_SKILL columns never render (FieldByLabel returns null for fps/skill — client-only display fields with no port plumbing); the GetField FPS/SKILL branches exist (ScoreboardPanel.cs:684-697) but are unreachable because the columns are never fed. ; scores_per_round averaging is now plumbed (ScoresPerRound + per-field roundsPlayed division), but no interactive scores_per_round toggle (Ctrl+R) — only a console cvar drives it.",
+   "[logic/values/timing/liveness] cl-scoreboard.field.name_icons: Handicap icon is PORTED + LIVE (DrawRow:1075-1083 draws a square at the EXACT QC tint '1 0 0' + '0 1 1' * ((16-lvl)/15), white@1 → red@16, fed by the networked handicap_level). ; Still missing: player-color shirt/pants swatch (gfx/scoreboard/playercolor_*), pulsing ready check, ignored icon, the pulsing (Q) wants-join team marker, and the playerid '#N' prefix (Scoreboard_AddPlayerId). ; Handicap icon is drawn as a flat colored square (no gfx/scoreboard/player_handicap texture); presentation fait",
+   "[values] cl-scoreboard.teams.grouping_totals: Only the primary team slot total is shown (SetWireRows stores wire.Teams primary slot); the secondary teamscore (e.g. keyhunt) and the team-size N/M side display (team_size_position) are not rendered. ; team_size_position (score-on-left vs right) layout option absent; totals drawn as colored banner boxes, not the QC bold hud_fontsize*1.5 side numbers.",
+   "[logic/values/timing] cl-scoreboard.block.accuracy: Drawn as plain text '%' cells, not the per-weapon ICON grid (drawpic weapon model2) with column/row highlighting. ; No accuracy_showdelay gating, no warmup suppression, no doublerows, no Accuracy_GetColor weapon ramp or nocolors option; the port's average color ramp differs from QC's per-weapon ramp.",
+   "[logic/values/timing] cl-scoreboard.block.itemstats: No item-stats block at all: Base shows a per-item icon grid of pickup counts (g_inventory.inv_items), filtered by itemstats_filter_mask=12. The port has no SetItemStats / DrawItemStats and inventory is not networked for it.",
+   "[liveness] cl-scoreboard.block.mapstats: Map-stats are read from server-side static state (MonsterAI / MapObjectsState) directly on the client feed path — live for a listen-server host, but neither monsters nor secrets are networked as a STAT, so a remote (non-host) client would not see the rows.",
+   "[logic/values/timing] cl-scoreboard.ui.interactive: No interactive UI: the port scoreboard is a passive overlay. Missing TAB panel cycling (SCOREBOARD↔RANKINGS), arrow-key player/team selection, ENTER/SPACE team-join + spectate, Ctrl+C column-layout cycle, Ctrl+R scores_per_round toggle, Ctrl+T tell, Ctrl+K vote-kick, ESC exit, and the team-selection screen (scoreboard_ui_enabled==2) with its join prompts and world dimming (0.7).",
+   "[logic] cl-scoreboard.draw.export: No equivalent of Scoreboard_Draw_Export (writes the scoreboard table to a file handle for the dump-scoreboard console command); the port has no scoreboard-export command."
+  ]
+ },
+ {
+  "unit": "cl-shownames",
+  "tier": "sonnet",
+  "notes": [
+   "[liveness] cl-shownames.gate.self_spectatee: Chase own-tag for the truly-local player still can't draw: the predicted local player is never in ClientNet.RemoteIds (HandleSnapshot skips LocalNetId), so the self branch only fires for the spectatee. In stock play this matters only for hud_shownames_self + chase_active on your OWN model in third person — a residual deferral; the spectatee path (the common observed case) is live."
+  ]
+ },
+ {
+  "unit": "cl-teamradar",
+  "tier": "opus",
+  "notes": [
+   "[logic/values/timing] cl-teamradar.links.onslaught: Onslaught radar links (ENT_CLIENT_RADARLINK / draw_teamradar_link / g_radarlinks) not networked or drawn — ONS radar shows control points but no connection lines.",
+   "[logic/values/timing] cl-teamradar.maximized.map: Maximized fullscreen radar entirely absent: no m-bind (+hud_panel_radar_maximized → cl_cmd hud radar 1), no fullscreen tactical overview, no separate maximized rotation/zoom/scale runtime, no default-border swap.",
+   "[logic/values/timing] cl-teamradar.maximized.click: No clickable ONS spawn-point selection (cmd ons_spawn), no teleport-click, no mouse/key input handling (MOUSE1/MOUSE2/ESC/console-key passthrough), no dead+showscores temp-hide, no 'Click to select…' prompt, no icon hover-glow.",
+   "[logic/values] cl-teamradar.cvar.zoomscale: Zoom/scale uses a RangeUnits=2500 + scale/ScaleReferenceDivisor heuristic for the bigsize/normalsize endpoints, not the Base mi_scale/scale2d-derived sizes; the actual arena-fit big size is approximated by a fixed 2500u range. ; Big-zoom recentering only happens when map bounds are loaded (HasMapBounds); the standalone path always has bounds, so this is live there, but the heuristic scale endpoints still differ from Base's exact fit.",
+   "[liveness] cl-teamradar.cvar.defaults: Discovered HUD-registry radar is force-hidden (HudManager StartHiddenIds 'radar'), so only the standalone NetGame instance (256x256 at 24,24) is live — the enable/team gating runs against the standalone draw, which is correct, but the discovered panel never participates. ; No hud_panel_radar_size cvar analogue (port keys off live control size + the 2500u range fallback instead of the 128px default).",
+   "[logic] cl-teamradar.mutator.hook: No TeamRadar_Draw client mutator hook: mutators cannot add custom blips/icons to the radar, and the hook's return value (which Base ORs into the per-icon team-match gate for hover-glow visibility) is unmodeled.",
+   "[logic] cl-teamradar.cvar.dynamichud: hud_panel_radar_dynamichud is registered with the correct default (1) but nothing consumes it: the port has no HUD_Scale_Enable/Disable (the dynamic-HUD shrink applied when the player is alive) so the radar never participates in dynamic-HUD scaling. ; HUD_Radar_Export (writing the radar's 8 aesthetic cvars into a saved hud skin file) has no port analogue; the port's skin/HUD-config export path does not round-trip these radar cvars."
+  ]
+ },
+ {
+  "unit": "cl-view",
+  "tier": "opus",
+  "notes": [
+   "[logic] cl-view.chase.classic_thirdperson: The server-side spectator-camera mode toggle is not ported: View_SpectatorCamera's STAT(CAMERA_SPECTATOR) 1/2 state + IMP_weapon_drop cycling (the chase_active<=0 auto-switch that flips chase_active to -2 and Impulse_Sends weapon-drop to cycle the server spectator camera) has no port analogue. The port drives the spectator third-person purely from the user chase_active cvar.",
+   "[logic/values/timing] cl-view.demo.free_camera_lockview_ortho: No demo free/chase camera (CSQC_Demo_Camera), no view lock (cl_lockview), no orthographic radar-render view (cl_orthoview / View_Ortho), no viewloc 2.5D side-scroller camera (GetViewLocationFOV), and no FPS report to the server (fpscounter_update STAT(SHOWFPS))."
+  ]
+ },
+ {
+  "unit": "cl-viewmodel",
+  "tier": "opus",
+  "notes": [
+   "[logic/values/timing/liveness] cl-viewmodel.anim.networked_frames: No networked weapon fire/idle/reload animation (the QC wframe temp entity is not networked); the gun never visibly cycles or reloads.",
+   "[values] cl-viewmodel.model.skin_colormap_glow_effects: Team colormap is an approximate whole-model albedo tint (0.6 + 0.4*teamColor), not Base's true colormap palette region swap (256 + c); reads as your team color but is not pixel-faithful. ; Per-child m_skin (wepskin) not applied; the gun renders with its base material.",
+   "[values] cl-viewmodel.align.gunalign_gunoffset: cl_gunalign side magnitude is a fixed representative AuthoredShotSideY (-3.5u) rather than each v_ model's own shot-tag vecs.y; left/center now move the gun but by an approximate amount, not the per-model Base value.",
+   "[values] cl-viewmodel.muzzle.flash_particle: Local muzzle position is a heuristic at the tag_shot socket rather than Base's view-projected movedir_aligned (not verified to read identically on-screen). ; Secondary fire does not flash (only the primary _attackHeld path calls Fire; UpdateLocalFireFeedback comments 'secondary FX stay networked for now'). ; ClientWorld.OnMuzzleFlash wrapper has no caller (NetGame calls _viewModel.Fire() directly) — dead wrapper, but the feature is live by another path.",
+   "[values] cl-viewmodel.muzzle.flash_model: MuzzleModelFor only maps Devastator/MineLayer (flash.md3) and Machinegun/Shotgun (uziflash.md3); Base also sets m_muzzlemodel for Vortex/Vaporizer (nexflash.md3) and the Overkill HMG/MachineGun/RPC — those weapons get no model flash in the port. ; Frame is animated in Base via frame+=2 (the md3 flash frame cycle); the port spawns a fresh static node and fades/shrinks it without advancing the md3 frame.",
+   "[timing] cl-viewmodel.casings.brass_eject: Casing physics is a self-integrated gravity + single ground-plane bounce (FloorZ), not full MOVETYPE_BOUNCE world collision at cl_casings_ticrate (0.03125); on most maps no floorZ is supplied so the casing falls through and only the lifetime fade culls it."
+  ]
+ },
+ {
+  "unit": "fx-effectinfo",
+  "tier": "opus",
+  "notes": [
+   "[liveness] fx-effectinfo.emit.by_name_fallback: The Effect=null engine-fallback request (unregistered effectinfo name) records the name but there is no DP-engine __pointparticles equivalent client-side; only names that also resolve in the effectinfo.txt catalog render. Used by te_csqc_lightningarc/te_beam (arc_lightning/heal_beam) which are handled by the beam renderer rather than the registry.",
+   "[liveness] fx-effectinfo.emit.te_builtins: The te_* helper -> registry-name mapping (e.g. TeSmallflash -> BLASTER_MUZZLEFLASH, TeGunshot -> MACHINEGUN_IMPACT) is a port convention, not a 1:1 DP te_* semantic; not verified that every live caller hits these wrappers vs emitting the registry effect directly. Beam/arc temp-effects route to BeamRenderer, not the particle catalog."
+  ]
+ },
+ {
+  "unit": "mapobject-misc",
+  "tier": "opus",
+  "notes": [
+   "[logic/values/timing] mapobject-misc.bgmscript.adsr: No bgmscript ADSR envelope: a func_clientwall / func_pointparticles carrying a .bgmscript key does not animate its alpha / origin / angles / emission to the map's .bgs music script — the prop is static instead of pulsing to the soundtrack. doBGMScript / BGMScript_InitEntity / the .bgs loader are absent.",
+   "[logic/values] mapobject-misc.models.clientwall_fade: func_clientwall distance-fade is not rendered: fade_start/fade_end/alpha_max/alpha_min/fade_vertical_offset are parsed onto the Entity (MapObjectFieldsExtra.cs) but NO renderer applies Ent_Wall_PreDraw's distance-fade alpha formula or its PVS alpha-cull — a clientwall meant to fade out with distance stays fully opaque. (The ClientWorld.cs:1234 ItemDistanceAlpha fade is the unrelated item-despawn fade; FadeEndDist is otherwise only read by WeatherSystem for rain/snow draw distance.) ; The antiwal"
+  ]
+ },
+ {
+  "unit": "mapobject-movers-platforms",
+  "tier": "sonnet",
+  "notes": [
+   "[liveness] mapobject-movers-platforms.plat.outside_target_use: PlatOutsideTouch is implemented and faithful but DEAD — and that is itself faithful to Base: Base platforms.qc only DEFINES plat_outside_touch (line 111) and never installs/spawns an outside trigger anywhere, so stock func_plat never calls it. The port matches (no outside trigger generated). Reachable only via custom-mapper wiring neither Base nor the port produces."
+  ]
+ },
+ {
+  "unit": "mapobject-target",
+  "tier": "sonnet",
+  "notes": [
+   "[logic] mapobject-target.items.use: The spawnfunc's normalized re-serialization of item tokens into a max/min/minus-prefixed give string (driven by spawnflags 0/1/2/4, then re-tokenized) is NOT reproduced; the port keeps the raw netname and parses it directly via GiveItems.Apply — equivalent for the common (give-string) case, but spawnflag-prefixed (max/min/minus) target_items semantics and the GetResource-driven resource serialization are not honored. ; The loot-toucher delete branch (ITEM_IS_LOOT actor -> EXACTTRIGGER_TOUCH + de",
+   "[logic] mapobject-target.speaker.ambient_triggered: ACTIVATOR (BIT3) still plays to ALL players on the LIVE path, not just the triggering client — SpeakerUseActivator gates on IsRealClient (a bot/world activator produces nothing, matching QC's early-out) and emits on the stacking CH_TRIGGER channel. A PlayToClientHandler MSG_ONE seam now EXISTS (TargetSpeaker.cs:201) and is honored when assigned, but it is assigned ONLY in tests — the live host boot path never wires it, so the real path falls back to the broadcast Api.Sound.Play and every client "
+  ]
+ },
+ {
+  "unit": "mapobject-teleporters-portals",
+  "tier": "opus",
+  "notes": [
+   "[logic] teleporters.core.telefrag: The round-prestart half of the suppression is now LIVE: TeleportRoundGateSuppressed() -> RoundHandler.RoundGateBlocks() (Teleporters.cs:566), wired by GameWorld.EnableRounds (RoundNotStartedProvider, GameWorld.cs:1490) for every round-based mode, so a telefrag is now correctly suppressed during a round countdown. ; The !g_race && !g_cts half is STILL effectively inert on the server: TeleportRoundGateSuppressed checks `gt == \"rc\" || gt == \"cts\"` (Teleporters.cs:563-565) against GameScores.Gametyp",
+   "[logic] teleporters.spawn.entities: target_teleporter's spawn-time disambiguation (target_teleporter_checktarget: dest / self-target / normal teleporter) is still simplified to 'teleport activator to target on use'; the self-target (.enemy = this) case is not reproduced. ; teleport_findtarget bot-waypoint spawning (waypoint_spawnforteleporter) is omitted (bot navigation). ; noise precache (FOREACH_WORD precache_sound) is a no-op; harmless headless.",
+   "[logic/values/timing] portals.entity.lifecycle: Porto portals are realised as a seamless two-way warpzone, so there is no portal health (g_balance_portal_health=200) — Base portals can be shot down (Portal_Damage). ; No 15s portal lifetime (g_balance_portal_lifetime) / fade-out (SUB_SetFade time,0.5) / recharge-to-200+reset-fade on each use; port warpzone portals persist for the whole match (death/reset teardown is wired, but no time-based expiry). ; No portal model (MDL_PORTAL) / skins (0/1/2) or EF_RED / EF_BLUE|EF_STARDUST / EF_ADDITIVE gl",
+   "[logic/values] portals.teleport.transform_and_amazing: ANNCE_ACHIEVEMENT_AMAZING on a portal telefrag within 1s of portal creation (portals.qc:193-194) is still never triggered — no teleport_time/tdeath_hit tracking on the warpzone path, and the warpzone crossing runs no tdeath at all. ; Independent-player gating (IS_INDEPENDENT_PLAYER: you can't walk through someone else's portal, portals.qc:307-314 / 486-487) is still absent. ; TELEPORT_FLAGS_PORTAL (FORCE_TDEATH) — the bitmask EXISTS (Teleporters.cs FlagsPortal) and TeleportPlayer honors it, but ",
+   "[timing] portals.weapon.cleanup: Re-shooting after a COMPLETED pair does not tear down the prior pair: PlacePortoPortal keys _pendingPorto by (owner,portalId) and a fresh shot spawns new warpzones without disconnecting the previous fully-placed pair (Base Portal_SetInPortal disconnects + Portal_Remove the old). A player can still hold more than one live pair if they re-fire after one completes. ; No 15s time-based expiry (g_balance_portal_lifetime) on the warpzone path — a living player's portals persist until death/reset (see ",
+   "[logic/values/timing] portals.weapon.hook_and_predict: Base Portal_Think predicts a player/hook crossing the portal plane THIS frame (Portal_WillHitPlane, PHYS_GRAVITY-aware tracebox over velocity*2*frametime) and teleports pre-emptively so fast movers don't tunnel; the warpzone realisation relies on a fixed trigger overlap, with no predict-ahead. (Warpzone.Teleport now has a same-frame finishtime guard and a plane-side test, but still no velocity*2*frametime predict-ahead.) ; A player's active grappling hook is still not teleported through the port"
+  ]
+ },
+ {
+  "unit": "mapobject-triggers",
+  "tier": "sonnet",
+  "notes": [
+   "[logic/values] mapobject-triggers.multi.trigger_multiple: CTS client-specific .wait buffers (multi.qc triggertimes buf_create / bufstr_get keyed by client number) not ported: the port uses the single shared nextthink, so per-client re-trigger timing in CTS/Race diverges ; q3compat wait defaults (0.5 / wait-forever) + q3compat red/blue spawnflag-1/2 team filter not applied (no q3 path)",
+   "[logic] mapobject-triggers.magicear.trigger_magicear: TUBA melody match branch (MAGICEAR_TUBA / W_Tuba_HasPlayed) out of scope — a TUBA ear returns msgin unchanged ; strdecolorize is a no-op (chat color codes minimal) so MAGICEAR_NODECOLORIZE is largely inert",
+   "[values/timing] mapobject-triggers.music.target_music: fade curve approximated: the client uses a two-AudioStreamPlayer A/B crossfade rather than QC's per-source state easing by frametime/fade_time (in) and frametime/fade_rate (out)",
+   "[liveness] mapobject-triggers.viewloc.trigger_viewlocation: no client 2.5D side-scroller camera consumer: the server stamps player.ViewLoc each frame but the view is never locked to the start->end line, so the camera region has no visible effect (unchanged this wave)"
+  ]
+ },
+ {
+  "unit": "sv-antilag",
+  "tier": "haiku",
+  "notes": [
+   "[logic/values] sv-antilag.solidmask.corpse: Base temporarily switches the shooter's hit-contents mask to also include CORPSE so a hitscan can hit gibbed/corpse bodies during the antilag trace (tracebox_antilag_force_wz, and W_SetupShot's pre-trace mask); the port's FireBullet/FireRailgunBullet/SetupShot do not adjust any contents mask around the trace. The port HAS corpse entities (Solid.Corpse / Entity.IsCorpse), so corpse-hitting behavior may differ unless the port's default trace already includes corpse-solids.",
+   "[logic/values] sv-antilag.mode.client_verified_and_cursor: g_antilag modes 1 (verified client-side) and 3 (prydon cursor hitscan) are unimplemented: a server set to either gets NO lag compensation at all (port treats anything != 2 as no-rewind)."
+  ]
+ },
+ {
+  "unit": "sv-chat",
+  "tier": "sonnet",
+  "notes": [
+   "[values] sv-chat.flood.per_type_throttle: Line-wrap width is an integer 82 visible chars vs Base's 82.4289758859709 px-equiv (perl averagewidth on gfx/vera-sans.width); proportional per-char widths are not modeled, so long-message line-count / flood==2 'too long' boundary can differ by one char on edge-length messages.",
+   "[logic] sv-chat.routing.recipients: INGAME(it) round-mode semantics not modeled: the port has no per-player .ingame round flag, so IsIngame(p) == !IsObserver(p). In round/elimination modes (Clan Arena / LMS / Survival) an eliminated-but-still-INGAME player is treated as a spectator, so the spectator-downgrade (teamsay->-1) and the (IS_PLAYER||INGAME) team-routing filter diverge from Base for those players. No effect on FFA/standard CTF/DM.",
+   "[logic] sv-chat.ignore.crud: Permanent (db-persisted) ignore tier is dropped (the QC return-2 path / ServerProgsDB by UID); ignores are keyed by PersistentId in-memory only (acceptable within a match, lost across server restarts). This is the sole remaining logic-partial reason."
+  ]
+ },
+ {
+  "unit": "sv-cheats",
+  "tier": "opus",
+  "notes": [
+   "[logic/values/timing] sv-cheats.impulse.clone: No CopyBody / corpse-clone mechanic; the clone impulses do nothing and sv_clones is unread. Unchanged by Wave-5.",
+   "[logic/values/timing] sv-cheats.impulse.speedrun: No personal_wp snapshot/restore (origin/velocity/resources/weapons/items/statuseffects/pause-timers), no AbortSpeedrun hook, no speedrunning flag handling. Unchanged by Wave-5.",
+   "[logic/values/timing] sv-cheats.impulse.teleport: No emergency player-teleport cheat: neither the info_autoscreenshot path nor a player-side MoveToRandomMapLocation exists. (Note: a BallEntity.Relocate / MoveToRandomMapLocation exists for the Keepaway/Nexball/Invasion BALL, but that is the gametype ball-respawn mechanic, NOT the player-teleport cheat — different consumer, not reusable here.) Unchanged by Wave-5.",
+   "[logic] sv-cheats.cmd.particles_make: make: the bad-surface guard is weaker than Base. Base rejects when (trace_dphitq3surfaceflags & Q3SURFACEFLAG_NOIMPACT) OR trace_fraction==1; the port (Cheats.cs:348-353) only rejects on hit-nothing (fraction==1), so a NOIMPACT/sky surface would still place the breakable. ; make: mode-1 surface-align is an APPROXIMATION — Base does fixedvectoangles2(normal, v_forward) then AnglesTransform_ApplyToAngles(angles,'-90 0 0'); the port (Cheats.cs:365-369) does FixedVecToAngles2 + a flat pitch -=90 (co",
+   "[logic/values/timing] sv-cheats.frame.drag: No CheatFrame per-frame hook and no Drag subsystem: cannot pick up/carry/throw entities (cheat or normal-range), no te_lightning1 drag beam. Unchanged by Wave-5. ; No dragbox_spawn/dragpoint_spawn/drag_remove/drag_setcnt/drag_save/drag_saveraceent/drag_clear race-checkpoint map-editor commands. ; g_grab_range cvar exists (Cvars.cs:372) but is never read (no consumer).",
+   "[logic] sv-cheats.mapent.info_autoscreenshot: No info_autoscreenshot spawnfunc: the entity is dropped on map load and the TELEPORT cheat's preferred destination never exists."
+  ]
+ },
+ {
+  "unit": "sv-client-lifecycle",
+  "tier": "opus",
+  "notes": [
+   "[logic] sv-client-lifecycle.connect.client_connect: Connect-side server->client channel deferred (see connect.fix_client_cvars_welcome row): no clientstuff/FixClientCvars/clientversion/_teams_available stuffcmds, no sv_notice_join/MOTD, no Handicap_Initialize/playban/chatban, no model_randomizer, no Send_NextMap. ; Player_DetermineForcedTeam / forced-team-otherwise spectator routing not modeled (team is pre-assigned via AssignBestTeam only).",
+   "[logic/values/timing/liveness] sv-client-lifecycle.connect.fix_client_cvars_welcome: Only fragments of the welcome channel exist: the campaign welcome level-num (SendCampaignWelcome) and the grappling-hook gameplay tip (BuildGameplayTipsString) are surfaced to the connecting client. Still unmodeled: FixClientCvars (cl_jumpspeedcap_min/max, cl_shootfromfixedorigin, prediction/gentle), clientstuff, cmd clientversion, set _teams_available, the sv_notice_join/SendWelcomeMessage MOTD/hostname/map/mutators body, Send_NextMap_To_Player, and the ClientInit_misc per-client init entity (a",
+   "[logic] sv-client-lifecycle.join.join_player: Join queue + team-selection ordering not modeled: the queued_join TeamBalance_AreEqual two-pass (queued-team dibs first pass + strongest-autoselect-by-skill second pass, player_with_dibs conflict) is absent; the port autoselects via a single connect-time AssignBestTeam. ; Campaign Join branch (campaign_bots_may_start / ReadyRestart) only partially modeled (CampaignHostAutojoin opts the host in); the bot-start ReadyRestart trigger is not in ClientManager.Join. ; Queue-conflict + queued-player bra",
+   "[logic/values] sv-client-lifecycle.join.join_allowed: MIN_SPEC_TIME + (teamplay && lockteams) + Player_GetForcedTeamIndex==TEAM_FORCE_SPECTATOR + g_playban (ForcedSpectate host hook→Bans.IsPlayBanned) + a gametype ForbidSpawn/late-join gate (LMS lockout, GametypeJoinGate) ARE enforced. Still missing: version_mismatch, g_maxping (ping<=0 too-soon + ping>maxping), and the whole QueueNeeded/queuePlayer/ShowTeamSelection + nJoinAllowed/GetPlayerLimit/g_maxplayers/bots_would_leave capacity gate. ; No CENTER_JOIN_PREVENT / CENTER_JOIN_PREVENT_VERSIONMISM",
+   "[logic] sv-client-lifecycle.spawn.put_player_in_server: In-PutPlayerInServer team assignment (bot_forced_team / wants_join>0 SetPlayerTeam / TeamBalance_JoinBestTeam) is not run here — the port pre-assigns the team once at connect, so a mid-match team change or wants_join preference isn't honored on respawn. ; wr_resetplayer + reload-all-reloadable-weapons-on-spawn (weapon_load = reloading_ammo) and CL_SpawnWeaponentity per slot are flagged as client/networking concerns and not done server-side. ; FixPlayermodel resolves every player+bot to sv_defaul",
+   "[logic] sv-client-lifecycle.observer.put_observer_in_server: Still omits: SelectObservePoint / observe-spawn placement (the port keeps the current origin instead), VoteCount/ReadyCount recount, the SPECTATE_WARNING / sv_maxplayers_spectator_blocktime block, CHAT_NOSPECTATORS notice, RemoveGrapplingHooks/Portal_ClearAll, alivetime PlayerStats report, and the is_forced/use_spawnpoint signature (the port has no is_forced/use_spawnpoint params).",
+   "[logic] sv-client-lifecycle.observer.observer_think: SpectatePrev (impulse 12/16/19/220-229), the IMP_weapon_drop CAMERA_SPECTATOR cycle, MinigameImpulse handling, the +use clippedspectating MOVETYPE_FLY toggle, and the sv_spectate 2 'spectating not allowed' block are not modeled.",
+   "[logic] sv-client-lifecycle.observer.autojoin_delayed: g_maxping / forced-team (TEAM_FORCE_SPECTATOR) / AutoJoinOnConnection mutator hook / (!teamplay || g_balance_teams) gates deferred. The QC `ping > 0` precondition (delay until centreprints work) is not modeled. sv_spectate and g_campaign holds ARE honored.",
+   "[logic/values/timing] sv-client-lifecycle.frame.name_and_version: Outdated/old-client/beta version-nag INFO notifications (INFO_VERSION_OUTDATED/OLD/BETA via vercmp + version_nagtime) never sent. ; Names are not truncated to sv_name_maxlength, invisible names not replaced with Player#<id>, the :name: event-log line and 'name was truncated/invisible' sprints are absent. ; GOD MODE info (INFO_GODMODE_OFF when FL_GODMODE drops) not modeled.",
+   "[logic/liveness] sv-client-lifecycle.frame.prethink_misc: UpdateChatBubble (the chatbubble.spr / minigame_busy bubble over a typing or minigame-busy player, ChatBubbleThink + ShowChatBubble hook) is not modeled — no visible 'is typing' bubble. ; The PlayerPreThink +use edge dispatch (PlayerUseKey) is not a single ported function: individual +use consumers (buttons/vehicles/ctf) read the button directly, but the usekeypressed edge tracker + PlayerUseKey routing (and its spectate/minigame branches) are scattered/absent. ; SetZoomState (server-side weapon",
+   "[logic] sv-client-lifecycle.disconnect.client_disconnect: Still not modeled: ignore-list cleanup, Portal_ClearAll/RemoveGrapplingHooks, chatbubble/killindicator/personal/g_counters delete, minigame part, WaypointSprite_PlayerGone, ReadyCount/VoteCount-on-leave, sv_hook_lastleave, and TeamBalance_RemoveExcessPlayers / QueuedPlayersTagIn. (Vehicle exit, player_powerups_remove_all + poweroff sound, the status-effect clear, the gametype objective-drop, and the generic MUTATOR_CALLHOOK(ClientDisconnect) ARE now modeled.)"
+  ]
+ },
+ {
+  "unit": "sv-clientkill",
+  "tier": "sonnet",
+  "notes": [
+   "[logic/values/timing] sv-clientkill.indicator.entity: No floating numeric countdown model is attached above the player; nothing is networked for it (KillCountdown drives only the announcer + center-print, explicitly NOT the digit entity — KillCountdown.cs:12-14). ; Clones on g_clones ghosts (the IL_EACH(g_clones) killindicator copy on each non-respawnghost clone) are also absent. ; The digit-entity colormod tint (black / grey / Team_ColorRGB) is unmodeled.",
+   "[logic/values] sv-clientkill.clientkill_now.vehicle_exit: KillCountdown.PerformKill (GameWorld.cs:879-881) flat Combat.Damage(p,p,p,100000,DEATH_KILL) makes no attempt to vehicles_exit the player first, nor to destroy the vehicle (vehicle_health=-1 + 1-dmg DEATH_KILL on the non-team-change path). A player who `kill`s while mounted in Base is ejected and the vehicle is killed; the port just damages the player entity. Edge-case only — relevant when sv-vehicles are live (vehicles are an out-of-scope/partial port unit).",
+   "[logic] sv-clientkill.teamchange.excess_removal: After a deferred team change resolves, Base re-runs excess-player removal (TeamBalance_RemoveExcessPlayers, gated on g_balance_teams_remove and only when no queued players are tagging in). The port's KillCountdown.PerformTeamChange (GameWorld.cs:898-923) does SetTeam + KillPlayerForTeamChange + a bot autobalance, but never the excess-removal pass. The same machinery IS wired on the leave path (Teamplay.cs:862, ClientManager.cs:790) — only the team-change-resolve invocation is missing. Off by def"
+  ]
+ },
+ {
+  "unit": "sv-commands-votes",
+  "tier": "haiku",
+  "notes": [
+   "[logic/values] sv-commands-votes.debug_tools.missing: radarmap is not registered: no in-game radar-image (XPM) generation for the minimap. ; gettaginfo / animbench / bbox / trace / stuffto / adminmsg / delrec / database / effectindexdump / make_mapinfo / printstats console verbs are unimplemented (no Register() calls)."
+  ]
+ },
+ {
+  "unit": "sv-impulse",
+  "tier": "sonnet",
+  "notes": [
+   "[logic] sv-impulse.weapon.getcycle: The impulse-group complain path is simplified: QC computes have_other and a custom-group bitmask for imp<0 (selection.qc:148-171); the port omits both since it drives the imp=-1 cycle/best path. The weaponsInMap (map-spawned-but-unowned weapon) branch (selection.qc:166,187) is unmodeled, so unowned-but-on-map weapons are skipped (cannot be cycle-selected before pickup).",
+   "[logic] sv-impulse.waypoints.sprites: The _crosshair (31/35/38) and _death (32/36/39) variants reuse the player's ORIGIN — there is no server-side WarpZone crosshair trace or death_origin on this path, so all three personal/here/danger variants deploy at the player's feet rather than at the aimed/death location. ; The .personal CHECKPOINT entity is not modeled, so the CTS/race clear self-kill (g_allow_checkpoints) resets the runner to the gametype's normal start/respawn spawn, not a stored personal-checkpoint origin. The HelpMePing ",
+   "[logic/values/liveness] sv-impulse.cheat.impulses: STILL OPEN: cheat impulses 140-147 (clone/speedrun/fixed-clone/teleport/drag) are not dispatched — they need engine services and remain unported. Only GIVE_ALL (99) and R00T (148) are routed.",
+   "[logic/values] sv-impulse.cheat.command_impulse: The clone/speedrun/fixed-clone/teleport/drag cheat impulses (140-147) are unported. They need engine services (entity cloning, speedrun checkpoint state, drag-mouse-grab) the port does not yet expose. (Some of the underlying CHEAT commands — e.g. teleporttotarget — exist in Cheats.cs as console commands, but the IMPULSE routing 140-147 has no DispatchImpulse branch.)"
+  ]
+ },
+ {
+  "unit": "sv-intermission",
+  "tier": "sonnet",
+  "notes": [
+   "[logic/values/liveness] sv-intermission.nextmap.override: quit_when_empty is not implemented: a server that would start an empty next map does not quit. ; quit_and_redirect is not implemented: players are not redirected/reconnected to another server at match end. ; lastlevel (single-player 'show menu after match') is not implemented (the cvar is registered but never read in DriveEndOfMatchMapFlow).",
+   "[liveness] sv-intermission.mapvote.server_core: There is still no NetControl.MapVote opcode, so the ballot/tally is not serialized over the wire and remote (--connect) clients can neither see nor cast. On a LISTEN server the cast path is live: a player's number-key 1..9 emits a C2S impulse, which Commands.DispatchImpulse intercepts while MapVoting.Running and routes to MapVoting.CastVote(caller, imp-1) before the weapon-impulse path. For a dedicated/remote-client server the vote still closes on timeout/PlayerCount with zero real votes (determ",
+   "[liveness] sv-intermission.mapvote.client_ui: The panel is fed only from the in-process GameWorld.MapVote (NetGame.UpdateMapVotePanel reads _serverWorld?.MapVote), so it lights up ONLY on a listen server. A pure --connect client has no in-process MapVoting and no NetControl.MapVote decode, so its ballot stays blank and it cannot vote — full remote parity still needs the networked opcode (see sv-intermission.mapvote.server_core). ; The panel has no mouse/cursor click handler (Base MapVote_InputEvent lets you click a map tile); voting is by n"
+  ]
+ },
+ {
+  "unit": "sv-ipban",
+  "tier": "sonnet",
+  "notes": [
+   "[logic] sv-ipban.enforce.on_connect: Base uses Ban_MaybeEnforceBanOnce (a one-shot .ban_checked flag) AND re-checks on the client's first command (cmd.qc:1181); the port enforces only once on connect (GameWorld.cs:1144 InfraClientConnect) with no first-command re-check. Low impact (connect-time drop is dominant).",
+   "[logic] sv-ipban.insert: The dosync leg (OnlineBanList_SendBan, with the reason!=\"\" and not-~-prefixed guard) is dropped — no online ban propagation on insert (see sv-ipban.sync.online)."
+  ]
+ },
+ {
+  "unit": "sv-mapvoting",
+  "tier": "sonnet",
+  "notes": [
+   "[logic/values/timing/liveness] sv-mapvoting.vote_scoreboard_hide: The scoreboard-hide EFFECT is now achieved a DIFFERENT way: UpdateScoreboard (NetGame.cs:3768-3772) models Base's intermission==2 by hiding the scoreboard whenever the MapVote panel is Visible (mapVoteShowing → intermissionShow = MatchIntermission && !mapVoteShowing), so the player does not see the scoreboard during the vote (the visible outcome of Base's SVC_FINALE). Presentation goal met. ; But Base's actual MECHANISM is absent: it forces RES_HEALTH=2342 on every client (incl. bots) and sends ",
+   "[logic] sv-mapvoting.gametype_vote: The hooks DON'T fire: GameWorld.ApplyGametypeSwitch calls Commands.GameTypeVoteHookHandler?.Invoke(\"all\")/(gt) (GameWorld.cs:3397-3398) but GameTypeVoteHookHandler is NEVER assigned (grep: no `GameTypeVoteHookHandler =`), so the sv_vote_gametype_hook_all/_<name> localcmd aliases are no-ops. Stock hooks are empty aliases (gametypes-server.cfg) so the visible effect is nil, but a server.cfg that defines a hook (e.g. g_maxplayers tweak) would be silently dropped. ; GameTypeVote_AvailabilityStatus' ",
+   "[liveness] sv-mapvoting.client.draw: Panel is FED on a listen server: NetGame.UpdateMapVotePanel calls SetVote/SetVotes/SetAvailability/OwnVote/SetWinner and owns Visible (NetGame.cs:3393-3484), so the player sees the ballot grid, level-shots, live counts, own-vote highlight, the selection pulse, the top-2 reduce-fade, and the winner reveal during a real listen-server match. ; The GametypeVote DRAW path is now ALSO driven: UpdateMapVotePanel passes gametypeVote: isGametypeVote (NetGame.cs:3441) and feeds gametype icons (gfx/menu/<s"
+  ]
+ },
+ {
+  "unit": "sv-spawnpoints",
+  "tier": "sonnet",
+  "notes": [
+   "[logic] sv-spawnpoints.select.select_spawn_point: Emergency fallback differs: Base, when Spawn_FilterOutBadSpots returns empty, RE-FILTERS the spot list once with targetcheck=false (server/spawnpoints.qc:421-435) before giving up. The port does run a targetcheck=false re-filter (SpawnSystem.cs:386-387), but then seeds every spot at (prio 0, weight 0) if even that comes back empty (SpawnSystem.cs:392-396), so the assault/active gate is relaxed once but a wrong-team / all-embedded list still falls through to a prio-0 fallback. UNCHANGED. ; anypoi",
+   "[logic/values/liveness] sv-spawnpoints.select.spawn_evalfunc: The race_spawns gate (a race spot MUST have a target, else -1) and the SPAWN_PRIO_RACE_PREVIOUS_SPAWN=50 in-scoring checkpoint biasing are NOT ported inside ScoreSpot (inline NOTE deferring this at SpawnSystem.cs:477). Race's respawn-at-last-checkpoint is instead covered via the spawnpoint_targ one-shot redirect (see select.spawnpoint_targ), NOT the in-Spawn_Score evalfunc/race_spawns scoring path. The race score-biasing/requirement remains missing. STILL OPEN. ; The port models the evalfunc as ",
+   "[logic] sv-spawnpoints.mutator.spawn_near_teammate: Residual relocation-branch defers: tracebox_hits_trigger_hurt (hurt-volume reject), checkpvs (PVS visibility), and the g_nades nade-in-range reject are still skipped (a faithful superset that may keep a spot QC would reject); weaponLocked and PHYS_INPUT_BUTTON_CHAT gates are always false (no plumbed input/weapon-lock); closetodeath uses the player's current origin not .death_origin. The sky-surface (Q3SURFACEFLAG_SKY) and lava/slime/water pointcontents rejects ARE applied. STILL OPEN (the residu"
+  ]
+ },
+ {
+  "unit": "sv-teamplay",
+  "tier": "opus",
+  "notes": [
+   "[values] sv-teamplay.join.skill_weighting: No TrueSkill ratings for humans: SkillProvider returns the bot's real BotSkill (0..10) for bots but a flat 5 for every human (IsRated treats only bots as rated; humans fall through the unranked server-average path). So skill weighting biases bot-involved ties but human-vs-human equal-size ties still reduce to a plain count. This is a VALUES/data gap, not a logic gap — the algorithm now matches Base. ; No warmup skill-aware join branch (Base TeamBalance_FindBestTeams warmup+sv_teamnagger+skill bl",
+   "[logic/values/timing] sv-teamplay.balance.autobalance_bots: Steady-state poll runs on a 3s cadence (BalanceTeamsTick, GameWorld.cs:2747-2749) where Base autobalances per-event; the cvar gate is now GONE (the poll is unconditional, stopped only by GameStopped/intermission, matching QC's commented-out gate). A synchronous compensation also fires on every human team-change (KillCountdown.PerformTeamChange), so the only timing divergence left is the 3s polling granularity. ; Uses frag score (ScoreFrags), not SP_SCORE, to pick the bot to move; ordering can di",
+   "[logic/values] sv-teamplay.queue.join_queue: No join-queue: players join immediately regardless of balance; the deficit-filling tag-in (TeamBalance_QueuedPlayersTagIn: specific-team-first then any-team) and QueueNeeded / QueuedPlayersReady are absent. ; wants_join (WantsJoin) exists on Player.cs:146 and is reset to 0 on connect/observer transitions, but is never set >0 or consulted for queueing — the field is plumbed but inert.",
+   "[logic] sv-teamplay.admin.lock_shuffle_move: moveplayer/team don't enforce lockteams backup/restore semantics of MoveToTeam (which temporarily disables the lock for the move then restores it); behavior overlaps but isn't the exact MoveToTeam path.",
+   "[logic/liveness] sv-teamplay.global.team_entities: No unified Team_* global entity API: per-team score lives in Scores, alive/owned-item counts and winner queries are reimplemented ad hoc per gametype (CA/Dom/Onslaught) rather than via Team_GetWinnerAliveTeam / Team_GetWinnerTeam_WithOwnedItems."
+  ]
+ },
+ {
+  "unit": "sv-world-rules",
+  "tier": "opus",
+  "notes": [
+   "[logic] sv-world-rules.warmup.reset_map: No per-client accuracy_reset / Inventory_clear pass on reset_map. ; The waypoint/assault .reset2 second pass (FOREACH_ENTITY_FLOAT_ORDERED two-stage ordering) is not separately driven — only the single .reset callback per entity fires.",
+   "[logic] sv-world-rules.checkrules.cascade: leadlimit / leadlimit_and_fraglimit WIN semantics are still not evaluated in the world layer (the win comes from the gametype MatchEnded latch + tie report). The leadlimit math exists in GameScores.CountFragsRemaining but only feeds the frags-remaining announcer, not the end-of-match decision. ; The CheckRules_World mutator hook (M_ARGV status override) is still not invoked.",
+   "[logic/values/timing] sv-world-rules.entity.randomseed: No shared server->client RNG seed: client-side random effects cannot be kept deterministic with the server.",
+   "[logic/values/timing] sv-world-rules.entity.pingplreport: No server->client ping / packet-loss / movement-loss report; scoreboard ping column and playerstats latency have no feed.",
+   "[logic/values/timing] sv-world-rules.misc.redirection: No server-redirect / mass-reconnect command (sv_redirect_target / quit_and_redirect).",
+   "[logic] sv-world-rules.misc.shutdown: ServerProgsDB persistence on shutdown (db_save/db_dump of server.db<sessionid>) has no port analogue. ; bot_endgame, CheatShutdown, WeaponStats_Shutdown and MapInfo_Shutdown are not performed on world teardown.",
+   "[logic/values/timing] sv-world-rules.eventlog.dumpstats: DumpStats(final) emits a :scores:<gametype>_<map>:<time> (final, at NextLevel) or :status:... (periodic, via the printstats/status console cmd) block — a per-player score/ping/team/handicap line dump — to console (sv_logscores_console), the eventlog (sv_eventlog), and a log file (sv_logscores_file). The port has no analogue: no final scores block is written to the eventlog at match end, and there is no printstats/status server command."
+  ]
+ },
+ {
+  "unit": "warpzones",
+  "tier": "opus",
+  "notes": [
+   "[values] warpzones.spawn.trigger: scale/modelscale and the warpzone_isboxy box-vs-exacttrigger distinction from WarpZoneLib_ExactTrigger_Init are not modeled; the EF_NODEPTHTEST render flag and WarpZone_Send CSQC serialisation are unported (no client entity).",
+   "[logic/values/timing] warpzones.client.render: No Godot SubViewport+Camera3D renders the linked OUT side onto the portal surface; HeroMaterials.BuildPortal (HeroMaterials.cs:168) is a static dark near-black StandardMaterial3D mirror. The warpzone reads as an opaque/wavy wall — you cannot see through it. PVS-fade and the r_water enable HACK are also absent.",
+   "[logic/values/timing] warpzones.client.fixview: No client view rotate when the camera straddles a zone, no near-clip push-out (geometry clips at the seam), no roll-kill on a roll-changing crossing, no exterior-model hide. Crossing a warpzone is visually jarring.",
+   "[logic/timing] warpzones.client.teleported_view: Server never sends a warpzone_teleported entity and never re-rotates v_angle (WarpZone_PlayerPhysics_FixVAngle); the client never rotates VF_CL_VIEWANGLES / CL_RotateMoves on a crossing. The view does not carry through the seam.",
+   "[logic/values/timing] warpzones.camera: No func_camera spawnfunc; security-camera dpcamera surfaces render as a dark mirror placeholder (HeroMaterials) rather than a fixed camera view of the target position.",
+   "[logic] warpzones.combat.traceextras: Grenade/toss trajectory prediction (WarpZone_TraceToss) and projectile particle trails (WarpZone_TrailParticles[_WithMultiplier]) do not bend through portals — bot grenade aim and trail visuals are wrong across a warpzone. Minor."
+  ]
+ }
+]

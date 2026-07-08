@@ -11,4 +11,16 @@
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>
+
+  <!-- (perf 2026-07-03) Debug builds run JIT-OPTIMIZED by default: the editor/dev builds are what gets
+       playtested daily, and unoptimized IL is a 2-5x tax on exactly the hot loops (world traces, the 72Hz
+       sim, bot tracewalks, per-frame entity drive) that drive frame hitches — a debug session on stormkeep
+       spends most of its hitch budget there. DEBUG defines/asserts and portable PDBs are untouched, so
+       stack traces, Prof scopes and #if DEBUG diagnostics all keep working; what you lose is step-debugging
+       fidelity (inlined frames, optimized-away locals). For a breakpoint session, restore classic Debug
+       codegen with:  dotnet build -p:XgDebugUnoptimized=true  (the FrameProfiler env banner reports which
+       flavor a session ran: csharp=Debug(jit-opt) vs Debug(unopt)). -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug' and '$(XgDebugUnoptimized)' != 'true'">
+    <Optimize>true</Optimize>
+  </PropertyGroup>
 </Project>

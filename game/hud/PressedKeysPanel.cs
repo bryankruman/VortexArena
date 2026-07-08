@@ -59,6 +59,19 @@ public partial class PressedKeysPanel : HudPanel
     /// </summary>
     public int? PressedKeysOverride { get; set; }
 
+    /// <summary>
+    /// QC <c>spectatee_status</c>: 0 = playing locally, &gt;0 = chasing a player (that player's entity number),
+    /// -1 = free-fly observer. Set by the net/spectate layer each frame. Drives the QC enable gate
+    /// (<c>HUD_PressedKeys</c>): a free-fly observer (&lt; 0) never shows the cluster; while merely playing
+    /// (&lt;= 0) it shows only when <c>hud_panel_pressedkeys</c> is 2 ("always"); chasing a player (&gt; 0) shows
+    /// it for any non-zero enable. Default 0 (the local-player path) so older feeders keep working.
+    /// </summary>
+    public int SpectateeStatus { get; set; }
+
+    /// <summary>True while the HUD editor is open (QC <c>autocvar__hud_configure</c>): the QC bypasses the
+    /// spectatee gate so the panel is visible/positionable in the editor. Default false.</summary>
+    public bool Configuring { get; set; }
+
     /// <summary>QC <c>hud_panel_pressedkeys_aspect</c>: forced width:height of the key cluster (0 = use the
     /// panel's own aspect). Default 1.8 (the luma default). Read live so a console <c>set</c> retunes it.</summary>
     private float Aspect => CvarF("aspect", 1.8f);
@@ -86,9 +99,10 @@ public partial class PressedKeysPanel : HudPanel
         const CvarFlags save = CvarFlags.Save;
         c.Register("hud_panel_pressedkeys_aspect", "1.8", save);
         c.Register("hud_panel_pressedkeys_attack", "0", save);
-        // QC HUD_Panel default: hud_panel_pressedkeys 1 = local player only while it would normally hide (we draw
-        // it for the live local player); 2 = also show. The generic enable cvar is seeded by HudConfig from the
-        // luma table ("1"); re-asserting here keeps the panel's tunables co-located but stays idempotent.
+        // QC HUD_Panel default: hud_panel_pressedkeys 0 = off, 1 = spectated player only, 2 = also the local
+        // player ("always"). The DrawPanel spectatee gate enforces these against the live SpectateeStatus. The
+        // generic enable cvar is seeded by HudConfig from the luma table ("1"); re-asserting here keeps the
+        // panel's tunables co-located but stays idempotent.
         c.Register("hud_panel_pressedkeys", "1", save);
     }
 
@@ -100,6 +114,20 @@ public partial class PressedKeysPanel : HudPanel
         // self-blank. Cfg.Enabled already resolves `hud_panel_pressedkeys != 0` (the panel is CanBeOff).
         if (!Cfg.Enabled)
             return;
+
+        // QC HUD_PressedKeys spectatee gate (pressedkeys.qc:18-24), bypassed in the HUD editor:
+        //   - a free-fly observer (spectatee_status < 0) never shows the cluster;
+        //   - while playing / not chasing a player (spectatee_status <= 0) it shows only when
+        //     hud_panel_pressedkeys >= 2 ("always"); chasing a player (> 0) shows it for any non-zero enable.
+        if (!Configuring)
+        {
+            if (SpectateeStatus < 0)
+                return;
+            // QC autocvar_hud_panel_pressedkeys (the 0/1/2 enable cvar, NOT a _<suffix> tunable): read the
+            // panel's enable cvar by its full name. Cfg.Enabled above already covers the != 0 / value-0 case.
+            if (SpectateeStatus <= 0 && GlobalF($"hud_panel_{PanelId}", 1f) < 2f)
+                return;
+        }
 
         // Resolve the pressed-key bitmask: an explicit override (spectated player, fed by the net layer) wins;
         // otherwise sample the local +/- button state (the same source the movement sampler reads).

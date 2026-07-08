@@ -50,10 +50,12 @@ public sealed class GlobalForcesMutator : MutatorBase
         {
             Scale = Api.Cvars.GetFloat("g_globalforces"); // enable cvar IS the scale (QC: damage_force * autocvar)
             NoSelf = ReadBool("g_globalforces_noself", true);
-            float ss = Api.Cvars.GetFloat("g_globalforces_self");
-            if (ss != 0f) SelfScale = ss;
-            float r = Api.Cvars.GetFloat("g_globalforces_range");
-            if (r != 0f) Range = r;
+            // QC reads autocvar_g_globalforces_self / _range directly, where 0 is a meaningful value
+            // (self=0 -> attacker takes no self-knockback; range=0 -> unlimited radius). Fall back to the
+            // QC AUTOCVAR defaults (sv_globalforces.qc:5-6: self=1, range=1000) only when the cvar is UNSET;
+            // an explicit 0 must be honored. The old `if (v != 0) ...` guard wrongly discarded a set-to-0.
+            SelfScale = ReadFloat("g_globalforces_self", 1f);
+            Range = ReadFloat("g_globalforces_range", 1000f);
         }
     }
 
@@ -62,8 +64,17 @@ public sealed class GlobalForcesMutator : MutatorBase
         if (_onPlayerDamage is not null) GameHooks.PlayerDamageSplitHealthArmor.Remove(_onPlayerDamage);
     }
 
-    private static bool IsLivePlayer(Entity e) =>
-        (e.Flags & EntFlags.Client) != 0 && e.DeadState == DeadFlag.No;
+    // MUTATOR_HOOKFUNCTION(mutator_globalforces, BuildMutatorsString) — sv_globalforces.qc:9-11
+    public override string BuildMutatorsString(string s) => s + ":GlobalForces";
+
+    // MUTATOR_HOOKFUNCTION(mutator_globalforces, BuildMutatorsPrettyString) — sv_globalforces.qc:13-15
+    public override string BuildMutatorsPrettyString(string s) => s + ", Global forces";
+
+    // QC server-side IS_PLAYER (server/utils.qh:9) is classname-only — (v).classname == "player" — with NO dead
+    // test, so a just-killed body still classed "player" is shoved by the spread. Match Base: client flag only,
+    // do NOT exclude on DeadState (the old DeadState==No filter was a port divergence that froze corpses).
+    private static bool IsPlayer(Entity e) =>
+        (e.Flags & EntFlags.Client) != 0;
 
     // MUTATOR_HOOKFUNCTION(mutator_globalforces, PlayerDamage_SplitHealthArmor)
     private bool OnPlayerDamage(ref GameHooks.PlayerDamageArgs args)
@@ -85,7 +96,7 @@ public sealed class GlobalForcesMutator : MutatorBase
         // QC: FOREACH_CLIENT(IS_PLAYER(it) && it != frag_target, { ... })
         foreach (Entity it in Api.Entities.FindByClass("player"))
         {
-            if (ReferenceEquals(it, target) || !IsLivePlayer(it)) continue;
+            if (ReferenceEquals(it, target) || !IsPlayer(it)) continue;
 
             // QC: if (range) if (vdist(it.origin - frag_target.origin, >, range)) continue;
             if (Range != 0f && Vector3.Distance(it.Origin, target.Origin) > Range) continue;
@@ -124,5 +135,13 @@ public sealed class GlobalForcesMutator : MutatorBase
     {
         string s = Api.Cvars.GetString(name);
         return string.IsNullOrEmpty(s) ? fallback : Api.Cvars.GetFloat(name) != 0f;
+    }
+
+    // Read a float cvar, falling back to the QC AUTOCVAR default only when UNSET (empty string).
+    // An explicitly-set 0 is kept distinct from "unset" and honored.
+    private static float ReadFloat(string name, float fallback)
+    {
+        string s = Api.Cvars.GetString(name);
+        return string.IsNullOrEmpty(s) ? fallback : Api.Cvars.GetFloat(name);
     }
 }

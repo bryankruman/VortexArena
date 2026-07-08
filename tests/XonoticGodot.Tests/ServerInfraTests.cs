@@ -91,6 +91,132 @@ public class ServerInfraTests
         Assert.False(server.Has("cl_local_only"));                  // client-only cvar never leaked into the server
     }
 
+    // ============================================================== config-save rule (DP Cvar_WriteVariables)
+
+    [Fact]
+    public void ArchivedNamesToPersist_WritesOnlyUserChangesOffTheLockedDefault()
+    {
+        // Mirrors MenuState.Boot's order: load the stock tree (via `set`, as the interpreter does), LockDefaults,
+        // then apply the user's menu/console changes (MarkArchived == DP's seta/CVAR_SAVE bit). The save then
+        // writes only what the user actually moved off the shipped default — DP's config.cfg rule — not a dump.
+        var cvars = new CvarService();
+        cvars.Set("crosshair", "3");      // shipped default
+        cvars.Set("sensitivity", "6");    // shipped default
+        cvars.Set("fov", "90");           // shipped default
+        cvars.LockDefaults();
+
+        cvars.Set("crosshair", "12");
+        cvars.MarkArchived("crosshair");  // changed off default + archived → MUST persist
+        cvars.Set("sensitivity", "6");    // re-set to the SAME locked default
+        cvars.MarkArchived("sensitivity");// archived but == default → MUST be omitted (lean diff, not full dump)
+        // fov never touched → not archived → omitted
+
+        var persist = new HashSet<string>(cvars.ArchivedNamesToPersist, System.StringComparer.Ordinal);
+        Assert.Contains("crosshair", persist);
+        Assert.DoesNotContain("sensitivity", persist);
+        Assert.DoesNotContain("fov", persist);
+    }
+
+    [Fact]
+    public void ArchivedNamesToPersist_RegisteredCvarAtDefault_NotWritten_EvenIfRegisteredAfterLock()
+    {
+        // THE config.cfg-bloat fix. A port-extension cl_* / hud_* cvar registers via ClientSettings.ApplyAll —
+        // AFTER MenuState.Boot's LockDefaults — and at its default value. It must NOT be written, just like DP
+        // doesn't dump CF_ALLOCATED cvars once they're cleared by a Register (CF_ALLOCATED is cleared, the rule
+        // falls back to value!=defstring). This is the exact sequence that bloated config.cfg with ~195 setas.
+        var cvars = new CvarService();
+        cvars.Set("crosshair", "3");      // a stock cfg-tree cvar present at lock time
+        cvars.LockDefaults();             // cl_vignette is NOT in the store yet (registers later)
+
+        // a previous bloated config.cfg is loaded first: the cvar is created by `seta` at its default value...
+        cvars.Set("cl_vignette", "1");
+        cvars.MarkArchived("cl_vignette");
+        // ...then the overlay registers its real default (== the loaded value). Register clears Allocated + adopts
+        // the authoritative default, so the cvar is now "unchanged from default" and drops out of the save.
+        cvars.Register("cl_vignette", "1", CvarFlags.Save);
+
+        Assert.False(cvars.IsModified("cl_vignette"));
+        Assert.DoesNotContain("cl_vignette",
+            new HashSet<string>(cvars.ArchivedNamesToPersist, System.StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void ArchivedNamesToPersist_RegisteredCvarChangedFromDefault_IsWritten()
+    {
+        // The flip side: the user actually changed a registered cvar off its default. Register promotes the real
+        // default (1), so value (2) != default (1) → it IS written — even though it was loaded/created before the
+        // overlay's Register ran (the inferred default "2" must not mask the real default "1").
+        var cvars = new CvarService();
+        cvars.LockDefaults();
+        cvars.Set("cl_vignette", "2");                       // loaded from config at a NON-default value
+        cvars.MarkArchived("cl_vignette");
+        cvars.Register("cl_vignette", "1", CvarFlags.Save);  // overlay declares the real default 1
+
+        Assert.True(cvars.IsModified("cl_vignette"));
+        Assert.Contains("cl_vignette",
+            new HashSet<string>(cvars.ArchivedNamesToPersist, System.StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void ArchivedNamesToPersist_UserCreatedCvarNeverRegistered_AlwaysWritten()
+    {
+        // DP's CF_ALLOCATED & !CF_DEFAULTSET escape: a cvar the user created in the console (`seta my_pref 1`) that
+        // no code ever Registers has no authoritative default we can compare against, so it's always saved — losing
+        // it would be wrong. It stays Allocated (never promoted) and unlocked (created after LockDefaults).
+        var cvars = new CvarService();
+        cvars.LockDefaults();
+        cvars.Set("my_pref", "1");
+        cvars.MarkArchived("my_pref");
+
+        Assert.Contains("my_pref",
+            new HashSet<string>(cvars.ArchivedNamesToPersist, System.StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void ConfigLoad_SetaVsSet_DecidesTheArchiveBit_LikeDpCfgProvenance()
+    {
+        // DP: `seta` in the shipped cfg tree sets CVAR_SAVE on the cvar (Cvar_SetA_f → Cvar_Get flags|=);
+        // plain `set` does not — the TREE, not the C# registration tables, is the authority on what may
+        // persist to config.cfg. MenuState.Boot wires ConfigLoader's archive hook to MarkArchived so that
+        // provenance survives the port.
+        var cvars = new CvarService();
+        const string cfg = "seta crosshair_enabled 1\nset sv_spectate 1\n";
+        XonoticGodot.Common.Config.ConfigLoader.Load(cvars, p => p == "boot.cfg" ? cfg : null,
+            name => cvars.MarkArchived(name), "boot.cfg");
+        cvars.LockDefaults();
+
+        Assert.True(cvars.IsArchived("crosshair_enabled"));   // seta → archiveable
+        Assert.False(cvars.IsArchived("sv_spectate"));        // plain set → never archived (Base parity)
+
+        // Change BOTH off their locked defaults: only the seta-declared one is eligible for config.cfg.
+        cvars.Set("crosshair_enabled", "0");
+        cvars.Set("sv_spectate", "0");
+        var persist = new HashSet<string>(cvars.ArchivedNamesToPersist, System.StringComparer.Ordinal);
+        Assert.Contains("crosshair_enabled", persist);
+        Assert.DoesNotContain("sv_spectate", persist);
+    }
+
+    [Fact]
+    public void ServerDefaults_OpsCvars_AreNotArchived_MatchingBasePlainSet()
+    {
+        // Base declares these with plain `set` (xonotic-server.cfg:14/102/124/194/233) or registers them
+        // C-side without CVAR_SAVE (`skill` — a bare `skill 8` line over DP sv_main.c's flags-0 cvar), so
+        // none may persist to config.cfg. They used to carry CvarFlags.Save here — which is how every
+        // --host/--bots/perf run's writes leaked into the user's real config as fake preferences
+        // (bot_number 6 / skill 0 / sv_spectate 0 / g_maplist_mostrecent stormkeep / …).
+        foreach (string name in new[]
+                 { "bot_number", "bot_join_empty", "skill", "minplayers", "sv_spectate", "g_maplist_mostrecent" })
+        {
+            CvarDef def = System.Array.Find(Cvars.Defaults, d => d.Name == name);
+            Assert.Equal(name, def.Name); // present in the defaults table at all
+            Assert.Equal(CvarFlags.None, def.Flags & CvarFlags.Save);
+        }
+
+        // Positive control: g_maplist IS `seta` in Base (xonotic-common.cfg:95) and stays archived.
+        CvarDef maplist = System.Array.Find(Cvars.Defaults, d => d.Name == "g_maplist");
+        Assert.NotEqual(CvarFlags.None, maplist.Flags & CvarFlags.Save);
+    }
+
     // =========================================================================================== bans
 
     [Fact]
@@ -618,8 +744,10 @@ public class ServerInfraTests
         world.Clients.ClientConnect(isBot: true, netName: "bot2");
         world.EndMatch();
 
-        // advance enough frames for intermission to elapse + the map flow to apply.
-        for (int i = 0; i < 80 && changedTo is null; i++)
+        // Advance enough frames for intermission to elapse + the map flow to apply. With no real client pressing
+        // fire, QC IntermissionThink waits the full input-grace window (intermission_exittime + 10, intermission.qc:501)
+        // before MapVote_Start; sv_mapchange_delay 0 makes exittime = now, so we need to clear ~10s of sim here.
+        for (int i = 0; i < 150 && changedTo is null; i++)
             world.Frame(0.1f);
 
         Assert.Equal("dance", changedTo); // rotated from boil → dance
@@ -729,10 +857,63 @@ public class ServerInfraTests
         world.Clients.ClientConnect(isBot: true, netName: "bot1"); // a roster so the match flow runs
 
         world.Commands.Execute("gotomap dance", isServerConsole: true);
-        for (int i = 0; i < 80 && changedTo is null; i++)
+        // QC IntermissionThink holds for the input-grace window (intermission_exittime + 10, intermission.qc:501)
+        // when no real client presses fire; sv_mapchange_delay 0 → exittime = now, so clear ~10s of sim here.
+        for (int i = 0; i < 150 && changedTo is null; i++)
             world.Frame(0.1f);
 
         Assert.Equal("dance", changedTo);            // gotomap's queued map won and reached the changelevel pipeline
         Assert.Equal("dance", world.SelectedNextMap); // and is recorded as the chosen next map
+    }
+
+    [Fact]
+    public void Restart_FromIntermission_ResetsTheServerCleanly()
+    {
+        // DP/QC `restart` (RestartMatch → ReadyRestart): leave intermission, clear scores, re-arm the pre-live
+        // start countdown, and re-spawn every player + reset map objects — WITHOUT reloading the level (that is
+        // what `map` does). This pins the full server-side reset the listen-server host triggers from its console
+        // and a passed `vote call restart`, so a regression in any of those steps fails here rather than in a
+        // playtest. (The listen-server CLIENT then resets its own prediction off the respawn-teleport snap; the
+        // `map` full reload is covered by Map_*RoutesToChangeLevelHandler above.)
+        var world = new GameWorld(new CollisionWorld()) { MapName = "boil" };
+        world.Boot("dm");
+        world.Commands.AddBotHandler = (_, _) => true;
+
+        ClientManager.ClientInfo a = world.Clients.ClientConnect(isBot: true, netName: "bot1");
+        world.Clients.ClientConnect(isBot: true, netName: "bot2");
+
+        // Dirty the match: register + score a player, give them speed, then drive the match to intermission.
+        world.Scores.Row(a.Player);                 // ensure the row exists so Score_ClearAll touches it
+        a.Player.ScoreFrags = 7;
+        a.Player.Velocity = new Vector3(320f, 0f, 0f);
+        world.EndMatch();
+        Assert.True(world.Intermission.Running, "precondition: EndMatch latches intermission (the state restart undoes)");
+
+        // The exact path the host's in-game console runs (isServerConsole: true → bypasses the client gate).
+        CommandContext ctx = world.Commands.Execute("restart", isServerConsole: true);
+        Assert.Contains("restart", ctx.Output);
+
+        Assert.False(world.Intermission.Running, "restart must leave intermission");
+        Assert.False(world.Warmup.WarmupStage, "restart forces warmup to end (forceWarmupEnd)");
+        Assert.True(world.Warmup.CountdownRunning, "restart must arm the pre-live start countdown");
+        Assert.Equal(0, a.Player.ScoreFrags);                  // QC Score_ClearAll on a real restart
+        Assert.False(a.Player.IsDead);                         // every player re-spawned alive (PutClientInServer)
+        Assert.Equal(Vector3.Zero, a.Player.Velocity);         // reset_map zeroes velocity for the fresh start
+    }
+
+    [Fact]
+    public void Map_SameMap_ReloadsTheCurrentLevel()
+    {
+        // DP `map <currentmap>` is the faithful way to RELOAD the level (full changelevel: server reboots on the
+        // same map, the client tears down + reconnects). It must route to ChangeLevelHandler exactly like a
+        // change to a different map — i.e. reloading the level is not special-cased away.
+        var world = new GameWorld(new CollisionWorld()) { MapName = "boil" };
+        world.Boot("dm");
+        string? changedTo = null;
+        world.Commands.ChangeLevelHandler = m => changedTo = m;
+
+        world.Commands.Execute("map boil", isServerConsole: true);
+
+        Assert.Equal("boil", changedTo); // a reload of the current level reaches the same reboot pipeline
     }
 }

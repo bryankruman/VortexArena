@@ -1,0 +1,304 @@
+unit: weapon-hlac
+category: weapon
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 9
+  worst_gaps:
+    - "None blocking. HLAC bolt now wires the dedicated models/hlac_bullet.md3 (ProjectileCatalog.cs:172-173, same ModelPath+GlowSprite-fallback convention as Blaster's laser.mdl; asset present) and bot-aim now presses primary only (BotWantsSecondary => false, hlac.qc:156-159) — both prior worst_gaps closed this wave. Residual: model render confirmed by read+asset-present, not a live render-capture; HlacCrouchSpreadTests still don't exercise the cross-press counter reset."
+features:
+  - id: weapon-hlac.primary.attack
+    name: "Primary rapid-fire single bolt with held-fire spread accumulation"
+    layer: [authority, shared]
+    base_refs:
+      - "common/weapons/weapon/hlac.qc:W_HLAC_Attack"
+      - "common/weapons/weapon/hlac.qc:W_HLAC_Attack_Frame"
+      - "common/weapons/weapon/hlac.qc:wr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:WrThink"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:ScheduleAttackFrame"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:Attack"
+    constants:
+      - { name: "primary_damage", base: "10", port: "10", match: true }
+      - { name: "primary_edgedamage", base: "5", port: "5", match: true }
+      - { name: "primary_force", base: "15", port: "15", match: true }
+      - { name: "primary_radius", base: "60", port: "60", match: true }
+      - { name: "primary_speed", base: "6000", port: "6000", match: true }
+      - { name: "primary_lifetime", base: "5", port: "5", match: true }
+      - { name: "primary_ammo", base: "1", port: "1", match: true }
+      - { name: "primary_refire", base: "0.078125", port: "0.078125", match: true }
+      - { name: "primary_animtime", base: "0.03125", port: "0.03125", match: true }
+      - { name: "primary_spread_min", base: "0", port: "0", match: true }
+      - { name: "primary_spread_add", base: "0.001953125", port: "0.001953125", match: true }
+      - { name: "primary_spread_max", base: "0.03125", port: "0.03125", match: true }
+      - { name: "misc_bulletcounter reset on fresh primary press", base: "= 0 in wr_think fire&1 first-press (hlac.qc:173)", port: "= 0 in WrThink Primary on PrepareAttack success (Hlac.cs:126)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: read, ref: "Hlac.cs:124-129 — WrThink(Primary) on PrepareAttack success resets MiscBulletCounter=0, fires once, then ScheduleAttackFrame; mirrors hlac.qc:169-176 (wr_think resets misc_bulletcounter=0 + weapon_thinkf W_HLAC_Attack_Frame)", result: pass }
+      - { kind: read, ref: "PrepareAttack (WeaponFireGate.cs:52-128) requires st.State==Ready for the shared-timer path -> the reset only fires on a genuine fresh trigger pull, exactly like QC weapon_prepareattack; sets State=InUse so per-tick WrThink(Primary) cannot re-fire mid-hold", result: pass }
+      - { kind: read, ref: "ScheduleAttackFrame (Hlac.cs:145-168) overwrites the pending w_ready think (ScheduleThink: 'last weapon_thinkf wins', WeaponFireDriver.cs:301), re-fires + ++MiscBulletCounter while ButtonAttack held & ammo/unlimited, else settles State=Ready WITHOUT resetting the counter -> re-tap restores accuracy. Matches hlac.qc:129-154", result: pass }
+      - { kind: trace, ref: "WeaponFireDriver.cs:155 calls weapon.WrThink(player, slot, Primary) every server tick -> the fresh-press reset path is live on the real match path", result: pass }
+      - { kind: value-diff, ref: "Configure() vs bal-wep-xonotic.cfg:537-548", result: pass }
+      - { kind: test, ref: "tests/XonoticGodot.Tests/HlacCrouchSpreadTests.cs — pins the crouchmod gate (single WrThink call); does NOT cover the cross-press counter reset (one WrThink per case)", result: partial }
+    confidence: high
+    notes: "WAVE-2 FIX (baseline worst gap closed). Per-press misc_bulletcounter reset is now implemented in WrThink(Primary) (Hlac.cs:126) and gated by PrepareAttack's READY-state requirement, so releasing+re-tapping primary restores accuracy — the weapon's signature feather-the-trigger mechanic. The new ScheduleAttackFrame faithfully models W_HLAC_Attack_Frame (held-fire self-reschedule loop: increment in the loop, NO reset in the loop; settle to READY on release/out-of-ammo). Adversarially verified live (driver calls WrThink(Primary) each tick) and double-fire-safe (PrepareAttack requires Ready, sets InUse). The HlacCrouchSpreadTests still only fire one WrThink/case so they do not exercise the cross-press reset — coverage gap remains but the logic is correct on read+trace."
+
+  - id: weapon-hlac.secondary.burst
+    name: "Secondary one-shot burst of `shots` scattered bolts"
+    layer: [authority, shared]
+    base_refs:
+      - "common/weapons/weapon/hlac.qc:W_HLAC_Attack2"
+      - "common/weapons/weapon/hlac.qc:wr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:Attack2"
+    constants:
+      - { name: "secondary_shots", base: "6", port: "6", match: true }
+      - { name: "secondary_damage", base: "15", port: "15", match: true }
+      - { name: "secondary_edgedamage", base: "7.5", port: "7.5", match: true }
+      - { name: "secondary_force", base: "30", port: "30", match: true }
+      - { name: "secondary_radius", base: "60", port: "60", match: true }
+      - { name: "secondary_speed", base: "6000", port: "6000", match: true }
+      - { name: "secondary_lifetime", base: "5", port: "5", match: true }
+      - { name: "secondary_ammo", base: "6", port: "6", match: true }
+      - { name: "secondary_refire", base: "1", port: "1", match: true }
+      - { name: "secondary_animtime", base: "0.3", port: "0.3", match: true }
+      - { name: "secondary_spread", base: "0.15", port: "0.15", match: true }
+      - { name: "secondary_enabled", base: "1", port: "true", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base decrements ammo AFTER W_SetupShot; port decrements before the loop. No observable difference (single actor, single tick)."
+    verification:
+      - { kind: test, ref: "tests/XonoticGodot.Tests/HlacCrouchSpreadTests.cs (Secondary_* cases)", result: pass }
+      - { kind: value-diff, ref: "Configure() vs bal-wep-xonotic.cfg:551-563", result: pass }
+    confidence: high
+    notes: "Burst loops `shots` bolts with one shared (crouch-adjusted) secondary spread; one recoil kick for the whole burst (matches Base). Unchanged by Wave-2 except per-bolt deathTag now carries HITTYPE_SECONDARY (see weapon-hlac.bolt.impact)."
+
+  - id: weapon-hlac.spread.crouchmod
+    name: "Crouch+grounded spread tightening gate"
+    layer: [shared]
+    base_refs:
+      - "common/weapons/weapon/hlac.qc:33"
+      - "common/weapons/weapon/hlac.qc:79"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:CrouchSpreadMod"
+    constants:
+      - { name: "primary_spread_crouchmod", base: "0.25", port: "0.25", match: true }
+      - { name: "secondary_spread_crouchmod", base: "0.5", port: "0.5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "tests/XonoticGodot.Tests/HlacCrouchSpreadTests.cs", result: pass }
+    confidence: high
+    notes: "Gate fires only when IS_DUCKED && IS_ONGROUND; per-mode crouchmod. Pinned bit-exact via deterministic PRNG (zero/one/0.25 multiplier cases). Unchanged by Wave-2."
+
+  - id: weapon-hlac.bolt.impact
+    name: "Bolt radius-damage burst on touch / lifetime"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/hlac.qc:W_HLAC_Touch"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:Explode"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:SpawnBolt"
+    constants:
+      - { name: "is_primary deathtype split (HITTYPE_SECONDARY)", base: "projectiledeathtype = m_id | HITTYPE_SECONDARY for secondary (hlac.qc:113), plain m_id for primary (hlac.qc:67)", port: "secondary deathTag = WithHitType(FromWeapon(hlac), Secondary); primary = RegistryId int (Hlac.cs:249-255)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base damages only on touch (SUB_Remove at lifetime does no damage); port think=Remove also does no damage — matches."
+    verification:
+      - { kind: read, ref: "Hlac.Explode -> WeaponSplash.RadiusDamage(... deathTag); per-mode damage/edge/radius/force captured at SpawnBolt", result: pass }
+      - { kind: read, ref: "SpawnBolt (Hlac.cs:253-256): secondary bolts now pass deathTag = DeathTypes.WithHitType(DeathTypes.FromWeapon(NetName), DeathTypes.Secondary) -> 'weapon_hlac|secondary'; RadiusDamage consumes deathTag (WeaponSplash.cs:208-212) so HITTYPE_SECONDARY now rides the deathtype. Matches hlac.qc:113", result: pass }
+    confidence: high
+    notes: "WAVE-2 FIX (HITTYPE_SECONDARY gap closed). Secondary bolts now carry the HITTYPE_SECONDARY token in the string deathtype via deathTag and it flows through RadiusDamage; primary keeps the plain RegistryId int (correct — QC primary has no HITTYPE_SECONDARY). Per-mode damage/edge/radius/force are still captured at SpawnBolt (closure); resolved damage matches Base exactly. The int RegistryId is still passed alongside for the legacy direct-int path, but the obituary/hittype path is the string deathTag, so HITTYPE_SECONDARY-keyed stats/obituary variants would now resolve correctly for the secondary."
+
+  - id: weapon-hlac.projectile.velocity
+    name: "Shared projectile-velocity setup (W_SetupProjVelocity_Basic)"
+    layer: [shared]
+    base_refs:
+      - "server/weapons/tracing.qc:W_SetupProjVelocity_Explicit"
+      - "common/weapons/calculations.qc:W_CalculateSpread"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:ProjectileVelocity"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:CalculateSpread"
+    constants:
+      - { name: "g_projectiles_newton_style", base: "0", port: "0 (inheritance omitted)", match: true }
+      - { name: "g_projectiles_spread_style", base: "0", port: "0 (dir + randomvec*spread)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "VERIFIED 2026-06-22 against tracing.qc:184-213 (re-confirmed post-Wave-2; ProjectileVelocity body unchanged — WeaponFiring.cs:702-704 still `QMath.Normalize(dir)*speed` -> |v|==speed exactly). QC `W_SetupProjVelocity_Explicit` calls `W_CalculateSpread(dir, spread, style, false)` (NOT normalized) then `proj.velocity = W_CalculateProjectileVelocity(owner, owner.velocity, pSpeed*dir, false)`; with g_projectiles_newton_style 0 that returns `pSpeed*dir` unchanged, so |velocity| = pSpeed*|normalize(dir_folded)+randomvec*spread|, i.e. Base bolts gain a small speed bump. Magnitude: at spread_max 0.03125 the per-axis randomvec()*spread is in [-0.03125,0.03125), so |v| is within ~1-3% of speed in typical draws (worst case ~5% on a fully axis-aligned draw). Aim DIRECTION is effectively identical (port normalizes the same vector QC builds). Flagged so it is not re-reported; fix only if exact projectile-speed parity is required."
+    gaps: []
+    verification:
+      - { kind: read, ref: "WeaponFiring.ProjectileVelocity (WeaponFiring.cs:695-704) vs tracing.qc:185-213 — renormalize-after-spread unchanged by Wave-2", result: pass }
+    confidence: medium
+    notes: "Newton-style velocity inheritance defaults off in Base and is omitted in the port (correct at default). The renormalize-after-spread is the only math divergence (intended)."
+
+  - id: weapon-hlac.recoil.punchangle
+    name: "Per-shot punchangle recoil kick"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/hlac.qc:38"
+      - "common/weapons/weapon/hlac.qc:121"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:Recoil"
+    constants:
+      - { name: "punchangle.x/y = random()-0.5 gated by !g_norecoil", base: "if (!autocvar_g_norecoil) (hlac.qc:38,121)", port: "if (Api.Cvars.GetFloat(\"g_norecoil\") != 0f) return; (Hlac.cs:269)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: read, ref: "Hlac.Recoil (Hlac.cs:267-275): early-returns when g_norecoil != 0, else sets PunchAngle.X/Y = Prandom.Float()-0.5. Matches hlac.qc:38-42,121-125 (!autocvar_g_norecoil gate). g_norecoil read via Api.Cvars.GetFloat -> defaults 0 (recoil active) when unregistered, matching Base default", result: pass }
+    confidence: high
+    notes: "WAVE-2 FIX (norecoil-gate gap closed). The HLAC-local punchangle.x/y kick is now suppressed under g_norecoil 1, matching Base; the separate W_SetupShot view recoil was already g_norecoil-gated (WeaponFiring.cs:119). Same pattern as Machinegun.Recoil."
+
+  - id: weapon-hlac.ammo.checkreload
+    name: "Ammo check + reload (wr_checkammo / wr_reload / forced reload)"
+    layer: [authority]
+    base_refs:
+      - "common/weapons/weapon/hlac.qc:wr_checkammo1"
+      - "common/weapons/weapon/hlac.qc:wr_checkammo2"
+      - "common/weapons/weapon/hlac.qc:wr_reload"
+      - "common/weapons/weapon/hlac.qc:wr_think (forced reload)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:CheckAmmoPrimary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:CheckAmmoSecondary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFireGate.cs:WrReload"
+    constants:
+      - { name: "reload_ammo", base: "0", port: "0", match: true }
+      - { name: "reload_time", base: "2", port: "2", match: true }
+      - { name: "wr_reload ammo floor", base: "min(pri.ammo, sec.ammo)=1", port: "max(1, ReloadingAmmoMin())=1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: read, ref: "CheckAmmoPrimary/Secondary (Hlac.cs:309-316) now resolve `reserve >= ammo || GetWeaponLoad(...) >= ammo` — the clip-OR-reserve term, matching hlac.qc:188-200 (GetResource >= ammo + weapon_load[m_id] >= ammo). Same pattern as Electro/Rifle/Shotgun/Vortex.", result: pass }
+      - { kind: read, ref: "WrThink (Hlac.cs:120-124) now has the forced-reload branch: if (ReloadingAmmo() != 0 && st.ClipLoad < min(Primary.Ammo, Secondary.Ammo)) WrReload + return; mirrors hlac.qc:163-167 (g_balance_hlac_reload_ammo && clip_load < min(pri.ammo,sec.ammo)).", result: pass }
+      - { kind: trace, ref: "HasAmmo dispatch (WeaponFireGate.cs:517) routes the live ammo gate to Hlac.CheckAmmoPrimary/Secondary; ReloadingAmmo()/ReloadingTime() resolve g_balance_hlac_reload_ammo (0) / reload_time (2) via the generic Bal path (WeaponFireGate.cs:408-414).", result: pass }
+      - { kind: value-diff, ref: "reload_ammo 0 / reload_time 2 vs bal-wep-xonotic.cfg:549-550; wr_reload floor = min(pri.ammo 1, sec.ammo 6) = 1 (ReloadingAmmoMin, Hlac.cs:186)", result: pass }
+    confidence: high
+    notes: "WAVE-6+ FIX (both baseline gaps closed; re-verified 2026-06-25). wr_checkammo1/2 now carry the clip-OR-reserve term (GetWeaponLoad), and WrThink has the forced-reload branch. Both still dormant at the shipped default reload_ammo 0 (HLAC un-clipped) but the logic is now bit-faithful to Base if reload_ammo is set >0. Generic base WrReload + SND_RELOAD covers the reload."
+
+  - id: weapon-hlac.fx.muzzle_impact
+    name: "Muzzle flash, impact effect, fire/impact sounds"
+    layer: [presentation]
+    base_refs:
+      - "common/weapons/weapon/hlac.qh:m_muzzleeffect"
+      - "common/weapons/weapon/hlac.qc:wr_impacteffect"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:Attack (Emit GREEN_HLAC_MUZZLEFLASH)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:Explode (Emit GREEN_HLAC_IMPACT + ImpactSound)"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectsList.cs:81"
+    constants:
+      - { name: "fire sound", base: "SND_HLAC_FIRE=lasergun_fire", port: "weapons/lasergun_fire.wav", match: true }
+      - { name: "impact sound", base: "SND_LASERIMPACT", port: "weapons/laserimpact.wav", match: true }
+      - { name: "muzzle effect", base: "GREEN_HLAC_MUZZLEFLASH (blaster fallback)", port: "GREEN_HLAC_MUZZLEFLASH -> BLASTER_MUZZLEFLASH fallback (Hlac.cs:331-337)", match: true }
+      - { name: "impact effect", base: "GREEN_HLAC_IMPACT (blaster fallback)", port: "GREEN_HLAC_IMPACT -> BLASTER_IMPACT fallback (Hlac.cs:345-351)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: read, ref: "Hlac.EmitMuzzleFlash (Hlac.cs:331-337) + EmitImpactEffect (Hlac.cs:345-351): Effects.ByName(GREEN_HLAC_*) ?? Effects.ByName(BLASTER_*) -> the v0.8.6 green->blaster compat fallback (hlac.qc:224-228) is now ported. Effects.ByName returns null for an unregistered name (Effect.cs:61), so the ?? branch is reachable on a missing-asset build", result: pass }
+      - { kind: trace, ref: "EffectsList.cs:97-98 registers GREEN_HLAC_IMPACT/MUZZLEFLASH; :39-40 registers BLASTER_IMPACT/MUZZLEFLASH; Hlac.Attack/Attack2 emit muzzle, Explode emits impact (all on the live fire path)", result: pass }
+    confidence: high
+    notes: "WAVE-16/17 RE-AUDIT (presentation partial->faithful, fallback gap closed). The runtime green->blaster compat fallback that the prior audit flagged as 'not ported' IS now present in EmitMuzzleFlash/EmitImpactEffect (Effects.ByName null-coalesce to the BLASTER effect). Both green effects are registered so the fallback is dormant on a normal build, but the path now matches Base for a hypothetical missing-asset build. Fire+impact audio cues/channels match."
+
+  - id: weapon-hlac.identity.metadata
+    name: "Weapon identity, kill/suicide notifications, registration/liveness"
+    layer: [authority, shared, presentation]
+    base_refs:
+      - "common/weapons/weapon/hlac.qh"
+      - "common/weapons/weapon/hlac.qc:wr_killmessage"
+      - "common/weapons/weapon/hlac.qc:wr_suicidemessage"
+      - "common/weapons/weapon/hlac.qc:wr_aim"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:Hlac (ctor)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:BotWantsSecondary"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Hlac.cs:BotAimShotSpeed"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponOrder.cs:209"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/DeathMessages.cs:66"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:368"
+      - "game/client/ProjectileCatalog.cs:165 (ProjectileType.Hlac desc)"
+      - "game/client/ProjectileCatalog.cs:297 (hlacbolt -> ProjectileType.Hlac)"
+    constants:
+      - { name: "impulse", base: "6", port: "6", match: true }
+      - { name: "ammo_type", base: "cells", port: "Cells", match: true }
+      - { name: "m_color", base: "'0.506 0.945 0.239'", port: "(0.506,0.945,0.239)", match: true }
+      - { name: "spawnflags", base: "MUTATORBLOCKED|RELOADABLE|TYPE_SPLASH", port: "MutatorBlocked|Reloadable|TypeSplash", match: true }
+      - { name: "killmessage", base: "WEAPON_HLAC_MURDER", port: "WEAPON_HLAC_MURDER", match: true }
+      - { name: "suicidemessage", base: "WEAPON_HLAC_SUICIDE", port: "WEAPON_HLAC_SUICIDE", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: trace, ref: "WeaponOrder.cs:209 registration; CompatRemaps maps weapon_plasmagun/ammo_cells -> hlac; impulse 6", result: pass }
+      - { kind: trace, ref: "DeathMessages.cs / NotificationsList.cs HLAC_MURDER/SUICIDE wired", result: pass }
+      - { kind: read, ref: "Hlac.BotWantsSecondary (Hlac.cs:184-185) now returns FALSE (primary only), matching QC wr_aim (hlac.qc:156-159) which only sets PHYS_INPUT_BUTTON_ATCK and never alt-fires — the ~10% secondary-burst divergence is removed. BotAimShotSpeed => Primary.Speed (Hlac.cs:188) leads at 6000 (primary==secondary). Both overrides called live: BotBrain.cs:457 (BotWantsSecondary) + BotBrain.cs:929 (BotAimShotSpeed). Bolt BotDodge=true rating=damage (Hlac.cs:274-275) so bots evade it", result: pass }
+      - { kind: read, ref: "ProjectileCatalog.cs:172-173 desc now sets ModelPath=models/hlac_bullet.md3 (was unset) + GlowSprite fallback + no trail; :297 maps hlacbolt/hlac -> ProjectileType.Hlac. Matches Base projectile.qc:356 (traileffect=EFFECT_Null) + MDL_PROJECTILE_HLAC=hlac_bullet.md3 (all.inc:65). Renderer loads the real model via ModelFactory(ModelPath) and only falls back to GlowSprite when null (ProjectileRenderer.cs:414-422) — same wiring as Blaster's laser.mdl", result: pass }
+      - { kind: read, ref: "asset present: assets/data/xonotic-data.pk3dir/models/hlac_bullet.md3 exists -> the dedicated MD3 loads on a normal content build (glow-sprite fallback only on a headless/missing-content build)", result: pass }
+    confidence: high
+    notes: "WAVE (2026-06-28) FIX — both baseline worst_gaps for this row closed. (1) bot-aim secondary divergence: BotWantsSecondary changed ctx.Random01<=0.1 -> false, so port HLAC bots now press primary only, exactly like QC wr_aim. (2) bolt model: ProjectileType.Hlac now wires ModelPath=models/hlac_bullet.md3 (asset present) with the GlowSprite fallback, mirroring Blaster; the renderer instantiates the real MD3 via ModelFactory when mounted. presentation partial->faithful. Trail correctly absent (EFFECT_Null). Identity/flags/color/ammo/notifications all match; reachable via impulse/order/CompatRemaps/NewToys/NIX. Model render confirmed by read + asset-present, NOT by a live render capture — drop to medium only if a runtime visual check is later required."

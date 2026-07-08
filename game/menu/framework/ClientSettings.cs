@@ -30,6 +30,7 @@ public static class ClientSettings
         Client.VignetteOverlay.RegisterDefaults(MenuState.Cvars);
         Client.ReticleOverlay.RegisterDefaults(MenuState.Cvars); // zoom scope reticle (cl_reticle*)
         Client.FrameProfiler.RegisterDefaults(MenuState.Cvars);
+        Client.ScreenshotService.RegisterDefaults(MenuState.Cvars); // scr_screenshot_* (the F12 screenshot command)
 
         // HUD skin + per-panel layout/behaviour cvar defaults (luma), so the menu HUD dialogs and the console
         // can see/drive them and panels read the luma defaults until a config overrides them.
@@ -71,24 +72,102 @@ public static class ClientSettings
         // and were invisible for the identical reason. cl_show* are the DP-native fallbacks FpsPanel/PingPanel read.
         c.Register("showfps", "0", save);
         c.Register("showping", "0", save);
+        c.Register("showposition", "0", save);
         c.Register("cl_showfps", "0", save);
         c.Register("cl_showping", "0", save);
+        c.Register("cl_showposition", "0", save);
+        // PVS-cull escape hatch. WorldPvsCuller registers this in _Ready — which only runs inside a match — so a
+        // menu-only session would leave it "allocated, default unknown"; register it eagerly at boot (idempotent
+        // with WorldPvsCuller's own Register) so it's a declared cvar with a known default. The whole r_*/cl_*
+        // debug/A-B family below is deliberately NOT CvarFlags.Save: Base has no counterpart for these, and a
+        // perf-session pin (`--cvar`/console `set`) must never persist into config.cfg. A user who wants one
+        // sticky can still `seta` it in the console (DP's allocated-cvar escape keeps it).
+        c.Register("r_pvs_cull", "1");
+        // (§12.8 A/B) Godot-native occlusion culling — orthogonal to r_pvs_cull, OFF by default (PVS is the
+        // shipping path). Eager idempotent register (matches WorldOcclusion's own) so it's a declared cvar.
+        c.Register("r_occlusion_cull", "0");
+        // (§12.8) DP-faithful entity render culling: hide remote entities outside the camera's PVS — DP draws an
+        // entity only when its cluster is in the view's PVS. ON by default (pairs with sv_cullentities_pvs so the
+        // client also skips drawing anything that slips through); margin = the half-extent of the bounds box.
+        c.Register("r_pvs_cull_entities", "1");
+        c.Register("r_pvs_cull_entities_margin", "64");
+        // (§12.5) Adaptive world-mesh cell size — scales the spatial split to map size to bound draw calls.
+        // adaptive 0 = fixed r_world_cell_size (1024 = today). div ~= cells along the longest axis; min/max clamp.
+        c.Register("r_world_cell_adaptive", "0");
+        c.Register("r_world_cell_size", "1024");
+        c.Register("r_world_cell_div", "8");
+        c.Register("r_world_cell_min", "256");
+        c.Register("r_world_cell_max", "4096");
         // Mouse pitch (only its SIGN is used here, for invert-look); DP default 1 (non-inverted) = current behaviour.
         c.Register("m_pitch", "1", save);
         // Server-browser auto-refresh pause toggle (DP default 0).
-        c.Register("net_slist_pause", "0", save);
-        // Input cadence + local fire prediction (port extensions, read live from the shared store by NetGame).
-        c.Register("cl_movement_perframe", "1", save); // absent → ON (DP-style per-frame variable-dt input; PERFORMANCE_REPORT.md B2, user-approved). `set cl_movement_perframe 0` restores the legacy fixed 72 Hz cadence.
-        c.Register("cl_predictfire", "1", save);       // intentionally default ON (NetGame: unset → on)
+        c.Register("net_slist_pause", "0");
+        // Local-player movement-prediction model (read live by NetGame). DEFAULT 1 = PATH A, the Base-faithful path:
+        // predict the local player ONCE per RENDER frame at the real (clamped) frame dt — Xonotic Base's
+        // Movetype_Physics_NoMatchTicrate — so the predicted origin lands at the exact render time and moves smoothly
+        // at any fps (no fixed-tick→fps aliasing "lurch"). The physics is frametime-independent (half-step gravity →
+        // dt-invariant apex; fps-independent strafe speed — see MovementTimingTests), so variable dt is safe; the
+        // server stays a fixed 1/72 s authoritative tick. `set cl_movement_perframe 0` = the LEGACY fixed-tick path
+        // (drain input in 1/72 s quanta + snap-to-latest render) — kept as an A/B fallback. See
+        // [[camera-drift-render-smoothing]] / NET-DEBUGGING.md.
+        c.Register("cl_movement_perframe", "1");
+        // Sub-tic eye extrapolation (DP partial-final-frame approximation, NetGame.UpdateCamera). Default ON. This
+        // LINEAR extrapolation by the leftover input accumulator beats with any fps that isn't a multiple of 72,
+        // shoving the eye a few units per hop — a candidate for "inconsistent bunnyhop timing". `set
+        // cl_movement_subtic_extrapolate 0` renders the eye at the last simulated tic (no extrapolation) for A/B
+        // isolation; the gravity-correct partial-tic sub-step fix supersedes it. NOT gated by cl_movement_smoothing_*.
+        c.Register("cl_movement_subtic_extrapolate", "1");
+        // Path A send model (only consulted in per-frame / cl_movement_perframe 1 mode). cl_netfps (DP-faithful,
+        // default 72) = how many input datagrams/s the client sends; the client still PREDICTS every render frame.
+        // cl_movement_send_all (default 0 = Base-faithful): 0 = gate sends to cl_netfps with bounded redundancy
+        // (intermediate frames coalesce above ~cl_netfps×redundancy fps, exactly like Darkplaces); 1 = send every
+        // predicted frame so the server replays the IDENTICAL command sequence and reconcile stays ~0 (more
+        // bandwidth, ideal on a listen server). Read live by NetGame so it A/B-toggles in-session.
+        c.Register("cl_netfps", "72", save);
+        c.Register("cl_movement_send_all", "0");
+        // cl_netimmediatebuttons (DP-faithful, default ON): send a command IMMEDIATELY (bypassing the cl_netfps rate
+        // gate) when it carries an impulse or a button-state change (fire/jump/crouch press/release), so above 72 fps
+        // those reach the server with minimal latency instead of waiting up to one ~13.9ms interval; steady movement
+        // input stays rate-limited to cl_netfps. `set cl_netimmediatebuttons 0` rate-limits everything uniformly.
+        c.Register("cl_netimmediatebuttons", "1", save);
+        // Render-clock damping (Path A #2): 1 (default) = free-run the render clock and gently creep it toward server
+        // time (Base cl_nettimesyncboundmode), 0 = hard-rebase to the latest server time every snapshot (the old
+        // behaviour, which jolts the camera/decay timeline when snapshots arrive in lumps). For A/B isolation.
+        c.Register("cl_netclock_smooth", "1");
+        // Post-hitch stall-aware reconcile (default ON). After a frame HITCH (GC / heavy streaming stalls the shared
+        // listen-server thread), the server is transiently behind; this HOLDS a moderate reconcile correction for a
+        // few snapshots instead of snapping the camera back, then resumes. Defensive (NOT the cause of any observed
+        // bug — the spawn-stutter was the ENet throttle), so it's toggleable: `set cl_movement_hitch_hold 0` reverts
+        // to immediate snapping. Rationale + the masking risk it carries: TROUBLESHOOTING.md.
+        c.Register("cl_movement_hitch_hold", "1");
+        c.Register("cl_predictfire", "1");       // intentionally default ON (NetGame: unset → on)
         // Client-side projectile prediction (CSQC Projectile_Draw): snap+extrapolate vs the old ease. Default
         // ON; `set cl_projectile_prediction 0` reverts for A/B feel-testing (ClientWorld polls it live).
-        c.Register("cl_projectile_prediction", "1", save);
+        c.Register("cl_projectile_prediction", "1");
+        // Master view-smoothing mode (default 1 = FAITHFUL): render the eye via the Base CSQCPlayer_ApplySmoothing
+        // algorithm (stairsmoothz glide + viewheightavg eye-height blend, error compensation forced OFF so
+        // corrections SNAP) so the camera matches stock Xonotic exactly and the only intentional divergence is the
+        // stepheight processing. 0 = the port path (adaptive stair catch-up + error-comp/knockback glide). Read
+        // live by NetGame.UpdateCamera; the Settings→Misc dialog can bind it.
+        c.Register("cl_movement_smoothing_faithful", "1");
+        // Prediction-error view smoothing strength (stock DP/Xonotic cvar; the Settings→Misc checkbox binds it).
+        // Base default is 0 (snap to truth) — a correction the smoother would smear into a drifting camera lag
+        // instead lands as a clean snap. Only consulted on the PORT path (faithful mode forces it 0). >0 re-enables
+        // the port's decaying error glide. Read live by NetGame via ConfigureErrorSmoothing.
+        c.Register("cl_movement_errorcompensation", "0", save);
+        // Eye-height smoothing time, seconds (stock Xonotic cl_smoothviewheight, default 0.05): how fast the eye
+        // blends to the new view offset on crouch/stand (faithful viewheightavg). 0 = snap. Read live by NetGame.
+        c.Register("cl_smoothviewheight", "0.05", save);
+        // Knockback view-smoothing window, seconds (PORT EXTENSION, read live by NetGame via ConfigureErrorSmoothing):
+        // how long an explosion/blaster shove glides the view instead of popping it. Stock Xonotic discards the spike
+        // (it predates predicted jumppads/teleporters); this port smooths it. 0 = pop like stock. See Reconciler.
+        c.Register("cl_movement_errorcompensation_force_time", "0.12");
         // Precache ALL weapon view-models at map load (default ON) vs only this match's expected loadout.
         // Warming all (~24) costs a little extra load time, hidden by the loading screen, but removes the
         // 30–300 ms stall the first time the player switches to / picks up / sees an unanticipated weapon
         // (PERFORMANCE_REPORT.md A3). `set cl_precache_all_weapons 0` restores the smart expected-only warm
         // for memory-constrained machines (NetGame.PrecacheWeaponModelsAsync reads it).
-        c.Register("cl_precache_all_weapons", "1", save);
+        c.Register("cl_precache_all_weapons", "1");
         // Off-screen / distant pose-cull for skeletal player models (3.3): when ON, PlayerModel.PushBones is
         // skipped for a REMOTE player whose model is off-screen, and distant on-screen players refresh the
         // Skeleton3D at half rate. The CPU locomotion clock keeps running every frame, so a model going
@@ -97,22 +176,31 @@ public static class ClientSettings
         // (§13 flip, 2026-06-12) Default ON: off-screen remote players skip the ~50-60 bone-pose interop
         // calls/frame and distant on-screen ones refresh at half rate; the local player is never culled and
         // the locomotion clock always runs (fresh pose on re-entry). `cl_pose_cull 0` restores full-rate.
-        c.Register("cl_pose_cull", "1", save);
+        c.Register("cl_pose_cull", "1");
         // Quake units: beyond this an ON-SCREEN remote player refreshes at half rate (a per-model phase stagger
         // spreads the work). 0 disables the distance half-rate, keeping only the off-screen skip.
-        c.Register("cl_pose_cull_distance", "1500", save);
+        c.Register("cl_pose_cull_distance", "1500");
         // (§13 flip, 2026-06-12) Default ON: animated MD3s morph in a vertex shader (2 uniforms/frame)
         // instead of re-uploading lerped vertex+normal buffers every frame (the 3.3 Tier-3 item). Eligible
         // models only (StandardMaterial3D surfaces — others keep the CPU path automatically); visual parity
         // verified on the stormkeep item set. `cl_gpu_morph 0` restores the CPU path.
-        c.Register("cl_gpu_morph", "1", save);
+        c.Register("cl_gpu_morph", "1");
         // Spawn-point idle glow + player-spawn flash (Xonotic QC autocvars; the Effects dialog binds the
         // first, makeMulti pokes the second). Stock defaults ON — SpawnPointParticles / the SPAWN effect
         // read these (absent → 0 would silently disable both).
         c.Register("cl_spawn_point_particles", "1", save);
         c.Register("cl_spawn_event_particles", "1", save);
+        // Base xonotic-client.cfg:77: the idle glow is culled beyond this range (0 = no distance cull).
+        // MUST be registered: SpawnPointParticles reads it live, and an absent cvar reads 0 = "no cull",
+        // which would render the glow at EVERY spawn point map-wide (the Base default culls at 1200qu).
+        c.Register("cl_spawn_point_dist_max", "1200", save);
         // Console/diagnostics verbosity (DP CF_CLIENT, NOT archived — a debug toggle shouldn't persist).
         c.Register("developer", "0");
+        // Net input→movement pipeline diagnostic (default-off; NOT archived — a debug toggle shouldn't persist). `set
+        // net_input_trace 1` logs the [nettrace] line every ~0.25s: client push/send → server recv/enq/batch → ENet
+        // throttle/loss/rtt → predicted-vs-authoritative origin → reconcile error. The end-to-end view for diagnosing
+        // movement/networking issues (it found the ENet packet-throttle spawn-stutter). See NET-DEBUGGING.md.
+        c.Register("net_input_trace", "0");
     }
 
     /// <summary>
@@ -149,6 +237,14 @@ public static class ClientSettings
         c.Register("r_map_tint_strength", "0");
         c.Register("r_scene_tint", "1 1 1");
         c.Register("r_scene_tint_strength", "0");
+        // Lightgrid model lighting (playtest r14). r_model_light_gamma: 1 = DP-faithful gamma-space light
+        // response on grid-lit models (display scales linearly with grid light — the "punch"), 0 = plain
+        // linear multiply through the tonemap. Default 0: Bryan preferred the linear look in the r15
+        // playtest A/B (both keep the full grid shading structure — this only picks the response curve).
+        // r_model_light_scale multiplies the grid sample (1 = DP's absolute 1/128 scale). NOT archived,
+        // same rationale as the tints: live-tuning knobs.
+        c.Register("r_model_light_gamma", "0");
+        c.Register("r_model_light_scale", "1");
     }
 
     /// <summary>
@@ -216,8 +312,23 @@ public static class ClientSettings
         // Guidance (B1): with vsync off, a cap slightly UNDER the worst-case sustainable rate is smoother than
         // uncapped, and it bounds the per-frame Godot-interop alloc rate (godot#105750) that an uncapped 300–600
         // fps would multiply into a Gen0 GC treadmill. With vid_vsync 2 (mailbox) leave it at 0 (uncapped).
+        // (hitch-fix 2026-06-14) On a fast GPU the DP default (256) lets the CPU outrun the swapchain under mailbox
+        // vsync -> constant present-jitter hitches. Controlled interleaved A/B (RTX 3080, catharsis + 6 bots):
+        // capping the applied rate 256 -> 144 cut total hitches ~5x (277/164 -> 40/55) and raised 1%-low 60 -> 84.
+        // A cap only helps when it ENGAGES (sits below the achievable fps), and 256 rarely does on a 3080. The
+        // display refresh is the ideal ceiling, but Godot under-reports it in borderless mode (reads 60 on this
+        // box), so for the "auto" case (the DP-shipped 256) we apply max(144, detected-refresh). Every OTHER
+        // explicit choice -- the menu's 128 / 512 / 1024 / 2048 or "Unlimited" (0) -- is the player's, honored as-is.
         int maxFps = (int)c.GetFloat("cl_maxfps");
-        Godot.Engine.MaxFps = maxFps > 0 ? maxFps : 0;
+        // "Auto" = the DP default (256) or the menu's "Unlimited" (0): neither is an fps target the player chose,
+        // and both let the CPU outrun the swapchain on a fast GPU -> present-jitter hitches. Apply an engaging
+        // ceiling = max(144, refresh). Any EXPLICIT non-default menu value (128 / 512 / 1024 / 2048) is honored.
+        int appliedFps = (maxFps == 0 || maxFps == 256)
+            ? System.Math.Max(144, (int)DisplayServer.ScreenGetRefreshRate())
+            : maxFps;
+        Godot.Engine.MaxFps = appliedFps;
+        XonoticGodot.Common.Diagnostics.Log.Info(
+            $"[video] cl_maxfps {maxFps} -> Engine.MaxFps {appliedFps} (refresh {DisplayServer.ScreenGetRefreshRate():0}Hz)");
 
         // (§12.7) OS-stall resistance: lift the process to ABOVE_NORMAL so background work (AV scans, the
         // indexer, browsers) can't preempt the game's main/render threads mid-frame — the CPU-side half of
@@ -227,14 +338,18 @@ public static class ClientSettings
         try
         {
             var proc = System.Diagnostics.Process.GetCurrentProcess();
-            var want = c.GetFloat("sys_priority_boost") != 0f
+            int boost = (int)c.GetFloat("sys_priority_boost");
+            var want = boost != 0
                 ? System.Diagnostics.ProcessPriorityClass.AboveNormal
                 : System.Diagnostics.ProcessPriorityClass.Normal;
             if (proc.PriorityClass != want)
-            {
                 proc.PriorityClass = want;
-                XonoticGodot.Common.Diagnostics.Log.Info($"[video] process priority → {want} (sys_priority_boost)");
-            }
+            // Always log the EFFECTIVE priority + the cvar that drove it. The old "only log on change" hid the
+            // state in the common cases (already-AboveNormal, or sys_priority_boost 0 → Normal-and-unchanged),
+            // so a config that pinned the boost off read as silence — indistinguishable from "boost on". This
+            // line now makes "is the boost on?" answerable straight from the boot log.
+            XonoticGodot.Common.Diagnostics.Log.Info(
+                $"[video] process priority {proc.PriorityClass} (sys_priority_boost {boost})");
         }
         catch (Exception ex)
         {
@@ -260,9 +375,11 @@ public static class ClientSettings
     private static void RegisterEngineVideoDefaults(CvarService c)
     {
         const CvarFlags save = CvarFlags.Save;
-        // vid_vsync is extended to a mode index (see ApplyVideo): 0 off / 1 on / 2 mailbox / 3 adaptive. Default
-        // 0 preserves the current low-latency behaviour; the video dialog recommends 2 (mailbox) for pacing.
-        c.Register("vid_vsync", "0", save);
+        // vid_vsync is extended to a mode index (see ApplyVideo): 0 off / 1 on / 2 mailbox / 3 adaptive. The port
+        // default is 2 (mailbox — best frame pacing without a FIFO cascade on a missed present); it's already set
+        // to 2 as a locked default in MenuState.Boot, so this idempotent Register keeps that value and just carries
+        // the archive flag. A player can still set 0 (lowest input latency) / 1 / 3 from the console or video menu.
+        c.Register("vid_vsync", "2", save);
         c.Register("vid_borderless", "0", save);
         // (§12.7) AboveNormal process priority by default — see ApplyVideo's priority block. 0 = stock priority.
         c.Register("sys_priority_boost", "1", save);
@@ -327,7 +444,7 @@ public static class ClientSettings
         // (1200/1/0, a too-flat linear ramp). Exponent 4 makes distant sounds fall off steeply so far-away
         // explosions go quiet. Tunable at runtime: e.g. `set snd_attenuation_exponent 2` (gentler) or the
         // decibel method `set snd_attenuation_exponent 0; set snd_attenuation_decibel 10` (radius 1200).
-        c.Register("snd_soundradius", "2400", save);
+        c.Register("snd_soundradius", "2400");
         c.Register("snd_attenuation_exponent", "4", save);
         c.Register("snd_attenuation_decibel", "0", save);
         c.Register("menu_snd_attenuation_method", "1", save);

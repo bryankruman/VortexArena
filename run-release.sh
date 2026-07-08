@@ -41,21 +41,61 @@ fi
 mkdir -p "$(dirname "$OUT")"
 echo "[run-release] exporting '$PRESET' (release, optimized C#) → $OUT"
 
-# Godot's headless --export-release frequently exits NON-ZERO even on a fully successful export
-# (benign import/shader/.NET warnings). So don't trust the exit code — gate on the binary appearing.
+# Godot's headless --export-release is doubly untrustworthy on Windows: it frequently exits
+# NON-ZERO on a fully successful export (benign import/shader/.NET warnings), AND it frequently
+# HANGS after a successful export — it prints '[ DONE ] savepack' but the process never exits
+# (a lingering render/.NET thread), so the script would stall here forever and never launch.
+# So we don't wait on godot to terminate or trust its exit code: run it in the background,
+# mirror its output live, and the moment the final 'savepack' stage reports DONE give it a beat
+# to flush the .exe/.pck to disk, then kill it ourselves. Real success is gated on the binary.
+log="$(mktemp)"
 set +e
-"$GODOT" --headless --path "$PROJ" --export-release "$PRESET" "$OUT"
-rc=$?
+"$GODOT" --headless --path "$PROJ" --export-release "$PRESET" "$OUT" >"$log" 2>&1 &
+gpid=$!
+tail -n +1 -f --pid="$gpid" "$log" &
+tailpid=$!
+# NOTE: match 'DONE.*savepack' (not a literal '] savepack') — Godot colorizes the marker, so there
+# are ANSI escape codes between ']' and 'savepack'; '.*' bridges them. A too-strict pattern here just
+# silently polls until the 10-min cap, which looks like "stalls forever after savepack".
+reason="timeout (10-min cap)"
+i=0
+for i in $(seq 1 1200); do                              # ~10 min safety cap (0.5s/iter)
+    if ! kill -0 "$gpid" 2>/dev/null; then reason="godot exited on its own"; break; fi
+    if grep -qi 'DONE.*savepack' "$log" 2>/dev/null; then
+        reason="savepack DONE detected"
+        sleep 2                                         # let godot finish flushing to disk
+        break
+    fi
+    sleep 0.5
+done
+echo "[run-release][debug] export loop ended after ~$((i/2))s — ${reason}; terminating godot (pid $gpid)…"
+kill -9 "$gpid" 2>/dev/null                             # no-op if it already exited
+wait "$gpid" 2>/dev/null; gexit=$?
+kill "$tailpid" 2>/dev/null; wait "$tailpid" 2>/dev/null
+rm -f "$log"
 set -e
+echo "[run-release][debug] godot reaped (wait status $gexit)"
+
 if [ ! -e "$OUT" ]; then
-    echo "[run-release] export FAILED — '$OUT' was not produced (godot exit $rc)" >&2
+    echo "[run-release] export FAILED — '$OUT' was not produced (see godot output above)" >&2
     exit 1
 fi
-[ "$rc" -ne 0 ] && echo "[run-release] note: godot exited $rc but produced the binary (benign export warnings) — continuing."
+echo "[run-release][debug] export OK — binary present: $OUT ($(wc -c <"$OUT" 2>/dev/null | tr -d ' ') bytes)"
 
 # Launch from the project root so the exported build's asset resolver finds the in-tree assets/data
 # (DataPaths.Resolve falls back to a CWD-relative 'assets/data' in an exported build; a packaged
 # zip instead carries assets beside the binary). Without this a release run boots into an empty world.
-echo "[run-release] launching: $OUT $*"
 cd "$PROJ"
-exec "$OUT" "$@"
+echo "[run-release] launching: $OUT $*"
+[ -x "$OUT" ] || echo "[run-release][debug] WARNING: '$OUT' is not marked executable — trying anyway" >&2
+# Run as a CHILD (not exec) so we can report the exit code. A release build that vanishes instantly is
+# almost always a startup crash or a missing asset/data path — its own console output appears above.
+set +e
+"$OUT" "$@"
+rc=$?
+set -e
+if [ "$rc" -ne 0 ]; then
+    echo "[run-release] game exited NON-ZERO ($rc) — failed to start or crashed; see its output above" >&2
+    exit "$rc"
+fi
+echo "[run-release] game exited cleanly (0)"

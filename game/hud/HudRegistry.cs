@@ -25,7 +25,7 @@ public static class HudRegistry
     {
         "radar", "weapons", "ammo", "powerups", "healtharmor", "notify", "timer", "score", "racetimer",
         "vote", "modicons", "pressedkeys", "engineinfo", "infomessages", "physics", "strafehud", "pickup",
-        "centerprint", "itemstime", "checkpoints", "crosshair", "vehicle", "fps", "ping",
+        "centerprint", "itemstime", "checkpoints", "crosshair", "vehicle", "fps", "ping", "position",
         "minigamehelp", "quickmenu", "chat", "mapvote", "scoreboard",
     };
 

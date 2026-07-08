@@ -17,7 +17,7 @@ namespace XonoticGodot.Engine.Simulation;
 /// </summary>
 public static class MoveTypePhysics
 {
-    public const float StepHeight = 18f;          // sv_stepheight default
+    public const float StepHeight = 31f;          // sv_stepheight (Xonotic physicsX.cfg default)
     public const float FloorNormalZ = FlyMove.FloorNormalZ;
 
     /// <summary>
@@ -57,10 +57,17 @@ public static class MoveTypePhysics
                 break;
 
             case MoveType.Step:
-                PhysicsStep(ctx, ent);
-                runThink(ent);
-                // SV_CheckWaterTransition after the step (watertype/waterlevel + splash event).
-                CheckWaterTransition(ctx, ent);
+                // Base step.qc: _Movetype_Physics_Step IS a 1-line alias to _Movetype_Physics_Walk, so a
+                // MOVETYPE_STEP body gets the full Walk slide + explicit stair stepping (not a freefall-only
+                // path). Mirror the Walk dispatch: due think first (gated), then the Walk integrator, which
+                // does its own CheckWater/CheckWaterTransition-equivalent gravity gating.
+                if (runThink(ent))
+                {
+                    WalkMove(ctx, ent);
+                    // SV_CheckWaterTransition after the step (watertype/waterlevel + splash event); DP's
+                    // SV_Physics_Step ran this and the QC Walk path does the transition via CheckWater.
+                    CheckWaterTransition(ctx, ent);
+                }
                 break;
 
             case MoveType.Walk:
@@ -128,9 +135,17 @@ public static class MoveTypePhysics
 
         CheckVelocity(ent);
 
-        // gravity (Toss/Bounce only; Fly/Missile have none)
+        // gravity (Toss/Bounce only; Fly/Missile have none). toss.qc:31-38: half-step BEFORE the move
+        // when GRAVITYUNAFFECTEDBYTICRATE (Xonotic default 1), with the matching half-step AFTER the loop
+        // (toss.qc:153-154). The port runs with that fix on, so split into two 0.5 steps (matching FlyMove);
+        // move_didgravity tracks whether the pre-move step ran so the post-move step only fires for it.
+        bool didGravity = false;
         if (ent.MoveType == MoveType.Toss || ent.MoveType == MoveType.Bounce)
-            ent.Velocity.Z -= ctx.EntGravity(ent);
+        {
+            didGravity = true;
+            float g = ctx.EntGravity(ent);
+            ent.Velocity.Z -= ctx.GravityUnaffectedByTicrate ? g * 0.5f : g;
+        }
 
         // angular
         ent.Angles += ent.AVelocity * ctx.FrameTime;
@@ -138,12 +153,34 @@ public static class MoveTypePhysics
         float moveTime = ctx.FrameTime;
         for (int bump = 0; bump < FlyMove.MaxClipPlanes && moveTime > 0f; bump++)
         {
+            // toss.qc:51-52: a fully-stopped entity has nothing left to push this frame.
+            if (ent.Velocity == Vector3.Zero)
+                break;
+
             Vector3 move = ent.Velocity * moveTime;
-            // Fly traps may move while stuck (DP passes checkstuck=false for FLY); our PushEntity
-            // doesn't unstick yet, so doTouch is the only difference and we keep it on.
             if (!ctx.PushEntity(out TraceResult trace, ent, move, doTouch: true))
                 return; // teleported
             if (ent.IsFreed) return;
+
+            // toss.qc:60-82 bmodelstartsolid retry: if the push starts fully embedded in a brush model
+            // (allsolid, zero progress, hit a SOLID_BSP), unstick the entity and retry the push once. If it
+            // is STILL allsolid at zero progress after the unstick it is immovably stuck — stop wasting CPU,
+            // zero velocity and rest on ground (matches Base). World-brush hits report a null trace.Ent in
+            // the port; a bmodel mover reports its Bsp entity (both count as a SOLID_BSP startsolid).
+            if (trace.AllSolid && trace.Fraction == 0f && (trace.Ent == null || trace.Ent.Solid == Solid.Bsp))
+            {
+                ctx.TryNudgeOutOfSolid(ent);
+                if (!ctx.PushEntity(out trace, ent, move, doTouch: true))
+                    return; // teleported
+                if (ent.IsFreed) return;
+                if (trace.AllSolid && trace.Fraction == 0f)
+                {
+                    ent.Velocity = Vector3.Zero;
+                    ent.Flags |= EntFlags.OnGround;
+                    return;
+                }
+            }
+
             if (trace.Fraction == 1f) break;
 
             moveTime *= 1f - MathF.Min(1f, trace.Fraction);
@@ -152,7 +189,8 @@ public static class MoveTypePhysics
             {
                 case MoveType.BounceMissile:
                 {
-                    float bf = 1f; // bouncefactor default for missiles
+                    // per-entity .bouncefactor (0 = engine default 1.0 for missiles); QC (!bouncefactor)?1.0:..
+                    float bf = ent.BounceFactor == 0f ? 1f : ent.BounceFactor;
                     ent.Velocity = Clip.ClipVelocity(ent.Velocity, trace.PlaneNormal, 1f + bf);
                     ent.Flags &= ~EntFlags.OnGround;
                     moveTime = 0f; // no slide unless sv_gameplayfix_slidemoveprojectiles
@@ -160,12 +198,13 @@ public static class MoveTypePhysics
                 }
                 case MoveType.Bounce:
                 {
-                    float bf = 0.5f;                  // bouncefactor default
-                    float bouncestop = 60f / 800f;   // bouncestop default
+                    // per-entity .bouncefactor/.bouncestop (0 = engine defaults 0.5 / 60/800).
+                    float bf = ent.BounceFactor == 0f ? 0.5f : ent.BounceFactor;
+                    float bouncestop = ent.BounceStop == 0f ? 60f / 800f : ent.BounceStop;
                     ent.Velocity = Clip.ClipVelocity(ent.Velocity, trace.PlaneNormal, 1f + bf);
                     float entGravity = ent.Gravity == 0f ? 1f : ent.Gravity;
-                    // DP (with grenadebouncedownslopes) uses |Dot(normal, vel)|
-                    float d = MathF.Abs(Vector3.Dot(trace.PlaneNormal, ent.Velocity));
+                    // DP with grenadebouncedownslopes (Xonotic default 1) uses the SIGNED d = normal·velocity.
+                    float d = Vector3.Dot(trace.PlaneNormal, ent.Velocity);
                     if (trace.PlaneNormal.Z > FloorNormalZ && d < ctx.Gravity * bouncestop * entGravity)
                     {
                         ent.Flags |= EntFlags.OnGround;
@@ -188,6 +227,11 @@ public static class MoveTypePhysics
                     {
                         ent.Flags |= EntFlags.OnGround;
                         ent.GroundEntity = trace.Ent;
+                        // toss.qc:130-131: only a brush-model (SOLID_BSP) resting ground counts as
+                        // "suspended in air" — so that freeing the mover later drops the corpse. A null
+                        // trace.Ent is the world brush (also SOLID_BSP in DP).
+                        if (trace.Ent == null || trace.Ent.Solid == Solid.Bsp)
+                            _suspendedInAir.Add(ent);
                         ent.Velocity = Vector3.Zero;
                         ent.AVelocity = Vector3.Zero;
                         moveTime = 0f;
@@ -202,17 +246,20 @@ public static class MoveTypePhysics
             }
         }
 
-        // remember if we came to rest on a (non-world) mover so a later free of that mover suspends us.
-        if ((ent.Flags & EntFlags.OnGround) != 0 && ent.GroundEntity != null)
-            _suspendedInAir.Add(ent);
+        // toss.qc:153-154: the trailing gravity half-step (GRAVITYUNAFFECTEDBYTICRATE) — fired only if the
+        // pre-move half-step ran (move_didgravity) and the entity is NOT resting on the ground. Together
+        // with the pre-move half-step this straddles the move, making fall distance tickrate-independent.
+        if (ctx.GravityUnaffectedByTicrate && didGravity && (ent.Flags & EntFlags.OnGround) == 0)
+            ent.Velocity.Z -= 0.5f * ctx.EntGravity(ent);
 
         // SV_CheckWaterTransition (sv_phys.c:2593) — watertype/waterlevel + splash event.
         CheckWaterTransition(ctx, ent);
     }
 
     // =============================================================================================
-    // SV_CheckWaterTransition (sv_phys.c:2410) — update watertype/waterlevel from point contents and
-    // emit a splash sound on a water surface crossing.
+    // _Movetype_CheckWaterTransition (movetypes.qc:368, DP SV_CheckWaterTransition sv_phys.c:2410) — update
+    // watertype/waterlevel from point contents and fire the entity's .contentstransition callback (set
+    // per-entity) on a content crossing. The movetype layer itself emits NO sound (Base-faithful).
     // =============================================================================================
 
     public static void CheckWaterTransition(PhysicsContext ctx, Entity ent)
@@ -222,14 +269,15 @@ public static class MoveTypePhysics
 
         if (ent.WaterType == 0)
         {
-            // just spawned here: take the contents, waterlevel 1 if liquid (fixedcheckwatertransition path).
-            // fall through to the assignment below.
+            // just spawned here. GAMEPLAYFIX_WATERTRANSITION default 1 (Xonotic) — take the fall-through
+            // assignment below; the cvar-0 early-out (watertype=contents, waterlevel=1) is not modeled.
         }
-        else if ((ent.WaterType == (int)Contents.Water || ent.WaterType == (int)Contents.Slime)
-                 != (cont == (int)Contents.Water || cont == (int)Contents.Slime))
+        else if (ent.WaterType != cont)
         {
-            // crossed a water/slime surface → splash (SV_StartSound watersplash).
-            ctx.PlaySound(ent, SoundChannel.Auto, "misc/water_in.wav");
+            // Base _Movetype_CheckWaterTransition (movetypes.qc:385): route through the per-entity
+            // contentstransition callback on a native-contents change. Base emits NO hardcoded cue here —
+            // the splash/exit sound and any lava/slime contact effect live in the callback, set per-entity.
+            ent.ContentsTransition?.Invoke(ent, ent.WaterType, cont);
         }
 
         if (cont <= (int)Contents.Water) // CONTENTS_WATER (-3) or lower (slime/lava) == in liquid
@@ -240,6 +288,7 @@ public static class MoveTypePhysics
         else
         {
             ent.WaterType = (int)Contents.Empty;
+            // GAMEPLAYFIX_WATERTRANSITION 1 (Xonotic default) → waterlevel 0 on exit.
             ent.WaterLevel = 0;
         }
     }
@@ -259,7 +308,12 @@ public static class MoveTypePhysics
         => CollisionWorld.BoxesOverlap(amin, amax, bmin, bmax);
 
     // =============================================================================================
-    // SV_Physics_Step (sv_phys.c:2615) — monsters/objects: freefall via FlyMove when not onground.
+    // SV_Physics_Step (sv_phys.c:2615) — DP-engine freefall-only step integrator.
+    //
+    // NO LONGER on the live dispatch path: Base's QC step.qc makes _Movetype_Physics_Step a 1-line alias
+    // to _Movetype_Physics_Walk, so MOVETYPE_STEP now routes through WalkMove (full slide + stair stepping)
+    // in RunEntity for parity. This method is retained as the DP-engine freefall reference (fly/swim guard,
+    // upward-velocity unstick, land cue) and may still be called directly by a freefall-only body path.
     // =============================================================================================
 
     public static void PhysicsStep(PhysicsContext ctx, Entity ent)
@@ -302,18 +356,30 @@ public static class MoveTypePhysics
     // SV_WalkMove gameplay-fix defaults (DP cvar defaults): jumpstep on, stepdown on, wallfriction a no-op,
     // nostep off. Match DP so monster stepping feels identical.
     private const bool JumpStep = true;       // sv_jumpstep
-    private const int StepDown = 1;           // sv_gameplayfix_stepdown (monster path leaves onground unset)
+    private const int StepDown = 2;           // sv_gameplayfix_stepdown (Xonotic physicsX.cfg; ==2 glues to descending stairs)
+    private const float StepDownMaxSpeed = 400f; // sv_gameplayfix_stepdown_maxspeed (skip down-step above this speed)
     private const bool WallFriction = false;  // sv_wallfriction (DP engine default 1, but the SV_WallFriction body is #if 0 — a no-op regardless)
     private const bool NoStep = false;        // sv_nostep
     private const bool DownTraceOnGround = true; // sv_gameplayfix_downtracesupportsongroundflag
+    private const bool UnstickPlayers = true; // sv_gameplayfix_unstickplayers (Xonotic default 1, xonotic-server.cfg:575)
 
     public static void WalkMove(PhysicsContext ctx, Entity ent)
     {
         if (ctx.FrameTime <= 0f) return;
 
-        // applygravity unless in water / waterjump.
+        // _Movetype_Physics_Walk (walk.qc:9-10): if sv_gameplayfix_unstickplayers, extricate a body that
+        // begins the tick embedded in geometry BEFORE the slide move. DP's _Movetype_CheckStuck ->
+        // _Movetype_UnstickEntity ultimately falls through to SV_NudgeOutOfSolid, which is exactly
+        // ctx.TryNudgeOutOfSolid (the grow-from-pivot extrication). Drives monster/STEP bodies that can spawn
+        // or get shoved into a brush; without it the FlyMove startsolid-allsolid bail only stops runaway, it
+        // never frees the body.
+        if (UnstickPlayers)
+            CheckStuck(ctx, ent);
+
+        // applygravity unless in water / waterjump. Base walk.qc:12 gates on WALK || STEP
+        // (MOVETYPE_STEP aliases to _Movetype_Physics_Walk, so STEP bodies must get gravity too).
         bool inWater = CheckWater(ctx, ent);
-        bool applyGravity = !inWater && ent.MoveType == MoveType.Walk && (ent.Flags & EntFlags.WaterJump) == 0;
+        bool applyGravity = !inWater && (ent.MoveType == MoveType.Walk || ent.MoveType == MoveType.Step) && (ent.Flags & EntFlags.WaterJump) == 0;
 
         CheckVelocity(ent);
 
@@ -404,9 +470,12 @@ public static class MoveTypePhysics
                 // SV_WallFriction body is #if 0 in DP — intentionally a no-op here.
             }
         }
-        // skip the down-move when stepdown is off / moving up / deep water / started offground / ended onground
+        // skip the down-move when stepdown is off / moving up / deep water / started offground / ended onground /
+        // moving too fast (sv_gameplayfix_stepdown_maxspeed; no IS_ONSLICK modeling in the port so the !onslick
+        // exception is always taken — a faithful skip above 400 u/s horizontal+vertical speed).
         else if (StepDown == 0 || ent.WaterLevel >= 3 || startVelocity.Z >= (1f / 32f)
-                 || !oldOnGround || (ent.Flags & EntFlags.OnGround) != 0)
+                 || !oldOnGround || (ent.Flags & EntFlags.OnGround) != 0
+                 || (StepDownMaxSpeed > 0f && startVelocity.Length() >= StepDownMaxSpeed))
         {
             return;
         }
@@ -418,8 +487,13 @@ public static class MoveTypePhysics
 
         if (downTrace.Fraction < 1f && downTrace.PlaneNormal.Z > FloorNormalZ)
         {
-            // DP leaves the SET_ONGROUND here disabled (#if 0) for the monster path so you can't
-            // double-jump off a step; we match that — onground stays as the slide left it.
+            // good landing on a descending step. With sv_gameplayfix_stepdown == 2 (Xonotic default) Base
+            // glues the entity to the stair: SET_ONGROUND + groundentity (walk.qc:171-175).
+            if (StepDown == 2)
+            {
+                ent.Flags |= EntFlags.OnGround;
+                ent.GroundEntity = downTrace.Ent;
+            }
         }
         else
         {
@@ -436,16 +510,45 @@ public static class MoveTypePhysics
         _ = stepNormal;
     }
 
+    // =============================================================================================
+    // _Movetype_CheckStuck (movetypes.qc, DP SV_CheckStuck) — extricate a body embedded in solid before its
+    // move. Probes the entity's own hull at its current origin; if it starts solid, nudge it out of the
+    // brush (Base's _Movetype_UnstickEntity ultimately calls SV_NudgeOutOfSolid == ctx.TryNudgeOutOfSolid)
+    // and relink. A clear start, or an unfixable bmodel-startsolid (TryNudgeOutOfSolid returns false), is
+    // left as-is — matching DP, which gives up on an entity wedged inside a brush model.
+    // =============================================================================================
+
+    private static void CheckStuck(PhysicsContext ctx, Entity ent)
+    {
+        // zero-length self-trace at the current origin: filter matches the body's own move select
+        // (NoMonsters for bmodel/trigger solids, Normal otherwise — same pick WalkMove's down-trace uses).
+        MoveFilter type = ent.Solid is Solid.Trigger or Solid.Not ? MoveFilter.NoMonsters : MoveFilter.Normal;
+        TraceResult tr = ctx.Trace.Trace(ent.Origin, ent.Mins, ent.Maxs, ent.Origin, type, ent);
+        if (!tr.StartSolid)
+            return; // not stuck — nothing to do (the common case)
+
+        if (ctx.TryNudgeOutOfSolid(ent))
+            ctx.LinkEdict(ent); // committed a freed origin — relink the broadphase/AbsMin/AbsMax
+    }
+
     /// <summary>
     /// SV_CheckWater (movetypes): set <see cref="Entity.WaterLevel"/>/<see cref="Entity.WaterType"/> from
-    /// the entity's hull (feet/waist) and return true if at least wet-feet. Used by WalkMove to skip
-    /// gravity while in liquid. Distilled from DP SV_CheckWater (a 3-point hull probe).
+    /// the entity's hull (feet/waist) and return true if SWIMMING (waterlevel > WETFEET). Used by WalkMove
+    /// to skip gravity while submerged. Distilled from DP SV_CheckWater (a 3-point hull probe).
+    /// Note: Base returns <c>waterlevel > 1</c> (>= SWIMMING), NOT just wet-feet, so a Walk/Step entity
+    /// wading with only its feet wet still gets gravity.
     /// </summary>
     public static bool CheckWater(PhysicsContext ctx, Entity ent)
     {
         Vector3 point = ent.Origin;
         point.Z = ent.Origin.Z + ent.Mins.Z + 1f;
         int cont = ctx.Trace.PointContents(point);
+
+        // Base _Movetype_CheckWater (movetypes.qc:340): fire the per-entity contentstransition callback on a
+        // native-contents change at the feet probe, BEFORE the waterlevel reset. Base emits no sound itself.
+        int nativeContents = NativeContentsFromSuper(cont);
+        if (ent.WaterType != 0 && ent.WaterType != nativeContents)
+            ent.ContentsTransition?.Invoke(ent, ent.WaterType, nativeContents);
 
         ent.WaterLevel = 0;
         ent.WaterType = (int)Contents.Empty;
@@ -462,7 +565,8 @@ public static class MoveTypePhysics
                     ent.WaterLevel = 3;
             }
         }
-        return ent.WaterLevel >= 1;
+        // Base SV_CheckWater returns `waterlevel > WATERLEVEL_WETFEET` (>= SWIMMING), not wet-feet.
+        return ent.WaterLevel > 1;
     }
 
     // =============================================================================================

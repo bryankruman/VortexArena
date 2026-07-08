@@ -1,0 +1,524 @@
+unit: turret-framework
+category: turret
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"  # OPUS re-verify post objstream wave: turret HEAD aim/avel + active/dead status now NETWORKED via the generic NetEntity delta (EntityField.TurretHead) — producer+codec+consumer live, round-trip-tested (61 turret/objstream tests pass, build green). net.sync missing->partial/live; but decode-only (no head-MODEL render node yet, deferred Phase-3) so client.presentation head render still open.
+summary:
+  feature_count: 15
+  worst_gaps:
+    - "Turret networking PARTIAL: the turret HEAD aim (pitch/yaw 8-bit), head avel yaw, and active/dead status ARE now networked (folded into the generic NetEntity delta, EntityField.TurretHead) — producer+codec+consumer live + round-trip-tested. Still no dedicated ENT_CLIENT_TURRET edict / turret_send / turret_construct (no distinct TNSF_SETUP/ANIM group), and the decoded head block is DECODE-ONLY (no client node renders the rotating head MODEL from it yet — deferred Phase-3). Other visible/audible turret feedback remains server-side temp-entity/point-particle emit."
+    - "Client presentation PARTIAL: muzzle flashes/tracers/beams/projectile trails/head-frame anims + death FX (Wave-8e/Wave-7) AND the framework-wide low-HP spark + SMOKE_LARGE/SMOKE_SMALL tiers (TurretAI.DrawFx) are emitted server-side; still missing the tur_head MODEL rotation render, the draw2d waypoint sprite/healthbar, the changeteam team recolor, and the client gib toss (all need a CSQC turret edict)."
+    - "Per-unit cvar table unported (load_unit_settings / TR_PROPS_COMMON / turret_scale_* / turret_initparams clamping / dumpturrets / turrets_manager_think reloadcvars) — per-unit balance is hardcoded C# const, mappers can't retune. (Framework-level g_turrets_* cvars ARE read live; per-unit g_turrets_unit_<name>_<field> are not.)"
+    - "Per-shot firecheck LOS + TEAMCHECK branches not modeled — but Base itself marks TFL_FIRECHECK_LOS/TEAMCECK as un-implemented (the '-' rows in the firecheck legend), so the port matches Base; acquisition-time LOS/team gating is the only LOS/team test in both."
+    - "tur_head model render absent: the steady-state head MODEL rotation (turret_draw avelocity integrate) and per-shot head-frame anim ride the turret body's own Entity.Frame (no separate head bone / CSQC turret edict). (turret_heal repairable turrets, the death two-step, the round-restart .reset hook, and the turret_targettrigger external-target map entity are all now ported + live — FIXED 06-27.)"
+features:
+  - id: turret-framework.registry.descriptor
+    name: "Turret descriptor class + registry (REGISTER_TURRET / TR_PROPS_COMMON)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret.qh:Turret"
+      - "common/turrets/all.qh:REGISTER_TURRET"
+      - "common/turrets/all.qh:TR_PROPS_COMMON"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/EntityClasses.cs:Turret"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:TurretAttribute"
+    constants:
+      - { name: "per-unit cvar fields", base: "28 (TR_PROPS_COMMON via g_turrets_unit_<name>_<field>)", port: "C# const per turret class (no per-unit cvar table)", match: false }
+      - { name: "tr_attack default", base: "m_weapon.wr_think", port: "per-turret Attack method", match: true }
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Per-unit cvar table unported (load_unit_settings / TR_PROPS_COMMON / turret_scale_* / turret_initparams clamping / dumpturrets) — per-unit balance is hardcoded C# const, mappers can't retune. (Framework-level g_turrets_* delays/nofire ARE cvar-backed; per-unit fields are not.)"
+    verification:
+      - { kind: code_read, ref: "turret.qh/all.qh Turret class vs EntityClasses.cs Turret + TurretAttribute", result: pass }
+    confidence: high
+    notes: "Descriptor + reflection registry faithful in shape; the per-unit cvar-backed field plumbing is still hardcoded consts. Unchanged 06-25."
+  - id: turret-framework.spawn.init
+    name: "turret_initialize: field stamping, defaults, model/size, lifecycle hooks"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_initialize"
+      - "common/turrets/sv_turrets.qc:turret_initparams"
+      - "common/turrets/sv_turrets.qc:load_unit_settings"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init"
+    constants:
+      - { name: "solid", base: "SOLID_BBOX", port: "Solid.BBox", match: true }
+      - { name: "movetype", base: "MOVETYPE_NOCLIP", port: "MoveType.Noclip", match: true }
+      - { name: "takedamage", base: "DAMAGE_AIM", port: "DamageMode.Aim", match: true }
+      - { name: "default team", base: "FLOAT_MAX (if no teamplay)", port: "float.MaxValue when team==0", match: true }
+      - { name: "active on spawn", base: "ACTIVE_ACTIVE", port: "Active=true", match: true }
+      - { name: "default respawntime", base: "60 (initparams)", port: "60f (TurretSpawn.Init default; per-unit override e.g. ewheel 30 matches cfg)", match: true }
+      - { name: "event_damage hook install", base: "this.event_damage = turret_damage", port: "e.GtEventDamage = TurretAI.EventDamage", match: true }
+      - { name: ".reset hook install", base: "turret_link sets this.reset = turret_reset (-> turret_respawn)", port: "Init sets e.Reset = TurretAI.Respawn (TurretSpawn.cs:102); fired live by GameWorld.ResetMapObjects (NEW 06-25)", match: true }
+      - { name: "TFL_DMG_HEADSHAKE install", base: "default damage_flags include TFL_DMG_AIMSHAKE", port: "Init(headShake:) -> TurretState.HeadShake -> EventDamage jitter (NEW Wave-7)", match: true }
+      - { name: "tur_head child + tag_head attach", base: "yes (new turret_head)", port: "none (no head entity)", match: false }
+      - { name: "turret_initparams clamps", base: "yes (bound/derive every numeric)", port: "none (raw consts)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Per-unit cvar table unported (load_unit_settings / TR_PROPS_COMMON / turret_scale_* / turret_initparams clamping / dumpturrets) — per-unit balance is hardcoded C# const."
+      - "No tur_head child entity / tag_head attachment (head bone is a TurretState.HeadAngles vector, not an edict)."
+      - "turret_initparams clamping/derivation absent: per-turret consts are used raw with no bound/default fill."
+    verification:
+      - { kind: test, ref: "TurretLifecycleTests.EwheelSpawn_PinsHealthAndCoreSetup (respawntime asserts 30 = ewheel cfg)", result: pass }
+      - { kind: code_read, ref: "turret_initialize vs TurretSpawn.Init; Init installs GtEventDamage = TurretAI.EventDamage, the .reset = TurretAI.Respawn round-restart hook (TurretSpawn.cs:102), AND threads headShake -> TurretState.HeadShake (TFL_DMG_HEADSHAKE)", result: pass }
+    confidence: high
+    notes: "Core edict stamping faithful; .event_damage gate live; Wave-7 threads the TFL_DMG_HEADSHAKE flag from Init into the live damage jitter; 06-25 Init now also installs the .reset = turret_reset round-restart hook (fired live by GameWorld.ResetMapObjects — see lifecycle.round_reset). cvar-load + initparams clamp + head-bone entity still not ported."
+  - id: turret-framework.spawn.liveness
+    name: "Map spawnfunc wiring + per-frame think arm (turret_link)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_link"
+      - "common/turrets/turret/*.qc:spawnfunc(turret_X)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:Spawn"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:229"
+      - "src/XonoticGodot.Common/GameInit.cs:21"
+      - "src/XonoticGodot.Engine/Simulation/SimulationLoop.cs:276"
+    constants:
+      - { name: "g_turrets master switch", base: "1 (default on)", port: "MasterSwitchEnabled default-on", match: true }
+      - { name: "nextthink re-arm", base: "turret_think sets nextthink=time", port: "spawnfunc re-arms NextThink each frame", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No Net_LinkEntity / turret_send registration (networking) and no turret_manager auto-spawn."
+    verification:
+      - { kind: test, ref: "TurretLifecycleTests.Spawnfunc_RespectsTheGTurretsMasterSwitch", result: pass }
+      - { kind: code_read, ref: "Register(turret_*) -> Spawn -> Think; GameInit registers; SimulationLoop.RunThink fires Think", result: pass }
+    confidence: high
+    notes: "Confirmed live: spawnfuncs registered, RegisterAll at boot, Think re-armed each frame and fired by RunThink. Unchanged 06-25."
+  - id: turret-framework.brain.think
+    name: "Per-frame brain: ammo regen + scan/aim/track/fire driver (turret_think)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:RunCombat"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Fire"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Cvar"
+    constants:
+      - { name: "ammo regen", base: "ammo += ammo_recharge*frametime, cap ammo_max", port: "same", match: true }
+      - { name: "inactive -> track+return", base: "yes", port: "yes", match: true }
+      - { name: "targetscan_mindelay", base: "0.1 (turrets.cfg:5)", port: "Cvar(g_turrets_targetscan_mindelay, 0.1f) — seeded live from turrets.cfg", match: true }
+      - { name: "targetscan_maxdelay", base: "1 (turrets.cfg:6)", port: "Cvar(g_turrets_targetscan_maxdelay, 1f)", match: true }
+      - { name: "aimidle_delay", base: "5 (turrets.cfg:7)", port: "Cvar(g_turrets_aimidle_delay, 5f)", match: true }
+      - { name: "g_turrets_nofire", base: "0 (turrets.cfg:3) — master fire-disable gate", port: "Cvar(g_turrets_nofire,0)!=0 short-circuits Fire", match: true }
+      - { name: "TurretThink mutator hook", base: "MUTATOR_CALLHOOK(TurretThink,this) at top of turret_think; true pauses the brain", port: "RunCombat: MutatorHooks.FireTurretThink(turret) returns early (skips ammo/acquire/aim/fire) — TurretAI.cs:681 (FIXED Wave-16)", match: true }
+      - { name: "Turret_CheckFire mutator hook", base: "if(MUTATOR_CALLHOOK(Turret_CheckFire,this)) return M_ARGV(1,float) at top of turret_firecheck", port: "RunCombat: FireTurretCheckFire override forces fire (skip gates) / hold — TurretAI.cs:748 (FIXED Wave-16)", match: true }
+      - { name: "TurretFire mutator hook", base: "if(MUTATOR_CALLHOOK(TurretFire,this)) return in turret_fire (suppress the shot)", port: "Fire(): FireTurretFire(turret) true short-circuits before weapon+bookkeeping — TurretAI.cs:882 (FIXED Wave-16)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "HITALLVALID / CUSTOM / VOLLYALWAYS shoot-mode branches are folded into per-turret Think rather than the shared driver (functionally covered by Tesla/Phaser/FusionReactor self-scan + the RunCombat VollyAlways path, but the generic dispatch is not in RunCombat)."
+    verification:
+      - { kind: code_read, ref: "turret_think vs TurretAI.RunCombat/Fire; Cvar() helper reads turrets.cfg (exec'd live via ConfigLoader.LoadServerConfig) with Base-matching fallbacks; the 3 turret mutator hooks (TurretThink/Turret_CheckFire/TurretFire) are real HookChain dispatchers (MutatorHooks.cs:1343/1409/1436) fired live from RunCombat (TurretAI.cs:690), the checkFire gate (757), and Fire (891) with empty-chain fast-paths", result: pass }
+      - { kind: test, ref: "OPUS 06-28 re-verify: XonoticGodot.Common build green + 58 turret tests pass; grep confirms ZERO MutatorHooks.Turret{Think,CheckFire,Fire}.Add callers (dispatch seam live, no handler registered — Base-faithful, no stock mutator registers EV_Turret*)", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (TurretThink/Turret_CheckFire/TurretFire mutator hooks now ported + live): Wave-16 wired all three brain/fire mutator hooks through the real HookChain dispatchers — a mutator can now pause a turret's think (TurretThink), force/hold its firecheck (Turret_CheckFire), or suppress an individual shot (TurretFire), matching the MUTATOR_CALLHOOK sites in turret_think/turret_firecheck/turret_fire. No stock mutator registers them (fast-path no-op in stock play), exactly like Base. Brain stays faithful (scan delays + aimidle + nofire master gate cvar-backed; VollyAlways mid-burst path in RunCombat). Only the generic HITALLVALID/CUSTOM shoot-mode dispatch remains folded into per-turret Think (functionally covered by the self-scanning Tesla/Phaser/FusionReactor)."
+  - id: turret-framework.acquire.target
+    name: "Target acquisition: radius scan + validate cascade + bias scoring"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_select_target"
+      - "common/turrets/sv_turrets.qc:turret_validate_target"
+      - "common/turrets/sv_turrets.qc:turret_targetscore_generic"
+      - "common/turrets/sv_turrets.qc:turret_targetscore_support"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:SelectTarget"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:ValidTarget"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:ScoreTarget"
+    constants:
+      - { name: "checkpvs gate", base: "validate:688 if(!checkpvs(target.origin, turret)) return -1", port: "ValidTarget Api.Trace.CheckPvs gate (NEW Wave-7; no-op on unvised map like DP)", match: true }
+      - { name: "alpha-cloak cull", base: "alpha!=0 && <=0.3 reject", port: "same", match: true }
+      - { name: "team check (self+owner+aiment)", base: "yes", port: "yes", match: true }
+      - { name: "ANGLELIMITS per-axis", base: "aim_maxpitch/aim_maxrot", port: "same (when SelectAngleLimits set)", match: true }
+      - { name: "LOS firetolerance", base: "aim_firetolerance_dist (sv_turrets.qc:791)", port: "p.FireToleranceDist (>0 ? unit value : 64f)", match: true }
+      - { name: "out-of-range penalty", base: "score *= 0.001", port: "same", match: true }
+      - { name: "support score func", base: "turret_targetscore_support", port: "no separate support score func", match: false }
+      - { name: "TurretValidateTarget mutator hook", base: "if(MUTATOR_CALLHOOK(TurretValidateTarget,turret,target,flags)) return M_ARGV(3,float)", port: "ValidTarget calls MutatorHooks.FireTurretValidateTarget after the alpha-cull, before NO/dead; non-null override short-circuits (true=valid/false=reject) — TurretAI.cs:343 (FIXED Wave-16)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No separate turret_targetscore_support path (support units score like combat units)."
+    verification:
+      - { kind: test, ref: "TurretTargetingTests.cs (validate cascade + scoring)", result: pass }
+      - { kind: code_read, ref: "turret_validate_target/select_target/targetscore_generic vs TurretAI; ValidTarget threads p.FireToleranceDist into the LOS reject, runs the checkpvs gate (Api.Trace.CheckPvs) before alpha/team/range, AND (Wave-16) fires MutatorHooks.FireTurretValidateTarget (real HookChain, fast-path when empty) right after the alpha-cull — a non-null override fully replaces the validity result (TurretAI.cs:352, MutatorHooks.cs:1379)", result: pass }
+      - { kind: test, ref: "OPUS 06-28 re-verify: build green + 58 turret tests pass (TurretTargetingTests incl.); the TurretValidateTarget dispatch seam is live but unregistered (no .Add), matching Base where no stock mutator hooks it", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (TurretValidateTarget mutator hook now ported + live): Wave-16 wired the EV_TurretValidateTarget hook into ValidTarget (TurretAI.cs:343) via the real HookChain dispatcher (MutatorHooks.cs:1379) — a handler's nullable-bool override force-accepts/force-rejects a candidate, matching validate_target's `return M_ARGV(3,float)`. No stock mutator registers it (fast-path no-op in stock play), exactly like Base. Validate cascade + scoring stay faithful; the checkpvs reject gate (Wave-7) matches validate_target:688. Only the separate turret_targetscore_support path still diverges (support units score like combat units)."
+  - id: turret-framework.aim.predict
+    name: "Aim prediction: lead + shot-traveltime + z-gravity + splash (turret_aim_generic)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_aim_generic"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:AimPoint"
+    constants:
+      - { name: "TFL_AIM_LEAD", base: "vel*mintime", port: "same", match: true }
+      - { name: "TFL_AIM_SHOTTIMECOMPENSATE", base: "lead by vlen/shot_speed", port: "same", match: true }
+      - { name: "TFL_AIM_ZPREDICT gravity", base: "sv_gravity 800 arc integrate", port: "Gravity=800 arc integrate", match: true }
+      - { name: "TFL_AIM_SPLASH", base: "worldonly down-trace to feet (traceline, not tracebox)", port: "Trace zero-hull (== traceline) worldonly down to feet", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "TurretAimTrackTests.cs (aim/lead)", result: pass }
+      - { kind: code_read, ref: "turret_aim_generic vs TurretAI.AimPoint", result: pass }
+    confidence: high
+    notes: "Full lead pipeline (lead/shot-time/z-predict/splash) faithful incl. the 800 gravity arc. Unchanged 06-25."
+  - id: turret-framework.track.head
+    name: "Head tracking motors + per-axis clamps (turret_track)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_track"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Track"
+    constants:
+      - { name: "STEPMOTOR(1)", base: "step aim_speed*frametime, hard clamp", port: "same", match: true }
+      - { name: "FLUIDINERTIA(3)", base: "accel-scaled + blendrate avelocity", port: "same", match: true }
+      - { name: "FLUIDPRECISE(2)", base: "clamp move to aim_speed, integrate avel", port: "same", match: true }
+      - { name: "track_blendrate", base: "0.35", port: "0.35f", match: true }
+      - { name: "track_accel_pitch/rot", base: "0.5", port: "0.5f", match: true }
+      - { name: "non-step default aim_speed", base: "180 (turret_initialize: non-STEPMOTOR aim_speed default-fill)", port: "aimSpeed fallback now track-type-aware: StepMotor->36, else 180 (TurretAI.cs:622) (FIXED Wave-16)", match: true }
+      - { name: "10th-frame TNSF_ANG force", base: "yes", port: "n/a (no networking)", match: false }
+      - { name: "STEPMOTOR negative-pitch clamp", base: "BUGGED: sv_turrets.qc:574-575 sets angles.x=+aim_maxpitch on the < -aim_maxpitch branch", port: "symmetric Bound(-aimMaxPitch,..,aimMaxPitch) (TurretAI.cs:544)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Port silently corrects a QC bug: the STEPMOTOR pitch clamp in turret_track (sv_turrets.qc:574-575) sets tur_head.angles.x to +aim_maxpitch even on the under-limit (< -aim_maxpitch) branch, snapping the head to max-up instead of max-down. The port uses a symmetric Bound, so a stepmotor turret at the lower pitch limit holds -aim_maxpitch. Behaviourally affects only the rare stepmotor turret driven hard past its lower pitch limit."
+    gaps: []
+    verification:
+      - { kind: test, ref: "TurretAimTrackTests.cs (stepmotor/fluid clamp tests)", result: pass }
+      - { kind: code_read, ref: "turret_track vs TurretAI.Track; aimSpeed fallback is now track-type-aware (StepMotor->36, fluid->180) at TurretAI.cs:622", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (values partial -> faithful): Wave-16 ported the non-stepmotor aim_speed default-fill — the unset-aim_speed fallback is now 36 for STEPMOTOR and 180 for fluid motors (TurretAI.cs:622), matching turret_initialize's per-track-type default. All three track motors + per-axis clamps stay faithful. (Every shipped turret passes a non-zero AimSpeed, so this only corrects the never-hit unset fallback — but the value now matches Base.) The symmetric lower-pitch clamp remains a sanctioned intended_divergence (it fixes a QC bug). 10th-frame TNSF_ANG force is n/a (no turret networking)."
+  - id: turret-framework.fire.gate
+    name: "Fire gate + fire bookkeeping (turret_firecheck / turret_fire)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_firecheck"
+      - "common/turrets/sv_turrets.qc:turret_fire"
+      - "common/turrets/sv_turrets.qc:turret_do_updates"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:RunCombat"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:UpdateImpact"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Fire"
+    constants:
+      - { name: "refire gate", base: "attack_finished_single[0]>time", port: "AttackFinished>now", match: true }
+      - { name: "ammo gate", base: "ammo<shot_dmg", port: "Ammo<ShotDamage", match: true }
+      - { name: "VOLLYALWAYS mid-burst early-return", base: "firecheck:889-892 returns true mid-burst", port: "RunCombat VollyAlways && VollyCounter!=ShotVolly -> Fire (NEW)", match: true }
+      - { name: "target-of-opportunity (tur_impactent)", base: "firecheck:910 validate(tur_impactent) -> switch+fire", port: "RunCombat: impact-ent valid -> switch enemy + Fire (NEW Wave-7)", match: true }
+      - { name: "too-close gate", base: "tur_dist_aimpos<range_min (with opportunity bypass)", port: "DistAimPos<RangeMin with impact-ent opportunity bypass (NEW)", match: true }
+      - { name: "AFF same-team-impact reject", base: "firecheck:928 SAME_TEAM(tur_impactent)", port: "(FireCheckAff & flags) && SameTeam(ImpactEnt) -> hold (NEW Wave-7)", match: true }
+      - { name: "aim<->impact tolerance (AIMDIST)", base: "tur_dist_impact_to_aimpos > aim_firetolerance_dist", port: "DistImpactToAimPos>FireToleranceDist (real impact trace; geometric OnTarget fallback headless) (NEW)", match: true }
+      - { name: "volley pre-ammo gate", base: "firecheck:937-941 whole-volley ammo at burst start", port: "ShotVolly>1 && VollyCounter==ShotVolly && Ammo<dmg*volly", match: true }
+      - { name: "default firecheck_flags", base: "DEAD|DISTANCES|LOS|AIMDIST|TEAMCHECK|AMMO_OWN|REFIRE (sv_turrets.qc:1280)", port: "FireCheckDefault = DEAD|DISTANCES|LOS|AIMDIST|TEAMCHECK|AMMO_OWN|REFIRE (per-unit FireCheckFlags override)", match: true }
+      - { name: "tur_impactent forward tracebox", base: "turret_do_updates tracebox along tur_shotdir_updated", port: "UpdateImpact tracebox '-1 -1 -1'/'1 1 1' along ShotDir to aimpos dist", match: true }
+      - { name: "volley bookkeeping", base: "--volly_counter; reset + volly_refire at end", port: "same", match: true }
+      - { name: "CLEARTARGET", base: "yes", port: "ClearTarget flag", match: true }
+      - { name: "per-shot firecheck LOS branch", base: "TFL_FIRECHECK_LOS (in default flags, but commented '-' not implemented in Base too)", port: "not modeled (Base lists it un-implemented)", match: true }
+      - { name: "per-shot firecheck TEAMCHECK branch", base: "TFL_FIRECHECK_TEAMCECK (Base comment marks '-' not implemented)", port: "not modeled (Base also leaves it un-implemented)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Per-shot firecheck LOS + TEAMCHECK branches not separately re-tested at fire time — but Base itself marks TFL_FIRECHECK_LOS/TEAMCECK as un-implemented in turret_firecheck (the '-' rows in the sv_turrets.qc:856-868 legend), so the port matches Base behaviour: acquisition-time LOS/team gating is the only LOS/team test in both."
+    verification:
+      - { kind: code_read, ref: "turret_firecheck (881-949) + turret_do_updates (496-524) vs RunCombat (646-714) + UpdateImpact; AFF/opportunity/too-close-bypass/AIMDIST-via-real-impact/volley-pre-ammo all present; Fire has the g_turrets_nofire short-circuit", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (was logic:partial): Wave-7 ported the impact-entity trace (turret_do_updates -> UpdateImpact) and the firecheck branches that depend on it — AFF, target-of-opportunity, AIMDIST via the real impact distance, the too-close opportunity bypass, and the per-unit firecheck_flags override. The remaining 'un-modeled' per-shot LOS/TEAMCHECK branches are also un-implemented in Base (marked '-'), so the fire gate now matches Base."
+  - id: turret-framework.projectile.generic
+    name: "Generic turret projectile (turret_projectile)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_projectile"
+      - "common/turrets/sv_turrets.qc:turret_projectile_touch"
+      - "common/turrets/sv_turrets.qc:turret_projectile_damage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Projectile"
+    constants:
+      - { name: "movetype", base: "MOVETYPE_FLYMISSILE", port: "MoveType.FlyMissile", match: true }
+      - { name: "velocity", base: "normalize(dir+randomvec*spread)*shot_speed", port: "same (Prandom)", match: true }
+      - { name: "lifetime", base: "9s", port: "9f", match: true }
+      - { name: "touch -> RadiusDamage", base: "shot_dmg/0/shot_radius/force/deathtype", port: "same", match: true }
+      - { name: "shootable hull (health>0)", base: "DAMAGE_YES + explode on death", port: "via shared Death hook", match: true }
+      - { name: "CSQCProjectile trail", base: "yes (client, proj_type stamped IN turret_projectile via CSQCProjectile(.., _proj_type, ..), sv_turrets.qc:487)", port: "TurretSpawn.Projectile now takes a projType arg and stamps NetName INSIDE the helper (TurretSpawn.cs:122); callers pass projType: electro_bolt/blaster/hagar/devastator so ProjectileCatalog.Classify gives the bolt its real client trail (Wave-9-11)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "turret_projectile (sv_turrets.qc:455-494, stamps _proj_type inline) vs TurretSpawn.Projectile (TurretSpawn.cs:113-176): the helper now owns the trail — `if (projType.Length != 0) proj.NetName = projType` at line 122; plasma/mlrs/flac/ewheel callers pass projType: (electro_bolt/devastator/hagar/blaster) + EFFECT_*_MUZZLEFLASH at the muzzle", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (was presentation:partial): Wave-9-11 added the projType parameter to TurretSpawn.Projectile and moved the NetName stamp INSIDE the helper (TurretSpawn.cs:122), exactly mirroring how Base's turret_projectile stamps _proj_type inline (sv_turrets.qc:487) rather than relying on callers. The helper now owns the trail, so the prior gap (a turret that forgot to stamp NetName would render trailless) is closed — presentation is faithful. audio stays partial: the per-turret fire sound is emitted by the caller paths, not this generic helper."
+  - id: turret-framework.lifecycle.use_damage
+    name: "Activation + damage gate (turret_use / turret_damage / turret_heal)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_use"
+      - "common/turrets/sv_turrets.qc:turret_damage"
+      - "common/turrets/sv_turrets.qc:turret_heal"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Use"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Damage"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:EventDamage"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:EventDamage"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init"
+    constants:
+      - { name: "use: adopt team, active=(team!=0)", base: "yes", port: "yes (live, wired to Entity.Use)", match: true }
+      - { name: "dead/inactive take no damage", base: "yes", port: "TurretAI.Damage returns 0 — live via GtEventDamage", match: true }
+      - { name: "friendlyfire gate/scale", base: "g_friendlyfire", port: "TurretAI.Damage scales — live", match: true }
+      - { name: "MOVE knockback shove", base: "velocity += vforce", port: "TurretAI.Damage shoves — live", match: true }
+      - { name: "RETALIATE pick attacker", base: "flag set but never READ in Base (no this.enemy=attacker)", port: "intentionally omitted (matches Base no-op)", match: true }
+      - { name: "HEADSHAKE damage jitter", base: "tur_head.angles.x/y += (random-0.5)*damage", port: "EventDamage: HeadAngles.X/Y += (Prandom-0.5)*take when HeadShake (NEW Wave-7)", match: true }
+      - { name: "health subtract + death trigger", base: "TakeResource(RES_HEALTH); health<=0 -> turret_die", port: "EventDamage TakeResource(Health); health<=0 -> Combat.Death -> Die", match: true }
+      - { name: "turret_heal / event_heal", base: "this.event_heal=turret_heal (sv_turrets.qc:253/1338): GiveResourceWithLimit RES_HEALTH up to max_health, reject if dead or >=limit", port: "TurretAI.Heal wired as e.GtEventHeal in TurretSpawn.Init (TurretSpawn.cs:100); cleared by Die (event_heal=func_null), re-installed by Respawn — live via Combat.Heal (FIXED 06-27)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "TurretLifecycleTests.Use_*/Damage_* (call TurretAI.Use/Damage directly)", result: pass }
+      - { kind: code_read, ref: "TurretSpawn.Init sets e.GtEventDamage=TurretAI.EventDamage AND e.GtEventHeal=TurretAI.Heal (TurretSpawn.cs:93/100); DamageSystem.EventDamage routes non-player+GtEventDamage to it and returns; Combat.Heal (DamageContracts.cs:102) dispatches to target.GtEventHeal, live caller Arc.cs:522 (heal-beam); TurretAI.Heal (TurretAI.cs:962) mirrors turret_heal (true_limit, dead/over-limit reject, GiveResourceWithLimit); Die clears GtEventHeal (TurretAI.cs:1043), Respawn re-installs (TurretAI.cs:1111)", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (turret_heal now ported + live): the framework heal SINK turret_heal is ported as TurretAI.Heal, wired as the GtEventHeal sink in Init, cleared on death, re-installed on respawn — a friendly heal source (Arc heal-beam, the only live Combat.Heal caller) can now repair a damaged-but-alive turret toward max_health. HEADSHAKE damage-jitter (prior fix) stays modeled; the retaliate omission matches Base (flag set but never read). No remaining gaps on this row."
+  - id: turret-framework.lifecycle.death_respawn
+    name: "Death + respawn (turret_die / turret_hide / turret_respawn)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_die"
+      - "common/turrets/sv_turrets.qc:turret_hide"
+      - "common/turrets/sv_turrets.qc:turret_respawn"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Die"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Respawn"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:OnAnyDeath"
+    constants:
+      - { name: "die: SOLID_NOT + takedamage NO + health 0", base: "yes", port: "yes", match: true }
+      - { name: "respawn delay", base: "respawntime (turret_die nextthink=time+0.2 -> turret_hide nextthink=time+respawntime-0.2 -> turret_respawn)", port: "Die NextThink=now+0.2 -> Hide NextThink=now+max(RespawnTime-0.2,0) -> Respawn (two-step ported, FIXED 06-25; total dead time = RespawnTime)", match: true }
+      - { name: "NORESPAWN -> delete + explode FX", base: "SND_ROCKET_IMPACT + EFFECT_ROCKET_EXPLODE then delete", port: "Die NORESPAWN: Sound rocket_impact + EffectEmitter ROCKET_EXPLODE + Remove (NEW Wave-7)", match: true }
+      - { name: "respawn restore (health/ammo/volley/head)", base: "yes + tr_setup", port: "yes + OnRespawn", match: true }
+      - { name: "death blast", base: "commented out on live path (sv_turrets.qc:182)", port: "no blast (removed to match Base) (FIXED Wave-7)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "TurretLifecycleTests.Die_*/Respawn_*/LethalDamage_ThroughTheSharedDeathHook_RunsDie", result: pass }
+      - { kind: code_read, ref: "turret_die/hide/respawn (sv_turrets.qc:159-205) vs TurretAI.Die/Hide/Respawn (TurretAI.cs:1002-1095) + Combat.Death OnAnyDeath; QC death RadiusDamage verified commented out (sv_turrets.qc:182) and port Die has NO blast; NORESPAWN branch plays rocket_impact + ROCKET_EXPLODE before Remove; non-NORESPAWN now uses the two-step Die(nextthink+0.2 -> Hide) -> Hide(nextthink+respawntime-0.2 -> Respawn)", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (timing partial -> faithful): the death two-step is now ported — Die schedules turret_hide at time+0.2 and Hide schedules turret_respawn at respawntime-0.2 (TurretAI.cs:1044-1062), so total dead time = RespawnTime exactly as Base. The over-lethal death RadiusDamage blast stays REMOVED (matches Base's commented-out blast), and the NORESPAWN branch fires rocket-impact + ROCKET_EXPLODE before removal. No remaining death/respawn gaps (turret_heal/event_heal is tracked on lifecycle.use_damage)."
+  - id: turret-framework.lifecycle.round_reset
+    name: "Round-restart reset hook (turret_reset -> turret_respawn via .reset)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_reset"
+      - "common/turrets/sv_turrets.qc:turret_link"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:102"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Respawn"
+      - "src/XonoticGodot.Server/GameWorld.cs:4614"
+    constants:
+      - { name: ".reset hook install", base: "turret_link sets this.reset = turret_reset (sv_turrets.qc:1158/1342)", port: "TurretSpawn.Init sets e.Reset = TurretAI.Respawn (TurretSpawn.cs:102) (FIXED 06-25)", match: true }
+      - { name: "reset action", base: "turret_reset -> turret_respawn (full health/ammo/volley/head, re-active)", port: "Entity.Reset = TurretAI.Respawn (turret_respawn body: restore health/ammo/volley/head, re-active, re-install per-frame think)", match: true }
+      - { name: "reset caller (reset_map_global)", base: "server/world.qc reset_map fires each non-client entity's .reset on round/match restart", port: "GameWorld.ResetMapObjects loops the live entity set and fires e.Reset?.Invoke(e) (GameWorld.cs:4614), called from the round/match restart path (GameWorld.cs:4553)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "turret_link:1158 this.reset = turret_reset (-> turret_respawn) vs TurretSpawn.Init:102 e.Reset = TurretAI.Respawn; GameWorld.ResetMapObjects:4521 fires e.Reset?.Invoke(e) for every non-client entity on the round/match restart (GameWorld.cs:4460), so a damaged/dead turret is restored to full setup at round start; Respawn re-installs the recorded PerFrameThink so a reset turret keeps thinking", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (was logic:missing, port_refs []): the round-restart reset hook is now wired AND live. TurretSpawn.Init installs e.Reset = TurretAI.Respawn (the port's turret_respawn body), and GameWorld.ResetMapObjects fires every non-client entity's .Reset on the round/match restart path — matching Base's turret_link .reset = turret_reset -> turret_respawn via reset_map_global. Turret state (health/ammo/volley/head/active) is now restored between rounds in round-based gametypes. (Assault additionally team-swaps + turret_respawns via AssaultTurretRoundstart.)"
+  - id: turret-framework.net.sync
+    name: "Turret networking (turret_send / TNSF_* / ENT_CLIENT_TURRET)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_send"
+      - "common/turrets/turret.qh:TNSF_SETUP"
+      - "common/turrets/cl_turrets.qc:NET_HANDLE(ENT_CLIENT_TURRET)"
+    port_refs:
+      - "game/net/ServerNet.cs:2248"
+      - "src/XonoticGodot.Net/NetEntity.cs:EntityField.TurretHead"
+      - "game/net/ClientEntityView.cs:162"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:TryGetState"
+    constants:
+      - { name: "TNSF_ANG (head pitch/yaw)", base: "turret_send writes tur_head.angles_x/_y (8-bit angles)", port: "ServerNet folds TurHeadPitch/Yaw into the generic entity delta; codec writes WriteAngles(Low)=8-bit per axis (NetEntity.cs EntityField.TurretHead) (NEW this wave)", match: true }
+      - { name: "TNSF_AVEL (head avelocity yaw)", base: "turret_send writes tur_head.avelocity_y", port: "TurHeadAVelYaw raw float in the TurretHead block (NEW this wave)", match: true }
+      - { name: "TNSF_STATUS (active/dead)", base: "team + scaled-health byte", port: "TurFlags byte: bit0 .active, bit1 DEAD_DEAD (NEW this wave); objective hp/255 + state ride the separate ObjState block (Onslaught)", match: false }
+      - { name: "TNSF_SETUP (registered id+origin+angles)", base: "dedicated CSQC turret edict", port: "none distinct — folds into the generic NetEntity stream (no ENT_CLIENT_TURRET edict, no turret_construct parse)", match: false }
+      - { name: "TNSF_MOVE / TNSF_ANIM", base: "origin+velocity+yaw / anim_start_time+frame", port: "origin via the generic entity record; head-frame anim rides the body Entity.Frame (no distinct ANIM group)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Head-aim/status sync is folded into the GENERIC NetEntity entity-delta stream, NOT a dedicated CSQC turret edict — there is no ENT_CLIENT_TURRET / turret_send / turret_construct parse. TNSF_ANG (head pitch/yaw via WriteAngles Low) + TNSF_AVEL (head avel yaw) + the active/dead status bits ARE networked; TNSF_SETUP (distinct edict registration) and a distinct TNSF_ANIM group are not (anim rides the body Entity.Frame, origin rides the generic record)."
+      - "The networked head block is DECODE-ONLY on the client this wave — ClientEntityView lands TurHeadPitch/Yaw/AVelYaw/TurActive on the proxy Entity, but no render node yet reads them to rotate a head MODEL (the tur_head render is deferred to 'Phase-3'). So the sync exists but nothing consumes it visually yet (see client.presentation)."
+    verification:
+      - { kind: code_read, ref: "ServerNet.cs:2248 TurretAI.TryGetState populates s.TurHeadPitch/Yaw/AVelYaw + TurFlags(active/dead) into the per-tick snapshot record; NetEntity.cs EntityField.TurretHead=1<<21 written via WriteAngles(Low)+raw avel float+TurFlags byte in WriteDelta and read in ReadDelta; ClientEntityView.cs:162 decodes them onto the proxy Entity. Producer runs every tick in the snapshot loop, consumer every frame — both LIVE on the net path.", result: pass }
+      - { kind: test, ref: "OPUS 06-28: ObjStreamCodecTests (TurretHead_RoundTrips / Idle_CostsNothing / AppendOrder_AllSet) round-trip the head block through EntityStateCodec; build green + 61 turret/objstream tests pass", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (was logic/values/timing/presentation: missing, liveness: na, port_refs []): this wave [objstream] networks the turret HEAD aim + active/dead status — TNSF_ANG (head pitch/yaw, 8-bit WriteAngles Low), TNSF_AVEL (head avel yaw), and the .active/DEAD_DEAD status bits — by folding them into the GENERIC per-entity NetEntity delta (new EntityField.TurretHead bit) rather than a dedicated CSQC turret edict. Producer (ServerNet.TryGetState probe, non-allocating), 32-bit codec, and consumer (ClientEntityView decode) are all LIVE and round-trip-tested. Scored partial (not faithful): there is still NO dedicated ENT_CLIENT_TURRET edict / turret_send / turret_construct (no TNSF_SETUP/distinct ANIM group), and the decoded head block is decode-only — no client node renders the rotating head MODEL from it yet (deferred to Phase-3; tracked on client.presentation)."
+  - id: turret-framework.client.presentation
+    name: "Client presentation (cl_turrets.qc: construct/draw/draw2d/die/gibs/changeteam)"
+    layer: [presentation]
+    base_refs:
+      - "common/turrets/cl_turrets.qc:turret_construct"
+      - "common/turrets/cl_turrets.qc:turret_draw"
+      - "common/turrets/cl_turrets.qc:turret_draw2d"
+      - "common/turrets/cl_turrets.qc:turret_die"
+      - "common/turrets/cl_turrets.qc:turret_changeteam"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:DrawFx"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Die"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretCombat.cs:FireBullet"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PlasmaTurret.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:TrThinkHeadAnim"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:Think"
+    constants:
+      - { name: "head rotation render", base: "tur_head.angles += avelocity*dt (turret_draw, every turret)", port: "none (no tur_head sub-entity; head angles are a TurretState vector, never rendered as a separate bone)", match: false }
+      - { name: "low-HP sparks/smoke (framework turret_draw)", base: "te_spark <127 @0.03 / SMOKE_LARGE <85 @0.01 / SMOKE_SMALL <32 @0.015, one shared random roll — ALL turrets (cl_turrets.qc:36-53)", port: "TurretAI.DrawFx mirrors all three tiers from one Prandom roll, emitted server-side, called every think from RunCombat; skips ewheel/walker (their own draw has its own spark) (FIXED 06-25)", match: true }
+      - { name: "death FX (rocket explode + sound)", base: "EFFECT_ROCKET_EXPLODE + SND_ROCKET_IMPACT (cl_turrets.qc:turret_die, every death)", port: "Die emits ROCKET_EXPLODE + weapons/rocket_impact.wav server-side on every death (Wave-7)", match: true }
+      - { name: "muzzle flash / tracer / beam FX", base: "Send_Effect EFFECT_*_MUZZLEFLASH, EFFECT_BULLET tracer, EFFECT_VAPORIZER_BEAM (per weapon, outside isPlayer gate)", port: "server-side EffectEmitter: BLASTER/MACHINEGUN/VORTEX muzzleflash, BULLET tracer, VAPORIZER_BEAM team beam, te_explosion launch flashes (NEW Wave-8e)", match: true }
+      - { name: "head-frame fire anim", base: "tur_head.frame cycle (plasma 1-5, flac 0-3, phaser fireflag 1-10/15 charge/discharge)", port: "runs on the turret edict's own networked Entity.Frame: plasma kick frame=1, flac 0-3 cycle, phaser fireflag charge/discharge (PhaserTurret.TrThinkHeadAnim) — no separate head bone (NEW Wave-8e)", match: false }
+      - { name: "gib toss / gib boom", base: "turret_gibtoss / turret_gibboom (per-type client gib entities)", port: "none (needs a CSQC turret edict to spawn client gibs)", match: false }
+      - { name: "waypoint sprite + healthbar", base: "turret_draw2d g_waypointsprite_turrets + drawhealthbar", port: "none", match: false }
+      - { name: "team recolor", base: "turret_changeteam colormap/glowmod (Team_ColorRGB)", port: "none", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: partial
+      audio: partial
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No tur_head MODEL render: the head aim/avel IS now networked + decoded onto the proxy (Entity.TurHeadPitch/Yaw/AVelYaw, see net.sync), but NO client node yet reads it to rotate a head model/bone (turret_draw tur_head.angles += avelocity*dt) — the render is deferred to 'Phase-3'. The per-shot head-frame anim still rides the turret body's own Entity.Frame instead of a separate head bone."
+      - "No turret_draw2d radar layer: no waypoint sprite and no over-turret healthbar."
+      - "No turret_changeteam team recolor (colormap/glowmod)."
+      - "No client gib toss (turret_gibtoss/turret_gibboom) — needs a CSQC turret edict."
+    verification:
+      - { kind: code_read, ref: "Wave-8e: muzzle flashes/tracers/beams/projectile trails/te_explosion launch flashes + head-frame anims + phaser discharge anim emitted server-side from the per-turret Attack paths and TurretCombat.FireBullet; Die emits ROCKET_EXPLODE+rocket_impact; TurretAI.DrawFx (called every think from RunCombat) emits the framework-wide <127 te_spark + <85 SMOKE_LARGE + <32 SMOKE_SMALL tiers from one shared Prandom roll (cl_turrets.qc:36-53). Still absent: tur_head model rotation, draw2d waypoint/healthbar, changeteam recolor, gib toss", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (framework low-HP sparks/smoke now ported): TurretAI.DrawFx (06-25) ports the all-turret turret_draw damage-feedback — the <127 te_spark and the <85 SMOKE_LARGE / <32 SMOKE_SMALL smoke tiers, from one shared random roll, emitted server-side for every combat turret (ewheel/walker keep their own draw). This plus the Wave-8e combat FX (muzzle flashes, bullet tracers, instagib team beam, projectile trails via NetName->ProjectileCatalog, launch-flash te_explosions, plasma/flac/phaser head-frame fire anims) and the Wave-7 death rocket-explode FX/sound make presentation/audio/liveness partial. Still genuinely absent (all need a CSQC turret edict): the tur_head MODEL render (no head bone), the draw2d waypoint sprite/healthbar, the changeteam team recolor, and the client gib toss."
+  - id: turret-framework.mapents.path_trigger
+    name: "Waypoint path + receive-target entities (turret_checkpoint / targettrigger / manager)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/checkpoint.qc:turret_checkpoint"
+      - "common/turrets/checkpoint.qc:turret_checkpoint_init"
+      - "common/turrets/targettrigger.qc:turret_targettrigger"
+      - "common/turrets/sv_turrets.qc:turrets_manager_think"
+      - "common/turrets/sv_turrets.qc:turret_findtarget"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:Checkpoint"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:TargetTrigger"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:243"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/EWheelTurret.cs:NextCheckpoint"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:FindTarget"
+    constants:
+      - { name: "turret_checkpoint chain", base: "drop-to-floor (1024u down, +32u) + .enemy=find(targetname,target)", port: "Checkpoint: WorldOnly down-trace +32u + MapMover index; chain resolved lazily by targetname in EWheel.NextCheckpoint", match: true }
+      - { name: "walker_checkpoint compat alias", base: "spawnfunc_turret_checkpoint", port: "walker_checkpoint -> Checkpoint", match: true }
+      - { name: "turret_findtarget defendpoint", base: "tur_defend + idle_aim from .target key (sv_turrets.qc:1238-1239); defend-mode score 1-d_dist/target_range (sv_turrets.qc:88-92)", port: "TurretAI.FindTarget resolves .target -> DefendPoint + IdleAim, called live from the spawnfunc (TurretSpawnFuncs.cs:48); ScoreTarget defend-mode 1-dDist/RangeMax", match: true }
+      - { name: "turret_targettrigger debounce", base: "0.5s (RECIEVETARGETS turret_addtarget, targettrigger.qc:16 this.cnt=time+0.5)", port: "TurretSpawnFuncs.TargetTrigger registered in MapObjectsRegistry:247; touch walks turrets by targetname, calls each AddTarget hook, 0.5s debounce via .Wait (FIXED 06-27)", match: true }
+      - { name: "g_turrets_reloadcvars manager", base: "1s think re-load cvars (turret_findtarget auto-spawns turret_manager -> turrets_manager_think)", port: "none (consts)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "turrets_manager_think + the turret_manager auto-spawn (g_turrets_reloadcvars: re-load every turret's per-unit cvars on a think) not ported — consistent with the per-unit cvar table being absent. (Inert: g_turrets_reloadcvars defaults off and the per-unit cvar table itself is unported, so there is nothing for the manager to reload.)"
+    verification:
+      - { kind: test, ref: "TurretLifecycleTests / EWheel path-roam coverage (checkpoint chain advance)", result: pass }
+      - { kind: code_read, ref: "checkpoint.qc:turret_checkpoint_init vs TurretSpawnFuncs.Checkpoint (drop-to-floor + targetname index) + EWheel.NextCheckpoint lazy chain link; turret_checkpoint/walker_checkpoint registered in MapObjectsRegistry:243-244; turret_findtarget defendpoint (sv_turrets.qc:1238-1239) ported as TurretAI.FindTarget, called from TurretSpawnFuncs.Spawn:48; turret_targettrigger.qc ported verbatim as TurretSpawnFuncs.TargetTrigger + TargetTriggerTouch (0.5s debounce, IL_EACH-by-targetname -> AddTarget) and REGISTERED in MapObjectsRegistry:247; only turret_manager/turrets_manager_think reloadcvars still absent", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (turret_targettrigger now ported + live -> liveness partial->live, logic/values/timing partial->faithful): the turret_targettrigger MAP ENTITY is now a registered spawnfunc (MapObjectsRegistry:247) that faithfully ports targettrigger.qc — its touch handler walks every turret matching the trigger's .target and invokes each one's AddTarget reception hook (TUR_FLAG_RECIEVETARGETS + .turret_addtarget) on a 0.5s debounce. The HK's AddTarget hook (HkTurret) therefore now has a live caller, closing the last dead-path on this row. The checkpoint/walker_checkpoint roam chain (Wave-7) and the turret_findtarget defendpoint wiring stay live. Only the turret_manager auto-spawn + g_turrets_reloadcvars think remains unported (inert — the per-unit cvar table it would reload is itself absent)."

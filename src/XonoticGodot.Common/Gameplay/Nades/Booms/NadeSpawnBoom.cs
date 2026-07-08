@@ -39,6 +39,11 @@ public sealed class NadeSpawnBoom : INadeBoom, INadeDestroyDamage
         spawnloc.MoveType = MoveType.None;
         spawnloc.Solid = Solid.Not;
         spawnloc.Effects = EffectFlags.Stardust; // QC EF_STARDUST (drawonlytoclient is render-only)
+        // Base's nade_spawn_loc (spawn.qc) is SOLID_NOT with EF_STARDUST and no real mesh — the stardust IS the
+        // visible. But ServerNet.Classify drops a non-projectile that has no model (ServerNet.cs:2187 "nothing to
+        // render"), which would starve EF_STARDUST off the wire. Plant a tiny near-invisible marker so the feed
+        // keeps the entity; the mesh is incidental, EF_STARDUST does the rendering. (Owner-only is a follow-up.)
+        spawnloc.Model = "models/marker.md3";
         spawnloc.NadeSpawnCount = (int)NadeProjectile.Cvar("g_nades_spawn_count", 3f); // QC .cnt
 
         if (player.NadeSpawnLoc is not null)

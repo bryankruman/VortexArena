@@ -169,6 +169,30 @@ public partial class EffectSystem : Node3D
     {
         if (Splats is not null)
             Splats.World = world;
+
+        // Give the faithful particle sim its OWN static, world-only tracer over the CLIENT collision world
+        // (NetGame builds it per map via MapLoader.BuildCollision). This mirrors DP's CL_TraceLine: particle
+        // bounces/content checks clip the static map BSP only — never live players/items/projectiles, and
+        // never the SERVER's collision world. A new TraceService(world) has entities=null (no entity sweep)
+        // and ConcurrencyGate=null (no lock): on a listen server the ambient Api.Trace IS the server world, so
+        // every bouncing spark used to box-sweep the live entity broadphase under the server-tick gate — the
+        // dominant combat-frame hitch. This tracer runs only on the main thread alongside the splat consumer
+        // of the same (client-only) world, so it needs no gate.
+        FaithfulParticles?.SetTrace(new TraceService(world));
+
+        // Give the casing sim a world-only tracer too, so brass does full MOVETYPE_BOUNCE world collision
+        // (reflect off real brush faces at cl_casings_ticrate) instead of the FloorZ ground-plane fallback —
+        // faithful to Base Movetype_Physics_MatchTicrate. Same client-only, gate-free tracer rationale as above
+        // (never the server world, never live entities). The sweep is a near-point box (casings are tiny brass).
+        if (Casings is not null)
+        {
+            var casingTrace = new TraceService(world);
+            Casings.TraceHook = (from, to) =>
+            {
+                TraceResult r = casingTrace.Trace(from, NVec3.Zero, NVec3.Zero, to, MoveFilter.WorldOnly, null);
+                return new ShellCasings.CasingTrace(r.Fraction, r.EndPos, r.PlaneNormal, r.StartSolid);
+            };
+        }
     }
 
     /// <summary>
@@ -343,6 +367,14 @@ public partial class EffectSystem : Node3D
         if (Splats is not null)
             list.Add(Splats.BuildWarmupInstance());
 
+        // (engine-perf 2026-06-16) The gib limbs + brass casings render via the entity feed (cev.process) and are
+        // otherwise un-warmed: the first combat death/shot first-instances their (mesh,material) pipeline mid-match
+        // → a synchronous SURFACE compile (the residual a RenderDoc capture pinned to the MD3-entity class). Their
+        // BuildWarmupInstances() warms exactly what plays — the real MD3/IQM limb+brass once the host wires their
+        // ModelLoader, the generated fallback otherwise — via the same BuildMesh factory the live spawn uses.
+        if (Gibs is not null) list.AddRange(Gibs.BuildWarmupInstances());
+        if (Casings is not null) list.AddRange(Casings.BuildWarmupInstances());
+
         // One representative effect flash so the warm viewport renders with a clustered OmniLight active.
         // (The live fx-light pool itself is seeded by the BuildFromInfo warm bursts above — their
         // lightradius blocks route through the pooled SpawnInfoLight during the loading screen.)
@@ -422,10 +454,28 @@ public partial class EffectSystem : Node3D
     /// <paramref name="color"/> tints the particles (QC eent_net_color override).
     /// Returns the created node (already added to the tree), or null if the name is empty/Null.
     /// </summary>
-    public Node3D? Spawn(string effectName, NVec3 origin, NVec3 velocity = default, int count = 1, Color? color = null)
+    public Node3D? Spawn(string effectName, NVec3 origin, NVec3 velocity = default, float count = 1f, Color? color = null)
     {
         if (string.IsNullOrEmpty(effectName))
             return null;
+
+        // Casing eject (W_*_Attack SpawnCasing): the bullet/shell casing temp-entities aren't pointparticles —
+        // they spawn a tumbling, bouncing brass entity. WeaponFiring.EjectCasing emits them as the CASING_BULLET/
+        // CASING_SHELL effects (carrying the QC eject velocity in Velocity); route those to the dedicated casing
+        // sim instead of the generic particle-burst heuristic so a real shell actually ejects. We match BOTH the
+        // EFFECT_* registry name ("CASING_BULLET", the networked path via Effect.Name) and the effectinfo name
+        // ("casing_bullet", the in-process listen-server path via EffectRequest.EffectName).
+        if (effectName == "CASING_BULLET" || effectName == "casing_bullet")
+            return SpawnCasing(origin, velocity, shell: false);
+        if (effectName == "CASING_SHELL" || effectName == "casing_shell")
+            return SpawnCasing(origin, velocity, shell: true);
+
+        // Raptor cluster-bomb burst: the DEATH_VH_RAPT_FRAGMENT FX tosses cosmetic shell-fragment gibs
+        // (RaptorCBShellfragToss) carrying the bursting bomb's velocity. The gameplay layer emits this as the
+        // RAPTOR_BOMB_SPREAD effect with the bomb velocity in Velocity; toss the frags, then fall through so the
+        // raptor_bomb_spread particle puff (the effectinfo block) still renders alongside them.
+        if (effectName == "RAPTOR_BOMB_SPREAD" || effectName == "raptor_bomb_spread")
+            SpawnRaptorShellfrags(origin, velocity);
 
         Effect? effect = ResolveEffect(effectName);
         // EFFECT_Null and the empty effectinfo string are intentional no-renders.
@@ -442,8 +492,53 @@ public partial class EffectSystem : Node3D
         if (kind == EffectClass.Beam && Beams is not null && velocity != default)
         {
             Color? beamTint = color is { } bc ? bc : null;
-            bool jagged = HasAny(effectName, "lightning", "arc", "shock", "electro", "tesla");
-            return jagged ? Beams.Arc(origin, velocity, beamTint) : Beams.Beam(origin, velocity, beamTint);
+            // Electric combo/turret zaps crackle (jagged te_csqc_lightningarc: ARC_LIGHTNING). The steady
+            // arc-WEAPON beam is a smooth cylinder (Base cl_arcbeam_simple default Draw_CylindricLine), so the
+            // ARC_BEAM_LINE family (ARC_BEAM_LINE / ARC_BEAM_LINE_HEAL) draws STRAIGHT even though the name
+            // contains "arc". HasAny is case-insensitive, so one "arc_beam_line" needle excludes both spellings.
+            bool jagged = HasAny(effectName, "lightning", "shock", "electro", "tesla")
+                || (HasAny(effectName, "arc") && !HasAny(effectName, "arc_beam_line"));
+            if (jagged)
+                return Beams.Arc(origin, velocity, beamTint);
+
+            // Per-variant cylindric-beam thickness (Base draws each beam at its own width — the BeamRenderer
+            // default of 6f is a single fallback that flattens those differences). Select by effect id so the
+            // broadcast arc/vortex beam draws at the right thickness/brightness on every client; the id reaches
+            // us as either the EFFECT_* name or the lower-case effectinfo name, and HasAny is case-insensitive,
+            // so one needle catches both spellings. No new wire data — render-side selection only.
+            float width = 6f;
+            if (HasAny(effectName, "arc_beam_line_burst"))
+            {
+                // Base ARC_BT_BURST: the fatter burst-mode cylinder (arc.qc cl_arcbeam burst width).
+                width = 14f;
+            }
+            else if (HasAny(effectName, "arc_beam_line"))
+            {
+                // Base normal/heal arc beam (ARC_BEAM_LINE / ARC_BEAM_LINE_HEAL): the standard 8f cylinder.
+                // HasAny(...arc_beam_line) also matches the burst spelling, so this branch sits AFTER the burst
+                // test above (burst wins).
+                width = 8f;
+            }
+            else if (HasAny(effectName, "vortex_beam", "nex_beam"))
+            {
+                // VORTEX_BEAM: QC scales the beam's alpha/fade by sqrt(charge) (vortex.qc:61) so a barely-charged
+                // shot draws faint and a full one bright. The port has no per-emission alpha on the wire, but in
+                // the team-tint path the broadcast colour IS vortex_glowcolor(team, max(0.25, sqrt(charge))), so
+                // the charge-derived brightness already lives in the tint's RGB magnitude. Recover it and fold it
+                // into the beam's ALPHA (and lightly into width) so a low-charge beam renders dimmer/thinner —
+                // matching the sqrt(charge) alpha gap without abusing the colour channel. On the default
+                // (no-tint) path beamTint is null, so the beam keeps its native effectinfo colour at full alpha.
+                if (beamTint is { } vt)
+                {
+                    // RGB magnitude of the charge-scaled glow stands in for sqrt(charge); clamp to the
+                    // max(0.25, sqrt(charge)) floor the team path already applies so the beam never vanishes.
+                    float brightness = Math.Clamp(MathF.Max(vt.R, MathF.Max(vt.G, vt.B)), 0.25f, 1f);
+                    beamTint = new Color(vt.R, vt.G, vt.B, vt.A * brightness);
+                    // Lerp the cylinder thickness from a thin low-charge beam (0.6×) up to the full 6f default.
+                    width = 6f * (0.6f + 0.4f * brightness);
+                }
+            }
+            return Beams.Beam(origin, velocity, beamTint, width);
         }
 
         // --- effectinfo.txt-driven path (T20) ------------------------------------------------------------
@@ -622,6 +717,13 @@ public partial class EffectSystem : Node3D
         => Gibs?.Splash(origin, velocity, amount, floorZ);
 
     /// <summary>
+    /// Toss the raptor cluster-bomb shell-fragment gibs (QC <c>RaptorCBShellfragToss</c>, dispatched from the
+    /// DEATH_VH_RAPT_FRAGMENT burst FX). Cosmetic bouncing debris thrown from the bursting bomb (Quake space).
+    /// </summary>
+    public void SpawnRaptorShellfrags(NVec3 origin, NVec3 bombVel)
+        => Gibs?.TossShellfrags(origin, bombVel);
+
+    /// <summary>
     /// Drop a single impact decal at a Quake-space point, projected along <paramref name="impactDir"/> (the
     /// shot/explosion direction). For callers that resolve their own decal; the effectinfo path projects
     /// decals automatically for effects that declare a <c>type decal</c> block.
@@ -653,6 +755,18 @@ public partial class EffectSystem : Node3D
         // libs reference effects by either spelling. Substring tests are ordinal/case-insensitive.
         string id = name;
         string net = effect?.NetName ?? name;
+
+        // Drawn line-beams (te_csqc_lightningarc + the Bumblebee heal/damage rays + the Arc weapon's cylindric
+        // beam) — these are registered as trail Effects ONLY so the count-0 beam emission survives the
+        // EffectEmitter.Emit/Encode point-count guard and networks (see EffectsList ARC_LIGHTNING / HEAL_BEAM /
+        // DAMAGE_BEAM / ARC_BEAM_LINE[_HEAL]). They must classify as Beam (drawn via BeamRenderer between origin
+        // and the velocity end-point), NOT as a particle Trail, so this explicit check precedes the trail-flag
+        // branch. ARC_BEAM_LINE / ARC_BEAM_LINE_HEAL both contain the "arc_beam_line" substring, so one needle
+        // catches the heal and damage variants. Particle-trail beams (arc_beam/arc_beam_heal/nex_beam) are
+        // unaffected — they lack "_line" and are matched only by the generic BEAM/trail rules below.
+        if (HasAny(id, "LIGHTNING", "HEAL_BEAM", "DAMAGE_BEAM", "ARC_BEAM_LINE")
+            || HasAny(net, "lightning", "heal_beam", "damage_beam", "arc_beam_line"))
+            return EffectClass.Beam;
 
         // Trails first — the catalog flag is authoritative; otherwise fall through to name heuristics.
         if ((effect?.IsTrail ?? false) || HasAny(net, "tr_", "_trail", "_thrust") || HasAny(id, "_TRAIL"))
@@ -1057,7 +1171,7 @@ public partial class EffectSystem : Node3D
     /// effect, or the trail END point for a trail effect (then the segment is origin..velocity).
     /// </summary>
     private Node3D? BuildFromInfo(IReadOnlyList<EffectInfoEmitter> blocks, NVec3 origin, NVec3 velocity,
-        int count, Color? colorOverride, bool isTrail, bool attach = true)
+        float count, Color? colorOverride, bool isTrail, bool attach = true)
     {
         var parent = new Node3D { Name = "fx_info", Position = Coords.ToGodot(origin) };
         bool any = false;
@@ -1207,29 +1321,37 @@ public partial class EffectSystem : Node3D
     /// </summary>
     private void SpawnBloodSplat(EffectInfoEmitter info, NVec3 center, Color? colorOverride)
     {
-        if (Decals is null)
+        // (playtest #37) Route through the DP-faithful surface-clipped splats (DecalSplats), NOT the legacy
+        // Godot Decal projection box: a projection volume paints THROUGH thin geometry inside its box and
+        // smears across corners — the reported through-wall/streaking marks. This was the last live caller
+        // of the legacy path. SplatPoint = CL_SpawnDecalParticleForPoint (probe rays, nearest surface, splat
+        // clipped to the real triangles).
+        if (Splats is null || !GodotObject.IsInstanceValid(Splats))
             return;
         // Use the declared stain (staintex/staincolor/stainsize/stainalpha) when present — that's the dedicated
         // blood-decal sprite (atlas 16-23) and tint DP leaves where blood hits. The blood particle color is
         // stored INVMOD-inverted (0xA8FFFF cyan -> dark red), so InfoDecalColor inverts it and folds in the
-        // neutral staincolor. Falls back to the emitter's own size/color when no stain was declared.
+        // neutral staincolor. The splat shader wants the REMOVAL amount (wall · (1 − tex·color)) — the
+        // complement of that display color. Falls back to the emitter's own size/color when no stain declared.
         Color blood = InfoDecalColor(info, colorOverride, useStain: true);
-        float radius = info.HasStain
-            ? MathF.Max(2f, info.StainMidSize() * 2f)         // stain half-size -> world radius
-            : MathF.Max(2f, info.SizeMax * 1.5f);
+        var removal = new Color(1f - blood.R, 1f - blood.G, 1f - blood.B);
+        float halfSize = info.HasStain
+            ? MathF.Max(1f, info.StainMidSize())
+            : MathF.Max(1f, info.SizeMax * 0.75f);
         float alpha = info.HasStain
             ? MathF.Max(0.4f, info.StainMidAlpha01())
             : MathF.Max(0.4f, info.MidAlpha01());
-        ImageTexture? sprite = info.HasStain
-            ? Font?.CellInRange(info.StainTex0, info.StainTex1, decal: true)
-            : Font?.CellInRange(16, 24, decal: true); // default blood-decal band when a blood block omitted staintex
+        // Atlas cell: the declared staintex band, else DP's blood-decal band 16..23 (cl_particles.c:3033).
+        int tex = info.HasStain && info.StainTex0 >= 0
+            ? info.StainTex0 + (info.StainTex1 > info.StainTex0 ? (int)(GD.Randi() % (uint)(info.StainTex1 - info.StainTex0)) : 0)
+            : 16 + (int)(GD.Randi() & 7);
         // Maxdist: a small surface-search radius so the stain stays local to the hit.
-        Decals.SpawnProjected(center, 32f, radius, blood, alpha, sprite);
+        Splats.SplatPoint(center, 32f, halfSize, removal, alpha, tex);
     }
 
     /// <summary>Build one GPU-particle emitter from a single parsed emitter block (the per-block spawn loop).</summary>
     private GpuParticles3D? BuildInfoBurst(EffectInfoEmitter info, NVec3 originMin, NVec3 originMax,
-        NVec3 emitVel, float traillen, int requestedCount, Color? colorOverride, bool isTrail,
+        NVec3 emitVel, float traillen, float requestedCount, Color? colorOverride, bool isTrail,
         NVec3 fwd, NVec3 right, NVec3 up)
     {
         // DP cl_particles.c:1710-1721: cnt = countabsolute + (pcount*countmultiplier)*quality, plus the
@@ -1798,7 +1920,7 @@ public partial class EffectSystem : Node3D
         if (useStain && info.HasStain)
         {
             (float sr, float sg, float sb) = info.StainMidColor();
-            r *= sr; g *= sg; b *= sb; // particle color * staincolor (DP stainmap product)
+            r *= sr; g *= sg; b *= sb; // particle color * staincolor MODDING FACTOR (DP /0x8000 product; 0x808080 neutral)
         }
         return new Color(r, g, b);
     }
@@ -2047,7 +2169,9 @@ public partial class EffectSystem : Node3D
         int count = _liveFxLights.Count;
         if (count == 0)
             return;
-        float dt = (float)delta;
+        // #30 slowmo/pause: flash-light fades are CSQC dlight decay in Base (cl.time) — scale with the client
+        // render-time factor so a paused game holds the flashes instead of fading them out on wall clock.
+        float dt = XonoticGodot.Game.Client.ClientRenderTime.ScaleDelta((float)delta);
         for (int i = count - 1; i >= 0; i--)
         {
             FxLight l = _liveFxLights[i];

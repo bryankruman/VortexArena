@@ -1,0 +1,584 @@
+unit: mutator-waypoints
+category: mutator
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 18
+  worst_gaps:
+    - "RE-AUDIT 2026-06-28 (parity-port-waves) DRIFT FIXES: (1) WaypointSprite_AttachCarrier is now LIVE — Ctf.EnsureCarrierWaypoint (Ctf.cs:583, called from pickup:688 / pass-retrieve:1059) attaches the own-team WP_FlagCarrier carrier marker WITH a health bar (UpdateMaxHealth 2*effHP + per-tick UpdateHealth, Ctf.cs:587-601) and the auto-helpme flash on carrier hit (HelpMePing at Ctf.cs:1382 under g_ctf_flagcarrier_auto_helpme_damage). The carrier Health is now SERIALIZED (ServerNet.cs:1240) + rendered (WaypointSpriteLayer DrawHealthBar). (2) BUFF markers are now a live producer — BuffsMutator.SpawnBuffWaypoint (:584, called from ActivateBuff:346 / respawn:482) spawns WP_Buff riding the buff item with per-buff radar tint + Ping on respawn."
+    - "Manager carrier sub-API: AttachCarrier is now live (CTF). ONLY DetachCarrier remains uncalled (the CTF carrier teardown uses Kill via KillCarrierWaypoint, not DetachCarrier). Rest of the manager API live: SpawnFixed/Spawn/AttachCarrier/UpdateSprites/UpdateHealth/UpdateMaxHealth/UpdateRule/UpdateBuildFinished/UpdateTeamRadar/Ping/HelpMePing/Kill/Disown (CTF carrier, Assault, itemstime, Seeker, powerup drops, Weapon_whereis, monster healthbars, buffs, player-deploy/helpme/clear)."
+    - "wp_extra-driven per-instance blink (superweapon Weapon=2 / Item=m_waypointblink) still not modeled, and wp_extra is not networked (generic icon/text for Weapon/Item/Monster/Buff). Radar PING ring pulse IS implemented + live (RadarPanel.DrawPingPulse + bit-7 stamp, driven by itemstime respawn countdown + buff respawn). Monster healthbars (g_monsters_healthbars) ported + live."
+    - "Still MISSING as waypoint producers: turret + vehicle markers (Buff is now present — see the collect/registry rows; Onslaught/Nexball/Race present since 2026-06-27)."
+features:
+  - id: waypoints.registry.defs
+    name: "Waypoint-kind registry (WP_* defs: text/icon/color/blink)"
+    layer: [shared]
+    base_refs:
+      - "common/mutators/mutator/waypoints/all.inc:REGISTER_WAYPOINT"
+      - "common/mutators/mutator/waypoints/all.qh:Waypoint"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:WaypointRegistry"
+    constants:
+      - { name: "def_count", base: "63 (all.inc REGISTER_WAYPOINT)", port: "63 (Waypoints.cs Build) — all names present", match: true }
+      - { name: "WP_FROZEN_COLOR", base: "0.25 0.9 1", port: "0.25 0.9 1", match: true }
+      - { name: "def text strings", base: "_(\"White base\"/\"Red base\"/\"Enemy carrier\"/\"Return flag here\"/\"Run here\"/\"DANGER\"/\"Tagged\")", port: "matched line-by-line", match: true }
+      - { name: "OnsCPDefend / OnsCPAttack / Seeker blink", base: "0.5 / 2 / 2", port: "0.5 / 2 / 2", match: true }
+      - { name: "FlagReturn blink (spritelookupblinkvalue override)", base: "2", port: "2 (baked into def)", match: true }
+      - { name: "blink default", base: "1", port: "1", match: true }
+      - { name: "superweapon Weapon / Item blink (spritelookupblinkvalue, wp_extra-dependent)", base: "2 / item.m_waypointblink", port: "Weapon def blink=1; not wp_extra-driven", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Residual: the wp_extra-DRIVEN spritelookupblinkvalue overrides (superweapon Weapon=2, Item=item.m_waypointblink) are not modeled — Weapon's def blink is a flat 1 and there is no per-instance wp_extra blink lookup. Harmless while those producers (superweapon pickups) are absent. The Seeker/Item/Weapon DEFS are now exercised by live producers; only the wp_extra per-instance blink override is unmodeled."
+      - "liveness: partial — defs are reachable only once their gametype emits waypoints; CTF (incl. FlagCarrier carrier marker, NEW 2026-06-28) + Domination + FreezeTag + Keepaway + TeamKeepaway + Assault + Key Hunt + LMS + itemstime (Item/Weapon) + Seeker + Weapon_whereis (Weapon def) + Monster (g_monsters_healthbars) + Onslaught (Ons*) + Nexball (Nb*) + Race (Race*) + Buff (BuffsMutator, NEW 2026-06-28) + player-deployed pings now exercise their defs. Still NOT on the live path: Vehicle*/VehicleIntruder (no turret/vehicle producers)."
+    verification:
+      - { kind: code-read, ref: "all.inc (63 REGISTER_WAYPOINT) vs WaypointRegistry.Build (63 Add(...)) — names/text/icon/color/blink line-by-line; texts match", result: pass }
+    confidence: high
+    notes: "Constants unchanged vs baseline (63/63, blink/colors match). Liveness coverage broadened (KH/LMS/itemstime/Seeker defs now live). Only open item is the per-instance wp_extra blink (Weapon/Item)."
+
+  - id: waypoints.server.manager_api
+    name: "Server WaypointSprite_* spawn/update/kill API + manager"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_Spawn"
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_DeployFixed"
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_Kill"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:WaypointSprites"
+      - "src/XonoticGodot.Server/Commands.cs:WaypointDeployFixed"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Assault.cs:SpawnObjectiveSprite"
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:RespawnCountdown"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Seeker.cs:494"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:446"
+    constants:
+      - { name: "sv_waypointsprite_deployed_lifetime", base: "10", port: "10 (config + Cvar fallback)", match: true }
+      - { name: "sv_waypointsprite_deadlifetime", base: "1", port: "1", match: true }
+      - { name: "sv_waypointsprite_limitedrange", base: "5120", port: "5120", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "DEPLOY + CLEAR + HELPME slice is live (DeployFixed/DeployPersonal/Attach/ClearPersonal/ClearOwned/HelpMePing from Commands.cs; Reset() + Think() in GameWorld; SendWaypoints merges WaypointSprites.Active per peer)."
+      - "OBJECTIVE/UPDATE slice is BROADLY live now: SpawnFixed/Spawn/UpdateMaxHealth/UpdateHealth/Disown/Kill via Assault (SpawnObjectiveSprite); Spawn/UpdateBuildFinished/Ping/Kill via itemstime (ItemPickupRules.RespawnCountdown, ItemPickupRules.cs:812/828/843); Spawn/UpdateRule/Kill via Seeker (Seeker.cs:508/513/526/531); Spawn/UpdateMaxHealth/UpdateHealth/Kill via powerup drops (PowerupsMutator.cs:557-591); Spawn (personal, radarIcon 0) via Weapon_whereis (Inventory.cs:415); Spawn/UpdateMaxHealth/UpdateHealth/UpdateTeamRadar/Kill via MONSTER healthbars (MonsterAI.cs:452/460/461/433/727); Spawn/Ping/UpdateTeamRadar/Kill via BUFF markers (BuffsMutator.cs:591/559/561/568)."
+      - "FIX this audit (2026-06-28): WaypointSprite_AttachCarrier is now LIVE — Ctf.EnsureCarrierWaypoint (Ctf.cs:583, from pickup:688 / pass-retrieve:1059) attaches the WP_FlagCarrier marker and primes its health bar (UpdateMaxHealth:587 + UpdateHealth:588 + UpdateTeamRadar:590). Still NO live caller: DetachCarrier ONLY — the CTF carrier teardown calls Kill (KillCarrierWaypoint, Ctf.cs:610) not DetachCarrier; the Dom/FreezeTag/Keepaway/KeyHunt/LMS carriers build WaypointSprite records directly in CollectWaypoints."
+    verification:
+      - { kind: code-read, ref: "grep callers → Commands.cs (Deploy/Attach/Clear) + GameWorld.cs (Reset/Think) + Assault.cs + ItemPickupRules.cs:812/828/843 + Seeker.cs:508-531 + PowerupsMutator.cs:557-591 + MonsterAI.cs:433/452/460/461/727 + BuffsMutator.cs:591/559/561/568 + Ctf.EnsureCarrierWaypoint:583 (AttachCarrier+UpdateMaxHealth+UpdateHealth+UpdateTeamRadar); DetachCarrier → ZERO non-test callers (def only, Waypoints.cs:539)", result: partial }
+    confidence: high
+    notes: "FIX vs baseline (2026-06-28): AttachCarrier now has a live caller (Ctf.EnsureCarrierWaypoint). liveness stays partial — only DetachCarrier remains uncalled (CTF teardown uses Kill instead). Buff markers add another live Spawn/Ping/UpdateTeamRadar/Kill producer."
+
+  - id: waypoints.gametype.collect
+    name: "Per-tick objective waypoint emit (per gametype)"
+    layer: [authority]
+    base_refs:
+      - "common/gamemodes/gamemode/ctf/sv_ctf.qc:ctf_FlagSetup"
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_SpawnFixed"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameplayBases.cs:419"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:454"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:534"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:825"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:722"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:752"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/KeyHunt.cs:1344"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:875"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:607"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Onslaught.cs:1063"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Nexball.cs:1292"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "RE-AUDIT 2026-06-27 (post-W16/17): TEN live CollectWaypoints producers now — CTF (flag base/dropped/carrier), Domination (control points), FreezeTag (Frozen/Reviving + thaw-progress bar), Keepaway (KaBall/KaBallCarrier), TeamKeepaway (team-colored carrier/ball), Key Hunt (KeyDropped + KeyCarrier<team>/Finish), LMS (LmsLeader show-window-gated), AND now Race (Start/Finish/StartFinish/Checkpoint fixed markers, Race.cs:607), Onslaught (generators WP_OnsGen/Shielded + control points WP_OnsCP/Defend/Attack via the teamplay triple, Onslaught.cs:1063), Nexball (WP_NbBall on carrier-or-loose + WP_NbGoal shown to the enemy team, Nexball.cs:1292). Each is an override on the active GameType, called via _world.GameType?.CollectWaypoints in ServerNet.SendWaypoints per tick — live whenever that mode runs. DRIFT FIX: Onslaught/Nexball/Race were listed as MISSING in the prior row but are now ported + live."
+      - "Still NOT CollectWaypoints producers: turret + vehicle markers. (Weapon_whereis, MONSTER healthbars, BUFF markers (BuffsMutator.SpawnBuffWaypoint, NEW 2026-06-28), and the CTF flag-CARRIER health-bar marker (Ctf.EnsureCarrierWaypoint, NEW 2026-06-28) are ported as MANAGER producers — not via CollectWaypoints. Assault + itemstime + Seeker + powerup-drop also emit via the manager, merged in SendWaypoints alongside CollectWaypoints.)"
+    verification:
+      - { kind: code-read, ref: "grep 'override.*CollectWaypoints' → Ctf.cs:454 + Domination.cs:534 + FreezeTag.cs:825 + Keepaway.cs:722 + TeamKeepaway.cs:752 + KeyHunt.cs:1344 + LastManStanding.cs:875 + Race.cs:607 + Onslaught.cs:1063 + Nexball.cs:1292; base GameplayBases.cs:419 is virtual {} no-op; all reached via ServerNet.SendWaypoints (SendWaypoints():1196 calls _world.GameType?.CollectWaypoints) per tick", result: pass }
+    confidence: high
+    notes: "DRIFT FIX vs prior row (2026-06-27 re-audit): Race + Onslaught + Nexball are now live CollectWaypoints producers (were marked missing). Onslaught CP uses the three-image teamplay swap (SpriteNameOwn/Spec). Only turret/vehicle/buff remain absent. logic partial→faithful, liveness partial→live (the missing producers were the only logic gap)."
+
+  - id: waypoints.ctf.flag_markers
+    name: "CTF flag waypoint sprites (base/dropped/carrier state machine)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/gamemodes/gamemode/ctf/sv_ctf.qc:ctf_FlagSetup"
+      - "common/mutators/mutator/waypoints/all.inc:REGISTER_WAYPOINT(FlagBaseRed)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs:CollectWaypoints"
+    constants:
+      - { name: "flag radar tint (red)", base: "colormapPaletteColor(0) ~ 1 .0625 .0625", port: "1 0.0625 0.0625", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "FIX (2026-06-28): flag-carrier HEALTH BAR is now PORTED + LIVE. Ctf.EnsureCarrierWaypoint (Ctf.cs:579) attaches the own-team WP_FlagCarrier via WaypointSprites.AttachCarrier, sets max = 2*healtharmor_maxdamage (CarrierMaxHealth, effHP approximated as health+armor) + per-tick UpdateHealth (RefreshCarrierWaypoint:596), serialized at ServerNet.cs:1240 and drawn by WaypointSpriteLayer.DrawHealthBar (:206). The QC armor-block-percent is approximated as the unblocked HP+armor sum (documented headless proxy)."
+      - "FIX (2026-06-28): auto-helpme on carrier hit is now LIVE — OnDamageCalculate (Ctf.cs:1366-1384) flashes HelpMePing on the live carrier waypoint when effHP < g_ctf_flagcarrier_auto_helpme_damage and the antispam window (g_ctf_flagcarrier_auto_helpme_time) elapsed, matching QC Damage_Calculate."
+      - "FIX (2026-06-28): stalemate + self-carry enemy-FC reveal is now PRODUCED — CollectWaypoints (Ctf.cs:499-535) emits WP_FlagCarrierEnemy<team> on the carrier during Stalemate or self-carry, gated to live enemy-team viewers and hidden while the carrier holds Invisibility (ctf_Stalemate_Customize), plus the WP_FlagReturn self-carry marker (carrier-only)."
+    verification:
+      - { kind: code-read, ref: "Ctf.EnsureCarrierWaypoint:579 (AttachCarrier+UpdateMaxHealth:587+UpdateHealth:588) + RefreshCarrierWaypoint:596 + auto-helpme OnDamageCalculate:1366-1384 + stalemate/self-carry reveal CollectWaypoints:499-535; carrier Health serialized ServerNet.cs:1240, rendered WaypointSpriteLayer.cs:206", result: pass }
+    confidence: high
+    notes: "DRIFT FIX vs baseline (2026-06-28): all three prior gaps closed — carrier health bar (AttachCarrier+UpdateHealth, networked+drawn), auto-helpme-on-hit, and the stalemate/self-carry enemy-FC reveal are now ported + live. presentation partial→faithful. Carrier effHP uses the health+armor proxy (armor-block percent unavailable at this seam)."
+
+  - id: waypoints.deploy.personal_here_danger
+    name: "Player-deployed pings (waypoint_personal/here/danger impulses)"
+    layer: [authority]
+    base_refs:
+      - "server/impulse.qc:IMPULSE(waypoint_personal_here)"
+      - "server/impulse.qc:IMPULSE(waypoint_here_here)"
+      - "server/impulse.qc:IMPULSE(waypoint_danger_here)"
+    port_refs:
+      - "src/XonoticGodot.Server/Commands.cs:CmdWaypointDeploy"
+      - "src/XonoticGodot.Server/Commands.cs:WaypointDeployFixed"
+      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:74"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:DeployFixed"
+      - "game/hud/QuickMenuPanel.cs:261"
+    constants:
+      - { name: "WP_Waypoint / WP_Here / WP_Danger mapping", base: "personal→WP_Waypoint, here→WP_Here, danger→WP_Danger", port: "same (CmdWaypointDeploy switch)", match: true }
+      - { name: "sv_waypointsprite_deployed_lifetime", base: "10", port: "10", match: true }
+      - { name: "sv_waypointsprite_limitedrange", base: "5120", port: "5120", match: true }
+      - { name: "sprint feedback strings", base: "\"personal waypoint spawned at location\" / \"HERE/DANGER spawned at location\"", port: "matched", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Origin nuance: the port routes ALL personal/here/danger variants (_here/_crosshair/_death) to the player's feet origin (p.Origin). Base distinguishes them — _crosshair uses the crosshair world-trace endpoint, _death uses the death spot. Minor partial: the marker lands at the player instead of the aimed point for the _crosshair/_death verbs. UNCHANGED."
+      - "Personal waypoint visibility is owner-only via VisibleForPlayer predicate (matches QC showto=own)."
+    verification:
+      - { kind: code-read, ref: "QuickMenuPanel macro → CommandSink → Commands.Execute → CmdWaypointDeploy → WaypointSprites.DeployFixed/DeployPersonal; verbs allowlisted in ClientCommandRegistry", result: pass }
+    confidence: high
+    notes: "NO CHANGE vs baseline. Full deploy chain live with Base-matching sprite mapping, lifetime/range constants and sprint strings. Residual: the _crosshair/_death origin trace is not modeled (all land at the player)."
+
+  - id: waypoints.deploy.helpme
+    name: "Team HELP-ME attach + ping (waypoint_here_follow)"
+    layer: [authority]
+    base_refs:
+      - "server/impulse.qc:IMPULSE(waypoint_here_follow)"
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_Attach"
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_HelpMePing"
+    port_refs:
+      - "src/XonoticGodot.Server/Commands.cs:WaypointDeployHelpme"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:Attach"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:HelpMePing"
+    constants:
+      - { name: "teamplay + alive gate", base: "if(!teamplay) return; if(IS_DEAD) return;", port: "same (CmdWaypointDeploy Helpme case)", match: true }
+      - { name: "FC guard", base: "Attach returns NULL if waypointsprite_attachedforcarrier (can't attach to FC)", port: "Attach refuses + pings the existing carrier marker's helpme", match: true }
+      - { name: "attach offset / lifetime", base: "'0 0 64' / deployed_lifetime", port: "'0 0 64' / 10", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The MUTATOR_CALLHOOK(HelpMePing) extension point (mutators overriding helpme, e.g. nades) is not modeled — the port attaches WP_Helpme unconditionally in teamplay. UNCHANGED."
+    verification:
+      - { kind: code-read, ref: "CmdWaypointDeploy Helpme (teamplay + alive gated) → WaypointDeployHelpme → WaypointSprites.Attach(\"Helpme\", ...) → HelpMePing; networked via SendWaypoints HelpmeUntil>now byte", result: pass }
+    confidence: high
+    notes: "NO CHANGE vs baseline. HELP-ME teamplay path live — attach-with-FC-guard + helpme flash, both teamplay-gated and alive-gated as in Base."
+
+  - id: waypoints.visibility.rules
+    name: "Per-peer visibility filter (SPRITERULE_DEFAULT/TEAMPLAY/SPECTATOR + CustomizeWaypoint)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_visible_for_player"
+      - "common/mutators/mutator/waypoints/waypointsprites.qh:SPRITERULE_DEFAULT"
+      - "common/mutators/mutator/powerups/sv_powerups.qc:CustomizeWaypoint"
+    port_refs:
+      - "game/net/ServerNet.cs:WaypointVisible"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:SpriteRule"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "All three rules match Base WaypointSprite_visible_for_player: personal predicate (VisibleForPlayer), SPRITERULE_SPECTATOR sv_itemstime gating (hide when ==0, show in warmup or when ==2), SPRITERULE_DEFAULT team-restriction + live-player gate."
+      - "Powerups CustomizeWaypoint hook now modeled: an enemy carrier holding Invisibility is hidden from enemy radar (ServerNet.cs:1090-1096). FIX vs baseline — this hook was not represented in the row before."
+    verification:
+      - { kind: code-read, ref: "ServerNet.WaypointVisible (ServerNet.cs:1077-1108): personal/spectator-itemstime/default-team-and-liveplayer + powerups-invisibility CustomizeWaypoint all present", result: pass }
+    confidence: high
+    notes: "FIX vs baseline: the powerups CustomizeWaypoint (Invisibility enemy-radar hide) hook is now implemented in WaypointVisible. The three SPRITERULE branches remain faithful."
+
+  - id: waypoints.visibility.three_image_rule
+    name: "TEAMPLAY three-image per-audience swap (netname/2/3)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:Draw_WaypointSprite"
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_UpdateSprites"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:SpriteFor"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:UpdateSprites"
+      - "game/net/ServerNet.cs:SendWaypoints"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Port resolves the per-audience image (QC model1=enemy / model2=own-team / model3=spectator) on the SERVER, per peer, in SendWaypoints via WaypointSprite.SpriteFor(viewerTeam, viewerIsSpectator), rather than networking the model1/2/3 triple to the client and selecting there. Because the port already serializes the waypoint set per peer, the right image is chosen for each viewer with no wire-format change; the visible result matches QC's Draw_WaypointSprite SPRITERULE_TEAMPLAY image swap. WaypointSprite_UpdateSprites(e,m1,m2,m3) maps to the SpriteName/SpriteNameOwn/SpriteNameSpec triple."
+    gaps:
+      - "RE-AUDIT 2026-06-27 (post-W16/17): DRIFT FIX — the three-image teamplay swap is now IMPLEMENTED + LIVE. WaypointSprite carries SpriteName (model1/enemy) + SpriteNameOwn (model2) + SpriteNameSpec (model3); WaypointSprite.SpriteFor(viewerTeam, viewerIsSpectator) (Waypoints.cs:203) picks the right one per viewer, with null falling back to SpriteName so non-teamplay producers are unaffected. SendWaypoints calls SpriteFor((int)peer.Team, peer.IsObserver) per peer (ServerNet.cs:1229), and WaypointVisible skips a viewer only when the chosen image is empty (QC `if(spriteimage=='') return`). Live producers setting the triple: Assault (Defend/Destroy/Destroy via UpdateSprites), KeyHunt (KeyCarrier<team> / KeyCarrierFriend|Finish / KeyCarrier<team>), TeamKeepaway (Tka<team> / KaBallCarrier / Tka<team>), Onslaught CP (OnsCPAttack / OnsCPDefend / OnsCP)."
+      - "Residual: the QC client-side per-def blink that rides each of the three images (e.g. OnsCPDefend 0.5 / OnsCPAttack 2) IS carried because the chosen sprite NAME resolves the def + its blink client-side; only the wp_extra-driven per-instance blink override (waypoints.registry.defs) remains unmodeled. The mechanism (server-side per-peer resolution vs networking the triple) is a deliberate divergence, not a gap."
+    verification:
+      - { kind: code-read, ref: "WaypointSprite.SpriteFor (Waypoints.cs:203-212) + SpriteNameOwn/Spec fields (:197-198) + UpdateSprites(wp,enemy,own,spectator) overload (:451-457); SendWaypoints picks per-peer via SpriteFor((int)peer.Team, peer.IsObserver) (ServerNet.cs:1229); producers Assault.cs:431 + KeyHunt.cs:1366-1368 + TeamKeepaway.cs:776-777 + Onslaught.cs:1117-1119 set the triple", result: pass }
+    confidence: high
+    notes: "DRIFT FIX vs prior row (2026-06-27 re-audit): was missing/[]/fail. The per-audience image swap is now fully ported (server-side per-peer SpriteFor resolution — an intended wire-saving divergence) and exercised live by Assault, KeyHunt, TeamKeepaway, and Onslaught CP. logic missing→faithful, presentation missing→faithful, liveness na→live."
+
+  - id: waypoints.net.serialize
+    name: "Waypoint networking (S2C channel + per-peer filter)"
+    layer: [authority]
+    base_refs:
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_SendEntity"
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:Ent_WaypointSprite"
+    port_refs:
+      - "game/net/ServerNet.cs:SendWaypoints"
+      - "game/net/ClientNet.cs:HandleWaypoints"
+      - "game/net/NetProtocol.cs:NetControl.Waypoints"
+    constants: []
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Port re-serializes the full peer-visible waypoint set each tick as a flat record list (id/origin/team/sprite/radaricon+pingbit/color/health/fade/helpme/maxdist/hideable) instead of QC's delta-bit SendEntity edicts. Equivalent payload; simpler wire format suited to the port's snapshot net model. Capped at 255/peer. The radar-icon byte packs the ping pulse in bit 7 (QC cnt|BIT(7)), so the ping ring IS carried."
+    gaps:
+      - "No SendFlags delta encoding (always sends all fields); QC sends only changed sub-fields. Bandwidth-only difference. UNCHANGED."
+      - "wp_extra (item/weapon/buff id used for client text/color/blink lookup) not networked — fine while wp_extra-dependent producers (superweapon pickups) are absent. UNCHANGED."
+    verification:
+      - { kind: code-read, ref: "SendWaypoints/HandleWaypoints round-trip; merges WaypointSprites.Active (ServerNet.cs:1020) + GameType.CollectWaypoints (1022); called per tick at ServerNet.cs:488; Helpme + per-peer VisibleForPlayer + ping bit-7 carried", result: pass }
+    confidence: high
+    notes: "Live for CTF (incl. carrier health bar — wp.Health now non-default, serialized ServerNet.cs:1240 + auto-helpme byte) + Onslaught + Nexball + Race + Domination + FreezeTag + Keepaway + TeamKeepaway + Key Hunt + LMS + Assault + itemstime + Seeker + powerup-drop + Buff + monster healthbars + player-deployed pings/helpme. Ping bit-7 carried; the carrier health-bar field is now exercised (FIX 2026-06-28). Format diverges deliberately; functionally equivalent for the fields used."
+
+  - id: waypoints.client.draw
+    name: "3D in-world sprite draw (icon/text + arrow + project)"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:Draw_WaypointSprite"
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:drawspritearrow"
+    port_refs:
+      - "game/client/WaypointSpriteLayer.cs:_Draw"
+    constants:
+      - { name: "iconsize", base: "32 (g_waypointsprite_iconsize)", port: "32 live (24 headless fallback)", match: true }
+      - { name: "fontsize", base: "12 (g_waypointsprite_fontsize)", port: "12 live (13 headless fallback)", match: true }
+      - { name: "edgeoffset_*", base: "0.06 (cvar)", port: "0.06 (cvar, live)", match: true }
+      - { name: "g_waypointsprite_uppercase", base: "1", port: "1 (live)", match: true }
+      - { name: "g_waypointsprite_text", base: "0", port: "0 (live)", match: true }
+      - { name: "SPRITE_ARROW_SCALE", base: "1", port: "approx (custom triangle arrow)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "g_waypointsprite_text / _uppercase / _iconsize / _fontsize / _scale / _alpha / _edgeoffset_* are read live and take effect; cl_hidewaypoints 0/1/2 + hideflag&1 (Hideable) gating honored. UNCHANGED."
+      - "g_waypointsprite_iconcolor still hardcoded white (QC iconcolor 0 default → white, so faithful at default; the non-zero tint option is not modeled). Minor. UNCHANGED."
+      - "The off-screen arrow is a simpler filled triangle than QC's bordered glyph (cosmetic). UNCHANGED."
+    verification:
+      - { kind: code-read, ref: "WaypointSpriteLayer._Draw reads g_waypointsprite_* + cl_hidewaypoints via Api.Cvars; iconSize/fontSize resolve to 32/12 live; uppercase/forceText/edgeoffsets applied", result: pass }
+    confidence: high
+    notes: "NO CHANGE vs baseline. Icon/font sizes match Base (32/12) live; text/uppercase/scale/alpha/edgeoffset + cl_hidewaypoints wired. Off-screen arrow glyph still simplified."
+
+  - id: waypoints.client.fades
+    name: "Distance / edge / crosshair / lifetime fades + blink"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:Draw_WaypointSprite"
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_Load"
+    port_refs:
+      - "game/client/WaypointSpriteLayer.cs:_Draw"
+    constants:
+      - { name: "distancealphaexponent", base: "2", port: "2 (hardcoded in maxdist ramp)", match: true }
+      - { name: "g_waypointsprite_alpha", base: "1", port: "1 (live; multiplies final alpha)", match: true }
+      - { name: "distancefade{alpha,scale,distmult}", base: "1 / 0.7 / 0.5", port: "1 / 0.7 / 0.5 (live; distFadeDist = MapSize*distmult)", match: true }
+      - { name: "edgefade{alpha,dist,scale}", base: "0.5 / 50 / 1", port: "0.5 / 50 / 1 (live)", match: true }
+      - { name: "crosshairfade{alpha,dist,scale}", base: "0.25 / 150 / 1", port: "0.25 / 150 / 1 (live)", match: true }
+      - { name: "SPRITE_HELPME_BLINK", base: "2 (bright-half multiply)", port: "2 (bright-half multiply, line 125)", match: true }
+      - { name: "blink_time", base: "(health>=0) ? health*10 : time", port: "wp.Health>=0 ? Health*10 : now (line 121)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Lifetime fade is server-computed (FadeAlpha) and networked rather than client-computed from fadetime/lifetime**timealphaexponent; timealphaexponent (1) not applied at the client (value 1 → no shape difference, but the computation site differs). Minor. UNCHANGED."
+      - "Off-screen arrow glyph still a simplified triangle (tracked under waypoints.client.draw)."
+    verification:
+      - { kind: code-read, ref: "WaypointSpriteLayer fade block: lifetime(Fade)*maxdist-ramp(pow2)*blink/helpme(*2 or def.Blink)*globalAlpha*distancefade*edgefade*crosshairfade — all three polish fades present with Base default constants", result: pass }
+    confidence: high
+    notes: "NO CHANGE vs baseline. Distance/edge/crosshair fades + helpme *2 bright-half blink + per-def blink + blink_time all faithful. Only the client-vs-server lifetime-fade computation site still differs (cosmetically equivalent at timealphaexponent 1)."
+
+  - id: waypoints.client.cvars_inert
+    name: "Client tuning cvars (g_waypointsprite_*, cl_hidewaypoints) wiring"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:WaypointSprite_Load"
+      - "xonotic-client.cfg:g_waypointsprite_alpha"
+    port_refs:
+      - "game/client/WaypointSpriteLayer.cs:CvarF"
+      - "game/menu/dialogs/DialogSettingsGame.cs:228"
+      - "assets/data/xonotic-data.pk3dir/xonotic-client.cfg:502"
+    constants:
+      - { name: "g_waypointsprite_alpha", base: "1", port: "1 (config default, READ LIVE)", match: true }
+      - { name: "g_waypointsprite_iconsize/fontsize/scale/text/uppercase/edgeoffset_*", base: "32/12/1/0/1/0.06", port: "same, READ LIVE", match: true }
+      - { name: "g_waypointsprite_distancefade{alpha,scale,distancemultiplier}/edgefade*/crosshairfade*", base: "1/0.7/0.5 · 0.5/50/1 · 0.25/150/1", port: "same, READ LIVE", match: true }
+      - { name: "cl_hidewaypoints", base: "0", port: "0 (config default, READ LIVE: 0/1/2)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "All g_waypointsprite_* cvars (including the distance/edge/crosshair fade cvars) + cl_hidewaypoints are READ LIVE by WaypointSpriteLayer._Draw via Api.Cvars (gated on HasCvars)."
+      - "Residual: g_waypointsprite_iconcolor not read (default white only). Minor."
+    verification:
+      - { kind: code-read, ref: "WaypointSpriteLayer.CvarF/CvarOn read alpha/scale/iconsize/fontsize/text/uppercase/edgeoffset_*/distancefade*/edgefade*/crosshairfade*/cl_hidewaypoints from Api.Cvars in _Draw", result: pass }
+    confidence: high
+    notes: "NO CHANGE vs baseline. The distance/edge/crosshair-fade cvars are genuinely read and change the render. Only g_waypointsprite_iconcolor remains unread (white-only)."
+
+  - id: waypoints.radar.icons
+    name: "Team radar icons + ping ring from waypoint sprites"
+    layer: [presentation]
+    base_refs:
+      - "common/mutators/mutator/waypoints/waypointsprites.qc:Ent_WaypointSprite"
+      - "common/mutators/mutator/waypoints/all.qh:REGISTER_RADARICON"
+      - "client/hud/panel/radar.qc:draw_teamradar_icon"
+    port_refs:
+      - "game/hud/RadarPanel.cs:391"
+      - "game/hud/RadarPanel.cs:DrawPingPulse"
+      - "game/net/ClientNet.cs:RadarPingTime"
+    constants:
+      - { name: "radar icon sprite", base: "gfx/teamradar_icon_<n>", port: "gfx/teamradar_icon_1 / _2", match: true }
+      - { name: "ping ring grow/fade", base: "size '2 2 0'*teamradar_size*dt, alpha (1-dt)*a over ~1s", port: "sz=2*iconPx*dt, alpha=(1-dt)*a, dt<1 (RadarPanel.cs:429-430)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Radar PING ring pulse is now IMPLEMENTED: server stamps bit 7 of the radar byte while IsPinging (ServerNet.cs:1234), client stamps a per-id ping time, RadarPanel.DrawPingPulse draws the expanding additive gfx/teamradar_ping ring. Live producers: itemstime respawn countdown (ItemPickupRules.cs:843) + buff respawn (BuffsMutator.cs:559). FIX vs baseline (was no-op)."
+    verification:
+      - { kind: code-read, ref: "RadarPanel iterates net.Waypoints (RadarPanel.cs), draws teamradar_icon per RadarIcon>0 tinted by team radar color + DrawPingPulse for ~1s after a ping; ClientNet decodes bit 7 → _radarPingTimes", result: pass }
+    confidence: high
+    notes: "FIX vs baseline: the ping pulse animation is now fully wired end-to-end (server bit-7 → client stamp → expanding ring), driven live by the itemstime respawn countdown ping. presentation upgraded partial→faithful."
+
+  - id: waypoints.itemstime.respawn_countdown
+    name: "Item-respawn countdown waypoints (WP_Item/WP_Weapon + build bar + ping + sound)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/t_items.qc:Item_RespawnCountdown"
+      - "common/mutators/mutator/itemstime/sv_itemstime.qc"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Items/ItemPickupRules.cs:RespawnCountdown"
+    constants:
+      - { name: "ITEM_RESPAWN_TICKS", base: "10", port: "RespawnTicks (config)", match: true }
+      - { name: "SpectatorOnly set", base: "Mega/Big Health+Armor → SPRITERULE_SPECTATOR", port: "ItemstimeMutator.IsSpectatorOnlyItem → SpriteRule.Spectator", match: true }
+      - { name: "head offset / lifetime", base: "'0 0 64' / 0 (killed on respawn)", port: "'0 0 64' / 0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "On the first countdown tick spawns WP_Weapon (weapon pickups) / WP_Item (else) attached to the item, UpdateBuildFinished drives the build-progress bar to the scheduled respawn, and every tick Pings the waypoint (radar ring) + plays ITEMRESPAWNCOUNTDOWN. SpectatorOnly items get SPRITERULE_SPECTATOR (the sv_itemstime 1/2 gate)."
+      - "audio: partial — QC soundto(MSG_ONE) plays ITEMRESPAWNCOUNTDOWN per visible client; the port's Common layer has no per-client soundto seam, so it emits a single positional cue on CH_TRIGGER (ATTEN_NORM). SpectatorOnly items over-broadcast slightly to nearby live players — the only divergence."
+      - "wp_extra-driven per-item icon/color (m_waypointblink etc.) not networked — WP_Item renders generic magenta, WP_Weapon generic black/client-resolved."
+    verification:
+      - { kind: code-read, ref: "ItemPickupRules.RespawnCountdown: Spawn(794) + UpdateBuildFinished(809) + Ping(824) + ITEMRESPAWNCOUNTDOWN sound; killed at Respawn (~745). Reached via item respawn Think chain (item.Think = RespawnCountdown, line 660)", result: pass }
+    confidence: high
+    notes: "NEW ROW (was unmapped; baseline listed itemstime markers as entirely absent). Now a live producer of WP_Item/WP_Weapon countdown waypoints with build-progress bar, radar ping, and respawn-countdown sound. The sole gap is the per-client soundto approximation."
+
+  - id: waypoints.keyhunt.key_markers
+    name: "Key Hunt key/carrier waypoint sprites (dropped + carrier state machine)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/gamemodes/gamemode/keyhunt/sv_keyhunt.qc:kh_Key_Spawn"
+      - "common/gamemodes/gamemode/keyhunt/sv_keyhunt.qc:kh_Key_AssignTo"
+      - "common/gamemodes/gamemode/keyhunt/sv_keyhunt.qc:kh_Key_waypointsprite_visible_for_player"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/KeyHunt.cs:CollectWaypoints"
+    constants:
+      - { name: "KH_KEY_WP_ZSHIFT", base: "20 (dropped-key marker)", port: "KeyWpZShift", match: true }
+      - { name: "carrier head offset", base: "'0 0 64'", port: "'0 0 64'", match: true }
+      - { name: "all-keys-owned flip", base: "WP_KeyCarrierFinish (\"Run here\") when one team owns ALL keys", port: "AllOwnedByWhichTeam → KeyCarrierFinish", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Dropped key → WP_KeyDropped on the key entity (KH_KEY_WP_ZSHIFT offset, SPRITERULE_DEFAULT + DroppedKeyWaypointVisibleFor tracking gate); carried key → WP_KeyCarrier<team> riding the carrier (head offset, SPRITERULE_TEAMPLAY + CarrierWaypointVisibleFor), flipped to WP_KeyCarrierFinish when one team owns all keys. Per-viewer predicates mirror kh_*_waypointsprite_visible_for_player (tracking-device + warmup/spec/same-team/invisibility)."
+    verification:
+      - { kind: code-read, ref: "KeyHunt.CollectWaypoints (KeyHunt.cs:1324-1376) + DroppedKeyWaypointVisibleFor (1380) + CarrierWaypointVisibleFor (1392); reached via ServerNet.SendWaypoints per tick", result: pass }
+    confidence: high
+    notes: "NEW ROW (was unmapped; baseline listed Key Hunt keys+carriers as absent). Now a live CollectWaypoints producer with the faithful dropped/carrier/finish state machine + per-viewer tracking-gated visibility predicates."
+
+  - id: waypoints.misc.lms_seeker_powerup
+    name: "Misc live producers: LMS leader, Seeker tag, powerup-drop countdown"
+    layer: [authority]
+    base_refs:
+      - "common/gamemodes/gamemode/lms/sv_lms.qc:lms_waypointsprite_visible_for_player"
+      - "common/weapons/weapon/seeker.qc:W_Seeker_Tag_Touch"
+      - "common/mutators/mutator/powerups/sv_powerups.qc:powerups_DropItem"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/LastManStanding.cs:CollectWaypoints"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Seeker.cs:494"
+      - "src/XonoticGodot.Common/Gameplay/Mutators/PowerupsMutator.cs:541"
+    constants:
+      - { name: "LMS leader offset / icon", base: "'0 0 64' / RADARICON_FLAGCARRIER", port: "'0 0 64' / RadarIcon 1", match: true }
+      - { name: "Seeker tag lifetime / icon", base: "tag_tracker_lifetime / RADARICON_TAGGED", port: "Tag.TrackerLifetime / RadarIcon 1", match: true }
+      - { name: "powerup-drop marker", base: "WP_Item countdown following the dropped item, maxtime scales bar", port: "Spawn(\"Item\") + UpdateMaxHealth(maxtime) + per-tick UpdateHealth", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "LMS: WP_LmsLeader attached to each in-game leader (FFA, no team gate), shown only in the periodic leader show-window and never to a spectator of that leader (lms_waypointsprite_visible_for_player). Live via CollectWaypoints (LastManStanding.cs:836)."
+      - "Seeker: type-1 tag spawns a WP_Seeker following the tagged target for tag_tracker_lifetime (RADARICON_TAGGED), refreshed/killed with the tracker (Seeker.cs:494-540). Live via the tag Touch handler."
+      - "Powerup drop: a WP_Item countdown follows the dropped powerup, the bar fills toward its remaining time, killed at 0 / expiry (PowerupsMutator.cs:541-578). The generic WP_Item def is used (no wp_extra per-powerup icon — minor cosmetic gap)."
+    verification:
+      - { kind: code-read, ref: "LastManStanding.CollectWaypoints:836 (show-window predicate) + Seeker.cs:514-520 (Spawn+UpdateRule) + PowerupsMutator.cs:541-575 (Spawn+UpdateMaxHealth+per-tick UpdateHealth+Kill)", result: pass }
+    confidence: high
+    notes: "NEW ROW (was unmapped; baseline listed LMS leader + monster/turret/vehicle/buff as absent and didn't track Seeker/powerup-drop markers). LMS leader, Seeker tag and powerup-drop countdown are now live. Monster healthbars are now live too (see waypoints.monster.healthbar). Onslaught/Nexball/Race/turret/vehicle/buff markers remain absent."
+
+  - id: waypoints.weapon.whereis
+    name: "'Where is weapon' spawn markers (g_showweaponspawns / Weapon_whereis)"
+    layer: [authority]
+    base_refs:
+      - "server/weapons/selection.qc:Weapon_whereis"
+      - "server/weapons/selection.qc:client_hasweapon"
+      - "common/mutators/mutator/waypoints/all.inc:REGISTER_WAYPOINT(Weapon)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Inventory.cs:Weapon_whereis"
+      - "src/XonoticGodot.Common/Gameplay/Inventory.cs:ClientHasWeapon"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs:WhereisLifetime"
+    constants:
+      - { name: "g_showweaponspawns", base: "1 (1=on weapon-key when unowned, 2=incl dropped, 3=all sharing impulse)", port: "g_showweaponspawns read live; all three modes ported (showSpawns==0 guard, <2 loot skip, >=3 impulse-group loop)", match: true }
+      - { name: "marker lifetime / radar", base: "-2 (instant, no fade) / RADARICON_NONE (in-world only, not on radar)", port: "WhereisLifetime 2.5 (re-spawned each press) / radarIcon 0 (RADARICON_NONE, in-world only)", match: false }
+      - { name: "head offset", base: "origin + ('0 0 1'*maxs.z)*1.2", port: "Origin + (0,0, Maxs.Z*1.2)", match: true }
+      - { name: "wp_extra (client weapon-icon id)", base: "wp.wp_extra = this.m_id", port: "wp.WpExtra = weapon.RegistryId", match: true }
+      - { name: "showto / hidden-weapon guard", base: "showto = cl (personal); skip WEP_FLAG_HIDDEN", port: "VisibleForPlayer = requester only; skip WeaponFlags.Hidden", match: true }
+    status:
+      logic: faithful
+      values: partial
+      timing: partial
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "FIX vs baseline (was missing/dead): Weapon_whereis is now ported in Inventory.cs and live — on the complain path of client_hasweapon (reached from the weapon-switch/cycle impulse via GetCycleWeapon:503 + SwitchWeaponWithComplain:518), when a non-bot player presses a weapon key for a weapon they don't own and g_showweaponspawns != 0, it scans the live item set and spawns a personal WP_Weapon sprite over every matching shown weapon-spawn (wp_extra = weapon id, radarIcon 0 = in-world only). All three g_showweaponspawns modes (1/2/3, loot skip, impulse-group expansion) are modeled."
+      - "values/timing: the marker lifetime diverges — Base uses -2 ('instant, no fade', re-spawned every press), the port uses a flat WhereisLifetime=2.5s deployed-style fade. Functionally similar (a brief on-demand marker) but not the bit-exact one-frame-then-re-spawn cadence. Minor."
+      - "wp_extra-driven client weapon-icon resolution: WpExtra is now SET on the sprite, but it is still not networked (waypoints.net.serialize gap), so the client renders the generic Weapon def rather than the per-weapon icon. Cosmetic."
+    verification:
+      - { kind: code-read, ref: "Inventory.Weapon_whereis (Inventory.cs:367-410): g_showweaponspawns guard + WEP_FLAG_HIDDEN skip + live item scan (WeaponPickup + OwnedWeaponSet.Has + ItemAvailable + shown model) + loot/showSpawns<2 skip + head offset maxs.z*1.2 + WP_Weapon Spawn radarIcon 0 + WpExtra=RegistryId + personal VisibleForPlayer; callers ClientHasWeapon complain-path (Inventory.cs:337-354) reached from GetCycleWeapon:503 + SwitchWeaponWithComplain:518 (server weapon-switch impulse)", result: pass }
+    confidence: high
+    notes: "FIX vs baseline (missing→faithful, dead→live): Weapon_whereis is now a live producer of on-demand WP_Weapon spawn-markers via the weapon-key complain path, with all three g_showweaponspawns modes. Residual: -2 vs 2.5s lifetime (values/timing partial) and un-networked wp_extra (generic icon). No dedicated test."
+
+  - id: waypoints.monster.healthbar
+    name: "Monster floating WP_Monster healthbar marker (g_monsters_healthbars)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/monsters/sv_monsters.qc:Monster_Spawn_Setup"
+      - "common/monsters/sv_monsters.qc:monster_changeteam"
+      - "common/mutators/mutator/waypoints/all.inc:REGISTER_WAYPOINT(Monster)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:SpawnHealthbar"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:UpdateHealthbar"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:ChangeTeam"
+    constants:
+      - { name: "g_monsters_healthbars (spawn gate)", base: "0 (autocvar_g_monsters_healthbars)", port: "0 (Cvar(\"g_monsters_healthbars\",0) != 0 gate, MonsterAI.cs:568)", match: true }
+      - { name: "WP_Monster Spawn args", base: "WaypointSprite_Spawn(WP_Monster, lifetime 0, maxdist 1024, this, '0 0 1'*(maxs.z+15), NULL, team, hideable true, RADARICON_DANGER)", port: "Spawn(\"Monster\", 0, 1024, e, (0,0,Maxs.Z+15), Origin, team, col, radarIcon 1, Default, hideable true)", match: true }
+      - { name: "team color / FFA fallback", base: "team ? Team_ColorRGB(team) : '1 0 0'", port: "Team!=0 ? Teams.ColorRgb(Team) : (1,0,0)", match: true }
+      - { name: "INVINCIBLE bar gate", base: "if (!(spawnflags & MONSTERFLAG_INVINCIBLE)) UpdateMaxHealth/UpdateHealth", port: "if ((SpawnFlags & MonsterFlag_Invincible)==0) UpdateMaxHealth+UpdateHealth", match: true }
+      - { name: "changeteam UpdateTeamRadar color", base: "WaypointSprite_UpdateTeamRadar(sprite, RADARICON_DANGER, team?Team_ColorRGB:'1 0 0')", port: "UpdateTeamRadar(Sprite, Sprite.RadarIcon, team?ColorRgb:(1,0,0)) + Sprite.Team=newteam", match: true }
+      - { name: "wp_extra = monsterid", base: "wp.wp_extra = this.monsterdef.monsterid", port: "WpExtra NOT set on monster sprite", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Live producer of the floating WP_Monster healthbar: SpawnHealthbar (MonsterAI.cs:446, called from Monster spawn at :568 under the g_monsters_healthbars gate) spawns WP_Monster at maxs.z+15 following the monster (maxdist 1024, hideable, RADARICON_DANGER), primes the bar unless INVINCIBLE, refreshes on hit (UpdateHealthbar / UpdateHealth), re-teams via ChangeTeam→UpdateTeamRadar, and is Killed on death (MonsterAI.cs:691/1909). Merged per peer via WaypointSprites.Active → ServerNet.SendWaypoints."
+      - "presentation: wp_extra (= monsterid, used client-side to resolve the monster's name/icon via get_monsterinfo) is not set on the sprite (and not networked), so the client renders the generic WP_Monster def text ('Monster') rather than the per-monster name. Cosmetic — same class as the other un-networked wp_extra gaps (waypoints.net.serialize)."
+    verification:
+      - { kind: code-read, ref: "MonsterAI.SpawnHealthbar:446-463 (gate :568) + UpdateHealthbar:470 + ChangeTeam:416 (UpdateTeamRadar:433) + Kill:691,1909 vs sv_monsters.qc:1366-1376 (Monster_Spawn_Setup) + :200-218 (monster_changeteam); args/gates/colors line-by-line; reaches the wire via WaypointSprites.Active merge (ServerNet.cs:1058)", result: pass }
+    confidence: high
+    notes: "NEW ROW (was unmapped; baseline listed monster markers as absent and UpdateTeamRadar as zero-caller dead). Monster healthbar is now a live persistent manager producer behind the (default-off) g_monsters_healthbars cvar, matching Base spawn args / team-color / INVINCIBLE / changeteam-radar. Sole gap: un-set wp_extra → generic 'Monster' text instead of the per-monster name. No dedicated test."

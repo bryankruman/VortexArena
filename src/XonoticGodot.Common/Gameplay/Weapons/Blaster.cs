@@ -48,6 +48,13 @@ public sealed class Blaster : Weapon
         ItemModel = "g_laser.md3";   // MDL_BLASTER_ITEM
     }
 
+    // blaster.qh: ATTRIB(Blaster, w_crosshair, "gfx/crosshairlaser"); ATTRIB(Blaster, w_crosshair_size, 0.5). The
+    // per-weapon crosshair the CSQC draws when crosshair_per_weapon is on (read client-side by the crosshair panel,
+    // the same seam Arc/Hook/Porto use). The panel already resolves these via its PerWeaponPics fallback table; carrying
+    // them on the weapon makes the ATTRIB explicit (the faithful pattern) and authoritative on the Weapon object.
+    public override string? Crosshair => "gfx/crosshairlaser";
+    public override float CrosshairSize => 0.5f;
+
     public override void Configure()
     {
         Primary.Damage      = Bal("g_balance_blaster_primary_damage", 20f);
@@ -112,6 +119,12 @@ public sealed class Blaster : Weapon
         if (best is not null) Inventory.SwitchWeapon(actor, best);
     }
 
+    // METHOD(Blaster, wr_aim) — common/weapons/weapon/blaster.qc:wr_aim. The bot only ever presses primary (the
+    // bolt); QC bot_aim leads at the projectile speed WEP_CVAR_PRI(blaster, speed). Lead by the balance bolt speed
+    // so a retuned bolt speed still leads correctly; the primary-only press is the default (no override needed for
+    // the button). Non-lobbed (bot_aim grav=false), so the brain's straight-line lead applies.
+    public override float BotAimShotSpeed(float defaultSpeed) => Primary.Speed;
+
     // Refire/animtime from the (cvar-seeded) balance block — the Blaster has a single primary fire mode.
     public override float RefireFor(FireMode fire) => Primary.Refire;
     public override float AnimtimeFor(FireMode fire) => Primary.Animtime;
@@ -149,6 +162,13 @@ public sealed class Blaster : Weapon
         Projectiles.MakeTrigger(missile); // QC PROJECTILE_MAKETRIGGER (SOLID_CORPSE): transparent to the firer's movement
         missile.Flags = EntFlags.Item; // QC FL_PROJECTILE (no dedicated flag in EntFlags yet)
 
+        // QC blaster.qc:64-65,83 — mark the bolt as a dodgeable hazard (bot_dodge/bot_dodgerating + IL_PUSH on
+        // the g_bot_dodge list). The havocbot_dodge danger-list consumer (findchainfloat(bot_dodge, true),
+        // SUPERBOT-gated) IS ported (BotBrain.HavocbotDodge), so a SUPERBOT bot specifically swerves away from
+        // an incoming bolt; lower-skill bots only LEAD it (BotBrain.ShotLead) + strafe via CombatMovement.
+        missile.BotDodge = true;
+        missile.BotDodgeRating = Primary.Damage;
+
         // settouch(missile, W_Blaster_Touch); — detonate + radius damage on contact.
         missile.Touch = (self, other) => OnTouch(self, other);
 
@@ -185,10 +205,27 @@ public sealed class Blaster : Weapon
     {
         self.Touch = null; // event_damage = func_null; prevent re-entry
 
+        // QC g_projectiles_interact==1 hack (blaster.qc:16-22,38-39): if the toucher is itself a projectile
+        // that normally ignores knockback (damageforcescale 0), temporarily give it damageforcescale=1 so the
+        // blast can knock it around — the Blaster can "shoot" other projectiles. Restored afterwards.
+        // Projectiles in the port carry EntFlags.Item as the FL_PROJECTILE stand-in (see Attack: missile.Flags).
+        bool zeroDamageForceScale = false;
+        if (other is not null
+            && (Api.Services is null || Api.Cvars.GetFloat("g_projectiles_interact") == 1f)
+            && (other.Flags & EntFlags.Item) != 0
+            && other.DamageForceScale == 0f)
+        {
+            other.DamageForceScale = 1f;
+            zeroDamageForceScale = true;
+        }
+
         Vector3 center = self.Origin + (self.Mins + self.Maxs) * 0.5f;
         WeaponSplash.RadiusDamage(self, center, Primary.Damage, Primary.EdgeDamage, Primary.Radius,
             self.Owner, RegistryId, Primary.Force,
             forceScale: new Vector3(1f, 1f, Primary.ForceZScale), directHit: other); // QC force_xyzscale.z
+
+        if (zeroDamageForceScale)
+            other!.DamageForceScale = 0f; // restore: projectiles default to ignoring knockback
 
         WeaponSplash.ImpactSound(self, "weapons/laserimpact.wav"); // QC SND_LASERIMPACT (wr_impacteffect)
         // QC: pointparticles(EFFECT_BLASTER_IMPACT, org2, w_backoff * 1000, 1) — the impact sprays back out of

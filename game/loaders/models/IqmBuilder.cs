@@ -231,6 +231,31 @@ public static class IqmBuilder
     /// sum 1; the surface material is resolved from the mesh's shader name. Note only the triangle *vertex*
     /// indices are re-based into the surface-local window, since each Godot surface indexes its own Vertex array.
     /// </summary>
+    // (hitch-fix §2, 2026-06-15) Exact-size scratch reuse for the per-surface mesh arrays. ArrayMesh.AddSurfaceFromArrays
+    // copies the managed arrays into Godot's mesh buffers SYNCHRONOUSLY at the Godot.Collections.Array assignment (it
+    // marshals to a Packed* Variant), so the scratch can be reused on the next surface/build — but ONLY at the EXACT
+    // length (an oversized buffer, e.g. from ArrayPool, would marshal garbage tail vertices = corrupted mesh; that is
+    // why this keys by length and never hands Godot a too-long array). One pool PER SLOT because all six arrays are
+    // alive simultaneously until AddSurfaceFromArrays. Reuse hits across instances of the same model (identical surface
+    // sizes) — the bot-spawn wave. [ThreadStatic]: BuildMesh runs on the main thread; bounded by distinct surface sizes.
+    [ThreadStatic] private static Dictionary<int, Vector3[]>? _posPool;
+    [ThreadStatic] private static Dictionary<int, Vector3[]>? _normPool;
+    [ThreadStatic] private static Dictionary<int, Vector2[]>? _uvPool;
+    [ThreadStatic] private static Dictionary<int, int[]>? _bonePool;
+    [ThreadStatic] private static Dictionary<int, float[]>? _weightPool;
+    [ThreadStatic] private static Dictionary<int, int[]>? _idxPool;
+
+    private static T[] RentExact<T>(ref Dictionary<int, T[]>? pool, int len)
+    {
+        pool ??= new Dictionary<int, T[]>();
+        if (!pool.TryGetValue(len, out T[]? buf))
+        {
+            buf = new T[len];
+            pool[len] = buf;
+        }
+        return buf;
+    }
+
     private static ArrayMesh BuildMesh(IqmData iqm, AssetSystem assets, SkinFile? skin)
     {
         var mesh = new ArrayMesh { ResourceName = "IqmMesh" };
@@ -255,12 +280,12 @@ public static class IqmBuilder
             if (materialName is null)
                 continue; // skin hides this mesh
 
-            var positions = new Vector3[vcount];
-            var normals = new Vector3[vcount];
-            var uvs = new Vector2[vcount];
+            var positions = RentExact(ref _posPool, vcount);
+            var normals = RentExact(ref _normPool, vcount);
+            var uvs = RentExact(ref _uvPool, vcount);
             // Godot wants 4 bone indices + 4 weights per vertex when skinned.
-            int[]? bones = skinned ? new int[vcount * 4] : null;
-            float[]? weights = skinned ? new float[vcount * 4] : null;
+            int[]? bones = skinned ? RentExact(ref _bonePool, vcount * 4) : null;
+            float[]? weights = skinned ? RentExact(ref _weightPool, vcount * 4) : null;
 
             bool haveNormals = iqm.Normals is { Length: > 0 };
             for (int v = 0; v < vcount; v++)
@@ -293,7 +318,7 @@ public static class IqmBuilder
             int triStart = sub.FirstTriangle * 3;
             int triEnd = (sub.FirstTriangle + sub.TriangleCount) * 3;
             triEnd = Math.Min(triEnd, iqm.Triangles.Length);
-            var indices = new int[Math.Max(0, triEnd - triStart)];
+            var indices = RentExact(ref _idxPool, Math.Max(0, triEnd - triStart));
             int upper = first + vcount;
             for (int t = triStart, k = 0; t < triEnd; t++, k++)
             {
@@ -340,16 +365,18 @@ public static class IqmBuilder
 
     /// <summary>
     /// Write the 4 bone indices + 4 weights for one vertex. BlendIndexes are joint indices (already global to
-    /// the skeleton, so no re-basing); weights are 0..255 bytes normalized to 0..1 floats. Falls back to a
-    /// rigid bind to bone 0 if the file lacks per-vertex skin data for this index.
+    /// the skeleton, so no re-basing) in <see cref="IqmData"/>'s flat <c>vertex*4</c> layout; weights are
+    /// 0..255 bytes normalized to 0..1 floats. Falls back to a rigid bind to bone 0 if the file lacks
+    /// per-vertex skin data for this index.
     /// </summary>
     private static void FillSkinVertex(IqmData iqm, int globalVertex, int localVertex, int[] bones, float[] weights)
     {
         int b = localVertex * 4;
-        byte[]? bi = (iqm.BlendIndexes is { } bix && globalVertex < bix.Length) ? bix[globalVertex] : null;
-        byte[]? bw = (iqm.BlendWeights is { } bwx && globalVertex < bwx.Length) ? bwx[globalVertex] : null;
+        int g = globalVertex * 4;
+        byte[]? bi = iqm.BlendIndexes;
+        byte[]? bw = iqm.BlendWeights;
 
-        if (bi is null || bw is null)
+        if (bi is null || bw is null || g < 0 || g + 4 > bi.Length || g + 4 > bw.Length)
         {
             // Unskinned vertex inside a skinned model: pin fully to the root bone so it stays attached.
             bones[b] = 0; bones[b + 1] = 0; bones[b + 2] = 0; bones[b + 3] = 0;
@@ -361,12 +388,12 @@ public static class IqmBuilder
         float sum = 0f;
         for (int j = 0; j < 4; j++)
         {
-            int idx = j < bi.Length ? bi[j] : 0;
+            int idx = bi[g + j];
             // BlendIndexes index into Joints (== skeleton bones); clamp defensively against malformed data so
             // Godot's skin lookup never dereferences a bone that doesn't exist.
-            if (idx < 0 || idx >= jointCount)
+            if (idx >= jointCount)
                 idx = 0;
-            float w = (j < bw.Length ? bw[j] : 0) / 255f;
+            float w = bw[g + j] / 255f;
             bones[b + j] = idx;
             weights[b + j] = w;
             sum += w;
@@ -427,10 +454,25 @@ public static class IqmBuilder
 
         if (framegroups is { Count: > 0 })
         {
+            // (playtest #36) `.framegroups` lines are NAMELESS (the trailing "// fire" is a comment the parser
+            // never sees), so clip names must be SYNTHESIZED — and the slot ORDER is the contract, exactly like
+            // the player animdecide registry (#32). A nameless FOUR-group skeletal rig is Base's weapon-hand
+            // contract (CL_WeaponEntity_SetModel, common/weapons/all.qc: anim_fire1='0…', anim_fire2='1…',
+            // anim_idle='2…', anim_reload='3…' — every shipped h_*.iqm.framegroups has exactly these 4 rows), so
+            // name those slots fire/fire2/idle/reload — the names ViewModel's clip lookups expect. Before this,
+            // the generic player-canonical names landed on weapons as idle/run/runbackwards/strafeleft: "idle"
+            // WAS the fire clip (guns looped their fire animation at rest) and "fire"/"reload" didn't exist.
+            bool allNameless = true;
+            for (int i = 0; i < framegroups.Count && allNameless; i++)
+                allNameless = string.IsNullOrEmpty(framegroups[i].Name);
+            string[]? slotNames = allNameless && framegroups.Count == WeaponSlotNames.Length ? WeaponSlotNames : null;
+
             for (int i = 0; i < framegroups.Count; i++)
             {
                 FrameGroup fg = framegroups[i];
-                string baseName = !string.IsNullOrEmpty(fg.Name) ? fg.Name : DefaultClipName(i);
+                string baseName = !string.IsNullOrEmpty(fg.Name) ? fg.Name
+                    : slotNames is not null ? slotNames[i]
+                    : DefaultClipName(i);
                 clips.Add(new ClipSpec(UniqueName(baseName, usedNames), fg.FirstFrame, fg.FrameCount, fg.Fps, fg.Loop));
             }
         }
@@ -450,9 +492,16 @@ public static class IqmBuilder
             clips.Add(new ClipSpec("all", 0, frames.Length, 20f, true));
         }
 
+        // Per-MODEL scratch shared across every clip build (track paths, track-index maps, frame-world
+        // buffers). These were re-allocated per clip — for a player model (~35 clips × ~60 bones) that was
+        // thousands of identical strings/NodePaths/arrays inside the first-build burst on the streamer
+        // worker (the iqm.anims scope of the bot-join alloc storm). Contents are per-bone, identical for
+        // every clip of the model, so one set serves all clips.
+        var scratch = new AnimScratch(boneNames);
+
         foreach (ClipSpec clip in clips)
         {
-            Animation anim = BuildOneAnimation(iqm, boneNames, clip);
+            Animation anim = BuildOneAnimation(iqm, scratch, clip);
             library.AddAnimation(clip.Name, anim);
 
             // Choose an autoplay default: prefer any "idle"-named clip, else fall back to the first clip.
@@ -464,15 +513,40 @@ public static class IqmBuilder
         return library;
     }
 
+    /// <summary>Reused per-model buffers for <see cref="BuildOneAnimation"/>: one animation track path per
+    /// bone (<c>"Skeleton3D:bone"</c>, pre-converted to <see cref="NodePath"/> — the conversion allocates a
+    /// managed wrapper + native path, so it must not repeat per clip), the per-clip track-index maps, and
+    /// the two frame-world scratch arrays. NodePath construction is pure data (no scene access) and safe on
+    /// the streamer worker, where the first build of each model runs.</summary>
+    private sealed class AnimScratch
+    {
+        public readonly NodePath[] BonePaths;
+        public readonly int[] PosTrack, RotTrack, SclTrack;
+        public readonly Transform3D[] WorldQuake, WorldGodot;
+
+        public AnimScratch(string[] boneNames)
+        {
+            int n = boneNames.Length;
+            BonePaths = new NodePath[n];
+            for (int i = 0; i < n; i++)
+                BonePaths[i] = new NodePath($"{SkeletonNodeName}:{boneNames[i]}");
+            PosTrack = new int[n];
+            RotTrack = new int[n];
+            SclTrack = new int[n];
+            WorldQuake = new Transform3D[n];
+            WorldGodot = new Transform3D[n];
+        }
+    }
+
     /// <summary>
     /// Build a single <see cref="Animation"/> for one clip: a position+rotation+scale track per bone, keyed at
     /// each frame in the clip's span at 1/fps. Each frame's bone-LOCAL Quake TRS is converted to a Godot
     /// bone-LOCAL transform through the same world-conjugation as the rest pose (computed fresh per frame so
     /// the non-commuting parent translation is handled correctly).
     /// </summary>
-    private static Animation BuildOneAnimation(IqmData iqm, string[] boneNames, ClipSpec clip)
+    private static Animation BuildOneAnimation(IqmData iqm, AnimScratch s, ClipSpec clip)
     {
-        int boneCount = boneNames.Length;
+        int boneCount = s.BonePaths.Length;
         IqmFrame[] frames = iqm.Frames;
         IqmJoint[] joints = iqm.Joints;
 
@@ -489,15 +563,13 @@ public static class IqmBuilder
             LoopMode = clip.Loop ? Animation.LoopModeEnum.Linear : Animation.LoopModeEnum.None,
         };
 
-        // Create the 3 tracks per bone up front and remember their indices.
-        var posTrack = new int[boneCount];
-        var rotTrack = new int[boneCount];
-        var sclTrack = new int[boneCount];
+        // Create the 3 tracks per bone up front and remember their indices (in the per-model scratch).
+        int[] posTrack = s.PosTrack, rotTrack = s.RotTrack, sclTrack = s.SclTrack;
         for (int bone = 0; bone < boneCount; bone++)
         {
             // Paths are relative to the AnimationPlayer.RootNode (the model root): "<skeleton>:<bone>".
             // The skeleton's node name is the fixed SkeletonNodeName, so no live node is needed here.
-            var basePath = $"{SkeletonNodeName}:{boneNames[bone]}";
+            NodePath basePath = s.BonePaths[bone];
 
             posTrack[bone] = anim.AddTrack(Animation.TrackType.Position3D);
             anim.TrackSetPath(posTrack[bone], basePath);
@@ -509,9 +581,9 @@ public static class IqmBuilder
             anim.TrackSetPath(sclTrack[bone], basePath);
         }
 
-        // Scratch arrays reused across every frame of this clip (one alloc per clip, not per frame).
-        var worldGodot = new Transform3D[boneCount]; // each bone's Godot-space WORLD transform this frame
-        var worldQuake = new Transform3D[boneCount]; // its Quake-space WORLD transform (pre-conjugation)
+        // Frame-world scratch reused across every frame of every clip of this model.
+        Transform3D[] worldGodot = s.WorldGodot; // each bone's Godot-space WORLD transform this frame
+        Transform3D[] worldQuake = s.WorldQuake; // its Quake-space WORLD transform (pre-conjugation)
 
         for (int f = 0; f < frameCount; f++)
         {
@@ -666,6 +738,10 @@ public static class IqmBuilder
             materialName = remap;
             remapped = true;
         }
+        // A RAW nodraw mesh material also hides (no skin remap needed) — the invisible-hand weapon rigs'
+        // skeleton plane is baked as material 'nodraw'; rendered, it was the black landing-dip triangle (r11).
+        if (SkinFile.IsNoDraw(materialName))
+            return null;
         return materialName;
     }
 
@@ -686,6 +762,12 @@ public static class IqmBuilder
     private static string DefaultClipName(int i) => i >= 0 && i < CanonicalAnimNames.Length
         ? CanonicalAnimNames[i]
         : $"anim_{i}";
+
+    /// <summary>Base's weapon-hand rig slot contract (CL_WeaponEntity_SetModel, common/weapons/all.qc:373-376):
+    /// a nameless 4-group `.framegroups` set is fire/fire2/idle/reload BY POSITION. Shared with
+    /// <see cref="DpmBuilder"/> — the DPM hand rigs (h_electro/h_crylink/h_rl/h_gl/h_hagar) carry the same
+    /// nameless 4-slot convention. (playtest #36/r9)</summary>
+    internal static readonly string[] WeaponSlotNames = { "fire", "fire2", "idle", "reload" };
 
     // Common Xonotic player-anim ordering used when a framegroup/anim has no explicit name. Not load-bearing.
     private static readonly string[] CanonicalAnimNames =

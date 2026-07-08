@@ -32,6 +32,31 @@ public enum MsgType
     Multi = 3,
     /// <summary>Picks between two sub-notifications by a per-client choice value (e.g. verbose vs terse). QC MSG_CHOICE.</summary>
     Choice = 4,
+    /// <summary>
+    /// Retract a centerprint group (or all groups) from the client. QC <c>MSG_CENTER_KILL</c>
+    /// (common/notifications/all.qc:1372): the server-driven counterpart to <c>centerprint_Kill</c> /
+    /// <c>centerprint_KillAll</c>. The dispatch carries the target CPID group in its text (empty = kill all).
+    /// </summary>
+    CenterKill = 5,
+    /// <summary>
+    /// Set the centerprint gametype title line above the countdown — the server-driven counterpart to QC
+    /// <c>centerprint_SetTitle</c> (client/announcer.qc Announcer_Gamestart). The dispatch carries the title
+    /// text (already "^BG"-prefixed); an empty text clears it (QC <c>centerprint_ClearTitle</c>).
+    /// </summary>
+    CenterTitle = 6,
+    /// <summary>
+    /// Set the centerprint duel title ("left vs right") — the server-driven counterpart to QC
+    /// <c>centerprint_SetDuelTitle</c> (client/announcer.qc Announcer_Duel). The two player names travel in
+    /// the dispatch's string args (s1=left, s2=right).
+    /// </summary>
+    CenterDuelTitle = 7,
+    /// <summary>
+    /// A raw engine <c>centerprint(client, text)</c> → panel push (QC the <c>centerprint()</c> builtin family:
+    /// chat /tell + team-message private centerprints, map/trigger/door/item <c>.message</c> text, target_print,
+    /// MOTD). The literal text travels in the dispatch's <see cref="NotificationDispatch.Text"/>; the client
+    /// pushes it via <c>centerprint_AddStandard</c>. Has no cpid/notification registry entry.
+    /// </summary>
+    CenterRaw = 8,
 }
 
 /// <summary>
@@ -82,6 +107,16 @@ public sealed class Notification : IRegistered
     public string Icon = "";
     /// <summary>Centerprint id group for MSG_CENTER (QC CPID_*); empty = CPID_Null. Client-side grouping.</summary>
     public string Cpid = "";
+
+    /// <summary>
+    /// The raw MSG_CENTER duration/count spec (QC <c>nent_durcnt</c>, the durcnt macro arg), e.g.
+    /// "item_centime 0", "1 f1", "4 0" or "" (== "0 0"). Token 0 is the display DURATION and token 1 the
+    /// ^COUNT countdown count; each token is a literal number, an <c>fN</c> float-arg reference, or the
+    /// <c>item_centime</c> token (== notification_item_centerprinttime = 1.5). Resolved at centerprint time
+    /// (QC <c>Local_Notification_centerprint_Add</c>, notifications/all.qc:1069) — see
+    /// <c>HudNotifications.ShowCenter</c>. Empty means "use the panel default duration / no countdown".
+    /// </summary>
+    public string Durcnt = "";
 
     // --- MSG_ANNCE payload ---
     /// <summary>Announcer sound filename without extension (QC <c>snd</c>), e.g. "headshot".</summary>
@@ -216,14 +251,18 @@ public static class Notifications
             Args = args, Icon = icon, Normal = normal, Gentle = gentle,
         });
 
-    /// <summary>QC <c>MSG_CENTER_NOTIF(name, default, strnum, flnum, args, cpid, durcnt, normal, gentle)</c>.</summary>
+    /// <summary>
+    /// QC <c>MSG_CENTER_NOTIF(name, default, strnum, flnum, args, cpid, durcnt, normal, gentle)</c>. The
+    /// <paramref name="durcnt"/> spec (QC the durcnt macro arg) is appended LAST so the existing positional
+    /// call sites keep binding; it carries the "DURATION COUNT" token pair (resolved at centerprint time).
+    /// </summary>
     public static Notification Center(string name, int strCount, int floatCount, string args, string cpid,
-        string normal, string gentle = "", bool enabled = true)
+        string normal, string gentle = "", bool enabled = true, string durcnt = "")
         => Register(new Notification
         {
             Name = name, Type = MsgType.Center, Enabled = enabled,
             StringCount = strCount, FloatCount = floatCount,
-            Args = args, Cpid = cpid, Normal = normal, Gentle = gentle,
+            Args = args, Cpid = cpid, Durcnt = durcnt, Normal = normal, Gentle = gentle,
         });
 
     /// <summary>

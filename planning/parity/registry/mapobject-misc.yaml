@@ -1,0 +1,579 @@
+unit: mapobject-misc
+category: mapobject
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 17
+  worst_gaps:
+    - "func_clientwall distance-fade not rendered: fade_start/fade_end/alpha_max/alpha_min/fade_vertical_offset + PVS alpha-cull (Ent_Wall_PreDraw) are stored on the entity but no renderer applies them (the antiwall solid-toggle relay g_clientmodel_use IS now ported+live; only the client distance-fade render half remains)"
+    - "bgmscript ADSR not ported: func_clientwall/func_pointparticles never animate alpha/position/emission to the map music"
+    - "models.qc colormap value is stored on Entity.ColorMapOverride (RENDER_COLORMAPPED bit set) but no renderer team-tints the prop on screen yet"
+    - "func_pointparticles client emission is an approximation: ONE persistent GpuParticles3D per emitter (first effectinfo block only) instead of per-frame __pointparticles respawn; per-emission .noise sound missing; movedir projected with a single center trace; no round-restart reset hook server-side"
+    - "wall/prop LOD unported: lodmodel1/lodmodel2 map keys (subs.qc LODmodel_attach -> lodmodelindex0..2/loddistance1..2 -> CSQCModel_LOD_Apply in Ent_Wall_Draw) have no port counterpart — props always render full-detail (perf-only)"
+features:
+  - id: mapobject-misc.laser.server_logic
+    name: "misc_laser damage + detector think (aim, trace, team gate, enter/exit latch)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/misc/laser.qc:misc_laser_think"
+      - "common/mapobjects/misc/laser.qc:misc_laser_aim"
+      - "common/mapobjects/misc/laser.qc:spawnfunc(misc_laser)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Laser.cs:LaserThink"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Laser.cs:LaserAim"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Laser.cs:LaserSetup"
+    constants:
+      - { name: "LASER_BEAM_MAXLENGTH", base: "32768", port: "32768", match: true }
+      - { name: "LASER_BEAM_MAXWORLDSIZE", base: "1048576", port: "1048576", match: true }
+      - { name: "LASER_FINITE", base: "BIT(1)", port: "1<<1", match: true }
+      - { name: "LASER_NOTRACE", base: "BIT(2)", port: "1<<2", match: true }
+      - { name: "LASER_INVERT_TEAM", base: "BIT(3)", port: "1<<3", match: true }
+      - { name: "dmg<0 instakill amount", base: "100000", port: "100000", match: true }
+      - { name: "team_damage_gate", base: "((sf&INVERT)==0)==(team!=hit.team)", port: "verbatim", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "End effect is resolved by NAME (Entity.LaserEndEffect) instead of QC's particle-effect integer .cnt, and the detector latch uses a dedicated Entity.LaserHitLatch bool instead of QC's .count field (a mapper-set count no longer pre-latches). No shipped map uses a numeric cnt key. Net_LinkEntity/laser_SendEntity is dropped (the client reads the shared entity off the ambient facade). Documented in Laser.cs."
+    gaps: []
+    verification:
+      - { kind: code, ref: "Laser.cs:42/116/141 LaserSetup/LaserAim/LaserThink vs laser.qc:12/58/215 — aim, endpoint, trace gate, detector enter/exit latch, INVERT team truth-table, dmg<0 instakill, dmg*frametime, DEATH_HURTTRIGGER->Void all match; LASER_BEAM_MAXLENGTH=32768/MAXWORLDSIZE=1048576 confirmed", result: pass }
+      - { kind: code, ref: "MapObjectsRegistry.cs:135 registers misc_laser -> Laser.LaserSetup", result: pass }
+    confidence: high
+    notes: "Re-verified Wave-8. Counterintuitive team gate (non-inverted team laser damages SAME-team touchers) mirrored verbatim. INITPRIO_FINDTARGET enemy lookup deferred to first active think rather than a spawn pass — same net effect."
+
+  - id: mapobject-misc.laser.beam_render
+    name: "misc_laser beam + end effect + dynamic light (Draw_Laser)"
+    layer: [presentation]
+    base_refs:
+      - "common/mapobjects/misc/laser.qc:Draw_Laser"
+    port_refs:
+      - "game/client/LaserRenderer.cs:LaserRenderer"
+    constants:
+      - { name: "beam texture", base: "particles/laserbeam", port: "particles/laserbeam.tga", match: true }
+      - { name: "sliding texcoord", base: "time*3", port: "Uv1Offset = -now*3 (animated, tiled along beam)", match: true }
+      - { name: "end fx SKY/NOIMPACT suppress", base: "Draw_Laser:333 sky||noimpact => no particles/dlight", port: "hitSurface gated on !sky && !noImpact", match: true }
+      - { name: "end fx rate", base: "drawframetime*1000 every frame", port: "count = FrameTime*1000 emitted every frame (no throttle)", match: true }
+      - { name: "additive when no alpha", base: "alpha 0.5 DRAWFLAG_ADDITIVE; else .alpha DRAWFLAG_NORMAL", port: "AlphaKey>0 -> Mix blend at alpha; else Add blend at 0.5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Client trace runs at the server tick origin (no InterpolateOrigin_Do) — negligible since stock-map lasers are static; the beam ribbon is a two-crossed-quad stand-in for QC's Draw_CylindricLine."
+    verification:
+      - { kind: code, ref: "LaserRenderer.cs:296-301 emits Effects.Spawn every frame at count=FrameTime*1000 (EndFxInterval throttle REMOVED in Wave-8e); LaserRenderer.cs:262-272 Mix-at-alpha vs Add-at-0.5 blend split matches Draw_Laser:325-330; Uv1Offset=-now*3 tiled scroll; SKY|NOIMPACT suppress at 217-219", result: pass }
+    confidence: high
+    notes: "FIXED (Wave-8e). The two residual baseline gaps are closed: the end-fx is now emitted EVERY frame at count=drawframetime*1000 (the EndFxInterval ~10Hz throttle was removed), and the additive-when-no-alpha-key path is now a real Mix-vs-Add blend split (AlphaKey>0 => normal blend at .alpha, else additive 0.5). Live on listen-server/demo via the ambient-facade scan; idles on a pure --connect client. In-game visual not separately observed but the code is now byte-faithful to Draw_Laser. Re-audit 2026-06-27 (post Waves 16/17): LaserRenderer.cs UNCHANGED by W16/17; still wired live in ClientWorld.cs:371-374 (new LaserRenderer + AddChild). presentation:faithful rests on code-read fidelity, not a runtime capture."
+
+  - id: mapobject-misc.follow.attach_follow
+    name: "misc_follow attach / MOVETYPE_FOLLOW ride at spawn"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/misc/follow.qc:follow_init"
+      - "common/mapobjects/misc/follow.qc:spawnfunc(misc_follow)"
+      - "common/mapobjects/misc/follow.qh:FOLLOW_ATTACH"
+      - "lib/util.qc:attach_sameorigin"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Follow.cs:FollowInit"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Follow.cs:FollowSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Follow.cs:AttachSameOrigin"
+    constants:
+      - { name: "FOLLOW_ATTACH", base: "BIT(0)", port: "1<<0", match: true }
+      - { name: "FOLLOW_LOCAL", base: "BIT(1)", port: "1<<1", match: true }
+      - { name: "tagscale = vlen(v_forward)^-2", base: "1/(flen*flen)", port: "1f/(flen*flen)", match: true }
+      - { name: "t_left = v_right * -tagscale", base: "yes", port: "vRight * -tagscale", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Follow.cs:80-133 vs follow.qc:5-64 — jointtype-persist, !src&&!dst guard, FOLLOW_ATTACH/LOCAL branches, dst.solid=SOLID_NOT, follow_sameorigin relative view_ofs/v_angle all match", result: pass }
+      - { kind: code, ref: "Follow.cs:151-196 AttachSameOrigin vs util.qc:2057-2095 — gettaginfo tag pose, tagscale, tag-local origin dots, fixedmakevectors pitch-flip + FixedVecToAngles2 round trip; headless fallback to bare parent link when no model service", result: pass }
+      - { kind: code, ref: "MapObjectsRegistry.cs:192 misc_follow -> Follow.FollowSetup; RunPostSpawn drains Follow.RunDeferredInit on the live server path (GameWorld.cs)", result: pass }
+    confidence: high
+    notes: "Re-verified Wave-8 (Follow.cs untouched since Waves 1-2). AttachSameOrigin bakes the entity into the parent tag's local space via Api.Models.TryGetTag + QMath.FixedVecToAngles2, with a documented headless fallback. Deferred to INITPRIO_FINDTARGET via the pending-init queue drained in RunPostSpawn (live on the real match path)."
+
+  - id: mapobject-misc.dynlight.server_state
+    name: "dynlight static/follow/tag/path modes + toggle + reset (server)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/misc/dynlight.qc:spawnfunc(dynlight)"
+      - "common/mapobjects/misc/dynlight.qc:dynlight_find_aiment"
+      - "common/mapobjects/misc/dynlight.qc:dynlight_find_target"
+      - "common/mapobjects/misc/dynlight.qc:dynlight_find_path"
+      - "common/mapobjects/misc/dynlight.qc:dynlight_use"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/DynamicLight.cs:DynlightSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/DynamicLight.cs:FindAiment"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/DynamicLight.cs:FindTarget"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/DynamicLight.cs:FindPath"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/DynamicLight.cs:PathNext"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/DynamicLight.cs:PathWait"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/DynamicLight.cs:DynlightUse"
+    constants:
+      - { name: "light_lev default", base: "200", port: "200", match: true }
+      - { name: "color default", base: "'1 1 1'", port: "(1,1,1)", match: true }
+      - { name: "path speed default", base: "100", port: "100", match: true }
+      - { name: "think interval", base: "0.1s", port: "0.1s", match: true }
+      - { name: "START_OFF / NOSHADOW / FOLLOW", base: "BIT(0)/BIT(1)/BIT(2)", port: "1<<0/1<<1/1<<2", match: true }
+      - { name: "path-follow corner walk", base: "setthink(train_next) — travels chain", port: "PathNext/PathWait walk corner chain via CalcMove(Linear)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The path-following branch reimplements a dynlight-specialised train_next/train_wait inline (PathNext/PathWait) on the public MapMover.CalcMove seam rather than calling MovingBrushes.TrainNext, because a dynlight is a zero-size point light that exposes none of the bbox/TRAIN_CURVE/TRAIN_TURN/NEEDACTIVATION keys the full func_train pather handles. Net behavior (travel corner chain at .speed, fire each corner's targets, honour per-corner .wait/.speed) matches QC's train_next reuse. Documented in DynamicLight.cs header."
+    gaps: []
+    verification:
+      - { kind: code, ref: "DynamicLight.cs:69-291 vs dynlight.qc:39-156 — defaults (light_lev=200, color='1 1 1', speed=100, nextthink time+0.1), four-mode dispatch, FindAiment/FindTarget MOVETYPE_FOLLOW+owner+view_ofs, DynlightUse/SetActive toggle, DynlightReset all match", result: pass }
+      - { kind: code, ref: "DynamicLight.cs:177-237 FindPath/PathNext/PathWait vs dynlight.qc:62-73 (setthink train_next) — FindFirstByTargetName lookahead, target chain advance, per-corner wait/speed, UseTargets on arrival; toggle + spin (avelocity) preserved independent of think", result: pass }
+      - { kind: code, ref: "MapObjectsRegistry.cs:187 dynlight registered; RunPostSpawn drains DynamicLight.RunDeferredInit on the live path (GameWorld.cs)", result: pass }
+    confidence: high
+    notes: "Re-verified Wave-8 (DynamicLight.cs untouched since Waves 1-2). Static/FOLLOW/tag-attach/toggle/reset/spin/path-travel all faithful and live. The render half (dynlight.render) is now ALSO implemented (Wave-8e) — see that feature."
+
+  - id: mapobject-misc.dynlight.render
+    name: "dynlight realtime light (radius/color/style render)"
+    layer: [presentation]
+    base_refs:
+      - "common/mapobjects/misc/dynlight.qc:18 (QUAKED: light_lev/color/style realtime light)"
+    port_refs:
+      - "game/client/DynamicLightRenderer.cs:DynamicLightRenderer"
+      - "src/XonoticGodot.Common/Gameplay/LightStyles.cs:Sample"
+    constants:
+      - { name: "light_lev -> radius (1 qu = 1 godot u)", base: "light_lev default 200", port: "OmniRange = light_lev*styleBrightness (clamp 0..2048)", match: true }
+      - { name: "color -> hue + brightness", base: "'1 1 1'..'255 255 255'", port: "LightColor = c/max(1,maxc); LightEnergy = min(8,maxc)", match: true }
+      - { name: "active/light_lev==0 -> off", base: "ACTIVE_NOT or !light_lev => no light", port: "Active!=Active || LightLev<=0 => Visible=false", match: true }
+      - { name: "style lightstyle animation", base: "server/world.qc:882-920 style table @10fps a..z", port: "LightStyles.Sample modulates radius (radius-modulation only, not lightmap)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "One persistent Godot OmniLight3D per dynlight, driven each frame from the shared server entity (light_lev->OmniRange, color->LightColor/LightEnergy hue/energy split, origin->position so it follows path/FOLLOW/tag-attach). Shadows disabled by default (matches Base's commented-out PFLAGS_NOSHADOW default and the budget). avelocity spin is intentionally not applied (an omni point light has no orientation). Scans the ambient entity facade (Api.Entities.FindByClass) like LaserRenderer, so it lights up on listen-server/demo and idles on a pure --connect client — the established client-fx seam."
+    gaps:
+      - "Named .style lightstyle ANIMATION is applied only by modulating the dynlight's own radius (LightStyles.Sample at 10fps). DP additionally animates WORLD-BRUSH lightmaps for named styles; the port has no lightmap-modulation subsystem, so styled world geometry renders steady (only the dynlight node flickers)."
+    verification:
+      - { kind: code, ref: "DynamicLightRenderer.cs:60-166 — per-frame OmniLight3D from e.Active/e.LightLev/e.LightColor/e.Origin; style brightness via LightStyles.Sample; ClientWorld.cs:367 instantiates DynamicLightRenderer and AddChild on the live client path", result: pass }
+      - { kind: code, ref: "ClientWorld.cs:51 DynamicLights property, :367 'new DynamicLightRenderer' + AddChild — wired into the live client world", result: pass }
+    confidence: high
+    notes: "FIXED (Wave-8e). The baseline worst-gap (server runs but no realtime-light consumer => authored map lights invisible) is closed: a new DynamicLightRenderer drives a persistent OmniLight3D per dynlight from the server entity each frame, honoring radius/color/toggle/path-travel/FOLLOW, with .style animation via the new LightStyles table. The only residual is animated world-brush LIGHTMAP modulation (a separate world-lighting subsystem), not the dynlight node itself. Re-audit 2026-06-27 (post Waves 16/17): DynamicLightRenderer.cs + LightStyles.cs UNCHANGED by W16/17; still wired live in ClientWorld.cs:376-377 (new DynamicLightRenderer + AddChild). presentation:faithful rests on code-read fidelity, not a runtime light capture."
+
+  - id: mapobject-misc.keys.item_key
+    name: "item_key* pickup keys (spawn, touch, grant itemkeys, model rotate)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/misc/keys.qc:spawnfunc(item_key)"
+      - "common/mapobjects/misc/keys.qc:item_key_touch"
+      - "common/mapobjects/misc/keys.qc:spawn_item_key"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:KeySetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:SpawnItemKey"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:KeyTouch"
+    constants:
+      - { name: "default model", base: "models/keys/key.md3", port: "models/keys/key.md3", match: true }
+      - { name: "GOLD/SILVER/BRONZE ids", base: "BIT(0)/BIT(1)/BIT(2)", port: "1<<0/1<<1/1<<2", match: true }
+      - { name: "RED/BLUE/GREEN keycards", base: "BIT(3)/BIT(4)/BIT(5)", port: "1<<3/1<<4/1<<5", match: true }
+      - { name: "MASTER key", base: "0xffffff", port: "0xffffff", match: true }
+      - { name: "colormod GOLD/SILVER/BRONZE", base: "'1 .9 0'/'.9 .9 .9'/'.6 .25 0'", port: "(1,.9,0)/(.9,.9,.9)/(.6,.25,0)", match: true }
+      - { name: "colormod RED/BLUE/GREEN/MASTER", base: "'.9 0 0'/'0 0 .9'/'0 .9 0'/'1 .25 .25'", port: "verbatim", match: true }
+      - { name: "key bbox", base: "'-16 -16 -56'..'16 16 0' +32z", port: "(-16,-16,-56)..(16,16,0) +32z", match: true }
+      - { name: "item_key1->SILVER / item_key2->GOLD (legacy swap)", base: "BIT(1)/BIT(0)", port: "1<<1/1<<0", match: true }
+      - { name: "modelflags MF_ROTATE", base: "this.modelflags |= MF_ROTATE; '0 100 0'*fmod(time,3.6)", port: "ModelSpinRotate=true; EntityNode yaw += 100*fmod(time,3.6)", match: true }
+      - { name: "EF_LOWPRECISION", base: "set", port: "EfLowPrecision (4194304)", match: true }
+      - { name: "FLOATING spawnflag -> noalign -> MOVETYPE_NONE else TOSS", base: "yes", port: "yes", match: true }
+      - { name: "pickup sound", base: "play2(toucher, SND(ITEMPICKUP))", port: "MapMover.Sound(toucher, TriggerAuto, .Noise)", match: true }
+      - { name: "pickup centerprint", base: "centerprint(toucher, message)", port: "MapMover.Centerprint -> MapObjectsCommon.Centerprint -> NotificationSystem.SendCenterRaw(OneOnly) (live channel)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Only the Q3COMPAT_COMMON QL +8z origin nudge is omitted (no Q3-compat global; documented). NOTE: the item_keys_names[lowestbit] save IS implemented (MapObjectsRegistry.cs:460 records this.netname per key bit; ItemKeysKeylist :386 builds the keylist string) and is LIVE — consumed by Doors.cs:537 and Triggers.cs:946 for the door/keylock 'You need <the SILVER key>' centerprints."
+    verification:
+      - { kind: code, ref: "MapObjectsRegistry.cs:154-159 registers item_key/item_key1/item_key2/item_key_gold/silver/master with correct BIT pre-stamps; KeySetup/SpawnItemKey/KeyTouch (349-521) vs keys.qc:77-264 — multi-bit reject (excl. master), per-id netname/colormod, bbox, TOSS/NONE, touch grant + fire-target-once-with-blanked-message all match", result: pass }
+      - { kind: code, ref: "MF_ROTATE wired: SpawnItemKey sets this_.ModelSpinRotate=true (MapObjectsRegistry.cs:481); EntityNode.cs:84-88 adds yawDeg += 100*fmod(time,3.6) — byte-faithful to csqcmodel_hooks.qc:617", result: pass }
+      - { kind: code, ref: "consumer chain consistent: KeyTouch grants toucher.ItemKeys (line 519); Doors.cs/Triggers.cs read the same Entity.ItemKeys — a granted key actually opens a keylock/key-gated door", result: pass }
+      - { kind: code, ref: "MapObjectsRegistry.cs:521 KeyTouch calls MapMover.Centerprint(toucher, this_.Message); MapObjectsCommon.Centerprint (MapObjectsCommon.cs:860-871) now routes through NotificationSystem.SendCenterRaw(NotifBroadcast.OneOnly, actor, message) -> Sink.Dispatch -> CenterPrintPanel (a live channel), no longer dependent on the unassigned CenterprintHandler delegate, so the pickup message reaches the toucher on the live path", result: pass }
+    confidence: high
+    notes: "FIXED 2026-06-27 (prior audit). The last residual presentation gap closed: MapObjectsCommon.Centerprint was rewired (the same 2026-06-25 fix recorded in mapobject-func/target/triggers) from the dead CenterprintHandler delegate to a direct NotificationSystem.SendCenterRaw(CenterRaw) call, so the 'You've picked up the X key!' centerprint now reaches the activator. CenterprintHandler remains as an OPTIONAL extra observer hook (fired in addition), no longer the delivery path. MF_ROTATE key spin (Wave-8e), grant logic, pickup sound, and consumer chain (Doors/Triggers read same Entity.ItemKeys) all live and faithful. presentation partial->faithful. Re-audit 2026-06-27 (post Waves 16/17): KeySetup/SpawnItemKey/KeyTouch + the item_key/item_key1/2/gold/silver/master registrations (MapObjectsRegistry.cs:164-169) and MapObjectsCommon.Centerprint (910-921 via SendCenterRaw) UNCHANGED by W16/17; no regression. presentation:faithful is code-read (pickup not run in-game)."
+
+  - id: mapobject-misc.teleport_dest.marker
+    name: "info_teleport_destination / misc_teleporter_dest endpoint"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/misc/teleport_dest.qc:spawnfunc(info_teleport_destination)"
+      - "common/mapobjects/misc/teleport_dest.qc:spawnfunc(misc_teleporter_dest)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:TeleportDestSetup"
+    constants:
+      - { name: "facing stored in mangle, angles cleared", base: "yes", port: "yes", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Teleporters.cs TeleportDestSetup vs teleport_dest.qc:29-49 — mangle=angles, angles cleared, setorigin, index", result: pass }
+      - { kind: code, ref: "MapObjectsRegistry.cs:116-117 registers both classnames -> TeleportDestSetup", result: pass }
+    confidence: high
+    notes: "Re-verified Wave-8. Passive findable edict (indexed by targetname); the reorient+reproject is consumed by the trigger_teleport path. CSQC net-link unnecessary (shared-entity seam)."
+
+  - id: mapobject-misc.corner.path_corner
+    name: "path_corner waypoint + per-corner platmovetype override (set_platmovetype)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/misc/corner.qc:spawnfunc(path_corner)"
+      - "common/mapobjects/platforms.qc:set_platmovetype"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MovingBrushes.cs:PathCornerSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:SetPlatMoveType"
+    constants:
+      - { name: "platmovetype string parse -> platmovetype_start/end", base: "set_platmovetype(this, platmovetype) tokenizes up to 2 floats + optional 'force'", port: "MapMover.SetPlatMoveType(this, Platmovetype) — same tokenizer; Wave 13 changed PlatMoveStart/End int->float so fractional ease factors (0.5/1.5) are no longer truncated (matches QC .float)", match: true }
+      - { name: "one-token sets both ends", base: "n==1 -> end=start", port: "PlatMoveEnd = n>1 ? argv[1] : PlatMoveStart", match: true }
+      - { name: "cubic_speedfunc_is_sane reject", base: "lib/math.qh:138", port: "CubicSpeedFuncIsSane (verbatim ellipse condition)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "MovingBrushes.cs:246-252 PathCornerSetup calls MapMover.SetPlatMoveType before origin/index; func_train TrainNext restores the corner's PlatMoveStart/End or re-parses the train's own key — matches corner.qc:44-51 + train_next", result: pass }
+      - { kind: code, ref: "MapObjectsCommon.cs SetPlatMoveType vs platforms.qc:209-235 — stof tokenizer, n==0/1/2 branches, 'force' skip, CubicSpeedFuncIsSane gate; Platmovetype promoted onto the edict BEFORE the spawnfunc runs", result: pass }
+    confidence: high
+    notes: "Re-verified Wave-8. PathCornerSetup parses the corner's per-corner ease/turn string, and func_train's TrainNext applies the corner override or restores the train default. SetPlatMoveType is also wired into func_plat and func_train spawnfuncs."
+
+  - id: mapobject-misc.subs.calcmove
+    name: "SUB_CalcMove / SUB_CalcAngleMove mover driver (linear + bezier + cubic_speedfunc)"
+    layer: [shared]
+    base_refs:
+      - "common/mapobjects/subs.qc:SUB_CalcMove"
+      - "common/mapobjects/subs.qc:SUB_CalcMove_Bezier"
+      - "common/mapobjects/subs.qc:SUB_CalcMove_controller_think"
+      - "common/mapobjects/subs.qc:SUB_CalcAngleMove"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:CalcMove"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:CalcMoveBezier"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:CalcMoveControllerThink"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:CalcMovePause"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:CalcAngleMove"
+    constants:
+      - { name: "linear cutoff", base: "traveltime < 0.15", port: "< 0.15f", match: true }
+      - { name: "platmovetype_start/end DEFAULT", base: "0/0 => smoothstep ease cubic_speedfunc(0,0,t) = -2t^3+3t^2", port: "PlatMoveStart=0/PlatMoveEnd=0 (now .float, fractional ease factors preserved since Wave 13) => smoothstep ease", match: true }
+      - { name: "explicit-linear platmovetype", base: "start==1 && end==1", port: "PlatMoveStart==1 && PlatMoveEnd==1", match: true }
+      - { name: "non-positive traveltime fallback", base: "0.001", port: "0.001f", match: true }
+      - { name: "angle short cutoff", base: "traveltime < 0.1", port: "< 0.1f", match: true }
+      - { name: "controller overshoot", base: "+ '0 0 0.125'", port: "+ (0,0,0.125)", match: true }
+      - { name: "cubic_speedfunc", base: "(((s+e-2)x -2s-e+3)x +s)x", port: "verbatim", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "MapObjectsCommon.cs:128-129/593 PlatMoveStart/End default 0 (matching QC float default) — the (start==1 && end==1) linear shortcut FAILS by default, so long movers run bezier with cubic_speedfunc(0,0,t)=-2t^3+3t^2 (smoothstep), exactly as Base", result: pass }
+      - { kind: code, ref: "CalcMove/CalcMoveBezier/CalcMoveControllerThink/CalcAngleMove vs subs.qc:114-389 — branch split, controller sub-entity, cubic_speedfunc, .ltime scheduling, SUB_CalcMoveDone snap+think1 all faithful", result: pass }
+      - { kind: code, ref: "Wave-17 (2f0bfdb) ADDED CalcMovePause (SUB_CalcMovePause, MapObjectsCommon.cs:687-699): an eased (bezier-controller) mover blocked mid-swing slides animstate_start/end by (now-ctl.nextthink+frametime) so cubic_speedfunc phase holds and it resumes smoothly. LIVE — called from Doors.cs:700 on the door-blocked path. Completes the eased-mover blocked-pause that was previously absent", result: pass }
+    confidence: high
+    notes: "Re-audited 2026-06-27 (post Waves 16/17). Used by every door/plat/train/button — the most-live feature in the unit; timing/values-faithful. A mapper-set platmovetype key flows through SetPlatMoveType (see corner.path_corner). Wave-17 added the SUB_CalcMovePause eased-mover blocked-pause (live via Doors.cs:700), strengthening completeness; status already faithful/live, unchanged."
+
+  - id: mapobject-misc.bgmscript.adsr
+    name: "bgmscript map-music ADSR animation (func_clientwall / func_pointparticles)"
+    layer: [presentation]
+    base_refs:
+      - "client/bgmscript.qc:doBGMScript"
+      - "client/bgmscript.qc:BGMScript_InitEntity"
+      - "client/bgmscript.qh:doBGMScript"
+      - "common/mapobjects/models.qc:Ent_Wall_Draw"
+    port_refs: []
+    constants:
+      - { name: "bgmscriptsustain default", base: "1", port: "n/a", match: false }
+      - { name: "alpha drive (lip<0)", base: "alpha = 1 + lip*f", port: "n/a", match: false }
+      - { name: "alpha drive (lip>0)", base: "alpha = 1 - lip*(1-f)", port: "n/a", match: false }
+      - { name: "position/angle drive", base: "(fld) += movedir*f", port: "n/a", match: false }
+      - { name: "gate", base: "autocvar_bgmvolume>0 && bgmtime>=0", port: "n/a", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No bgmscript ADSR envelope: a func_clientwall / func_pointparticles carrying a .bgmscript key does not animate its alpha / origin / angles / emission to the map's .bgs music script — the prop is static instead of pulsing to the soundtrack. doBGMScript / BGMScript_InitEntity / the .bgs loader are absent."
+    verification:
+      - { kind: code, ref: "grep bgmscript/doBGMScript/Ent_Wall_PreDraw across game/ + src/: only documented as out-of-scope (MapModels.cs:11-14, MapParticleEmitters.cs, PointParticles.cs); no consumer added by Wave-8", result: fail }
+    confidence: high
+    notes: "STILL OPEN (re-audited 2026-06-28, parity-port-waves branch). Explicitly scoped out in the MapModels.cs:15/69 / PointParticles.cs:14 / MapParticleEmitters.cs:19 headers as a documented residual ('bgmscript ADSR is out of scope — no bgmtime music-position clock; no shipped stock map depends on it'). grep bgmscript/doBGMScript/.bgs across game/+src/ finds only those out-of-scope comments — no consumer added this wave. All dimensions remain missing."
+
+  - id: mapobject-misc.models.props_walls
+    name: "models.qc decoration props + static walls (spawn/solid/drop/colormap)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mapobjects/models.qc:g_model_init"
+      - "common/mapobjects/models.qc:g_model_dropbyspawnflags"
+      - "common/mapobjects/models.qc:g_model_setcolormaptoactivator"
+      - "common/mapobjects/models.qc:spawnfunc(func_wall) etc."
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapModels.cs:GModelInit"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapModels.cs:DropBySpawnflags"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapModels.cs:SetColormapToActivator"
+    constants:
+      - { name: "ALIGN_ORIGIN/BOTTOM spawnflags&3", base: "1/2/3", port: "1/2/3", match: true }
+      - { name: "drop trace distance", base: "4096", port: "4096f", match: true }
+      - { name: "misc_* pitch flip", base: "angles_x = -angles_x", port: "FlipPitch", match: true }
+      - { name: "colormap teamplay", base: "(team-1)*0x11 | BIT(10)", port: "(team-1)*0x11 | 1<<10", match: true }
+      - { name: "solid<0 -> SOLID_NOT", base: "yes", port: "SolidOverride<0 -> Solid.Not", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The g_clientmodel_* Net_LinkEntity (ENT_CLIENT_WALL) stream is omitted: the listen-server/demo client reads the shared entity off the ambient facade (the seam every client fx uses). No shipped stock map depends on the antiwall relay or bgmscript on these. Documented in MapModels.cs."
+    gaps:
+      - "Colormap value is stored on Entity.ColorMapOverride but render consumption (team-tinting the prop) is a follow-up seam — a colormapped prop is not actually recolored on screen yet (grep ColorMapOverride: only stored at MapModels.cs/MapObjectFieldsExtra.cs, no renderer consumer)."
+    verification:
+      - { kind: code, ref: "MapModels.cs:29-141 vs models.qc:17-218; all classnames registered in MapObjectsRegistry.cs; solid/SetModel order, DropBySpawnflags 3 branches, colormap teamplay path all match", result: pass }
+    confidence: high
+    notes: "Re-audited 2026-06-28 (parity-port-waves branch). func_wall/func_clientwall/func_static get Solid.Bsp + inline brush via SetModel; DropToFloor inline; logic/values/timing faithful+live. presentation STILL partial: ColorMapOverride is WRITTEN by SetColormapToActivator (MapModels.cs:150-158, RENDER_COLORMAPPED bit set) but no renderer team-tints a MAP PROP on screen — the only ColorMapOverride render consumers are WeaponThrowing/MonsterAI/PhysicalItems (dropped weapons / monsters / physical items), none of which paint a func_wall/misc_gamemodel prop. NOT closed this wave (no prop-colormap renderer added). The clientwall-fade + bgmscript pieces are tracked as their own rows."
+
+  - id: mapobject-misc.models.clientwall_fade
+    name: "func_clientwall distance-fade + PVS alpha-cull + antiwall solid-toggle (Ent_Wall_PreDraw / g_clientmodel_use)"
+    layer: [presentation, authority]
+    base_refs:
+      - "common/mapobjects/models.qc:Ent_Wall_PreDraw"
+      - "common/mapobjects/models.qc:g_clientmodel_use"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectFieldsExtra.cs:FadeStartDist"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapModels.cs:ClientModelUse"
+    constants:
+      - { name: "alpha = (alpha_min + alpha_max * bound(0,(fade_end-dist)/(fade_end-fade_start),1)) / 100", base: "yes", port: "fields stored, render formula NOT applied", match: false }
+      - { name: "single-distance cut (fade_end==fade_start)", base: "alpha=0 past fade_start", port: "not applied (render)", match: false }
+      - { name: "PVS cull -> alpha 0", base: "!checkpvs => alph=0", port: "not applied (render)", match: false }
+      - { name: "inactive (antiwall) -> alpha 0 / solid toggle", base: "antiwall_flag 1=deactivate 2=activate", port: "solid-toggle + .inactive ported (ClientModelUse); the alpha-0-when-inactive RENDER half not applied", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "func_clientwall distance-fade is not rendered: fade_start/fade_end/alpha_max/alpha_min/fade_vertical_offset are parsed onto the Entity (MapObjectFieldsExtra.cs) but NO renderer applies Ent_Wall_PreDraw's distance-fade alpha formula or its PVS alpha-cull — a clientwall meant to fade out with distance stays fully opaque. (The ClientWorld.cs:1234 ItemDistanceAlpha fade is the unrelated item-despawn fade; FadeEndDist is otherwise only read by WeatherSystem for rain/snow draw distance.)"
+      - "The antiwall .inactive flag toggles SOLID server-side but does NOT also force the wall's render alpha to 0 (Ent_Wall_PreDraw sets alph=0 when inactive); a deactivated clientwall goes non-solid but stays VISIBLE until a wall renderer consumes .inactive."
+    verification:
+      - { kind: code, ref: "MapObjectFieldsExtra.cs stores FadeStartDist/FadeEndDist/AlphaMax/AlphaMin/FadeVerticalOffset; grep across game/ + src/: no wall renderer consumes them for distance-fade (ClientWorld ItemDistanceAlpha = item despawn fade, not clientwall; WeatherSystem = rain/snow drawdist)", result: fail }
+      - { kind: code, ref: "SERVER antiwall relay LIVE: MapModels.cs:GModelInit installs ent.Use=ClientModelUse only for clientModel=true classnames (ClientWallSetup/ClientIllusionarySetup/ClientModelSetup pass clientModel:true) and records ent.DefaultSolid=sol; ClientModelUse (MapModels.cs:108-135) ports g_clientmodel_use (antiwall_flag 1=deactivate->SOLID_NOT+Inactive+unlink, 2=activate->restore DefaultSolid+link, then SetColormapToActivator); reads the firing trigger's AntiwallFlag via MapMover.CurrentUseTrigger (set on the SUB_UseTargets path, MapObjectsCommon.cs:466-481); antiwall_flag parsed (MapObjectFieldsExtra.cs); classnames registered (MapObjectsRegistry.cs:159-164)", result: pass }
+    confidence: high
+    notes: "Re-audited 2026-06-28 (parity-port-waves branch). The SERVER-side antiwall solid-toggle relay (g_clientmodel_use) is ported and LIVE on this branch — this wave wired it cleanly through a clientModel flag in GModelInit (ent.Use=ClientModelUse + ent.DefaultSolid recorded) for func_clientwall/func_clientillusionary/misc_clientmodel; the trigger's antiwall_flag is threaded via MapMover.CurrentUseTrigger on the SUB_UseTargets path. logic/values/liveness = partial: the authority half (solid toggle + .inactive + DefaultSolid restore + colormap re-apply) is faithful+live; the CLIENT render half (Ent_Wall_PreDraw distance-fade alpha formula, PVS alpha-cull, alpha-0-when-inactive) is STILL missing — no wall renderer consumes the stored fade fields (a func_clientwall's faces bake into the static map mesh; ClientWorld.cs:1486 ItemDistanceAlpha is the unrelated item-despawn fade; WeatherSystem reads FadeEndDist only for rain/snow drawdist). presentation stays missing. NOT closed this wave. No shipped stock map is known to depend on the render fade; severity low for stock content."
+
+  - id: mapobject-misc.pointparticles.server_logic
+    name: "func_pointparticles / func_sparks server state (spawn defaults, box anchor, toggle/use)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/pointparticles.qc:spawnfunc(func_pointparticles)"
+      - "common/mapobjects/func/pointparticles.qc:spawnfunc(func_sparks)"
+      - "common/mapobjects/func/pointparticles.qh:PARTICLES_IMPULSE"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/PointParticles.cs:PointParticlesSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/PointParticles.cs:SparksSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/PointParticles.cs:LegacyUse"
+    constants:
+      - { name: "atten default", base: "ATTEN_NORM (0.5); <0 -> 0 (global)", port: "0.5f; <0 -> 0f", match: true }
+      - { name: "volume/count/impulse defaults", base: "1 / 1 / 1", port: "1f / 1f / 1f", match: true }
+      - { name: "no-model box re-anchor", base: "setorigin(origin+mins); setsize('0 0 0', maxs-mins)", port: "SetOrigin(Origin+Mins); SetSize(0, Maxs-Mins)", match: true }
+      - { name: "func_sparks defaults", base: "count 25, impulse 2.5, velocity '0 0 -1', mdl TE_SPARK", port: "25f / 2.5f / (0,0,-1) / \"TE_SPARK\"", match: true }
+      - { name: "PARTICLES_IMPULSE / PARTICLES_VISCULLING", base: "BIT(1)/BIT(2)", port: "1<<1 / 1<<2", match: true }
+      - { name: "reset rule (generic_netlinked_reset)", base: "reset hook re-arms each round: targetname => active iff START_ON, else on", port: "applied inline ONCE at spawn; no Entity.Reset hook installed", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "pointparticles_SendEntity/Net_LinkEntity and the per-frame pointparticles_think (which only nets origin moves via SendFlags) are dropped — the client reads the shared entity off the ambient facade, the established port seam (documented in PointParticles.cs header). .mdl stays a NAME on Entity.Mdl instead of resolving to a QC effect number (cnt=0 'use a good handler')."
+    gaps:
+      - "No round-restart re-arm: QC sets this.reset = generic_netlinked_reset so a toggled emitter returns to its START_ON state each round; the port applies that rule inline once at spawn and never installs Entity.Reset (grep PointParticles.cs: no this_.Reset assignment, unlike Doors/Buttons/DynamicLight) — an emitter toggled off stays off after round restart."
+    verification:
+      - { kind: code, ref: "PointParticles.cs:31-104 vs pointparticles.qc:93-146 — defaults (atten/volume/count/impulse), box re-anchor, SetActive=GenericSetActive, targetname legacy_use, sparks chain keeps classname; MapObjectsRegistry.cs:181-182 registers func_pointparticles + func_sparks (live spawn path)", result: pass }
+      - { kind: code, ref: "grep '.Reset =' in PointParticles.cs: absent (Breakable/Buttons/Doors/DynamicLight all install one) — reset-hook gap confirmed", result: fail }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). bgmscriptsustain clamp (qc:99-100) is server-side prep for the CSQC ADSR — not ported, tracked under mapobject-misc.bgmscript.adsr. Emission itself is the client half (see pointparticles.client_emit)."
+
+  - id: mapobject-misc.pointparticles.client_emit
+    name: "func_pointparticles client emission (Draw_PointParticles continuous/burst particles)"
+    layer: [presentation]
+    base_refs:
+      - "common/mapobjects/func/pointparticles.qc:Draw_PointParticles"
+      - "common/mapobjects/func/pointparticles.qc:NET_HANDLE(ENT_CLIENT_POINTPARTICLES)"
+      - "common/mapobjects/func/pointparticles.qh:SF_POINTPARTICLES_IMPULSE"
+    port_refs:
+      - "game/client/MapParticleEmitters.cs:Build"
+      - "game/client/MapParticleEmitters.cs:_Process"
+    constants:
+      - { name: "relative density decode", base: "impulse<0: *= -vol/(64**3) particles per 64^3 cube", port: "rate = -rate * vol / 64^3 (Build, MapParticleEmitters.cs:173-178)", match: true }
+      - { name: "ABSOLUTE_ONLY_SPAWN_AT_TOGGLE burst", base: "PARTICLES_IMPULSE => n = impulse only when just_toggled", port: "ImpulseMode one-shot burst of .impulse on rising edge (_Process:75-83)", match: true }
+      - { name: "steady rate", base: "n = doBGMScript * impulse * drawframetime emissions/frame, each __pointparticles(cnt, p, vel+randomvec*waterlevel, count)", port: "one persistent GpuParticles3D, Amount = pps*lifetime (pps = rate * (countabsolute + count*block.count))", match: false }
+      - { name: "brush containment", base: "WarpZoneLib_BoxTouchesBrush retry per random point", port: "not ported — emits across whole bbox", match: false }
+      - { name: "movedir surface projection", base: "per-point traceline along movedir 4096, emit at trace_endpos with plane_normal*|movedir|", port: "ONE center trace at Build time", match: false }
+      - { name: "per-emission noise", base: "_sound(CH_AMBIENT, noise, VOL_BASE*volume, atten) at each emission point", port: "none", match: false }
+      - { name: "port-only cap", base: "n/a (fail<=64*n loop guard)", port: "MaxAmountPerEmitter = 1500", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: partial
+      audio: missing
+      liveness: partial
+    intended_divergence: true
+    divergence_rationale: "Deliberate architecture swap documented in the MapParticleEmitters.cs header: DP respawns particles every draw frame via __pointparticles; doing that through EffectSystem.Spawn would churn a transient GpuParticles3D per frame per emitter (courtfun has 44), so each map entity gets ONE long-lived continuous GpuParticles3D with Amount sized so steady-state particles-per-second matches DP's formula. The listed approximations (single effectinfo block, bbox containment, single movedir trace) ride that decision; the missing .noise / bgmscript / reset-follow are residual gaps, not part of the intent."
+    gaps:
+      - "Per-emission positional .noise sound never plays (Base _sound at CH_AMBIENT per emission) — a sound-annotated emitter is silent."
+      - "bgmscript ADSR modulation of the emission rate (n = doBGMScript(this) * ...) missing — tracked under mapobject-misc.bgmscript.adsr."
+      - "Emitter position is fixed at Build time: Base re-nets origin moves (pointparticles_think SF_TRIGGER_RESET) and Draw uses live origin; a func_pointparticles moved after spawn keeps emitting at its old spot."
+      - "Only the FIRST defined dry-land effectinfo block is approximated (color/size/velocity midpoints); multi-block effects lose their secondary layers."
+      - "just_toggled minimum-one-emission rule (n<1 => n=1 on toggle) not reproduced for continuous emitters."
+      - "Live on listen-server/demo only (ambient facade scan); a pure --connect client has no facade and shows no map emitters."
+    verification:
+      - { kind: code, ref: "MapParticleEmitters.cs:53-89 (_Process toggle/burst) + 132-285 (Build: rate decode, block resolve, box extents, velocity jitter, gravity, color ramp) vs Draw_PointParticles pointparticles.qc:166-233; ClientWorld.cs:448-449 news + AddChilds MapParticleEmitters on the live client path", result: pass }
+      - { kind: code, ref: "grep noise/_sound in MapParticleEmitters.cs: none — per-emission sound confirmed absent (also listed as a documented residual in the file header)", result: fail }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). The SF_POINTPARTICLES_* wire sendflags (qh:8-11) are the dropped Net_LinkEntity stream's delta bits — subsumed by the shared-entity facade divergence; the wire's relative-impulse decode and toggle-burst semantics ARE reproduced facade-side. presentation:partial rests on code-read, not an A/B capture."
+
+  - id: mapobject-misc.laser.wire_contract
+    name: "misc_laser net-link stream (SF_LASER_* delta sendflags, ENT_CLIENT_LASER)"
+    layer: [shared]
+    base_refs:
+      - "common/mapobjects/misc/laser.qh:SF_LASER_UPDATE_ORIGIN"
+      - "common/mapobjects/misc/laser.qc:laser_SendEntity"
+    port_refs:
+      - "game/client/LaserRenderer.cs:LaserRenderer"
+    constants:
+      - { name: "SF_LASER_UPDATE_ORIGIN/TARGET/ACTIVE/EFFECT", base: "BIT(0)..BIT(3)", port: "no wire — client reads Origin/mangle/Active/effect off the shared entity every frame", match: false }
+      - { name: "SF_LASER_NOTRACE/SCALE/ALPHA/FINITE", base: "BIT(4)..BIT(7) optional-field presence bits", port: "no wire — fields read directly", match: false }
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: partial
+    intended_divergence: true
+    divergence_rationale: "Net_LinkEntity/laser_SendEntity is deliberately dropped: the client reads the shared server entity off the ambient facade (Api.Entities.FindByClass scan in LaserRenderer), the seam every port client-fx uses — same rationale already recorded on mapobject-misc.laser.server_logic. The delta protocol itself is therefore intentionally unimplemented."
+    gaps:
+      - "The facade replacement only exists where the client shares the server process: on a pure --connect client there is no ambient facade, so laser state never reaches it and no beam renders — the one observable behavior the dropped stream would have provided."
+    verification:
+      - { kind: code, ref: "LaserRenderer.cs scans Api.Entities.FindByClass(\"misc_laser\") each frame reading Origin/Mangle/Active/BeamColor/AlphaKey/Scale/ModelScale — every field laser_SendEntity (laser.qc:123-170) carries is consumed facade-side; no ENT_CLIENT_LASER-equivalent message exists in game/net (grep laser in ServerNet.cs/ClientNet.cs: no laser wire)", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). Covers laser.qh's wire half; the LASER_* spawnflags + beam-length constants in the same header are already verified under mapobject-misc.laser.server_logic. Dedicated-server laser rendering is a port-wide seam question (all facade-based fx share it), not laser-specific."
+
+  - id: mapobject-misc.keys.usekey_keylist
+    name: "item_keys_usekey / item_keys_keylist door-key API + item_keys_names table"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/misc/keys.qh:item_keys_usekey"
+      - "common/mapobjects/misc/keys.qc:item_keys_usekey"
+      - "common/mapobjects/misc/keys.qc:item_keys_keylist"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:ItemKeysKeylist"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:LowestBit"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs:DoorCheckKeys"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs (trigger_keylock touch)"
+    constants:
+      - { name: "usekey semantics", base: "valid = l.itemkeys & p.itemkeys; l.itemkeys &= ~valid; matched iff valid != 0", port: "Doors.cs:519-520 / Triggers.cs:1009-1012 verbatim (all-given => 0 falls out of &= ~valid)", match: true }
+      - { name: "keylist format", base: "\"the X\" / \"the X, the Y\" walking lowestbit + bitshift(keylist, -(l+1))", port: "ItemKeysKeylist: same walk, unsigned right shift (uint)keylist >> (l+1)", match: true }
+      - { name: "ITEM_KEY_MAX", base: "24 (item_keys_names[24]; master key 0xffffff)", port: "no fixed array — Dictionary<int,string> keyed by bit index; master 0xffffff = same 24-bit domain", match: true }
+      - { name: "item_keys_names source", base: "empty until an item_key spawns (keys.qc:240 records this.netname)", port: "seeded with the 6 stock bit names, then overwritten per spawned key (MapObjectsRegistry.cs:379-387, :474)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "MapObjectsRegistry.cs:389-429 LowestBit + ItemKeysKeylist vs keys.qc:40-65 — one-key shortcut ((k&(k-1))==0), multi-key walk with base offset, unsigned shift; consumers LIVE: Doors.cs:537 + Triggers.cs:1022 build the 'You need <the SILVER key>' centerprints on the locked-door/keylock path", result: pass }
+      - { kind: code, ref: "usekey consume inlined at both consumers (Doors.cs:519-522 DoorCheckKeys, Triggers.cs:1007-1017) with the valid==0 (NEED) vs partial (ALSONEED) distinction matching door.qc:189-209", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). The pickup/spawn half is mapobject-misc.keys.item_key (already faithful/live). Port seeds default key names so a door can name a required key even if its item_key spawns later or a mapper gates a door on a key with no pickup — Base would print an empty name there; benign, noted not gapped. CSQC item_keys_usekey variant (keys.qc:3-10, prediction-only) has no port analogue — key doors are server-authoritative in the port."
+
+  - id: mapobject-misc.models.wall_lod
+    name: "wall/prop LOD models (lodmodel1/lodmodel2 keys -> distance-switched modelindex)"
+    layer: [presentation]
+    base_refs:
+      - "common/mapobjects/models.qh:lodmodelindex0"
+      - "common/mapobjects/models.qc:g_clientmodel_genericsendentity"
+      - "common/mapobjects/models.qc:Ent_Wall_Draw"
+      - "common/mapobjects/subs.qc:LODmodel_attach"
+    port_refs: []
+    constants:
+      - { name: "loddistance wire clamp", base: "bound(0, loddistance, 32767)", port: "n/a", match: false }
+      - { name: "LOD2 fallback", base: "!lodmodelindex2 && lodmodelindex1 => lod2 = lod1", port: "n/a", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "lodmodel1/lodmodel2 map keys are ignored: Base resolves them server-side (subs.qc:481-520 LODmodel_attach), networks lodmodelindex0..2 + loddistance1/2 (models.qc:137-141), and the client swaps modelindex by camera distance (Ent_Wall_Draw -> CSQCModel_LOD_Apply, models.qc:272). The port never parses the keys and no map-prop renderer switches models — every prop renders full-detail at any distance (perf-only; no stock-map visual break known)."
+    verification:
+      - { kind: code, ref: "grep lodmodel/LodModel across src/ + game/ + tests/: only Engine/Simulation/CsqcModelLod.cs — the PLAYER-model _lodN filename derivation (cl_playerdetailreduction), which never reads mapobject lodmodel1/lodmodel2 keys; no MapObjects/MapModels handling", result: fail }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). models.qh's other contract halves are already tracked: fade/inactive/default_solid fields under mapobject-misc.models.clientwall_fade, bgmscript fields under mapobject-misc.bgmscript.adsr, modelscale under mapobject-misc.models.props_walls (scale = modelscale default in GModelInit)."

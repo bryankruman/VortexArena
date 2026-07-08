@@ -5,7 +5,9 @@
 // the lump can spawn doors / triggers / plats / jumppads / etc. Each registered delegate is the family's
 // static setup method (Action<Entity>), matching one QC spawnfunc.
 
+using System.Numerics;
 using XonoticGodot.Common.Framework;
+using XonoticGodot.Common.Services;
 
 namespace XonoticGodot.Common.Gameplay;
 
@@ -87,6 +89,10 @@ public static class MapObjectsRegistry
         SpawnFuncs.Register("target_items", TargetUtilities.ItemsSetup);
         SpawnFuncs.Register("target_spawn", TargetUtilities.SpawnSetup);
 
+        // ---- info_autoscreenshot (server/cheats.qc) — observe/screenshot point; the TELEPORT cheat's preferred
+        //      emergency destination. The findtarget aim is deferred to RunPostSpawn (INITPRIO_FINDTARGET). ----
+        SpawnFuncs.Register("info_autoscreenshot", InfoAutoScreenshot.Setup);
+
         // ---- func_door_secret (T22: func/door_secret.qc) — slide-back-then-side secret door. (Uses its own
         //      "door_secret" classname, NOT "door", to stay out of the regular-door shared death/link dispatch
         //      the port introduced; see TargetUtilities.DoorSecretSetup.) ----
@@ -107,6 +113,20 @@ public static class MapObjectsRegistry
         //      WarpzoneSpawns.Sink bridge the host wires in Boot (mirrors Porto.PortalSpawner). ----
         SpawnFuncs.Register("trigger_warpzone", WarpzoneSpawns.TriggerWarpzoneSetup);
         SpawnFuncs.Register("trigger_warpzone_position", WarpzoneSpawns.TriggerWarpzonePositionSetup);
+        // QC's CANONICAL position spawnfunc (server.qc:642); trigger_warpzone_position just delegates to it. A map
+        // authored with the bare misc_warpzone_position name must orient its zone identically.
+        SpawnFuncs.Register("misc_warpzone_position", WarpzoneSpawns.MiscWarpzonePositionSetup);
+        // runtime / moving-warpzone re-link (server.qc:807-815). Both names spawn the same triggerable use-handler.
+        SpawnFuncs.Register("trigger_warpzone_reconnect", WarpzoneSpawns.TriggerWarpzoneReconnectSetup);
+        SpawnFuncs.Register("target_warpzone_reconnect", WarpzoneSpawns.TriggerWarpzoneReconnectSetup);
+        // map-placed security cameras (lib/warpzone/server.qc spawnfunc func_camera / func_warpzone_camera): the
+        // dpcamera/func_camera entity resolves its target, stores the camera pose, and on touch/view stamps the
+        // viewer's authoritative FixAngle/FixAngleAngles — the same view-orient channel the warpzone owner block
+        // uses (no new wire fields). Routed through the same WarpzoneSpawns.Sink the other warpzone spawnfuncs use
+        // (bridged in GameWorld.cs:453) so it realises on the normal match path. Client view-side presentation
+        // (FixView / portal render) is the listen-host/demo ambient seam, same as LaserRenderer / PortalRenderer.
+        SpawnFuncs.Register("func_camera", WarpzoneSpawns.FuncCameraSetup);
+        SpawnFuncs.Register("func_warpzone_camera", WarpzoneSpawns.FuncCameraSetup);
 
         // ---- teleporters (trigger/teleport.qc, misc/teleport_dest.qc) ----
         SpawnFuncs.Register("trigger_teleport", Teleporters.TeleportSetup);
@@ -143,6 +163,18 @@ public static class MapObjectsRegistry
         SpawnFuncs.Register("func_wall", MapModels.WallSetup);
         SpawnFuncs.Register("func_clientwall", MapModels.ClientWallSetup);
         SpawnFuncs.Register("func_static", MapModels.StaticSetup);
+
+        // ---- pickup keys (misc/keys.qc) — the key SOURCE for trigger_keylock / key-gated func_door. The
+        //      keylock CONSUMER (item_keys_usekey) already lives in Triggers.cs/Doors.cs reading Entity.ItemKeys,
+        //      but with no key spawnfunc a map's key entity spawned NOTHING — so a key-gated area was permanently
+        //      locked. spawn_item_key + item_key_touch are ported inline below (KeySetup/KeyTouch); item_key1/2
+        //      and the QL item_key_gold/silver/master aliases pre-stamp .itemkeys then chain to item_key. ----
+        SpawnFuncs.Register("item_key", KeySetup);
+        SpawnFuncs.Register("item_key1", e => { e.ItemKeys = 1 << 1; KeySetup(e); }); // BIT(1) SILVER (legacy swap)
+        SpawnFuncs.Register("item_key2", e => { e.ItemKeys = 1 << 0; KeySetup(e); }); // BIT(0) GOLD (legacy swap)
+        SpawnFuncs.Register("item_key_gold", e => { e.ItemKeys = 1 << 0; KeySetup(e); });   // QL gold
+        SpawnFuncs.Register("item_key_silver", e => { e.ItemKeys = 1 << 1; KeySetup(e); }); // QL silver
+        SpawnFuncs.Register("item_key_master", e => { e.ItemKeys = 0xffffff; KeySetup(e); }); // QL master (all 24 bits)
 
         // ---- continuous map particle emitters (T48: func/pointparticles.qc) — server state/toggling;
         //      emission is client-side (game/client/MapParticleEmitters.cs). ----
@@ -214,6 +246,13 @@ public static class MapObjectsRegistry
         SpawnFuncs.Register("turret_walker", TurretSpawnFuncs.Walker);
         SpawnFuncs.Register("turret_ewheel", TurretSpawnFuncs.EWheel);
         SpawnFuncs.Register("turret_fusionreactor", TurretSpawnFuncs.FusionReactor);
+        // turret_checkpoint (common/turrets/checkpoint.qc): the waypoint nodes ewheel/walker roam between; the
+        // walker_checkpoint classname is a QC compat alias for the same spawnfunc.
+        SpawnFuncs.Register("turret_checkpoint", TurretSpawnFuncs.Checkpoint);
+        SpawnFuncs.Register("walker_checkpoint", TurretSpawnFuncs.Checkpoint);
+        // turret_targettrigger (common/turrets/targettrigger.qc): a touch volume that designates the toucher as a
+        // target to RECIEVETARGETS turrets (the HK) whose targetname matches the trigger's target (0.5s debounce).
+        SpawnFuncs.Register("turret_targettrigger", TurretSpawnFuncs.TargetTrigger);
 
         // vehicles (common/vehicles/vehicle/*.qc: spawnfunc(vehicle_X){ ... vehicle_initialize(this,VEH_X,false); }).
         SpawnFuncs.Register("vehicle_racer", VehicleSpawnFuncs.Racer);
@@ -236,6 +275,10 @@ public static class MapObjectsRegistry
         // Domination control points (common/gametypes/gametype/domination/sv_domination.qc dom_controlpoint).
         SpawnFuncs.Register("dom_controlpoint", GametypeObjectiveSpawns.DomControlPoint);
         SpawnFuncs.Register("team_dom_point", GametypeObjectiveSpawns.DomControlPoint); // legacy classname alias
+        // dom_team: team-definition data holder (carries a per-team control-point model). Route it through the sink
+        // so it's RETIRED (never spawns/renders) — without this its map `model` key made it a stray dom_*.md3 model
+        // wrongly visible on the map in the wrong gametype (playtest #20: Stormkeep DM showed a dom_* cluster).
+        SpawnFuncs.Register("dom_team", GametypeObjectiveSpawns.DomTeam);
         // Race checkpoints + penalty zones (common/gametypes/gametype/race/sv_race.qc + server/race.qc).
         SpawnFuncs.Register("trigger_race_checkpoint", GametypeObjectiveSpawns.RaceCheckpoint);
         SpawnFuncs.Register("trigger_race_penalty", GametypeObjectiveSpawns.RacePenalty);
@@ -308,6 +351,195 @@ public static class MapObjectsRegistry
         ViewLocation.RunDeferredInit();
         Follow.RunDeferredInit();
         AdvancedMovers.RunDeferredInit();
+        Teleporters.RunDeferredInit(); // target_teleporter_checktarget disambiguation (dest/self-target/teleporter)
+        InfoAutoScreenshot.RunDeferredInit(); // aim each info_autoscreenshot at its .target (QC findtarget pass)
+    }
+
+    // ====================================================================
+    //  Pickup keys (common/mapobjects/misc/keys.qc) — ported inline so the
+    //  registry stays the single owner of this family (no separate Keys.cs).
+    // ====================================================================
+    //
+    //  spawnfunc(item_key)        -> KeySetup  (default netname/colormod/model per .itemkeys, then spawn_item_key)
+    //  item_key_touch             -> KeyTouch  (grant itemkeys bits, pickup sound+centerprint, fire .target once)
+    //
+    //  Faithful to keys.qc:77-264. Divergences (mirrors the rest of this module's contracts):
+    //   * EF_LOWPRECISION is a networking hint the port's Entity carries no field for; dropped (harmless).
+    //   * MF_ROTATE is the DP model-spin flag (keys-only in all of Base). The port has no networked modelflags
+    //     channel, so it rides Entity.ModelSpinRotate on the shared edict and EntityNode applies DP's
+    //     '0 100 0'*fmod(time,3.6) yaw spin (csqcmodel_hooks.qc:617) on the listen-server/demo path.
+    //   * QC's objerror on a multi-bit / nameless / modelless key is a headless no-op here: the edict is left
+    //     inert (removed) rather than crashing the map, matching how the port treats other objerror sites.
+    //   * play2(toucher, noise) (toucher-only 2D cue) -> MapMover.Play2 (CH_INFO / VOL_BASE / ATTEN_NONE).
+    //   * The Q3COMPAT_COMMON QL +8z origin nudge is omitted (no Q3 compat global in the port; keys.qc:125-127).
+
+    private const string KeyDefaultModel = "models/keys/key.md3";
+    private const string KeyDefaultSound = "ITEMPICKUP"; // QC SND(ITEMPICKUP)
+
+    /// <summary>QC <c>item_keys_names[ITEM_KEY_MAX]</c> (keys.qh:9): display name per key bit-index, recorded when an
+    /// item_key spawns (keys.qc:240). Read by <see cref="ItemKeysKeylist"/> so door/keylock "you need …" centerprints
+    /// can name the missing keys. Seeded with the stock bit names so a door requiring a key still names it even when
+    /// the matching item_key pickup happens to be spawned later than the door's own setup.</summary>
+    private static readonly System.Collections.Generic.Dictionary<int, string> ItemKeyNames = new()
+    {
+        [0] = "GOLD key",      // BIT(0)
+        [1] = "SILVER key",    // BIT(1)
+        [2] = "BRONZE key",    // BIT(2)
+        [3] = "RED keycard",   // BIT(3)
+        [4] = "BLUE keycard",  // BIT(4)
+        [5] = "GREEN keycard", // BIT(5)
+    };
+
+    /// <summary>QC <c>lowestbit(v)</c> (lib/math.qc): bit-index of the least-significant set bit (0-based); -1 if 0.</summary>
+    private static int LowestBit(int v)
+    {
+        if (v == 0)
+            return -1;
+        int b = 0;
+        while ((v & 1) == 0) { v >>= 1; b++; }
+        return b;
+    }
+
+    /// <summary>Port of <c>item_keys_keylist(float keylist)</c> (keys.qc:40-66): build the human-readable list of the
+    /// keys named by the <paramref name="keylist"/> bitfield, e.g. "the SILVER key" or "the GOLD key, the SILVER key".
+    /// Empty when no bits are set. Used by the func_door / trigger_keylock "You need %s" center notifications.</summary>
+    public static string ItemKeysKeylist(int keylist)
+    {
+        // no keys
+        if (keylist == 0)
+            return "";
+
+        // one key
+        if ((keylist & (keylist - 1)) == 0)
+            return "the " + KeyName(LowestBit(keylist));
+
+        string n = "";
+        int baseBit = 0;
+        while (keylist != 0)
+        {
+            int l = LowestBit(keylist);
+            n = string.IsNullOrEmpty(n)
+                ? "the " + KeyName(baseBit + l)
+                : n + ", the " + KeyName(baseBit + l);
+
+            // QC bitshift(keylist, -(l+1)) is an unsigned right shift by (l+1).
+            keylist = (int)((uint)keylist >> (l + 1));
+            baseBit += l + 1;
+        }
+        return n;
+    }
+
+    private static string KeyName(int bitIndex)
+        => ItemKeyNames.TryGetValue(bitIndex, out string? name) ? name : "";
+
+    /// <summary>Port of <c>spawnfunc(item_key)</c> + <c>spawn_item_key</c> (keys.qc:100-264): resolve the default
+    /// netname/colormod/model from <c>.itemkeys</c>, then place the key as a SOLID_TRIGGER pickup.</summary>
+    private static void KeySetup(Entity this_)
+    {
+        this_.ClassName = "item_key";
+
+        // Reject a key with more than one bit set (keys.qc:173-179) unless it's the master key. Headless: drop it.
+        if (this_.ItemKeys > 0 && (this_.ItemKeys & (this_.ItemKeys - 1)) != 0 && this_.ItemKeys != 0xffffff)
+        {
+            MapMover.RemoveEntity(this_);
+            return;
+        }
+
+        // Default netname + colormod by key id (keys.qc:182-238).
+        string netName;
+        Vector3 colorMod;
+        string model = KeyDefaultModel;
+        switch (this_.ItemKeys)
+        {
+            case 1 << 0: netName = "GOLD key";     colorMod = new Vector3(1f, .9f, 0f);    break;
+            case 1 << 1: netName = "SILVER key";   colorMod = new Vector3(.9f, .9f, .9f);  break;
+            case 1 << 2: netName = "BRONZE key";   colorMod = new Vector3(.6f, .25f, 0f);  break;
+            case 1 << 3: netName = "RED keycard";  colorMod = new Vector3(.9f, 0f, 0f);    break; // FIXME(Base): keycard model
+            case 1 << 4: netName = "BLUE keycard"; colorMod = new Vector3(0f, 0f, .9f);    break;
+            case 1 << 5: netName = "GREEN keycard";colorMod = new Vector3(0f, .9f, 0f);    break;
+            case 0xffffff: netName = "MASTER key"; colorMod = new Vector3(1f, .25f, .25f); break;
+            default:
+                // An unlisted/custom key: requires a custom netname AND model, else QC objerrors (keys.qc:221-237).
+                netName = "FLUFFY PINK keycard";
+                colorMod = new Vector3(1f, 1f, 1f);
+                if (string.IsNullOrEmpty(this_.NetName) || string.IsNullOrEmpty(this_.Model))
+                {
+                    MapMover.RemoveEntity(this_);
+                    return;
+                }
+                break;
+        }
+
+        if (string.IsNullOrEmpty(this_.NetName))
+            this_.NetName = netName;
+        if (this_.ColorModKey == Vector3.Zero)   // QC: if(!this.colormod) — null vector means "unset"
+            this_.ColorModKey = colorMod;
+
+        // QC keys.qc:240: item_keys_names[lowestbit(this.itemkeys)] = this.netname; — record the display name
+        // so func_door/trigger_keylock's "You need <the SILVER key>" centerprints can name the missing keys.
+        ItemKeyNames[LowestBit(this_.ItemKeys)] = this_.NetName;
+        if (string.IsNullOrEmpty(this_.Model))
+            this_.Model = model;
+        if (string.IsNullOrEmpty(this_.Message))
+            this_.Message = "You've picked up the " + this_.NetName + "!";
+        if (string.IsNullOrEmpty(this_.Noise))
+            this_.Noise = KeyDefaultSound;
+
+        SpawnItemKey(this_);
+    }
+
+    /// <summary>Port of <c>spawn_item_key</c> (keys.qc:100-134): movetype/model/solid + bbox placement + touch.</summary>
+    private static void SpawnItemKey(Entity this_)
+    {
+        // spawnflags&1 (FLOATING) => noalign (keys.qc:104-105).
+        if ((this_.SpawnFlags & 1) != 0)
+            this_.NoAlign = true;
+
+        // noalign => MOVETYPE_NONE (suspended), else MOVETYPE_TOSS (drop to floor) (keys.qc:107-110).
+        this_.MoveType = this_.NoAlign ? MoveType.None : MoveType.Toss;
+
+        if (Api.Services is not null && !string.IsNullOrEmpty(this_.Model))
+            Api.Entities.SetModel(this_, this_.Model);
+
+        this_.Effects = AdvancedMovers.EfLowPrecision; // QC: this.effects = EF_LOWPRECISION
+        // QC: this.modelflags |= MF_ROTATE (keys.qc:117). The port has no networked modelflags channel, so the
+        // render-only spin rides this bool on the shared edict; EntityNode applies DP's '0 100 0'*fmod(time,3.6)
+        // yaw spin (csqcmodel_hooks.qc:617) on the listen-server/demo path. MF_ROTATE is keys-only in all of Base.
+        this_.ModelSpinRotate = true;
+        this_.Solid = Solid.Trigger;
+
+        // bbox placement (keys.qc:122-123): origin raised +32z within the bbox, size '-16 -16 -56'..'16 16 0'.
+        MapMover.SetOrigin(this_, this_.Origin + new Vector3(0f, 0f, 32f));
+        MapMover.SetSize(this_, new Vector3(-16f, -16f, -56f), new Vector3(16f, 16f, 0f));
+
+        // NOTE: not FL_ITEM, so no DropToFloor_QC special-casing; the TOSS integrator settles it next frame
+        // (keys.qc:129-131 DropToFloor_QC_DelayedInit). Matches StartItem.cs's TOSS drop contract.
+
+        this_.Touch = KeyTouch;
+        MapMover.IndexRegister(this_);
+    }
+
+    /// <summary>Port of <c>item_key_touch</c> (keys.qc:77-95): grant the key bits to a player, play the pickup
+    /// sound + centerprint, then fire <c>.target</c> ONCE (the message is blanked across SUB_UseTargets so the
+    /// fired targets don't re-print it, exactly as QC does).</summary>
+    private static void KeyTouch(Entity this_, Entity toucher)
+    {
+        if ((toucher.Flags & EntFlags.Client) == 0) // IS_PLAYER
+            return;
+
+        // Already holds every bit this key grants -> ignore (keys.qc:83-84).
+        if ((toucher.ItemKeys & this_.ItemKeys) != 0)
+            return;
+
+        toucher.ItemKeys |= this_.ItemKeys;
+        MapMover.Play2(toucher, this_.Noise); // QC keys.qc:87 play2(toucher, this.noise) — 2D VOL_BASE/ATTEN_NONE
+        MapMover.Centerprint(toucher, this_.Message);
+
+        // Fire .target with the message blanked so SUB_UseTargets doesn't re-centerprint it (keys.qc:91-94).
+        string oldMessage = this_.Message;
+        this_.Message = "";
+        MapMover.UseTargets(this_, toucher, toucher);
+        this_.Message = oldMessage;
     }
 }
 
@@ -342,6 +574,13 @@ public static class GametypeObjectiveSpawns
 
     // Domination control point (the owning team starts neutral; the map may set an initial team via fields).
     public static void DomControlPoint(Entity e) => Emit(e, "dom_controlpoint", (int)e.Team);
+
+    // Domination TEAM DEFINITION (dom_team): a data holder that in Base carries a team's control-point model
+    // (dom_red/blue/…​md3). The port doesn't consume these — but the lump copies their `model` key onto the edict,
+    // so WITHOUT routing them through the sink they survive as live, networked, RENDERED models (a cluster of
+    // dom_*.md3 on a platform, wrongly visible in every mode incl. DM — playtest #20). Emit so the sink retires
+    // them: removed in non-dom (default arm), and the Domination arm also retires them (never a placement).
+    public static void DomTeam(Entity e) => Emit(e, "dom_team", (int)e.Team);
 
     // Race checkpoint + penalty zone (checkpoint index / penalty seconds come from the edict fields).
     public static void RaceCheckpoint(Entity e) => Emit(e, "trigger_race_checkpoint", Teams.None);

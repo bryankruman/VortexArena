@@ -12,9 +12,9 @@ namespace XonoticGodot.Game.Client;
 /// a gib splash of "type 1" tosses an eye, a bloody skull, then per-amount a spray of arms, chests, legs and
 /// fast-flying chunks, each a bouncing MOVETYPE_BOUNCE body that fades out after cl_gibs_lifetime.
 ///
-/// We load the real MD3 gib models from the mounted content (models/gibs/*.md3) via the host model loader;
-/// the Quake1 <c>chunk.mdl</c> isn't handled by the IQM/DPM/MD3 loader, so those fast chunks fall back to a
-/// small generated mesh. Physics (gravity + ground bounce + tumble) are integrated client-side per tick,
+/// We load the real gib models from the mounted content (the MD3 limbs models/gibs/*.md3 and the Quake1
+/// <c>chunk.mdl</c>, now handled by the host loader) via the model loader; a small generated mesh is the
+/// fallback when the loader is unwired. Physics (gravity + ground bounce + tumble) are integrated client-side per tick,
 /// exactly as the QC gib is a pure client drawable advanced by Movetype_Physics_MatchTicrate.
 /// </summary>
 public sealed partial class ModelGibs : Node3D
@@ -30,7 +30,7 @@ public sealed partial class ModelGibs : Node3D
     /// <summary>Host model loader (e.g. <c>AssetLoader.LoadModel</c>); null =&gt; generated placeholder chunks.</summary>
     public Func<string, Node3D?>? ModelLoader { get; set; }
 
-    // The MD3 limb models a normal (type 0x01) gib splash tosses (gibs.qc). chunk.mdl is Quake1 (placeholder).
+    // The MD3 limb models a normal (type 0x01) gib splash tosses (gibs.qc). The fast chunk.mdl is a Quake1 MDL.
     private static readonly string[] LimbModels =
     {
         "models/gibs/arm.md3",
@@ -66,7 +66,7 @@ public sealed partial class ModelGibs : Node3D
                     Toss(mdl, origin + jitter, velocity, RandomVec() * (GD.Randf() * 120f + 85f), floorZ, false);
                 }
             }
-            // Fast chunks that splat on impact (chunk.mdl -> placeholder mesh).
+            // Fast chunks that splat on impact (the real Quake1 chunk.mdl).
             for (int k = 0; k < 4; k++)
                 if (GD.Randf() < randomValue)
                     Toss("models/gibs/chunk.mdl", origin + RandomVec() * 16f, velocity, RandomVec() * 450f, floorZ, destroyOnTouch: true);
@@ -100,11 +100,79 @@ public sealed partial class ModelGibs : Node3D
         return gib;
     }
 
+    /// <summary>
+    /// Toss the raptor cluster-bomb shell-fragment gibs (QC <c>RaptorCBShellfragToss</c> /
+    /// <c>RaptorCBShellfragDraw</c>, raptor_weapons.qc:244-284, dispatched from the DEATH_VH_RAPT_FRAGMENT burst
+    /// FX in damageeffects.qc:353-360). Three bouncing <c>clusterbomb_fragment.md3</c> drawables thrown outward
+    /// from the burst point: gravity 0.15, an avelocity = ±|velocity| seed plus a per-frame ±15 tumble jitter,
+    /// a 3s lifetime that fades over its final second (QC cnt = time+2, nextthink = time+3). Pure cosmetic
+    /// debris — <paramref name="origin"/>/<paramref name="bombVel"/> are Quake space (the bursting bomb's pose).
+    /// </summary>
+    public void TossShellfrags(NVec3 origin, NVec3 bombVel)
+    {
+        for (int i = 1; i < 4; i++)
+        {
+            // QC damageeffects.qc: vel = normalize(w_org - (w_org + force_dir*16)) + randomvec()*128. We lack the
+            // surface backoff (force_dir) headless, so seed a small outward/upward bias + the dominant random spray.
+            NVec3 vel = new NVec3(0f, 0f, 0.4f) + RandomVec() * 128f;
+            Node3D mesh = BuildMesh("models/vehicles/clusterbomb_fragment.md3");
+            var frag = new GibBody
+            {
+                Name = "raptor_cb_shellfrag",
+                Position = Coords.ToGodot(origin),
+                VelocityQuake = vel,
+                GravityScale = 0.15f,                       // QC sfrag.gravity = 0.15
+                Lifetime = 3f,                              // QC sfrag.nextthink = time + 3
+                FadeDuration = 1f,                          // QC cnt = time + 2 → fades over the final second
+                FloorZ = float.NegativeInfinity,
+                DestroyOnTouch = false,
+                // QC: avelocity = prandomvec() * vlen(velocity); plus a +15/draw jitter (AngularJitter).
+                AngularVel = RandomVecG() * vel.Length(),
+                AngularJitter = 15f,
+            };
+            frag.AddChild(mesh);
+            AddChild(frag);
+            frag.OnFreed = () => _liveCount = Math.Max(0, _liveCount - 1);
+            _liveCount++;
+        }
+        CullIfNeeded();
+    }
+
+    /// <summary>
+    /// (engine-perf 2026-06-16) Build one hidden instance per DISTINCT gib model for the offscreen GPU pipeline
+    /// warm pass (<see cref="GpuWarmPass"/>). The gib world-models render via the entity feed and are otherwise
+    /// un-warmed, so the FIRST combat death first-instances their (mesh,material) pipeline mid-match — a
+    /// synchronous SURFACE compile (the residual a RenderDoc capture pinned to the MD3-entity class). Uses the
+    /// SAME <see cref="BuildMesh"/> factory a live <see cref="Toss"/> uses, so it warms exactly what plays: the
+    /// real MD3 limb when <see cref="ModelLoader"/> resolves it, the generated chunk fallback otherwise. The
+    /// returned nodes are unparented — the warm pass parents, renders, and frees them.
+    /// </summary>
+    public List<Node3D> BuildWarmupInstances()
+    {
+        var list = new List<Node3D>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // One opaque instance (the first-draw variant) + one alpha-override instance (the final-second fade
+        // variant ApplyAlpha switches to — a distinct PSO otherwise compiled mid-match on the first gib fade).
+        void Warm(string path)
+        {
+            if (!seen.Add(path)) return;
+            list.Add(BuildMesh(path));
+            list.Add(GpuWarmPass.AlphaWarm(BuildMesh(path)));
+        }
+        foreach (string mdl in LimbModels) Warm(mdl);   // arm (listed twice → deduped), chest, smallchest, leg1, leg2
+        Warm("models/gibs/eye.md3");                    // the eye + bloody skull Splash() always tosses
+        Warm("models/gibs/bloodyskull.md3");
+        Warm("models/gibs/chunk.mdl");                  // fast chunks (real Quake1 MDL)
+        return list;
+    }
+
     // ------------------------------------------------------------------------------------------------
 
     private Node3D BuildMesh(string modelPath)
     {
-        if (ModelLoader is not null && !modelPath.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase))
+        // All shipped gib models load through the host loader now, including the Quake1 chunk.mdl (MdlReader
+        // added 2026-07); GeneratedChunk stays as the fallback when the loader is unwired or a parse fails.
+        if (ModelLoader is not null)
         {
             try
             {
@@ -172,6 +240,16 @@ public sealed partial class ModelGibs : Node3D
         public bool DestroyOnTouch;
         public Action? OnFreed;
 
+        /// <summary>QC <c>.gravity</c> scale (1 = full sv_gravity). The raptor shellfrags use 0.15.</summary>
+        public float GravityScale = 1f;
+
+        /// <summary>Per-tick avelocity jitter (QC <c>RaptorCBShellfragDraw: avelocity += randomvec()*15</c>); 0 = none.</summary>
+        public float AngularJitter;
+
+        /// <summary>How long the final fade-out lasts (QC gibs fade over their last second; shellfrags fade
+        /// over the cnt..nextthink window, ~1s). The alpha ramps 0→1 over this many seconds before death.</summary>
+        public float FadeDuration = 1f;
+
         private const float Gravity = 800f;       // sv_gravity; gibs use gravity 1 (full)
         private const float BounceFactor = 0.4f;  // gib bouncefactor-ish
         private float _age;
@@ -179,7 +257,11 @@ public sealed partial class ModelGibs : Node3D
 
         public override void _PhysicsProcess(double delta)
         {
-            float dt = (float)delta;
+            // #30 slowmo/pause: gib tosses are Base CSQC (cl.time-driven) — scale like the casings so gibs
+            // hang frozen at slowmo 0 instead of settling on wall clock.
+            float dt = XonoticGodot.Game.Client.ClientRenderTime.ScaleDelta((float)delta);
+            if (dt <= 0f)
+                return; // paused — hold everything in place
             _age += dt;
             if (_age >= Lifetime)
             {
@@ -190,7 +272,10 @@ public sealed partial class ModelGibs : Node3D
 
             if (!_resting)
             {
-                VelocityQuake.Z -= Gravity * dt;
+                VelocityQuake.Z -= Gravity * GravityScale * dt;
+                // QC RaptorCBShellfragDraw: avelocity += randomvec() * 15 each draw — a continuous tumble jitter.
+                if (AngularJitter != 0f)
+                    AngularVel += RandomVecG() * (AngularJitter * dt);
                 NVec3 posQ = Coords.ToQuake(Position) + VelocityQuake * dt;
 
                 if (!float.IsNegativeInfinity(FloorZ) && posQ.Z <= FloorZ && VelocityQuake.Z < 0f)
@@ -218,10 +303,10 @@ public sealed partial class ModelGibs : Node3D
                 RotateObjectLocal(Vector3.Right, AngularVel.X * dt);
             }
 
-            // Fade over the final second (QC sets alpha = bound(0, nextthink-time, 1)).
+            // Fade over the final FadeDuration seconds (QC sets alpha = bound(0, nextthink-time, 1)).
             float remaining = Lifetime - _age;
-            if (remaining < 1f)
-                ApplyAlpha(this, Math.Clamp(remaining, 0f, 1f));
+            if (remaining < FadeDuration)
+                ApplyAlpha(this, Math.Clamp(remaining / Math.Max(0.001f, FadeDuration), 0f, 1f));
         }
 
         private static void ApplyAlpha(Node node, float a)

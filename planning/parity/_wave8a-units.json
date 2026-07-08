@@ -1,0 +1,163 @@
+[
+ {
+  "unit": "assault",
+  "tier": "opus",
+  "notes": [
+   "[presentation] assault.objective.activate: ActivateObjective now also spawns the objective's waypoint sprite (SpawnObjectiveSprite → WP_AssaultDestroy + health bar) on the server, matching QC's WaypointSprite_SpawnFixed. But there is no client render/networking path, so the sprite is not actually visible on-screen (see assault.objective.waypoint_sprite). Logic/state is faithful; the visible marker is still absent.",
+   "[audio] assault.objective.decrease_and_score: QC MUTATOR_HOOKFUNCTION(as, PlayHitsound) returns true for a func_assault_destructible victim (forces the standard hitsound when shelling a wall); the port doesn't special-case it. Parity-neutral but not explicitly modeled (now tracked as new_unmapped assault.notify.play_hitsound).",
+   "[presentation] assault.objective.waypoint_sprite: Presentation only: the objective waypoint sprite is now spawned, health-bar-updated, disowned-on-destroy, and ticked SERVER-SIDE (SpawnObjectiveSprite + WaypointSprites.Think, GameWorld.cs:1557). But there is NO client render/networking path — no code reads WaypointSprites.Active to serialize/render it (net+engine grep empty). So the attacker has no actual on-screen objective marker, health bar, or radar icon yet. The state machine is faithful; the visible pixels are absent.",
+   "[presentation] assault.objective.destructible_heal: Presentation: the heal updates the wall's waypoint-sprite health bar server-side (WaypointSprites.UpdateHealth) but, like all the Assault sprites, that bar is not surfaced to the client (no waypoint render/network path). QC's func_breakable_colormod (the visible color tint on a healed wall) is not modeled. The heal LOGIC + health restoration is faithful + live."
+  ]
+ },
+ {
+  "unit": "clanarena",
+  "tier": "sonnet",
+  "notes": [
+   "[presentation] clanarena.join.late_join_observer: While !allowed_to_spawn, QC forces a joining player to Observer (TRANSMUTE), sets INGAME_STATUS_JOINING, and sends INFO_CA_JOIN_LATE so they play from the next round. The port still has no INGAME_JOINING state and no allowed_to_spawn spawn gate, so mid-round joiners are not handled the QC way. ; QC Bot_FixCount counts in-game-joined clients (so bots fill mid-round) -- not ported.",
+   "[presentation] clanarena.notify.alone_on_leave: The death-path 'alone' notify is wired (see clanarena.notify.round_outcome), but Base ALSO sends CENTER_ALONE when a live teammate disconnects or is forced to observer mid-round. The port has no CA hook on the disconnect / make-observer paths, so a teammate leaving by means other than death won't trigger the last-survivor print.",
+   "[presentation] clanarena.spectate.force_spectate_cmd: Base intercepts the `spectate` client command for an INGAME player: it force-spectates (MUT_SPECCMD_FORCE) and, when sv_spectate is on and they're already spec/observer, sends INFO_CA_LEAVE ('left the game'). The port has no CA ClientCommand_Spectate hook and no CA_LEAVE notification, so leaving CA mid-game isn't handled the QC way. Tied to the missing INGAME state."
+  ]
+ },
+ {
+  "unit": "ctf",
+  "tier": "opus",
+  "notes": [
+   "[presentation] ctf.flag.spawn_setup: Base flag is static at the spawn origin (no DropToFloor settle on non-fixed spawns); dropped flags now DO settle (MoveType.Toss integrator, see ctf.flag.drop_on_death). ; No glow trail (g_ctf_flag_glowtrails), no dynamic team light (g_ctf_dynamiclights), no EF_LOWPRECISION; EF_FULLBRIGHT forced on (Base default off).",
+   "[presentation] ctf.flag.capture: Capture-time persistent record (ctf_CaptureRecord/ServerProgsDB) + g_ctf_leaderboard + the fastest-cap broadcast (CTF_CAPTURE_TIME_<team>, registered in NotificationsList but Capture fires CTF_CAPTURE_<team> only) not ported. ; Per-flag score_capture override + cnt-group guard not modeled (own flag home requirement IS faithful).",
+   "[presentation] ctf.flag.fckill_score: Auto-helpme is modeled as a carrier-sprite helpme FLASH (GtHelpMeUntil networked via ServerNet:964, consumed in CollectWaypoints), not the full Base WaypointSprite_HelpMePing sprite; effective-HP test approximates healtharmor_maxdamage with health+armor.",
+   "[audio] ctf.flag.throw: Throw emits no sound (Base plays a flag toss/announce cue on DROP_THROW); ThrowFlag -> ThrowDropCommon never calls FlagAnnounceSound.",
+   "[presentation/audio] ctf.capture_shield: No physical ctf_captureshield push entity (no shield model, no force push, no shielded centerprints) — the status is computed and gates pickups + reaches the HUD, but the visible/pushing shield is absent.",
+   "[presentation] ctf.stalemate: The stalemate state is detected but has NO visible effect: PackCtfStatus declares CtfStalemate(8192) but never ORs it from ctf.Stalemate (GametypeStatusBlock.cs:192, `the bit is reserved here`), so the CTF_STALEMATE OBJECTIVE_STATUS bit is never set — the client stalemate overlay (ready to read bit 8192) never lights up. ; The enemy-FC waypoint reveal (WP_FlagCarrierEnemy*) and the CENTER_CTF_STALEMATE_CARRIER/OTHER center prints are not produced.",
+   "[presentation] ctf.hud.waypoints: Base/dropped/carrier-enemy sprites + the carrier helpme FLASH are emitted; no dedicated flag-return sprite, no enemy-FC-on-pickup reveal (g_ctf_flagcarrier_waypointforenemy_spotting), no stalemate enemy-FC reveal."
+  ]
+ },
+ {
+  "unit": "cts",
+  "tier": "opus",
+  "notes": [
+   "[presentation] cts.checkpoints.intermediate: target_checkpoint and trigger_race_checkpoint are consumed as no-ops for CTS (GameWorld:2093-2094 documents them as Race-only); defrag-style maps lose ordered checkpoint enforcement. ; No 'went backwards' detection, no spawnflag-4 backward-damage, no per-checkpoint split times/records, no .defragcp order file. Wave-5 added per-checkpoint split records to the Race port (Race.cs RecordCheckpointSplit / _checkpointRecords), but Cts.cs got no equivalent — CTS remains a single start->stop course with",
+   "[presentation] cts.speedaward: No per-round best-speed tracking/broadcast and no persisted all-time best speed; the HUD speed-award display has no data.",
+   "[presentation] cts.hud.race_timer: CTS has no intermediate checkpoints, so the panel's per-checkpoint split / anticipation delta / next-best lines are intentionally inert for CTS (RaceCheckpoint=254, no split feed) — this matches a single start->stop course but means the panel shows only the running clock + medal flash, not the full Race split UI.",
+   "[presentation] cts.hud.cl_panel_gating: HUD_Score_show (hide the score panel while observing in CTS) and DrawScoreboardItemStats / DrawDeathScoreboard hiding are not specifically modeled per-CTS; the 'Rankings' scoreboard header is a hard-coded literal, not a CTS-conditional relabel. ; Scoreboard accuracy is still not networked, so the CTS-gated accuracy block draws nothing (low impact: CTS has no accuracy display by intent)."
+  ]
+ },
+ {
+  "unit": "deathmatch",
+  "tier": "opus",
+  "notes": [
+   "[presentation/audio] deathmatch.respawn.timing: Respawn 10-9-8 countdown announcer is STILL not presented: Player.RespawnCountdown is computed by RespawnTiming.Calculate but still has NO reader/announcer (only SpawnSystem resets it). The respawn-time STAT is networked (RespawnTimeStat) but the spoken 10..1 countdown is absent. (This presentation/audio gap is owned by sv-client-lifecycle.dead.respawn_countdown_announce.)"
+  ]
+ },
+ {
+  "unit": "domination",
+  "tier": "haiku",
+  "notes": [
+   "[presentation] domination.controlpoint.spawn: QC AnimateDomPoint frame animation (t_width 0.02 / t_length 239, ++frame per 0.1s think) is not ported — the point body shows a static model frame, no animation. ; scale(0.6) is not applied to the spawned entity (EF_LOWPRECISION + EF_FULLBRIGHT-when-cvar ARE)."
+  ]
+ },
+ {
+  "unit": "freezetag",
+  "tier": "opus",
+  "notes": [
+   "[presentation] freezetag.unfreeze: Does not delete an ice entity (not spawned in the first place); the waypoint sprite IS cleared (it stops being collected once IsFrozen flips false).",
+   "[presentation/audio] freezetag.damage.softkill_void: No soft-kill relocate path (g_frozen_damage_trigger): the NEEDKILL soft-kill (restore HP=1+armor, teleport to a spawn point, no weapon reset) in PlayerDies / the Damage_Calculate relocate branch is absent — FT.OnDamageCalculate leaves NEEDKILL deathtypes alone (frozen player dies in void/lava), and the relocate needs the server spawn selector (intentionally NOT done in the gametype layer, per the FreezeTag.cs comment ~390). ; Fall-damage revive (g_frozen_revive_falldamage) IS now implemented and",
+   "[presentation] freezetag.presentation.ice_model: No distinct ice block entity (random 1-of-20 frame, team-colored, following the player at origin-16) — frozen players only get an icy-blue colormod on their normal model.",
+   "[audio] freezetag.presentation.notifications: SPAWN_LATE (joining mid-round as frozen) and REVIVED_NADE are declared in NotificationsList but never sent (their producing events — nade self-revive and spawn-as-frozen — are themselves unimplemented; see freezetag.damage.softkill_void). REVIVED_FALL/REVIVE_SELF ARE now sent from the live fall-damage-revive branch. ; FT-specific notification announcer SOUNDS: these INFO/CENTER notifications carry no announcer cue in Base either, so audio is mostly na; marked partial because the dependent spawn-",
+   "[presentation] freezetag.presentation.overlay_eventchase: Overlay + crosshair ring + eventchase cam are all driven on the host/listen-server path (LocalServerPlayer / its Frozen status effect); a pure remote client with no LocalServerPlayer shows none of them (the cross-client wepent/stat follow-up)."
+  ]
+ },
+ {
+  "unit": "invasion",
+  "tier": "sonnet",
+  "notes": [
+   "[presentation] invasion.client.point_limit_menu: Base exposes a 'Point limit:' slider (50..500, step 10) in the create-game gametype menu via m_configuremenu. The port's create-game menu has no Invasion-specific point-limit slider row."
+  ]
+ },
+ {
+  "unit": "keepaway",
+  "tier": "opus",
+  "notes": [
+   "[presentation] keepaway.ball.spawn: SpawnBall is CALLED on the live match path — GameWorld.Boot (the NetGame match-start path) procedurally spawns the single ball at a RandomMapLocation right after the entity lump, replacing the missing QC ka_Handler_CheckBall driver. ; PRESENTATION residual: the EF_DIMLIGHT bit + glow_color/glow_trail are set as data on the edict, but the actual ball MODEL render + glow trail are client concerns not yet realized (model path models/orbs/orbblue.md3 is configured but the CSQC render of it is deferr",
+   "[presentation] keepaway.ball.respawn: The relocate MOVES the ball — BallEntity.Relocate calls RandomMapLocation (a random spawnpoint, falling back to a jitter around home) + the '0 0 200' kick + re-arms NextThink; the loose-ball think (RespawnThink) is live via SpawnForGametype. ; SND_KA_RESPAWN plays at relocate (Keepaway.RespawnBall → SoundSystem.PlayOn KA_RESPAWN, ATTEN_NONE). ; FIXED (was STILL OPEN): the NEEDKILL ka_DamageEvent respawn path is now LIVE — AdoptBall installs OnBallDamage on the ball's Entity.GtEventDamage, the li",
+   "[presentation] keepaway.ball.pickup: Pickup is reachable — the live engine trigger-touch pass dispatches Solid.Trigger entities' Touch=BallTouchEntity, which calls PickUp; AttachToCarrier makes the ball SOLID_NOT + MOVETYPE_NONE + sets GtCarrier. ; SND_KA_PICKEDUP plays (PlayOn KA_PICKEDUP, ATTEN_NONE); INFO_KEEPAWAY_PICKUP (all) + CENTER_KEEPAWAY_PICKUP (all-except) + CENTER_KEEPAWAY_PICKUP_SELF (one) notifications all sent and registered. ; KEEPAWAY_PICKUPS column increment runs (AddCol on PickUp); the 0.5s self-recapture lockout",
+   "[presentation] keepaway.ball.drop: The drop velocity includes the crandom xy scatter (DropOffsetVelocity == Base '0 0 200' + '0 100 0'*crandom + '100 0 0'*crandom; Prandom.Signed == crandom); the 0.5s previous_owner/wait self-recapture lockout is armed (GtNextTakeTime + Owner=carrier). ; SND_KA_DROPPED plays globally (PlayGlobal KA_DROPPED, ATTEN_NONE); INFO_KEEPAWAY_DROPPED (all) + CENTER_KEEPAWAY_DROPPED (all) notifications sent and registered. ; FIXED (was STILL OPEN, liveness partial→live): ALL FOUR drop triggers are now wire",
+   "[presentation] keepaway.waypoints.tracking: FIXED (was missing/na→partial/live): CollectWaypoints (overriding GameType.CollectWaypoints, pulled live each tick by ServerNet.cs:927 SendWaypoints) now EMITS the sprites — a KaBallCarrier sprite on the carrier (offset '0 0 64', RADARICON_FLAGCARRIER) when held, else a KaBall sprite at the loose ball's origin. The sprite TYPES were already registered in the catalog (Waypoints.cs:137-138 KaBall/KaBallCarrier with radar icons). ; FIXED (was 'cvar never read'): g_keepawayball_tracking is now read ",
+   "[presentation] keepaway.warn.noncarrier: Base ka PlayerDies: when a NON-carrier frags someone (frag_target not carrying AND attacker not carrying) and autocvar_g_keepaway_noncarrier_warn is set, it sends CENTER_KEEPAWAY_WARN ('Get the ball to score points for frags!') to the killer. The port's OnDeath has NO such branch and never reads g_keepaway_noncarrier_warn. ; The notification IS registered (NotificationsList.cs:986 CENTER KEEPAWAY_WARN) but nothing emits it. Default cvar is 0 (off), so the visible impact is nil at defaults — but ",
+   "[presentation] keepaway.score.countfragsremaining: Base MUTATOR_HOOKFUNCTION(ka, Scores_CountFragsRemaining) returns `!autocvar_g_keepaway_score_timepoints` — i.e. announce the remaining-frags countdown ONLY when time-scoring is OFF (when scoring is by carry-time the frag countdown is meaningless). The port has no Scores_CountFragsRemaining hook for ka, so the announce gating by g_keepaway_score_timepoints is not modeled. ; Default g_keepaway_score_timepoints=0, so by default Base WOULD announce remaining frags; the divergence only manifests whe"
+  ]
+ },
+ {
+  "unit": "keyhunt",
+  "tier": "haiku",
+  "notes": [
+   "[presentation] keyhunt.controller.round_loop: delay_tracking is now IMPLEMENTED as a timer: StartRound sets TrackingEnabled=false and schedules _trackingEnableTime = now + delay_tracking (KEYHUNT_SCAN center-print sent when delay_tracking >= 0); TickKeys flips TrackingEnabled true once the timer elapses. The flag is honored, but it only gates waypoint-sprite visibility — and the sprites themselves are still unimplemented (keyhunt.waypoints.sprites), so the reveal has no player-visible target yet (presentation: partial). ; Base kh_WaitForPla",
+   "[presentation] keyhunt.waypoints.sprites: STILL OPEN: no WP_KeyDropped sprite over loose keys and no WP_KeyCarrier{Red,Blue,Yellow,Pink}/Friend/Finish sprite over carriers; the radar/over-head waypoints and the 'Run here'(Finish) <-> 'Key Carrier'(Friend) flip on the all-owned transition are absent. ; The kh_tracking_enabled / delay_tracking visibility gating is now COMPUTED in the port (TrackingEnabled flips after delay_tracking), but it has no sprite target to gate — so it is moot until sprites land."
+  ]
+ },
+ {
+  "unit": "lms",
+  "tier": "opus",
+  "notes": [
+   "[presentation] lms.leader.waypoint: The periodic show-for-5s / hide-for-25s + random*10s jitter VISIBILITY-WINDOW TIMER is ported + live (DriveLeaderVisibility, LastManStanding.cs:767, driven from GameWorld.cs:2328) and the wp_time/interval/jitter constants all match Base (5/25/10, sv_lms.qc:17-19). BUT there is still NO WP_LmsLeader waypoint SPRITE rendered over leaders, and the recycled STAT(REDALIVE)=lms_leaders / STAT(BLUEALIVE)=lives_diff / STAT(OBJECTIVE_STATUS)=visible-leaders stats are still not exported to the client, so ",
+   "[presentation] lms.hud.mod_icon: ModIconsPanel still has no Lms mode (ModIconsMode enum / switch — grep -i lms returns nothing). Absent: the leader-count icon (player_neutral + count), the flag_stalemate overlay when visible, and the yellow/orange(diff==3)/red(diff>=4) '+N' lives-diff readout from STAT(REDALIVE/BLUEALIVE/OBJECTIVE_STATUS). The server-side leader stats that would feed it (LeaderCount/LeadersLivesDiff) are computed but never networked. UNCHANGED."
+  ]
+ },
+ {
+  "unit": "nexball",
+  "tier": "opus",
+  "notes": [
+   "[presentation/audio] nexball.goal.touch_scoring: Score sound is kh/capture, not ctf/respawn.wav (close cue, wrong sample); fault/out TYPEHIT is correct. ; No bprint / Send_Notification goal announcement (Goaaaaal! / own-goal / fault / out text). ; GOAL_TOUCHPLAYER spawnflag is approximated: GoalTouchEntity always treats a touching ball-carrier as a hit (the port has no per-goal spawnflag bit), and the early BallTeam/BallPusher clear differs from QC (which keeps them through the glide) but is behaviorally equivalent under the ball.cnt!=0 guard.",
+   "[presentation] nexball.ball.spawn: WireObjectiveSpawns calls nb.SpawnBall(e.Origin) with the default basketball=true for BOTH nexball_basketball AND nexball_football — a football-only map therefore spawns a (carryable) basketball instead of a kick-only football. The classname should select the kind. ; Scale 1.3 + glow_trail rendering are still client-deferred (model path + trail color are configured; bbox/effects/playerclip/relocate are exact).",
+   "[presentation] nexball.ball.giveball: No weapon-arena swap to WEPSET(NEXBALL) / W_SwitchWeapon(WEP_NEXBALL) on pickup (the BallStealer weapon does not exist — see nexball.weapon.ballstealer). ; No carrier waypoint sprite; the carrier glow effect bit is cleared on the ball but not rendered on the carrier (client-deferred).",
+   "[presentation] nexball.ball.dropball: Drop-on-death is wired (OnDeath -> DropBall(carrier)); drop-on-disconnect and drop-on-observe (ClientDisconnect / MakePlayerObserver / nb_DropBall hooks) are NOT wired (InfraClientDisconnect / PutObserverInServer don't drop the ball). ; No ground waypoint sprite on drop (client-deferred).",
+   "[presentation] nexball.carry.perframe: No safe-pass crosshair-lock onto teammates (the secondary-fire homing pass has no target — blocked on the missing BallStealer weapon). ; STAT(OBJECTIVE_STATUS) NB_CARRYING bit is not networked (NB_CARRYING appears only in comments); the held-ball forteam-return notification (INFO_NEXBALL_RETURN_HELD) is not sent (the drop+reset effect IS applied). ; No per-frame viewmodel scale (0.25) / EF_FLAME safe-pass lock indicator (client).",
+   "[presentation/audio] nexball.weapon.ballstealer: WEP_NEXBALL / BallStealer weapon does not exist; there is no way to SHOOT or pass the carried ball. ; No primary launch, no secondary tackle projectile (W_Nexball_Touch ball-steal), no homing safe-pass (W_Nexball_Think). ; No weapon-arena handler, so Nexball is not enforced as a weapon-arena mode (carriers keep their normal weapons).",
+   "[presentation] nexball.weapon.power_meter: No NB_METERSTART charge state; launch power can't be modulated (no minpower..maxpower triangle wave) because there is no launch weapon. ; No HUD power-meter progress bar.",
+   "[audio] nexball.sound.cues: Bounce (NB_BOUNCE), drop (NB_DROP/InitBall) and fault/out (TYPEHIT) sounds are played live; the SCORE goal sound is kh/capture not ctf/respawn.wav. ; g_nexball_sound_bounce gate is not honored (bounce always plays). ; SHOOT1/SHOOT2/STEAL are registered but still dead — they belong to the missing BallStealer weapon.",
+   "[presentation] nexball.hud.modicon: ModIconsPanel has no nexball drawer: no 'carrying' icon and no charge-meter progress bar. ; No event-chase (third-person) cam when not carrying; accuracy/item-stats scoreboard panels not hidden for nexball."
+  ]
+ },
+ {
+  "unit": "onslaught",
+  "tier": "opus",
+  "notes": [
+   "[presentation] onslaught.cp.touch_build: NEW (drift, values): the LIVE icon build uses OnslaughtControlPoint.CpHealth → DefCpHealth = 200f (OnslaughtControlPoint.cs:54) as its bare-default fallback, NOT Onslaught.ControlPointHealth (1000, Onslaught.cs:153, which SpawnIcon does NOT call). Base g_onslaught_cp_health = 1000 (gametypes-server.cfg:578). Masked while the cfg sets the cvar to 1000; a missing-cfg boot builds icons to a 200-health max (and the per-tick build rate (max-build)*0.2/buildtime is computed off that wrong max). The ba",
+   "[presentation] onslaught.cp.icon_damage: Audio emitted: shielded→ONS_DAMAGEBLOCKEDBYSHIELD to attacker (debounced); per-hit ONS_HIT1/2; destroy→ONS_GENERATOR_EXPLODE + ONSLAUGHT_CPDESTROYED_NONAME info. Presentation still missing: no EFFECT_SPARKS/ROCKET_EXPLODE particles, no progressive icon model swap. ; Proximity self-destruct nearby-enemy reward NOW MODELED (IconDamage attacker==self branch: ONS_TAKES+1/SCORE+5 to every nearby enemy within proximitydecap_distance) — previously listed as a gap; closed alongside onslaught.cp.proximit",
+   "[audio] onslaught.cp.icon_think_regen: Damaged-FX sparks + ONS_SPARK1/2 ambient sounds not emitted (presentation/audio FX, not the steady regen logic).",
+   "[presentation] onslaught.gen.damage_destroy: NEW (drift, values): the LIVE generator spawn path uses OnslaughtControlPoint.GenHealth → DefGenHealth = 2000f (OnslaughtControlPoint.cs:58) and writes it onto BOTH the entity AND the graph node (SpawnGenerator:120-121 overwrites the node's correct 2500), NOT Onslaught.DefaultGenHealth (2500, Onslaught.cs:43, used only by the bare AddGenerator). Base g_onslaught_gen_health = 2500 (gametypes-server.cfg:576). Masked while the cfg loads the cvar to 2500; a missing-cfg boot starts generators at 2000",
+   "[presentation] onslaught.win.check_winner: BankRoundWin sends ROUND_TEAM_WIN_<team> center+info to all + play2all CTF_CAPTURE_<team> win jingle (winner>0), ROUND_TIED (winner==-1). Remaining: scoreboard column rendering + winner-banner HUD is a client concern (tracked under onslaught.presentation.csqc).",
+   "[presentation/audio] onslaught.captureshield: No physical capture-shield entity around shielded generators/control points: an enemy player walks into a shielded node with no push-back, no GENERATOR/CONTROLPOINT_SHIELDED center notification on contact, and no spinning additive shield model. (The damage-ignore IS enforced via node.Shielded, and the weapon-damage blocked-by-shield SOUND hint IS played in IconDamage/GeneratorDamage; only the touch-push shield ENTITY + its center-print are missing.)",
+   "[presentation/audio] onslaught.spawn.teleport_choose: No control-point-to-control-point teleport (use key / click-radar), no respawn-at-chosen-CP, no spawn_at_controlpoints / spawn_at_generator placement near owned nodes. Players spawn only via the generic team spawn system. The ons_spawn client command + clickradar HUD are absent. (spawn_choose defaults ON in Base.) ONS_TELEPORT/ONS_TELEPORT_ANTISPAM notifications registered as data but never emitted.",
+   "[presentation] onslaught.cp.proximity_decap: Proximity-decap NOW IMPLEMENTED in IconThink (OnslaughtControlPoint.cs:408-451): (friendly - enemy) live-player count within g_onslaught_cp_proximitydecap_distance changes icon HP by ±dps*THINKRATE each tick; at <=0 the icon is destroyed via IconDamage (lone enemy, or `self` to spread the multi-attacker +5 reward to all nearby enemies); a pure-friendly crowd repairs it. Master toggle defaults OFF in Base. Remaining: no waypoint/HUD presentation of the decap state.",
+   "[presentation/audio] onslaught.presentation.csqc: No generator/control-point/icon world models on the client; no progressive damage-model swaps; no icon bob/spin/punch-on-hit animation; no generator damage `frame`; no radar link lines; no objective death-cam (ENT_ONSCAMERA/WantEventchase/ons_camSetup) on round loss; no generator explosion sequence (rays/shockwave/gibs/electricity); no particle effects (EFFECT_SPARKS/CAP/RAGE/ROCKET_EXPLODE) or waypoint-sprite build/health bars.",
+   "[presentation/audio] onslaught.audio.cues: Core cues EMITTED live: SpawnIcon→ONS_CONTROLPOINT_BUILD; build completion→ONS_CONTROLPOINT_BUILT + ONSLAUGHT_CAPTURE_NONAME + ONS_CAPTURE(_TEAM)_NONAME; IconDamage→ONS_DAMAGEBLOCKEDBYSHIELD / ONS_HIT1/2 / ONS_GENERATOR_EXPLODE + ONSLAUGHT_CPDESTROYED_NONAME; GeneratorDamage→blocked-by-shield / GENERATOR_UNDERATTACK + ONS_GENERATOR_UNDERATTACK / ONS_HIT1-2 (or explode at chance damage/220) / ONSLAUGHT_GENDESTROYED(_OVERTIME) + explode; OvertimeDecayTick first tick→OVERTIME_CONTROLPOINT + ONS_GEN",
+   "[presentation/audio] onslaught.gen.unshielded_alarm: ons_GeneratorThink (sv_onslaught.qc:1021) is NOT ported: while a generator is alive but UN-shielded (an enemy controls a linked CP), Base re-warns every 5s — the owning team gets CENTER_ONS_NOTSHIELDED_TEAM + the ONS_GENERATOR_ALARM siren (ATTEN_NONE), and the enemy team gets APP_TEAM_NUM(team, CENTER_ONS_NOTSHIELDED). The port wires no generator think entity (SpawnGenerator sets no Think), so this recurring 'your generator is exposed!' alarm never plays. The notifications (ONS_NOTSHIELDED_TEAM "
+  ]
+ },
+ {
+  "unit": "race",
+  "tier": "sonnet",
+  "notes": [
+   "[presentation] race.hud.mod_icon_rankings: The HUD_Mod_Race MOD-ICON (the floating personal-best + server-best icon + the new-record/new-rank/fail medal flash with rank ordinal, faded over 5 s) is still NOT ported — ModIconsPanel has no Race case. (Note: the split-timer panel #8 has its OWN internal medal flash, fed via NetGame.UpdateRacePanels; that is race.hud.split_timer, not this mod-icon.) ; The rankings DISPLAY cap is a hardcoded 15 rather than Base's RANKINGS_DISPLAY_CNT cvar; ReadName/ReadTime are read straight from the persisten",
+   "[presentation] race.speed_awards: race_SpeedAwardFrame (per-frame top-speed tracking, round + all-time speed awards broadcast to clients, RaceTimerPanel speed-at-CP readout baseline) is not ported. RaceTimerPanel has RaceCheckpointSpeed/BestSpeed fields but they are never fed."
+  ]
+ },
+ {
+  "unit": "survival",
+  "tier": "haiku",
+  "notes": [
+   "[presentation] survival.presentation.player_colors_and_notifications: Player-model/scoreboard green-prey/red-hunter colormap override (SURV_COLOR_PREY 51 / SURV_COLOR_HUNTER 68, cl_survival.qc NET_HANDLE colormap=1024+plcolor + ForcePlayercolors_Skip + DrawScoreboard) is STILL NOT applied — own role at round end is not visually reflected on player models or the scoreboard. This is the remaining presentation gap; notifications themselves are live. ; cl_surv DrawScoreboard_Force (show the scoreboard while GAME_STOPPED so players see who the hunter was) is not modele"
+  ]
+ },
+ {
+  "unit": "tka",
+  "tier": "opus",
+  "notes": [
+   "[presentation] tka.ball.spawn: Single ball only: SpawnBall makes one ball; g_tkaball_count multi-ball chaining (toucher.ballcarried.cnt vs g_tka_ballcarrier_maxballs) not modeled. Default count is 1, so values match the stock server. ; Model/EF_DIMLIGHT/trail_color/damageforcescale are set on the sim edict, but the actual glow_trail particle trail + EF_DIMLIGHT light are client/render concerns — not yet visible. ; Spawn is procedural at map-load (GameWorld.cs:666 switch on GameType; TKA case), replacing QC tka_Handler_CheckBa",
+   "[presentation/audio] tka.ball.respawn: BallEntity.RandomMapLocation uses the QC SelectSpawnPoint FALLBACK path (a random spawnpoint), not the engine MoveToRandomMapLocation world-bounds sampler (rejecting solid/lava/sky). Faithful to the fallback QC itself drops to, but the primary random-world-point sampler is approximated. ; Respawn sound (SND_KA_RESPAWN, ATTEN_NONE) IS played in RespawnBall, but the EFFECT_KA_BALL_RESPAWN particles at the old+new origin remain deferred (the WP_KaBall waypoint IS now produced — see tka.waypoints.tr",
+   "[presentation] tka.ball.pickup: GiveBall is LIVE: BallTouchEntity is the ball's touch handler (registered in the live SpawnBall), so a player touching the loose ball becomes the carrier, with SND_KA_PICKEDUP, INFO/CENTER_KEEPAWAY_PICKUP[_SELF] notifications, the 0.5s self-recapture lockout, AttachToCarrier, and TKA_PICKUPS+1. ; The carried-ball orbit anim (Tick -> BallEntity.CarryOrbit, BALL_XYSPEED 100 / XYDIST 24) runs — GameWorld.cs:2301 calls tka.Tick(Simulation.FrameTime) every frame. The ball orbits the carrier. ; No sca",
+   "[presentation] tka.ball.drop: DropBall is invoked from OnDeath (LIVE death hook) when the victim carried. It detaches, drops at the feet with the crandom xy scatter, arms the 0.5s self-recapture lockout, re-arms the relocate think, plays SND_KA_DROPPED, sends INFO/CENTER_KEEPAWAY_DROPPED, and (via CollectWaypoints next tick) shows the loose-ball waypoint. ; The use-key (PlayerUseKey), ClientDisconnect, MakePlayerObserver, and DropSpecialItems drop paths are STILL NOT wired. NOTE: MutatorHooks.PlayerUseKey now EXISTS (Mutator",
+   "[presentation] tka.waypoints.tracking: FIXED (missing -> faithful logic + live): CollectWaypoints (TeamKeepaway.cs:675) now produces a TEAM-COLORED carrier sprite (TkaBallCarrier<team> + per-team radar tint, offset '0 0 64', RADARICON_FLAGCARRIER) while held, and the neutral KaBall sprite on the loose ball. It honors g_tkaball_tracking (0 = no waypoint). This is pulled LIVE by ServerNet.SendWaypoints (ServerNet.cs:474 -> :927 _world.GameType.CollectWaypoints), filtered per peer, networked, and rendered by the client WaypointSpriteLay"
+  ]
+ }
+]

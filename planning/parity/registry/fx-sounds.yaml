@@ -1,0 +1,455 @@
+unit: fx-sounds
+category: sound
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 15
+  worst_gaps:
+    - "_GlobalSound AUTOTAUNT per-recipient probability roll (tauntrand < cl_autotaunt) still omitted (per-client cvar not networked; TAUNT animaction IS now fired — that gap closed)."
+    - "play2 per-recipient MSG_ONE targeting is still a broadcast approximation (SoundWire has no per-client send); exact only on a single-human listen server."
+    - "sound_allowed MSG_ONE 'sounds to self always pass' branch still omitted (cosmetic; no msg_entity context at the gate). The raw-Api.Sound.Play bypass is now CLOSED (gate applied at EngineServices.Play chokepoint)."
+    - "GlobalSound_pitch model-scale shift is now PORTED+WIRED this pass (SoundSystem.GlobalSoundPitch -> pitch: through Play -> SoundWire.Pitch -> ClientWorld PitchScale); residual: audible shift on a non-default .scale entity not runtime-verified (no-op for stock players, ScaleFactor==0 -> pitch 1.0)."
+features:
+  - id: fx-sounds.registry.sound_table
+    name: "Sound registry (SOUND(name,path) table) + path resolution"
+    layer: [shared]
+    base_refs:
+      - "common/sounds/sound.qh:CLASS(Sound)"
+      - "common/sounds/all.qh:SOUND"
+      - "common/sounds/all.inc"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Sounds/GameSound.cs:Sounds"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundsList.cs:RegisterAll"
+    constants:
+      - { name: "registry_size", base: "BITS(9)=512", port: "Registry<GameSound> (unbounded)", match: true }
+      - { name: "path_resolve", base: "wav (sv) / wav,ogg,flac probe (cl)", port: "AssetLoader.ResolveSoundVpath ogg/wav probe under sound/", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "all.inc vs SoundsList.cs incl. #define aliases (ONS_GENERATOR_ALARM=KH_ALARM, NADE_BONUS=KH_ALARM, FLACEXP/FIREBALL aliases); AssetLoader.ResolveSoundVpath probe order", result: pass }
+    confidence: high
+    notes: "Full all.inc coverage (weapons/gametypes/vehicles/turrets/monsters/items/misc) incl. per-team CTF cues + health/armor/powerup pickup sample names. Seeded at boot via Sounds.RegisterAll. Unchanged this pass."
+
+  - id: fx-sounds.registry.channels
+    name: "CH_* channels — auto(neg)=stack vs single(pos)=replace"
+    layer: [shared]
+    base_refs:
+      - "common/sounds/sound.qh:6"
+    port_refs:
+      - "src/XonoticGodot.Common/Services/Services.cs:SoundChannel"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/GameSound.cs:EngineChannel"
+    constants:
+      - { name: "CH_PLAYER", base: "-7 auto", port: "PlayerAuto=-7", match: true }
+      - { name: "CH_VOICE", base: "-2 auto", port: "VoiceAuto=-2", match: true }
+      - { name: "CH_WEAPON_A", base: "-1 auto", port: "WeaponAuto=-1", match: true }
+      - { name: "CH_TRIGGER", base: "-3 auto", port: "TriggerAuto=-3", match: true }
+      - { name: "CH_*_SINGLE", base: "positive = replace per (entity,channel)", port: "positive enum + single-channel replace", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "SoundChannel enum (-7/-3/-2/-1, 1) + EngineChannel switch vs sound.qh CH_*; ClientWorld.OnSound single-replace", result: pass }
+    confidence: high
+    notes: "Negative=autochannel stacks, positive=single replaces; ClientWorld stops the prior player on a (netId,channel) single play. Unchanged this pass."
+
+  - id: fx-sounds.registry.atten_vol
+    name: "ATTEN_* / VOL_* mix constants"
+    layer: [shared]
+    base_refs:
+      - "common/sounds/sound.qh:27"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Sounds/GameSound.cs:SoundLevels"
+    constants:
+      - { name: "ATTEN_NONE/MIN/LOW/NORM/LARGE/IDLE/STATIC/MAX", base: "0/0.015625/0.2/0.5/1/2/3/3.984375", port: "0/0.015625/0.2/0.5/1/2/3/3.984375", match: true }
+      - { name: "VOL_BASE/BASEVOICE/MUFFLED", base: "0.7/1.0/0.35", port: "0.7/1.0/0.35", match: true }
+    status:
+      logic: na
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value, ref: "SoundLevels vs sound.qh:27-38", result: pass }
+    confidence: high
+    notes: "All eight attenuations + three volumes exact. Unchanged this pass."
+
+  - id: fx-sounds.registry.random_variants
+    name: "SND_*_RANDOM pickers + counted GlobalSound variants"
+    layer: [shared]
+    base_refs:
+      - "common/sounds/all.inc:SND_GRENADE_BOUNCE_RANDOM"
+      - "common/effects/qc/globalsound.qc:GlobalSound_sample"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundSystem.cs:SoundVariantGroups"
+    constants:
+      - { name: "STEP/STEP_METAL count", base: "6", port: "6", match: true }
+      - { name: "FALL/FALL_METAL count", base: "4", port: "4", match: true }
+      - { name: "RIC/NEXWHOOSH/FLACEXP", base: "1..3", port: "1..3", match: true }
+      - { name: "GRENADE_BOUNCE", base: "1..6", port: "1..6", match: true }
+      - { name: "GIB_SPLAT", base: "01..04 (prandom)", port: "01..04 (Prandom)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "SoundVariantGroups counts/prefixes vs all.inc + GlobalSound_sample sprintf(%s%d.wav, floor(r*n+1)); ResolveGlobalSample matches +1 offset", result: pass }
+    confidence: high
+    notes: "Uses Prandom for determinism (ADR-0010). Live via footsteps (STEP/STEP_METAL) / gibs / ricochet / bounce callers. GlobalSound_sample +1 base-1 indexing matches. Unchanged this pass."
+
+  - id: fx-sounds.emit.sound_play
+    name: "sound() / sound7 / SV_StartSound positional emit + networking"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/sounds/sound.qh:43"
+      - "common/sounds/all.qc:soundtoat"
+    port_refs:
+      - "src/XonoticGodot.Common/Services/Services.cs:ISoundService.Play"
+      - "src/XonoticGodot.Engine/Simulation/EngineServices.cs:SoundService"
+      - "src/XonoticGodot.Net/SoundWire.cs:SoundWire"
+      - "game/client/ClientWorld.cs:OnSound"
+    constants:
+      - { name: "emit_origin", base: "origin + 0.5*(mins+maxs)", port: "e.Origin + (Mins+Maxs)*0.5", match: true }
+      - { name: "wire_encode", base: "SVC_SOUND bit-packed (idx/flags/quantized)", port: "SoundWire self-describing record", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "SoundWire replaces DP's bit-packed SVC_SOUND with a self-describing record (sample string + raw floats + chan + netid + loop/stop/pitch flags) because the port has its own snapshot protocol and no DP sound-index table; behaviorally equivalent (vol/atten/channel/origin/loop/stop/pitch all carried)."
+    gaps: []
+    verification:
+      - { kind: code, ref: "SoundService.Play -> SoundEvent -> SoundWire.Write/Read -> ClientWorld.OnSound; box-center origin", result: pass }
+    confidence: high
+    notes: "The live SV_StartSound path for every networked one-shot. Box-center origin matches DP. SoundWire unchanged this pass."
+
+  - id: fx-sounds.emit.loop_stop
+    name: "loopsound / stopsound — persistent (entity,channel) loop + stop"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/sounds/all.qc:stopsound"
+    port_refs:
+      - "src/XonoticGodot.Common/Services/Services.cs:ISoundService.Stop"
+      - "game/client/ClientWorld.cs:CreateLoop"
+    constants:
+      - { name: "loop_key", base: "(entity, channel)", port: "(SourceNetId, Channel)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Play(loop:true)/Stop + SoundWire Loop/Stop flags + ClientWorld dedicated loop players", result: pass }
+    confidence: medium
+    notes: "Live: Arc beam loop, vehicle engines, projectile fly-loops. Re-emitting the same loop on its key is idempotent. Not re-traced exhaustively this pass; unchanged."
+
+  - id: fx-sounds.emit.sound_allowed
+    name: "sound_allowed owner-walk gate + bot_sound_monopoly"
+    layer: [authority]
+    base_refs:
+      - "common/sounds/all.qc:sound_allowed"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundSystem.cs:SoundAllowedGate"
+    constants:
+      - { name: "bot_sound_monopoly", base: "0", port: "bot_sound_monopoly cvar (default 0, gate honored)", match: true }
+      - { name: "owner_walk", base: "body->enemy / realowner / owner", port: "SoundAllowedGate.WalkOwner (same chain, 16-guard)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC MSG_ONE 'sounds to self always pass' branch omitted (no per-recipient msg_entity context at the gate; documented cosmetic edge-case — only matters under bot_sound_monopoly 1, default 0)."
+    verification:
+      - { kind: code, ref: "SoundAllowedGate.WalkOwner mirrors body->enemy/realowner/owner; IsAllowed (SoundSystem.cs:54-69) walks the owner chain then mirrors `autocvar_bot_sound_monopoly && IS_REAL_CLIENT(e)` -> deny", result: pass }
+      - { kind: code, ref: "EngineServices.Play (EngineServices.cs:612) now applies SoundAllowedGate.IsAllowed(e) at the single SV_StartSound chokepoint EVERY Api.Sound.Play flows through — so even raw Api.Sound.Play call sites (weapon UNAVAILABLE, monster/turret/map-object cues) are gated. The baseline 'raw direct calls bypass the gate' gap is CLOSED.", result: pass }
+      - { kind: grep, ref: "IsAllowed also called by every SoundSystem.PlayOn/PlayRaw/SpamSound overload (SoundSystem.cs:188/197/206/223/361/379) — idempotent double-check (re-asks the same question). Build green (Common.csproj).", result: pass }
+    confidence: high
+    notes: "Re-audit 2026-06-27: gate is now UNIVERSAL. IsAllowed calls WalkOwner internally (SoundSystem.cs:62) so owner-walk re-home is live, AND EngineServices.Play (line 612) applies the gate at the SV_StartSound chokepoint, so raw Api.Sound.Play emits are gated too (was the baseline residual gap — now closed). bot_sound_monopoly default 0 => no-op in normal play. Only residual: the MSG_ONE self-pass branch (cosmetic, monopoly-only)."
+
+  - id: fx-sounds.emit.play2_family
+    name: "play2 / play2team / play2all / spamsound"
+    layer: [authority]
+    base_refs:
+      - "common/sounds/all.qc:play2"
+      - "common/sounds/all.qc:play2team"
+      - "common/sounds/all.qc:play2all"
+      - "common/sounds/all.qc:spamsound"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundSystem.cs:PlayGlobal"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundSystem.cs:SpamSound"
+      - "src/XonoticGodot.Common/Framework/Entity.cs:SpamTime"
+    constants:
+      - { name: "play2", base: "soundtoat(MSG_ONE, NULL, '0 0 0', CH_INFO, file, VOL_BASE, ATTEN_NONE)", port: "Play2: Api.Sound.Play(recipient, Auto, sample, VolBase, AttenNone)", match: true }
+      - { name: "play2team", base: "if(monopoly)return; FOREACH_CLIENT(IS_PLAYER&&IS_REAL_CLIENT&&team==t) play2", port: "Play2Team: monopoly early-return + per-team roster filter -> Play2", match: true }
+      - { name: "play2all", base: "if(autocvar_bot_sound_monopoly) return; _sound(NULL,CH_INFO,samp,VOL_BASE,ATTEN_NONE)", port: "PlayGlobal/PlayGlobalRaw (shared emitter, ATTEN_NONE) — now WITH monopoly gate", match: true }
+      - { name: "spamsound_gate", base: "if(time > e.spamtime){ e.spamtime=time; sound(...) }", port: "SpamSound: if(now > emitter.SpamTime){ SpamTime=now; Play(...) }", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "play2 per-recipient targeting is a broadcast approximation: QC play2 sends MSG_ONE (msg_entity=e) so EXACTLY one client hears it; the port's SoundWire has no per-client send, so Play2/Play2Team broadcast to all connected clients — exact only on a single-human listen server. This is the SOLE residual reason liveness stays partial."
+    verification:
+      - { kind: code, ref: "SpamSound/SpamSoundRaw mirror QC spamsound (sound_allowed gate + time>spamtime + set spamtime); Entity.SpamTime added; Play2/Play2Raw/Play2Team/Play2TeamRaw mirror play2/play2team (CH_INFO/VOL_BASE/ATTEN_NONE; play2team monopoly+team filter)", result: pass }
+      - { kind: grep, ref: "Play2 LIVE: GameWorld.cs:2035 (idle-kick TALK2), Inventory.cs:333/365 + Minelayer.cs:696 + WeaponFireGate.cs:305 (UNAVAILABLE), OnslaughtControlPoint.cs:292/713/987 (ONS shield-block), NadeBonus.cs:57. Play2Team LIVE: OnslaughtControlPoint.cs:318 (ONS_GENERATOR_UNDERATTACK), :738 (ONS_CONTROLPOINT_UNDERATTACK). Play2Raw LIVE: VehiclePhysicsHelpers.cs:281/304/310 (vehicles/locked|lock|locking — vehicle lock cues now wired), MapObjectsCommon.cs:848. spamsound LIVE: NadeProjectile.cs:154 + VehicleCommon.cs:521/530/541. play2all -> PlayGlobal (live, KH/ONS/Keepaway gametype callers). MapMover.Play2 wired: Doors, VoiceScript, target_print/keylock TALK, MapObjectsRegistry, Triggers.", result: pass }
+      - { kind: code, ref: "PlayGlobal/PlayGlobalRaw (SoundSystem.cs:310-339) apply the bot_sound_monopoly early-return, matching QC play2all (all.qc:143-145). Vehicle lock play2 (VehiclePhysicsHelpers.LockTarget:264-313) routes the 3 QC sv_vehicles.qc:114/134/139 cues through Play2Raw (VOL_BASE/ATTEN_NONE).", result: pass }
+    confidence: high
+    notes: "Re-audit 2026-06-27: the baseline gap 'Vehicle lock/locking play2 sites remain unwired' is now STALE/CLOSED — VehiclePhysicsHelpers.LockTarget wires all three sv_vehicles.qc lock cues (locked/lock/locking) through SoundSystem.Play2Raw with the correct VOL_BASE/ATTEN_NONE (was Api.Sound.Play default vol=1/atten=1). Prior fixes hold: Play2Team live on both ONS underattack cues (per-team roster filter), play2all monopoly gate present, ~14 play2 sites wired. liveness stays partial for ONE reason only: MSG_ONE per-recipient targeting is a broadcast approximation (SoundWire has no per-client send), exact only on a single-human listen server."
+
+  - id: fx-sounds.voice.playersound_registry
+    name: "PlayerSounds / GlobalSounds registries (body sound ids)"
+    layer: [shared]
+    base_refs:
+      - "common/effects/qc/globalsound.qh:REGISTER_PLAYERSOUND"
+      - "common/effects/qc/globalsound.qh:REGISTER_GLOBALSOUND"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Sounds/GameSound.cs:PlayerSoundIds"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundsList.cs:RegisterGlobalSounds"
+    constants:
+      - { name: "playersound_ids", base: "death drown fall falling gasp jump pain25 pain50 pain75 pain100", port: "same 10 ids", match: true }
+      - { name: "globalsound_ids", base: "STEP/STEP_METAL (misc/footstep0/metalfootstep0, count 6) FALL/FALL_METAL (misc/hitground/metalhitground, count 4)", port: "same 4 + counts", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "PlayerSoundIds + STEP/STEP_METAL/FALL/FALL_METAL paths+counts vs globalsound.qh:REGISTER_GLOBALSOUND", result: pass }
+    confidence: high
+    notes: "Id set + GlobalSound base paths/counts match. The sample-PATH resolution for body sounds works (see fx-sounds.voice.persounds_manifest). Unchanged this pass."
+
+  - id: fx-sounds.voice.voicemessage_table
+    name: "REGISTER_VOICEMSG table (team radio + taunts) + VOICETYPE constants"
+    layer: [shared]
+    base_refs:
+      - "common/effects/qc/globalsound.qh:REGISTER_VOICEMSG"
+      - "common/effects/qc/globalsound.qh:64"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Sounds/VoiceMessage.cs:VoiceMessages"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/VoiceTypes.cs:VoiceType"
+    constants:
+      - { name: "VOICETYPE_PLAYERSOUND..TAUNT", base: "10..15", port: "10..15", match: true }
+      - { name: "voicemsg_count", base: "21 (11 listed + 10 situational)", port: "21 (same order, listed flags)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "VoiceMessages._all vs REGISTER_VOICEMSG (ids+vt+listed) in QC order; VoiceTypeOf fallback->Taunt mirrors _GetPlayerSoundSampleField->playersound_taunt", result: pass }
+    confidence: high
+    notes: "21 messages, VOICETYPE 10..15 exact. Unknown-id fallback to Taunt mirrors QC. Unchanged this pass."
+
+  - id: fx-sounds.voice.globalsound_dispatch
+    name: "_GlobalSound VOICETYPE routing (recipients + taunt/gentle gates)"
+    layer: [authority]
+    base_refs:
+      - "common/effects/qc/globalsound.qc:_GlobalSound"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundSystem.cs:_GlobalSound"
+      - "src/XonoticGodot.Server/Commands.cs:3149"
+    constants:
+      - { name: "sv_taunt", base: "1", port: "reads cvar (gate honored)", match: true }
+      - { name: "sv_autotaunt", base: "1", port: "reads cvar (gate honored)", match: true }
+      - { name: "PLAYERSOUND atten", base: "ATTEN_NORM (MSG_ALL)", port: "ATTEN_NORM broadcast", match: true }
+      - { name: "directional_atten", base: "(cl_voice_directional==1) ? ATTEN_MIN : ATTEN_NONE", port: "voiceDirectional==1 ? AttenMin : AttenNone (cvar read)", match: true }
+      - { name: "taunt_atten", base: "(cl_voice_directional>=1) ? bound(ATTEN_MIN, cl_voice_directional_taunt_attenuation, ATTEN_MAX) : ATTEN_NONE", port: "same bound(ClVoiceDirectionalTauntAttenuation) when voiceDirectional>=1", match: true }
+      - { name: "voice_sample_path", base: "manifest-mapped sound/player/espeak/coms/<id>", port: "resolved via Sounds.PlayerSoundSample -> .sounds manifest -> sound/player/espeak/coms/<id> (host resolver installed)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "AUTOTAUNT per-recipient probability roll (tauntrand < CS_CVAR(it).cl_autotaunt) still omitted: per-client cl_autotaunt is not networked, so autotaunts that clear sv_autotaunt always play for all recipients (documented deferral; a single global cl_autotaunt default 0 would wrongly silence ALL autotaunts). This is the SOLE remaining reason logic stays partial."
+    verification:
+      - { kind: code, ref: "_GlobalSound LASTATTACKER[_ONLY]/TEAMRADIO/AUTOTAUNT/TAUNT/PLAYERSOUND recipient sets + sv_taunt/sv_autotaunt/sv_gentle gates + fake (MSG_ONE) handling vs globalsound.qc; sample via PlayerSoundSample", result: pass }
+      - { kind: code, ref: "TAUNT now fires the taunt animation on a living speaker BEFORE the sv_taunt/sv_gentle gates (SoundSystem.cs:553-560): AnimDecide.SetAction(AnimUpperAction.Taunt, restart) mirrors QC animdecide_setaction(this, ANIMACTION_TAUNT, true) — the baseline 'no anim-action seam' gap is CLOSED.", result: pass }
+      - { kind: code, ref: "directional atten reads cl_voice_directional (==1 -> ATTEN_MIN else ATTEN_NONE); taunt atten applies bound(ATTEN_MIN, cl_voice_directional_taunt_attenuation, ATTEN_MAX)", result: pass }
+      - { kind: grep, ref: "voicemessage cmd (Commands.cs:3149) passes _world.Clients.Players roster -> live recipient routing reachable (fake = spec/observer/flood)", result: pass }
+    confidence: high
+    notes: "Re-audit 2026-06-28: _GlobalSound now computes GlobalSoundPitch(emitter.ScaleFactor) once and threads it through every Emit() (LASTATTACKER/TEAMRADIO/TAUNT/AUTOTAUNT/PLAYERSOUND), matching QC's pitch=GlobalSound_pitch(pitchscale*this.scale) at globalsound.qc:341 — no-op for stock players (ScaleFactor 0 -> 1.0). The TAUNT animdecide_setaction(ANIMACTION_TAUNT) seam stays wired (SoundSystem.cs:563-570, fires on a living speaker before the sv_taunt/sv_gentle gates). Directional + taunt-attenuation faithful. Logic stays PARTIAL ONLY for the per-client autotaunt probability roll (deferred — per-client cvar not networked). Recipient sets + sv_* gates + fake/self handling faithful & live; reached by the voicemessage cmd (Commands.cs:3149)."
+
+  - id: fx-sounds.voice.live_body_callers
+    name: "PlayerSound/GlobalSound call sites (footstep/fall/pain/death/jump)"
+    layer: [authority]
+    base_refs:
+      - "common/physics/player.qc:PM_Footsteps"
+      - "common/physics/player.qc:PM_check_hitground"
+      - "server/player.qc:374"
+    port_refs:
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:Footsteps"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:610"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:946"
+    constants:
+      - { name: "footstep_interval", base: "nextstep = time + 0.3 + random*0.1", port: "now + 0.3 + FootstepJitter (random*0.1, server-local RNG)", match: true }
+      - { name: "footstep_speed_gate", base: "vdist > 0.6*sv_maxspeed", port: "0.6*MaxSpeed", match: true }
+      - { name: "lastground_window", base: "time < lastground + 0.2", port: "now < LastGroundTime + 0.2", match: true }
+      - { name: "nextstep_window", base: "(time > nextstep) || (time < nextstep - 10)", port: "(now > LastFootstepTime) || (now < LastFootstepTime - 10)", match: true }
+      - { name: "ducked_landing_vol", base: "VOL_MUFFLED 0.35", port: "VolMuffled 0.35", match: true }
+      - { name: "g_footsteps_gate", base: "autocvar_g_footsteps (default 1)", port: "Cvars.GetString('g_footsteps')==0 early-return (unset treated as 1)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Minor: the speed gate uses 2D horizontal velocity (Vec2LenSq) while QC vdist uses 3D velocity — negligible in practice (grounded motion is near-horizontal), but not byte-identical when moving up/down a slope."
+    verification:
+      - { kind: code, ref: "PlayerPhysics.Footsteps mirrors PM_Footsteps: g_footsteps early-return, IS_DUCKED, lastground+0.2 window, 0.6*maxspeed gate, nextstep window, nextstep=time+0.3+random*0.1 jitter; PM_check_hitground sets a jittered suppression window + ladder bail", result: pass }
+      - { kind: code, ref: "DamageSystem pain/death -> PlayPlayerSound(victim,id,ModelSoundDir(victim)) -> ModelSoundDir -> resolver -> sound/player/espeak/player/<id> (REAL, e.g. pain50.ogg ships)", result: pass }
+      - { kind: code, ref: "real files: sound/player/espeak/player/pain50.ogg + jump.ogg + misc/footstep0N.wav all present on disk", result: pass }
+    confidence: high
+    notes: "All five dimensions faithful & live (footsteps + pain/death/drown body voices resolve to real espeak samples; cadence jitter + g_footsteps gate present). Remaining nit: 2D vs 3D speed gate. Unchanged this pass."
+
+  - id: fx-sounds.voice.persounds_manifest
+    name: "LoadPlayerSounds .sounds manifest parse + per-model/skin reload"
+    layer: [shared]
+    base_refs:
+      - "common/effects/qc/globalsound.qc:LoadPlayerSounds"
+      - "common/effects/qc/globalsound.qc:UpdatePlayerSounds"
+      - "common/effects/qc/globalsound.qc:ClearPlayerSounds"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Sounds/GameSound.cs:PlayerSoundSample"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/GameSound.cs:ModelSoundsFile"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/GameSound.cs:ModelSoundResolver"
+      - "game/loaders/PlayerSoundResolver.cs:Install"
+      - "src/XonoticGodot.Formats/Sidecars/ModelSounds.cs:ParseEntries"
+    constants:
+      - { name: "default_path", base: "key->file from sound/player/default.sounds (e.g. pain50 -> sound/player/espeak/player/pain50)", port: "PlayerSoundResolver parses default.sounds manifest -> same key->file mapping", match: true }
+      - { name: "model_dir_resolve", base: "get_model_datafilename(model,skin,'sounds') parse; model pack overrides default", port: "ModelSoundsFile(model,skin) = '{model}_{skin}.sounds'; resolver tries model pack then default (override order matches)", match: true }
+      - { name: "variant_pick", base: "N>0 => random {path}1..{path}N, N==0 => single file", port: "ModelSound.IsSingle (count<=0) else _rng.Next(1,N+1) suffix", match: true }
+      - { name: "globalsound_pitch", base: "GlobalSound_pitch model-scale shift (a=1.5/b=0.75/c=100) when scale != 1", port: "SoundSystem.GlobalSoundPitch(scaleFactor) — exact asymptotic gradient, wired into Play* via pitch: -> SoundWire.Pitch byte -> ClientWorld PitchScale", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "GlobalSound_pitch audible model-scale shift is now ported+wired (this pass) but NOT runtime-verified on a non-default .scale entity: for stock players ScaleFactor==0 -> pitch 1.0 (no shift), so the gradient is exercised live but only meaningfully diverges from 1.0 for a scaled emitter (giant/mini mutators, scaled map entities) — which was not played in-game side-by-side."
+      - "Per-skin fallback chain partially simplified: QC tries skin N, then skin 0; the port resolves a single ModelSoundsFile(model,skin) and the default pack (a missing per-skin manifest falls through to default rather than to skin-0). Negligible for stock models, which ship one pack."
+    verification:
+      - { kind: code, ref: "PlayerSoundResolver.Resolve: model pack overrides, else default.sounds; ModelSounds.ParseEntries (id/path/variant, //comments skipped, last-wins) matches LoadPlayerSounds tokenize_console; default.sounds maps pain50->sound/player/espeak/player/pain50, taunt->sound/player/espeak/coms/taunt", result: pass }
+      - { kind: code, ref: "LIVE: PlayerSoundResolver.Install(_vfs) at NetGame.cs:398 installs Sounds.ModelSoundResolver=Resolve when a VFS is mounted; Sounds.Reset clears it; headless falls back to PlayerSoundSampleRaw gracefully", result: pass }
+      - { kind: code, ref: "GlobalSoundPitch (SoundSystem.cs:634-646) reproduces QC asymptotic gradient pitch=(b*d*(a-1)+a*c*(1-b))/(d*(a-1)+c*(1-b)), d=scaleFactor*100, a=1.5/b=0.75/c=100; verified at all 3 anchors: scale 1.0 -> 1.0, scale->0 -> 1.5, scale->inf -> 0.75. Wired into PlayPlayerSound/PlayGlobalVariant/_GlobalSound.Emit (pitch:) — Play -> SoundWire.Pitch percentage byte -> ClientWorld.OnSound -> AudioStreamPlayer.PitchScale (full chain live). Build green (Common.csproj).", result: pass }
+    confidence: high
+    notes: "Re-audit 2026-06-28: the GlobalSound_pitch model-scale shift gap is now CLOSED (logic) — GlobalSoundPitch implements the exact QC gradient and is wired through every voice/body emit (pitch: arg flows Play->SoundWire->PitchScale). Was the SOLE match:false logic/values hole; constant now match:true. Manifest parser + headless resolver seam unchanged (faithful & live). Residual: audible scaled-emitter shift not runtime-verified (no-op at ScaleFactor 0); minor skin-0 fallback simplification."
+
+  - id: fx-sounds.presentation.dp_attenuation
+    name: "Client spatialization — DP SND_Spatialize distance gain + emitter follow"
+    layer: [presentation]
+    base_refs:
+      - "common/sounds/sound.qh:sound7"
+    port_refs:
+      - "game/client/ClientWorld.cs:DpDistanceGain"
+      - "game/client/ClientWorld.cs:SetSpatialVolume"
+    constants:
+      - { name: "snd_soundradius", base: "2400 (DP method 1)", port: "2400 (cvar, fallback 2400)", match: true }
+      - { name: "snd exponent", base: "4 (DP method 1)", port: "4", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "DP's SND_Spatialize falloff (radius/exponent) is reproduced in C# with Godot's own attenuation DISABLED (AttenuationModel.Disabled, MaxDistance 0, low-pass cutoff raised), instead of Godot's inverse-distance curve. This is the FAITHFUL DP curve (method 1), not an arbitrary tweak. ATTEN_NONE plays centered on the listener (2D)."
+    gaps: []
+    verification:
+      - { kind: code, ref: "DpDistanceGain vs DP snd_main.c SND_Spatialize; RentAudioPlayer disables Godot attenuation; per-frame re-spatialize + emitter-follow by net id", result: pass }
+    confidence: medium
+    notes: "Not verified side-by-side against DP at runtime; the formula matches the documented DP curve. Unchanged this pass."
+
+  - id: fx-sounds.presentation.hitsound_sample
+    name: "Hit-confirmation sound sample (HIT registry entry)"
+    layer: [presentation]
+    base_refs:
+      - "common/sounds/all.inc:219"
+      - "client/view.qc:914:HitSound"
+    port_refs:
+      - "game/client/HitSound.cs:118"
+    constants:
+      - { name: "hit_sample", base: "misc/hit (SOUND(HIT)) -> sound/misc/hit.wav", port: "misc/hit (AudioLoader) -> res://sound/misc/hit.wav fallback", match: true }
+      - { name: "antispam_time", base: "cl_hitsound_antispam_time 0.05", port: "AntiSpamInterval 0.05", match: true }
+      - { name: "pitch_formula", base: "gradient: (b*d*(a-1)+a*c*(1-b))/(d*(a-1)+c*(1-b)), mode 3 mirrored", port: "ComputePitch: same gradient formula (a=max_pitch,b=min_pitch,c=nom_damage,d=damage); mode 3 mirror (a-b)/2+b", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Anti-spam uses real-time (Time.GetTicksMsec) rather than sim time; QC also has an arc_hack that ignores cl_hitsound_antispam_time when the Arc is held + cl_hitsound>=2 (not ported). Minor: port adds an explicit Clamp([min,max]) the QC curve approaches but doesn't apply — negligible (the gradient stays in range)."
+    verification:
+      - { kind: code, ref: "HitSound.cs:142 loads 'misc/hit' (fallback res://sound/misc/hit.wav) — matches SOUND(HIT,'misc/hit'); shipped file assets/data/.../sound/misc/hit.wav confirmed; no 'hitconfirm' refs remain", result: pass }
+      - { kind: code, ref: "ComputePitch (HitSound.cs:96-128) now implements QC's gradient pitch_shift = (b*d*(a-1)+a*c*(1-b))/(d*(a-1)+c*(1-b)) with the mode-3 mirror (a-b)/2+b, bit-faithful to view.qc:937-949; cvar defaults max=1.5/min=0.75/nom=25 match view.qh", result: pass }
+    confidence: high
+    notes: "FIX since baseline: the mode 2/3 pitch curve was a linear ramp; it now implements QC's exact asymptotic gradient function (ComputePitch, HitSound.cs:96-128) with the mode-3 mirror, so values partial->faithful and pitch_formula constant match false->true. The earlier hitsound-silent fix (misc/hit, not misc/hitconfirm) remains in place. Residual nits only: real-time vs sim-time anti-spam + the unported arc_hack."

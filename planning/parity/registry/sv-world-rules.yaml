@@ -1,0 +1,561 @@
+unit: sv-world-rules
+category: server
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-27"
+summary:
+  feature_count: 20
+  worst_gaps:
+    - "RandomSeed shared-RNG broadcast is now PORTED + LIVE (FIX 2026-06-27): server producer (RandomSeed.cs ticked every frame) + match-state network seam + per-instance client PrandomContext, with the 5s/65536 re-roll constants matching Base — but no client EFFECT consumes the decoded seed yet (presentationally inert; seed value not bit-exact by design). RedirectionThink is now PARTIAL + LIVE (FIX 2026-06-27): quit_and_redirect reconnects clients at match end via RedirectHandler -> MenuCommand.Connect, but the 'self' restart variant, sv_public -2, the two-pass retry loop, and the quit_and_redirect_timer defer are unported. PingPLReport stays PARTIAL: PL networked + consumed by the HUD PL column, but the ping column is hard -1 and the playerstats latency feed is still missing."
+    - "DumpStats (:scores:/:status: console+eventlog scores dump) is now PORTED and LIVE (FIX 2026-06-27): Commands.DumpStats(final) is called at NextLevel (final=true) + via the `printstats` server command (final=false); the per-call score-LOG-FILE open/append (sv_logscores_file path) is the only residual (the eventlog-file sink covers structured logging)."
+    - "GameWorld.Shutdown does slowmo-reset + ban-save + unfinished PlayerStats_GameReport(false), but ServerProgsDB persistence, bot_endgame, CheatShutdown and WeaponStats_Shutdown on teardown are still absent."
+    - "World-layer leadlimit / leadlimit_and_fraglimit WIN semantics and the CheckRules_World mutator hook are still not evaluated in the checkrules cascade (leadlimit math only feeds the frags-remaining announcer). WinningCondition_RanOutOfSpawns is PORTED."
+    - "serverflags + animated-lightstyle CLIENT consumers are now PARTIAL (FIX 2026-06-27): the HUD pickup-timer gate reads SERVERFLAG_FORBID_PICKUPTIMER (PickupPanel) and a styled dynlight animates via LightStyles.Sample (DynamicLightRenderer). STILL OPEN: no fullbright player-render gate reads SERVERFLAG_ALLOW_FULLBRIGHT, and world-brush lightmap animation for named styles is unported (styled geometry renders steady; only the dynlight node flickers)."
+features:
+  - id: sv-world-rules.boot.worldspawn
+    name: "worldspawn map-init bookkeeping"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:spawnfunc(worldspawn)"
+      - "server/world.qc:InitGameplayMode"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot"
+      - "src/XonoticGodot.Server/GameWorld.cs:ApplyWorldspawn"
+    constants:
+      - { name: "matchid_format", base: "<counter>.<unixtime>.<rand6> (sprintf %d.%s.%06d)", port: "string.Format \"{0}.{1}.{2:D6}\" (sv_eventlog_files_counter . unix . rand6) GameWorld.cs:1110", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No ServerProgsDB load and no full support-entity spawn pass at boot (RandomSeed/PingPLReport/lightstyles covered as separate rows; DB persistence covered under misc.shutdown)."
+    verification:
+      - { kind: code, ref: "GameWorld.Boot + ApplyWorldspawn + GameLog.MatchId now = string.Format(\"{0}.{1}.{2:D6}\", Cvars.Int(sv_eventlog_files_counter), unixTime, rand6) (GameWorld.cs:1016-1019) vs world.qc:949/763. Boot handles gravity/fog/music keys + reply precompute + max_shot_distance + warpzones.", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22: the matchid is now the QC <counter>.<unixtime>.<rand6> correlation id (GameWorld.cs:1018), not the bare map name — values partial->faithful, logic partial->faithful. Boot handles gravity/fog/music worldspawn keys, matchid, and reply precompute; the heavy QC init list (DB, mapinfo enumerate, q3 compat) is host/engine-side. Map_MarkAsRecent IS ported (MapRotation.MarkAsRecent)."
+  - id: sv-world-rules.cvars.changes_log
+    name: "cvar_changes / cvar_purechanges server-list log"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:cvar_changes_init"
+    port_refs:
+      - "src/XonoticGodot.Server/CommandReplies.cs:BuildCvarChanges"
+    constants:
+      - { name: "header_default_server", base: "// this server runs at default server settings", port: "same", match: true }
+      - { name: "header_default_gameplay", base: "// this server runs at default gameplay settings", port: "same", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "BuildCvarChanges vs cvar_changes_init: value!=default scan, _-skip, both exclude passes, header strings", result: pass }
+    confidence: high
+    notes: "Unchanged; still faithful. Drives the server browser pure/impure flag, including the gameplay-irrelevant second exclude pass."
+  - id: sv-world-rules.warmup.stage
+    name: "Warmup stage entry + limit resolution"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:readlevelcvars"
+      - "server/command/vote.qc:ReadyCount"
+    port_refs:
+      - "src/XonoticGodot.Server/WarmupController.cs:Begin"
+      - "src/XonoticGodot.Server/WarmupController.cs:ResolveWarmupLimit"
+      - "src/XonoticGodot.Server/WarmupController.cs:ResolveMinPlayers"
+    constants:
+      - { name: "g_warmup", base: "0", port: "0 (Cvars.cs:123)", match: true }
+      - { name: "g_warmup_limit", base: "180 (xonotic-server.cfg)", port: "180 (Cvars.cs:124)", match: true }
+      - { name: "g_warmup_majority_factor", base: "0.8", port: "0.8 (Cvars.cs:126)", match: true }
+      - { name: "map_minplayers", base: "per-map worldspawn key (0 default)", port: "0 (Cvars.cs:131)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "WarmupController.Begin (campaign forces off; g_warmup<0||>1 -> infinite limit -1; ==1 -> ResolveWarmupLimit) + ResolveMinPlayers vs readlevelcvars:2198-2213. g_warmup_limit default 180 == xonotic-server.cfg:37. MapMinPlayers wired to Cvars.Int(map_minplayers).", result: pass }
+    confidence: high
+    notes: "Unchanged; faithful. g_warmup_limit default 180 matches Base, the g_warmup<0 map-minplayers lower bound is live. The Begin() readlevelcvars mirror (campaign-off / infinite-vs-timed limit) is faithful."
+  - id: sv-world-rules.warmup.serverflags
+    name: "readlevelcvars serverflags (fullbright / pickuptimer)"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/world.qc:readlevelcvars"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/ServerFlags.cs"
+      - "src/XonoticGodot.Server/GameWorld.cs:ReadLevelCvars"
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot"
+      - "game/hud/PickupPanel.cs"
+    constants:
+      - { name: "SERVERFLAG_ALLOW_FULLBRIGHT", base: "BIT(0) from sv_allow_fullbright", port: "1<<0 from sv_allow_fullbright (ServerFlags.cs:24)", match: true }
+      - { name: "SERVERFLAG_FORBID_PICKUPTIMER", base: "BIT(4) from sv_forbid_pickuptimer", port: "1<<4 from sv_forbid_pickuptimer (ServerFlags.cs:36)", match: true }
+      - { name: "sv_allow_fullbright", base: "1 (xonotic-server.cfg:611)", port: "1 (Cvars.cs:402)", match: true }
+      - { name: "sv_forbid_pickuptimer", base: "0 (xonotic-server.cfg:614)", port: "0 (Cvars.cs:403)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Only the FORBID_PICKUPTIMER consumer is ported: the HUD pickup panel reads the bit to gate the leading match timer (PickupPanel.cs:169-173, QC client/hud/panel/pickup.qc:91). The ALLOW_FULLBRIGHT consumer is still unported — nothing reads SERVERFLAG_ALLOW_FULLBRIGHT to gate fullbright player rendering (Base client/view.qc:1115 cl_fullbright gate), so that bit has no on-screen effect."
+    verification:
+      - { kind: code, ref: "ServerFlags.cs (SERVERFLAG_* bit table, AllowFullbright=1<<0/ForbidPickupTimer=1<<4) + GameWorld.ReadLevelCvars (cs:1650-1660: clears+sets both bits, writes ServerFlags.Value and mirrors to the `serverflags` cvar). LIVE at GameWorld.Boot + re-run on source cvar change. CLIENT consumer now LIVE for the pickup-timer half: PickupPanel.cs:169-173 reads (serverflags & SERVERFLAG_FORBID_PICKUPTIMER) from the shared store to enforce the showtimer==1 gate (only 'spectating' shows the timer when forbidden). No fullbright player-render gate reads the bit (grep game/: no SERVERFLAG_ALLOW_FULLBRIGHT consumer). vs readlevelcvars:2189-2195.", result: partial }
+    confidence: high
+    notes: "FIX since 2026-06-25 (presentation): the FORBID_PICKUPTIMER client consumer is now PORTED and LIVE — the HUD pickup panel gates its leading match timer on the published serverflag exactly as QC. presentation missing->partial. STILL OPEN: the ALLOW_FULLBRIGHT consumer (the fullbright player-render gate) is unported, so that bit still has no observable effect. Server-side authority half (ServerFlags table + ReadLevelCvars derive/publish) remains faithful+live."
+  - id: sv-world-rules.warmup.ready_count
+    name: "ReadyCount ready-up majority + countdown abort"
+    layer: [authority]
+    base_refs:
+      - "server/command/vote.qc:ReadyCount"
+    port_refs:
+      - "src/XonoticGodot.Server/WarmupController.cs:ReadyCountCheck"
+      - "src/XonoticGodot.Server/WarmupController.cs:ToggleReady"
+    constants:
+      - { name: "majority_count_basis", base: "humans only (human_players)", port: "humans only (IsBot skip)", match: true }
+      - { name: "majority_rounding", base: "rint(human_players * bound(0.5, factor, 1))", port: "Round(humans * clamp(factor,0.5,1), ToEven)", match: true }
+      - { name: "sv_teamnagger", base: "2 (xonotic-server.cfg)", port: "2 (Cvars.cs:150)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No GiveWarmupResources re-give on countdown abort (loadout re-give deferred to SpawnSystem); the abort itself fires, but the per-player warmup loadout is not re-given when reset_map already ran at countdown start."
+    verification:
+      - { kind: code, ref: "ReadyCountCheck (human-only humansReady/humanPlayers, rint via Round(...,ToEven), clamp(factor,0.5,1), minplayers/badteams abort, infinite->timed switch) vs ReadyCount:553-616. LIVE callers: ToggleReady via `ready` cmd + BotPopulation. Seams WIRED at GameWorld.cs (MapMinPlayers, BadTeams->Teamplay.TeamsUnbalancedForNag, TimeoutActive->Timeout.Active, OnCountdownStop->NotificationSystem.Send). Notifications defined NotificationsList.cs.", result: pass }
+    confidence: high
+    notes: "Faithful. The minplayers / sv_teamnagger badteams countdown-abort and the timeout ready-count guard are LIVE; the COUNTDOWN_STOP_MINPLAYERS/BADTEAMS notifications are defined + broadcast."
+  - id: sv-world-rules.warmup.ready_restart
+    name: "ReadyRestart / ReadyRestart_force match-restart flow"
+    layer: [authority]
+    base_refs:
+      - "server/command/vote.qc:ReadyRestart"
+      - "server/command/vote.qc:ReadyRestart_force"
+    port_refs:
+      - "src/XonoticGodot.Server/WarmupController.cs:ReadyRestart"
+      - "src/XonoticGodot.Server/GameWorld.cs:RestartMatch"
+    constants:
+      - { name: "RESTART_COUNTDOWN", base: "10 (vote.qh:66)", port: "10 (WarmupController.RestartCountdown)", match: true }
+      - { name: "campaign_countdown", base: "3", port: "3 (WarmupController.CampaignCountdown), LIVE", match: true }
+      - { name: "teamplay_lockonrestart", base: "0 (xonotic-server.cfg:29)", port: "0 (Cvars.cs:152)", match: true }
+      - { name: "sv_ready_restart_after_countdown", base: "0 (xonotic-server.cfg:24)", port: "0 (Cvars.cs:128), now implemented (restart_timer deferral)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Per-player restart policy still not ported: no sv_spectate==2 demotion, no re-join of queued (wants_join) players, no per-player allowed_timeouts reset, no alivetime_start clear in ReadyRestart_force."
+    verification:
+      - { kind: code, ref: "WarmupController.ReadyRestart vs ReadyRestart_force:441-524; RestartCountdown=10 == RESTART_COUNTDOWN (vote.qh:66); CampaignCountdown=3 LIVE; OnLockTeams WIRED -> TeamsLocked. sv_ready_restart_after_countdown NOW IMPLEMENTED: when !warmup && cvar!=0, ReadyRestart arms a deferred reset (WarmupController.cs:377-380 _pendingResetAt=GameStartTime) that Think() fires once at game_starttime (cs:298-302, restart_timer think); default 0 path still runs reset_map(false) immediately. Paired client/spawn half: SpawnSystem extends rot/regen-pause + spawn-shield by (game_starttime-time) only when !sv_ready_restart_after_countdown (cs:770-791, QC client.qc:665-669).", result: partial }
+    confidence: high
+    notes: "FIX since 2026-06-25: sv_ready_restart_after_countdown is now IMPLEMENTED — ReadyRestart arms a restart_timer-style deferral (_pendingResetAt at game_starttime) when the cvar is on and outside warmup, dispatched once by Think(); the default (0) keeps the immediate reset_map(false) at countdown start. The SpawnSystem countdown-freeze extension also honors the cvar (only extends pause/shield timers when after-countdown is OFF). logic partial->faithful, constant match false->true. Campaign 3s countdown + teamplay_lockonrestart team-lock remain LIVE. STILL OPEN: the per-player restart policy (spectate demotion, requeue, timeout/alivetime reset) is deferred."
+  - id: sv-world-rules.warmup.reset_map
+    name: "reset_map: full map/player reset on restart"
+    layer: [authority]
+    base_refs:
+      - "server/command/vote.qc:reset_map"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:ResetMap"
+      - "src/XonoticGodot.Server/GameWorld.cs:ResetMapObjects"
+    constants: []
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No per-client accuracy_reset pass on reset_map (the per-player hit/fire accuracy counters are not zeroed). Inventory_clear is subsumed by the Clients.Spawn -> PutClientInServer start-loadout re-give."
+    verification:
+      - { kind: code, ref: "ResetMap (GameWorld.cs:4456-4492: Score clear on real restart, reset_map_players, round reset, per-player zero-vel + PlayerPowerupsRemoveAll + StatusEffectsCatalog.RemoveAll + PlayerStates.OnSpawn + Clients.Spawn, minigames+centerprint kill) / ResetMapObjects (4500-4534): pass 1 = projectile delete THEN e.Reset?.Invoke for every non-client entity; pass 2 = e.Reset2?.Invoke for every non-client entity (the waypoint/assault-roundstart LAST pass). vs reset_map:351-430", result: partial }
+    confidence: high
+    notes: "FIX since 2026-06-25: the .reset2 second pass is now PORTED — ResetMapObjects runs the QC two-stage order (pass 1: delete projectiles + fire every non-client .reset; pass 2: fire every non-client .reset2 after the first pass completes, GameWorld.cs:4524-4533), so waypoint sprites + the Assault round-start trigger re-arm only after movers/spawnpoints reset. The .reset pass and LMS reset_map_players remain present; score clear, round reset, per-player zero-velocity + PlayerPowerupsRemoveAll + Spawn, status-effects RemoveAll, projectile deletion all gated on time<=game_starttime. logic stays partial. STILL OPEN: per-client accuracy reset (Inventory_clear is subsumed by the spawn re-give)."
+  - id: sv-world-rules.checkrules.cascade
+    name: "CheckRules_World per-frame win cascade"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:CheckRules_World"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:RunCheckRulesWorld"
+      - "src/XonoticGodot.Server/GameWorld.cs:CheckRulesAndIntermission"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:CountFragsRemaining"
+    constants:
+      - { name: "warmup/pre-start limit zeroing", base: "warmup_stage || time<=game_starttime", port: "same", match: true }
+      - { name: "timelimit offset", base: "timelimit += game_starttime", port: "same", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "leadlimit / leadlimit_and_fraglimit WIN semantics are still not evaluated in the world layer (the win comes from the gametype MatchEnded latch + tie report). The leadlimit math exists in GameScores.CountFragsRemaining but only feeds the frags-remaining announcer, not the end-of-match decision."
+      - "The CheckRules_World mutator hook (M_ARGV status override) is still not invoked."
+    verification:
+      - { kind: code, ref: "RunCheckRulesWorld (GameWorld.cs:3301-3403: timelimit zeroing + offset, overtime/suddendeath cascade, RanOutOfSpawns-first then WinningCondition_Scores) vs CheckRules_World:1725-1861. WinningConditionRanOutOfSpawns (GameWorld.cs:3414-3485) faithfully mirrors world.qc:1641-1718 (HaveTeamSpawns/g_spawn_useallspawns/SomeSpawnHasBeenUsed guards, living-player + spawnpoint presence tally via SpawnSystem.EnumerateSpawnPointTeams, present==0 draw / present==1 win with -1000 loser penalty), called LIVE from RunCheckRulesWorld:3357. ANNCE_REMAINING_FRAG_{1,2,3}: GameScores.CountFragsRemaining (leadlimit + leadlimit_and_fraglimit) LIVE-called per-frame from the gametype scoring layer; REMAINING_FRAG notifs defined NotificationsList.cs. CheckRules_World mutator hook + world-layer leadlimit WIN not ported.", result: partial }
+    confidence: high
+    notes: "FIX since 2026-06-25: WinningCondition_RanOutOfSpawns is now PORTED and LIVE — WinningConditionRanOutOfSpawns (GameWorld.cs:3414) faithfully reproduces world.qc:1641 (g_spawn_useallspawns team spawn-exhaustion: draw when no team has presence, win+(-1000 loser penalty) when one team survives) and runs first in the cascade (cs:3357), with full SpawnSystem support (HaveTeamSpawns/SomeSpawnHasBeenUsed/EnumerateSpawnPointTeams). Was confirmed-absent in the baseline. logic stays partial (two gaps remain). The frags-remaining announcer (ANNCE_REMAINING_FRAG_{1,2,3}) is implemented + LIVE with leadlimit math (audio partial). STILL OPEN: the world-layer leadlimit WIN condition and the CheckRules_World mutator hook. Overtime/suddendeath ordering + warmup/pre-start gating are faithful."
+  - id: sv-world-rules.checkrules.overtime
+    name: "Overtime / sudden-death (InitiateSuddenDeath/Overtime/GetWinningCode)"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:InitiateSuddenDeath"
+      - "server/world.qc:InitiateOvertime"
+      - "server/world.qc:GetWinningCode"
+    port_refs:
+      - "src/XonoticGodot.Server/OverTimeManager.cs"
+      - "game/hud/TimerPanel.cs"
+    constants:
+      - { name: "timelimit_overtime", base: "2 (min)", port: "2 (Cvars.cs:114)", match: true }
+      - { name: "timelimit_overtimes", base: "0", port: "0 (Cvars.cs:115)", match: true }
+      - { name: "timelimit_suddendeath", base: "5 (min)", port: "5 (Cvars.cs:116)", match: true }
+      - { name: "OVERTIME_SUDDENDEATH", base: "BITS(24)=16777216", port: "1<<24 (OverTimeManager.cs:53 / TimerPanel.cs:29)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "race/qualifying race_StartCompleting branch deliberately omitted (those modes latch their own winner)."
+    verification:
+      - { kind: code, ref: "OverTimeManager vs world.qc:1467-1536; constants vs Cvars.cs:114-116 (2/0/5) + xonotic-server.cfg. STAT(OVERTIMES) NOW NETWORKED: OverTimeManager.Overtimes (OverTimeManager.cs:74) -> ServerNet.SendMatchState -> ClientNet.MatchOvertimes -> TimerPanel.Overtimes (TimerPanel.cs:82-92), which renders the 'Overtime'/'Overtime #N'/'Sudden Death' subtext (sentinel OVERTIME_SUDDENDEATH = 1<<24 handled both sides).", result: pass }
+    confidence: high
+    notes: "FIX since 2026-06-25 (presentation): STAT(OVERTIMES) is now networked end-to-end — OverTimeManager.Overtimes rides the MatchState packet to ClientNet.MatchOvertimes and the HUD TimerPanel renders the overtime / sudden-death banner subtext (with the 1<<24 sudden-death sentinel). presentation partial->faithful. Decision logic, constants, sentinel handling (overtimesadded=-1) and the just-begun-suddendeath revert remain faithful+live. audio stays partial (one-shot overtime/sudden-death center notifications are sent via NotificationSystem; the announcer voice cue parity is not separately verified here)."
+  - id: sv-world-rules.nextlevel.intermission
+    name: "NextLevel + intermission entry / map-change timer"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:NextLevel"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:NextLevel"
+      - "src/XonoticGodot.Server/Intermission.cs"
+    constants:
+      - { name: "sv_mapchange_delay", base: "5", port: "5 (Cvars.cs:137)", match: true }
+      - { name: "empty_server_exittime", base: "-1", port: "-1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "target_music_kill (stop any playing trigger-music entity at match end) is not invoked here — no MusicKill analogue in the port."
+      - "MatchEnd_RestoreSpectatorStatus (move match-joiners back to spectator at match end) is not called here (see new_unmapped)."
+      - "The bprint team/player 'wins the match' broadcast lines are handled by the notification layer, not this path (verify coverage in sv-notification)."
+    verification:
+      - { kind: code, ref: "GameWorld.NextLevel (GameWorld.cs:3780+) + Intermission.Begin vs world.qc:1404-1464. DumpStats(true) NOW called (GameWorld.cs:3797). MatchEnd_BeforeScores hook NOW fired before the report (GameWorld.cs:3791 -> MutatorHooks.FireMatchEndBeforeScores) and the trailing MatchEnd hook NOW fired (GameWorld.cs:3832 -> MutatorHooks.FireMatchEnd). No target_music_kill / MatchEnd_RestoreSpectatorStatus (grep).", result: pass }
+    confidence: high
+    notes: "FIX since 2026-06-25: two NextLevel sub-steps that were absent are now wired — DumpStats(true) (now tracked faithful under sv-world-rules.eventlog.dumpstats) AND the MatchEnd_BeforeScores + MatchEnd mutator hooks (both fired, before/after the per-player report mirroring QC's order). Core path stays faithful: winner marking, :gameover eventlog, playerstats report, campaign pre-intermission, demo stop, exittime = time + sv_mapchange_delay (or -1 empty). STILL OPEN: target_music_kill and MatchEnd_RestoreSpectatorStatus from this same QC path."
+  - id: sv-world-rules.entity.randomseed
+    name: "RandomSeed shared-RNG broadcast entity"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/world.qc:RandomSeed_Spawn"
+      - "server/world.qc:RandomSeed_Think"
+      - "server/world.qc:RandomSeed_Send"
+    port_refs:
+      - "src/XonoticGodot.Server/RandomSeed.cs"
+      - "src/XonoticGodot.Server/GameWorld.cs:RandomSeed (field cs:186)"
+      - "src/XonoticGodot.Server/GameWorld.cs:OnStartFrame (RandomSeed.Tick cs:1771)"
+      - "game/net/ServerNet.cs:SendMatchState (cs:967-987)"
+      - "game/net/ClientNet.cs:ReadMatchState (cs:600-618)"
+    constants:
+      - { name: "reroll_period_s", base: "5 (this.nextthink = time + 5, world.qc:602)", port: "5 (RandomSeed.RerollPeriod, RandomSeed.cs:23)", match: true }
+      - { name: "seed_range", base: "bound(0, floor(random()*65536), 65535) (world.qc:601)", port: "Clamp(floor(rand*65536),0,65535) (RandomSeed.cs:54)", match: true }
+      - { name: "seed_value_bit_exact", base: "engine random() stream", port: "process System.Random (NOT bit-exact; no client effect consumes it yet)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The seed VALUE is rolled from a process RNG, not Base's engine random() stream, so it is not bit-exact with Base. This is harmless and deliberate: no client EFFECT currently consumes the decoded seed (the client RandomRng PrandomContext has no downstream reader — grep returns none), so only the seam (re-roll cadence + network round-trip + per-context reseed) needs to agree, and it does. The mechanism also folds the seed onto the existing SendMatchState packet rather than a dedicated ENT_CLIENT_RANDOMSEED networked entity (smallest diff that reaches every accepted peer; appended trailing so an old client truncates harmlessly)."
+    gaps:
+      - "No client effect consumes the decoded shared seed yet: ClientNet.RandomRng (PrandomContext, reseeded on change at ClientNet.cs:617) has no downstream reader, so the seed produces no observable deterministic spread/effect — the seam exists but is presentationally inert until a consumer is wired."
+      - "Seed value is not bit-exact with Base's engine random() stream (intended; see divergence_rationale)."
+    verification:
+      - { kind: code, ref: "RandomSeed.cs: Reroll = Clamp(floor(rand*65536),0,65535), 5s RerollPeriod (==world.qc:601-602); Tick(Time) called LIVE per server frame at GameWorld.OnStartFrame (cs:1771); instance owned by GameWorld (cs:186). Wire: ServerNet.SendMatchState appends RandomSeed.Current as a UShort at the end of the match-state packet (cs:970/987); ClientNet.ReadMatchState reads it trailing (cs:602), reseeds RandomRng only on change (cs:614-617). No client consumer of RandomRng (grep src/+game/ — none).", result: pass }
+    confidence: high
+    notes: "FIX since 2026-06-27: RandomSeed is now PORTED and LIVE — the server producer (RandomSeed.cs, ticked every frame), the network seam (folded onto SendMatchState, decoded into a per-instance PrandomContext), and the 5s/65536 re-roll constants all match Base. missing->faithful (logic), missing->partial (values: seed not bit-exact by design), missing->faithful (timing), missing->partial (presentation: no consumer yet so inert), na->live (liveness). intended_divergence set: process RNG instead of engine random() + match-state packet instead of ENT_CLIENT_RANDOMSEED. STILL OPEN: no client effect reads the decoded seed, so the shared-RNG determinism it enables is unused."
+  - id: sv-world-rules.entity.pingplreport
+    name: "PingPLReport ping/packet-loss client report"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/world.qc:PingPLReport_Spawn"
+      - "server/world.qc:PingPLReport_Think"
+    port_refs:
+      - "game/net/ServerNet.cs:BuildScoreboard"
+      - "src/XonoticGodot.Net/ScoreboardBlock.cs:ScoreRowWire"
+      - "game/hud/ScoreboardPanel.cs:SetRows"
+    constants:
+      - { name: "ping_packetloss_byte", base: "min(ceil(ping_packetloss*255),255) (world.qc:74)", port: "min(ceil(PacketLoss*255),255) (ServerNet.cs:2234)", match: true }
+      - { name: "LATENCY_THINKRATE", base: "10 (s) — playerstats latency record", port: "none (no latency feed)", match: false }
+      - { name: "report_period_s", base: "3 / maxclients", port: "n/a — PL folded into the per-tick scoreboard block, not a round-robin entity", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Only the packet-loss (PL) half is fed: the port has NO ping feed — the scoreboard ping column is hard -1 (ScoreboardPanel.cs:228/249 'Ping isn't networked per row yet'), and there is no playerstats latency record (the LATENCY_THINKRATE=10s avg-latency accumulation for the xonstat report)."
+      - "Mechanism diverges: Base uses the TE_CSQC_PINGPLREPORT round-robin entity (one client per think, 3/maxclients s); the port quantizes ENet PacketLoss to a 0..255 byte and folds it into the per-tick scoreboard wire (ScoreRowWire.PacketLossByte), de-quantized client-side for the PL column."
+    verification:
+      - { kind: code, ref: "ServerNet.BuildScoreboard (ServerNet.cs:2230-2242) computes plByte = min(ceil(_transport.PacketLoss(peer)*255),255) per connected human (bots/unmapped = 0) and packs it into ScoreRowWire.PacketLossByte; ScoreboardBlock.cs:119/172 writes/reads the byte; ScoreboardPanel.cs:251 de-quantizes the 0..255 loss byte to a 0..1 fraction for the PL column. Ping left -1 (ScoreboardPanel.cs:228/249). No PingPLReport entity / no latency record (grep). vs world.qc:74/96/58.", result: partial }
+    confidence: high
+    notes: "FIX since 2026-06-25: the PL half is now PORTED and LIVE — measured ENet packet loss is quantized to the same 0..255 byte as QC (min(ceil(loss*255),255)) and networked via the scoreboard block, then consumed by the HUD PL column. missing->partial on logic/values/timing/presentation, na->partial on liveness. STILL OPEN: the ping column has no per-row feed (hard -1) and the playerstats latency average (LATENCY_THINKRATE=10s) is unported. Mechanism intentionally folds PL into the existing scoreboard wire rather than reproducing the TE_CSQC_PINGPLREPORT round-robin entity."
+  - id: sv-world-rules.boot.lightstyles
+    name: "Animated lightstyle table install"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/world.qc:spawnfunc(worldspawn)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/LightStyles.cs"
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot"
+      - "game/client/DynamicLightRenderer.cs"
+    constants:
+      - { name: "lightstyle_count", base: "12 named (0-11) + style 63", port: "12 named (0-11) + style 63 (LightStyles.cs:46-59)", match: true }
+      - { name: "frame_strings", base: "world.qc:882-920 verbatim", port: "verbatim identical (LightStyles.cs:46-59)", match: true }
+      - { name: "anim_rate_fps", base: "10 (Quake lightstyle convention)", port: "10 (LightStyles.FramesPerSecond)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Styled lights animate by modulating only the dynlight's own RADIUS (DynamicLightRenderer samples LightStyles.Sample at 10fps and scales OmniRange). DarkPlaces additionally animates WORLD-BRUSH lightmaps for named styles; the port has no lightmap-modulation subsystem, so styled world geometry renders steady (only the dynlight node flickers). (Tracked also under mapobject-misc.yaml.)"
+    verification:
+      - { kind: code, ref: "LightStyles.cs: 12 named styles (0-11) + style 63, frame strings byte-for-byte identical to world.qc:882-920, 10fps Quake decode ('a'=0.0..'m'=1.0). InstallWorldspawnTable() called LIVE at GameWorld.Boot. CLIENT consumer now LIVE: DynamicLightRenderer.cs:146-148 samples LightStyles.Sample(e.LightStyle, msec/1000) and modulates OmniRange per frame (full-dark frame turns the light off); instantiated on the live client path (ClientWorld). vs spawnfunc(worldspawn) lightstyle(0..11)+lightstyle(63).", result: partial }
+    confidence: high
+    notes: "FIX since 2026-06-25 (presentation): the client render consumer is now PORTED and LIVE — DynamicLightRenderer samples LightStyles.Sample(style, wall-clock) at 10fps and modulates a styled dynlight's radius each frame, so a styled light visibly flickers/pulses/strobes. presentation missing->partial. STILL OPEN: world-brush lightmap animation for named styles (the port animates only the dynlight node's radius, not lightmapped geometry). Server-side table install + Sample decoder remain faithful+live."
+  - id: sv-world-rules.misc.start_delay
+    name: "g_start_delay pre-match join window"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:readlevelcvars"
+    port_refs:
+      - "src/XonoticGodot.Server/WarmupController.cs:Begin"
+    constants:
+      - { name: "g_start_delay", base: "0 (listen) / 15 (dedicated) (xonotic-common.cfg:185-186)", port: "0 (Cvars.cs:134); registered", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The dedicated-server 15s default comes from an `if_dedicated` clause in xonotic-common.cfg that the port's config layer does not replicate — an explicit `set g_start_delay 15` works, but the stock dedicated 15s join window is not auto-applied. Config-layer divergence only, not a code gap."
+    verification:
+      - { kind: code, ref: "WarmupController.Begin: startDelay = CampaignActive ? 0 : Cvars.FloatOr(g_start_delay,0); GameStartTime = Now + startDelay — vs readlevelcvars:2220-2221. g_start_delay registered (Cvars.cs:134, default 0).", result: pass }
+    confidence: high
+    notes: "Unchanged; faithful. The g_start_delay cvar is registered with the Base listen default 0, read-and-apply on the live no-warmup path is faithful (campaign => 0). The only residual is the dedicated-server 15s if_dedicated config default (cfg-layer, not a code defect)."
+  - id: sv-world-rules.misc.max_shot_distance
+    name: "max_shot_distance from world bounds"
+    layer: [authority, shared]
+    base_refs:
+      - "server/world.qc:InitGameplayMode"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:SetMaxShotDistanceFromWorldBounds"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:CurrentMaxShotDistance"
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot"
+    constants:
+      - { name: "max_shot_distance", base: "min(230000, vlen(world.maxs-world.mins)) per-map (default 32768 in constants.qh)", port: "min(230000f, VLen(maxs-mins)) per-map at Boot; 32768f constant fallback (WeaponFiring.cs:60)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "WeaponFiring.SetMaxShotDistanceFromWorldBounds (cs:59-60: min(230000f, VLen(worldMaxs-worldMins))) called per map at GameWorld.cs:734-739 from the built collision bounds (degenerate fixture keeps the 32768f fallback). All hitscan/turret/vehicle sites read WeaponFiring.CurrentMaxShotDistance / TurretAI.CurrentMaxShotDistance. vs world.qc:731 max_shot_distance = min(230000, vlen(world.maxs-world.mins)).", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-22: the global hitscan/trueaim/turret clamp is now recomputed per-map from the world bounds (min(230000, vlen(maxs-mins))) at Boot (GameWorld.cs:734) and exposed as WeaponFiring.CurrentMaxShotDistance, read by every SetupShot/FireBullet/turret/vehicle site. Was a fixed 32768qu constant. logic+values partial->faithful. The 32768f constant survives only as the pre-map/degenerate-fixture fallback (matches the QC constants.qh default)."
+  - id: sv-world-rules.misc.redirection
+    name: "RedirectionThink server redirect"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:RedirectionThink"
+      - "server/intermission.qc:redirection_target = autocvar_quit_and_redirect"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:DriveEndOfMatchMapFlow (quit_and_redirect cs:3975-3982)"
+      - "src/XonoticGodot.Server/Commands.cs:RedirectHandler (cs:154)"
+      - "game/net/NetGame.cs:RedirectHandler wiring (cs:777/810)"
+    constants:
+      - { name: "quit_and_redirect", base: "\"\" (empty default)", port: "\"\" (Cvars.cs:495)", match: true }
+      - { name: "quit_and_redirect_timer", base: "defer-reconnect delay (autocvar_quit_and_redirect_timer)", port: "none — port reconnects immediately, no defer timer", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: partial
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Only the core quit_and_redirect path is ported (read at match-end map flow, RedirectHandler -> MenuCommand.Connect reconnects the local/listen client). MISSING: the 'self' restart variant (redirection_target == \"self\" -> disconnect; defer reconnect), the cvar_set sv_public -2 advertise-suppression, the per-second retry loop with redirection_timeout/redirection_nextthink (Base tries twice to catch slow clients), the quit_and_redirect_timer defer delay, and the localcmd quit once all clients are gone."
+    verification:
+      - { kind: code, ref: "GameWorld.DriveEndOfMatchMapFlow reads quit_and_redirect (cs:3976), and on non-empty fires Commands.RedirectHandler(redirect) (cs:3980) then returns (suppresses map rotation). RedirectHandler wired LIVE on both threaded + non-threaded host branches (NetGame.cs:777/810) -> Callable.CallDeferred(MenuCommand.Connect(addr)). Base sets redirection_target from autocvar_quit_and_redirect at intermission (intermission.qc:363) and calls RedirectionThink() per frame from main.qc:341. No sv_public/-2, no retry loop, no defer timer (grep).", result: partial }
+    confidence: high
+    notes: "FIX since 2026-06-27: quit_and_redirect is now PORTED and LIVE — at end-of-match the server reads the cvar and reconnects clients to the target address via RedirectHandler -> MenuCommand.Connect (deferred so it tears down the game tree safely). missing->partial (logic/values/timing), na->live. STILL OPEN: the 'self' restart variant, sv_public -2 advertise-suppress, the two-pass per-second retry loop (redirection_timeout/nextthink), and the quit_and_redirect_timer defer delay — the port reconnects immediately and once. Admin convenience feature; low gameplay impact."
+  - id: sv-world-rules.misc.shutdown
+    name: "Shutdown: persist DB/bans + slowmo/playerstats/bot teardown"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:Shutdown"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:Shutdown"
+      - "src/XonoticGodot.Server/TimeoutController.cs:ResetSlowmoOnShutdown"
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "ServerProgsDB persistence on shutdown (db_save/db_dump of server.db<sessionid>) has no port analogue."
+      - "bot_endgame, CheatShutdown, WeaponStats_Shutdown and MapInfo_Shutdown are not performed on world teardown."
+    verification:
+      - { kind: code, ref: "GameWorld.Shutdown (cs:1377-1398): Bans.Save() + Timeout.ResetSlowmoOnShutdown() + (if !Intermission.Running) PlayerStats.GameReport(finished:false) + cvar-changed unsubscribe — vs world.qc:2618-2670 (slowmo reset, Ban_SaveBans, PlayerStats_GameReport(false), db_save, bot_endgame).", result: partial }
+    confidence: high
+    notes: "FIXED since 2026-06-22: GameWorld.Shutdown is no longer a near-no-op — it now does the slowmo-reset-on-active-timeout (Timeout.ResetSlowmoOnShutdown, TimeoutController.cs:243), the Ban_SaveBans re-persist, AND the unfinished-match PlayerStats_GameReport(false) (only when intermission never ran, to avoid double-report). liveness partial->live. STILL OPEN: ServerProgsDB persistence, bot_endgame, CheatShutdown, WeaponStats_Shutdown — so logic stays partial."
+  - id: sv-world-rules.eventlog.dumpstats
+    name: "DumpStats final/periodic scores dump (:scores: / :status:)"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:DumpStats"
+    port_refs:
+      - "src/XonoticGodot.Server/Commands.cs:DumpStats"
+      - "src/XonoticGodot.Server/Commands.cs:CmdPrintStats"
+      - "src/XonoticGodot.Server/GameWorld.cs:NextLevel"
+    constants:
+      - { name: "final_prefix", base: ":scores:", port: ":scores: (Commands.cs:2632)", match: true }
+      - { name: "status_prefix", base: ":status:", port: ":status: (Commands.cs:2632)", match: true }
+      - { name: "sv_logscores_console", base: "0 (xonotic-server.cfg:336)", port: "0 (Cvars.cs:423)", match: true }
+      - { name: "sv_logscores_bots", base: "0 (xonotic-server.cfg:339)", port: "0 (Cvars.cs:426)", match: true }
+      - { name: "sv_logscores_file", base: "console/file score-line sinks", port: "registered (Cvars.cs:424) but per-call file open/append omitted (eventlog-file sink covers it)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The dedicated per-call score-LOG-FILE open/append (Base appends each block to sv_logscores_filename when sv_logscores_file is on) is not reproduced — the port routes the same blocks to the structured eventlog-file sink (sv_eventlog_files) instead, so a standalone scores.log is not written."
+    verification:
+      - { kind: code, ref: "Commands.DumpStats(final) (Commands.cs:2619-2682) emits :scores:/:status:<gametype>_<map>:<time>, :labels:player:, per-player :player:see-labels: rows, teamplay :labels:teamscores: + per-team :teamscores:see-labels:, and :end — to console (sv_logscores_console, forced on for !final) and eventlog (sv_eventlog, final only; suppressed-to-console when sv_eventlog_console). GetPlayerScoreString/GetTeamScoreString/GetScoreLogLabel port scores.qc:599/610/671. LIVE callers: GameWorld.NextLevel (GameWorld.cs:3797, final=true) + the `printstats` server command (Commands.cs:867 -> CmdPrintStats, final=false). vs world.qc:1264/1429 + sv_cmd.qc:1249.", result: pass }
+    confidence: high
+    notes: "FIX since 2026-06-25: DumpStats is now fully PORTED and LIVE. The colon-delimited score-log block (header + player label/value rows + teamscore rows + :end) is built by Commands.DumpStats and driven both at intermission (NextLevel, final=true → eventlog + console) and via the new `printstats` server command (final=false → console only). The score-string helpers (GetScoreLogLabel sort-priority/lower-is-better suffixes, GetPlayerScoreString/GetTeamScoreString) faithfully mirror scores.qc. logic+values+timing missing->faithful, liveness na->live. Only residual: the standalone sv_logscores_file flat-file append (the eventlog-file sink covers structured logging)."
+  - id: sv-world-rules.boot.initialize_entity_queue
+    name: "InitializeEntity ordered deferred-spawn queue"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:InitializeEntity"
+      - "server/world.qc:InitializeEntitiesRun"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:RunPostSpawn"
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot (RunPostSpawn cs:739)"
+    constants: []
+    status:
+      logic: partial
+      values: na
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The port does NOT reproduce Base's generic order-sorted linked list (InitializeEntity(e, func, order) sorted by initialize_entity_order). Instead it reproduces the same BEHAVIORAL ordering with a fixed-sequence drain: MapObjectsRegistry.RunPostSpawn() (called once at Boot after the whole BSP entity lump has spawned) runs the door-link pass FIRST (INITPRIO_LINKDOORS) then the INITPRIO_FINDTARGET pass (DynamicLight/ViewLocation/Follow/AdvancedMovers/Teleporters/InfoAutoScreenshot deferred-init queues), each family draining its own pending queue. The few entities that need it carry their own deferred-resolve list; there is no single generic priority queue."
+    gaps:
+      - "Only the families that actually need post-spawn ordering carry a deferred-init queue (doors, dynlights, view-locations, follow, advanced movers, teleporters, info_autoscreenshot). The general INITPRIO mechanism (e.g. INITPRIO_GAMETYPE_FALLBACK GameplayMode_DelayedInit, INITPRIO_DROPTOFLOOR DropToFloor, the weaponarena_available_*_update FINDTARGET passes) is not driven by a unified queue; whether every Base INITPRIO consumer has a port analogue is not exhaustively traced. The reset_map .reset2 second-pass (already tracked under warmup.reset_map) is handled by a separate two-stage Reset/Reset2 invoke, not this queue."
+    verification:
+      - { kind: code, ref: "MapObjectsRegistry.RunPostSpawn (cs:331-344): RunDeferredLinks (door-link, QC INITPRIO_LINKDOORS) then per-family RunDeferredInit drains (FINDTARGET pass) in fixed priority order; called LIVE once at GameWorld.Boot (cs:739) after the BSP lump spawns. Base: world.qc:2229 (InitializeEntity order-sorted insert), world.qc:2262 (InitializeEntitiesRun drain). No generic initialize_entity_order linked list in the port (grep).", result: partial }
+    confidence: medium
+    notes: "RECLASSIFIED since 2026-06-25 (unknown->partial/faithful/live): the port DOES implement the deferred post-spawn ordering primitive — MapObjectsRegistry.RunPostSpawn drains per-family init queues in INITPRIO order (links before findtarget), live at Boot. It is a fixed-sequence drain rather than Base's generic order-sorted queue (intended_divergence), so logic=partial (covers the families that need it, not a unified queue) but timing=faithful (drained once after the whole lump) and liveness=live. The reset_map .reset2 two-stage pass is handled separately. Status was previously left unknown pending this trace."
+  - id: sv-world-rules.boot.default_alpha
+    name: "SetDefaultAlpha default player/weapon alpha resolution"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:SetDefaultAlpha"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Mutators/MutatorHooks.cs:FireSetDefaultAlpha"
+      - "src/XonoticGodot.Server/GameWorld.cs:Boot (FireSetDefaultAlpha cs:647)"
+    constants:
+      - { name: "g_player_alpha", base: "autocvar_g_player_alpha; 0 -> 1 fallback (world.qc:109-110)", port: "g_player_alpha; 0 -> 1 fallback (MutatorHooks.cs:1041)", match: true }
+      - { name: "default_weapon_alpha", base: "= default_player_alpha (world.qc:112)", port: "WeaponAlpha = playerAlpha (MutatorHooks.cs:1041+)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "MutatorHooks.FireSetDefaultAlpha (cs:1039-1058): seeds playerAlpha from g_player_alpha with the 0->1 fallback, weaponAlpha = playerAlpha, then fires the SetDefaultAlpha hook chain (Cloaked lowers to g_balance_cloaked_alpha, RunningGuns weapon-alpha) — faithful to world.qc:105-114's MUTATOR_CALLHOOK(SetDefaultAlpha) gate + default branch. Resolved (DefaultPlayerAlpha, DefaultWeaponAlpha) cached on GameWorld and read by spawn/death/loadout. Called LIVE at GameWorld.Boot (cs:647). DamageSystem corpse inherits DefaultPlayerAlpha (cs:693).", result: pass }
+    confidence: high
+    notes: "NEW ROW (registry coverage gap, 2026-06-27). SetDefaultAlpha was unmapped though fully ported: MutatorHooks.FireSetDefaultAlpha mirrors world.qc:105-114 (g_player_alpha 0->1 fallback, weapon alpha = player alpha, mutator-hook override for Cloaked/RunningGuns), fired live at Boot and cached on GameWorld for spawn/death/loadout reads. faithful + live."

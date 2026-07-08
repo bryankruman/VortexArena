@@ -7,7 +7,7 @@
 //   relay_teamcheck.qc-> trigger_relay_teamcheck (+ RELAYTEAMCHECK_NOTEAM/_INVERT)
 //   relay_activators.qc-> relay_activate / relay_deactivate / relay_activatetoggle (+ generic_setactive)
 //   gamestart.qc      -> trigger_gamestart
-//   magicear.qc       -> trigger_magicear (string-match core; left unwired — no say pipeline yet)
+//   magicear.qc       -> trigger_magicear (string-match core; LIVE via the server Chat.Say pipeline)
 //
 // These are pure relay/timer entities: they fire their targets (MapMover.UseTargets, the port of
 // SUB_UseTargets) on .use or on a schedule, with no volume. trigger_relay / target_relay / target_delay /
@@ -26,9 +26,10 @@ namespace XonoticGodot.Common.Gameplay;
 /// <summary>
 /// The logic-gate / activator-relay trigger entities (flipflop / monoflop / multivibrator / disablerelay /
 /// relay_if / relay_teamcheck / relay_activate* / gamestart / magicear). Each setup is a spawnfunc registered
-/// by <see cref="MapObjectsRegistry"/>. Faithful ports; the per-gate <c>.reset</c> bodies are included where
-/// they map cleanly, but the engine has no <c>.reset</c> map-restart pass yet (GameWorld.ResetMapObjects is a
-/// stub), so they stay dormant until that infra lands — core <c>.use</c> behavior is unaffected.
+/// by <see cref="MapObjectsRegistry"/>. Faithful ports; the per-gate <c>.reset</c> bodies are installed where Base
+/// installs them (flipflop/monoflop/disablerelay/relay_if/relay_teamcheck/relay_activate*) and driven by the live
+/// GameWorld.ResetMapObjects pump (e.Reset, plus gamestart's e.Reset2). trigger_multivibrator deliberately gets no
+/// reset (Base's spawnfunc installs none).
 /// </summary>
 public static class LogicGates
 {
@@ -62,7 +63,9 @@ public static class LogicGates
         this_.Use = FlipflopUse;
         this_.ClassName = "trigger_flipflop";
         MapMover.IndexRegister(this_);
-        // QC: this.reset = spawnfunc_trigger_flipflop (a perfect resetter) — dormant until reset infra exists.
+        // QC flipflop.qc:23: this.reset = spawnfunc_trigger_flipflop (a perfect resetter). Re-running the spawnfunc
+        // re-asserts active + the START_ENABLED initial latch; the central ResetMapObjects pump drives it (e.Reset).
+        this_.Reset = FlipflopSetup;
     }
 
     /// <summary>QC <c>flipflop_use</c>: toggle the latch; fire targets only when it flips ON.</summary>
@@ -96,7 +99,9 @@ public static class LogicGates
         this_.GateState = 0;
         this_.ClassName = "trigger_monoflop";
         MapMover.IndexRegister(this_);
-        // QC: this.reset = monoflop_reset — dormant until reset infra exists.
+        // QC monoflop.qc:64: this.reset = monoflop_reset. Driven by the central ResetMapObjects pump (e.Reset);
+        // re-arms the latch so an ON-state monoflop snaps off on a round restart.
+        this_.Reset = MonoflopReset;
     }
 
     /// <summary>QC <c>monoflop_use</c>: (re)arm the off-timer to time+wait every press; fire ON only on the rising edge.</summary>
@@ -158,6 +163,9 @@ public static class LogicGates
         this_.ClassName = "trigger_multivibrator";
         MapMover.IndexRegister(this_);
 
+        // NOTE: Base spawnfunc(trigger_multivibrator) (multivibrator.qc:131-149) installs NO this.reset — unlike the
+        // other gates it is NOT registered with the round-restart reset pump. multivibrator_reset is called inline
+        // only for the targeted-init branch below. So we deliberately do NOT assign this_.Reset here (faithful).
         if (!string.IsNullOrEmpty(this_.TargetName))
             MultivibratorReset(this_);
     }
@@ -225,7 +233,9 @@ public static class LogicGates
         this_.Use = DisableRelayUse;
         this_.ClassName = "trigger_disablerelay";
         MapMover.IndexRegister(this_);
-        // QC: this.reset = spawnfunc_trigger_disablerelay (resets fully) — dormant until reset infra exists.
+        // QC disablerelay.qc:28: this.reset = spawnfunc_trigger_disablerelay (resets fully) — re-asserts active.
+        // Driven by the central ResetMapObjects pump (e.Reset).
+        this_.Reset = DisableRelaySetup;
     }
 
     /// <summary>
@@ -274,7 +284,9 @@ public static class LogicGates
         this_.Use = RelayIfUse;
         this_.ClassName = "trigger_relay_if";
         MapMover.IndexRegister(this_);
-        // QC: this.reset = spawnfunc_trigger_relay_if (resets fully) — dormant until reset infra exists.
+        // QC relay_if.qc:25: this.reset = spawnfunc_trigger_relay_if (resets fully) — re-asserts active.
+        // Driven by the central ResetMapObjects pump (e.Reset).
+        this_.Reset = RelayIfSetup;
     }
 
     /// <summary>QC <c>trigger_relay_if_use</c>: compare cvar_string(netname) vs cvar_string(message).</summary>
@@ -306,11 +318,23 @@ public static class LogicGates
     public static void RelayTeamCheckSetup(Entity this_)
     {
         this_.Active = MapMover.ActiveActive;
-        // QC: this.team_saved = this.team; IL_PUSH(g_saved_team, this) — only used by the (dormant) reset; skip.
+        // QC relay_teamcheck.qc:38: this.team_saved = this.team; IL_PUSH(g_saved_team, this) — captured so the
+        // reset can restore the original team gate after a round/match scramble.
+        this_.TeamSaved = this_.Team;
         this_.Use = RelayTeamCheckUse;
         this_.ClassName = "trigger_relay_teamcheck";
         MapMover.IndexRegister(this_);
-        // QC: this.reset = trigger_relay_teamcheck_reset — dormant until reset infra exists.
+        // QC relay_teamcheck.qc:39: this.reset = trigger_relay_teamcheck_reset. Driven by the central
+        // ResetMapObjects pump (e.Reset).
+        this_.Reset = RelayTeamCheckReset;
+    }
+
+    /// <summary>QC <c>trigger_relay_teamcheck_reset</c> (relay_teamcheck.qc:31): re-assert active and restore the
+    /// spawn-time team gate from <see cref="Entity.TeamSaved"/> on a round/match restart.</summary>
+    private static void RelayTeamCheckReset(Entity self)
+    {
+        self.Active = MapMover.ActiveActive;
+        self.Team = self.TeamSaved;
     }
 
     /// <summary>QC <c>trigger_relay_teamcheck_use</c>.</summary>
@@ -350,7 +374,9 @@ public static class LogicGates
         this_.Active = MapMover.ActiveActive;
         this_.Use = RelayActivatorsUse;
         MapMover.IndexRegister(this_);
-        // QC: this.reset = relay_activators_init (doubles as reset) — dormant until reset infra exists.
+        // QC relay_activators.qc:30: this.reset = relay_activators_init (doubles as reset) — re-asserts active.
+        // Driven by the central ResetMapObjects pump (e.Reset).
+        this_.Reset = RelayActivatorsInit;
     }
 
     /// <summary><c>spawnfunc(relay_activate)</c> — sets named targets ACTIVE.</summary>
@@ -408,7 +434,10 @@ public static class LogicGates
         this_.Use = GamestartUse;
         this_.ClassName = "trigger_gamestart";
         MapMover.IndexRegister(this_);
-        // QC: this.reset2 = spawnfunc_trigger_gamestart — dormant until reset infra exists.
+        // QC gamestart.qc:13: this.reset2 = spawnfunc_trigger_gamestart — on a map reset, re-run the spawnfunc to
+        // re-arm the deferred fire (the reset_map second pass drives .reset2 now). gamestart_use delete()s the
+        // trigger after it first fires its targets, so this only re-arms a trigger that is still alive at the reset.
+        this_.Reset2 = GamestartSetup;
 
         if (this_.Wait != 0f)
         {
@@ -436,16 +465,34 @@ public static class LogicGates
     }
 
     /// <summary>
-    /// QC <c>game_starttime</c> — the match start time (countdown end). The headless gametype runs from t=0 (the
-    /// host applies the real countdown upstream), so default to 0; a host can set it for fidelity.
+    /// QC <c>game_starttime</c> — the match start time (countdown end). Backed by
+    /// <see cref="GameStartTimeProvider"/>: a host wires it to the live world's countdown end (e.g.
+    /// <c>GameWorld.GameStartTime</c>, the same value the RoundHandler/Warmup hold) the way it wires
+    /// <c>StartItem.GameStartTimeProvider</c>/<c>Announcer.GameStartTime</c>; when unwired it reads 0 (the
+    /// headless t=0 start). Setting it overrides the provider with a fixed value for tests/standalone use.
     /// </summary>
-    public static float GameStartTime { get; set; }
+    public static float GameStartTime
+    {
+        get => _gameStartTimeOverride ?? GameStartTimeProvider?.Invoke() ?? 0f;
+        set => _gameStartTimeOverride = value;
+    }
+
+    private static float? _gameStartTimeOverride;
+
+    /// <summary>
+    /// Host-wired source of the live match countdown-end time (QC <c>game_starttime</c>). Set by the host at boot
+    /// (e.g. <c>LogicGates.GameStartTimeProvider = () =&gt; GameWorld.GameStartTime</c>) so the <c>.wait</c> branch
+    /// of <see cref="GamestartSetup"/> schedules relative to the real countdown end rather than 0. A direct set of
+    /// <see cref="GameStartTime"/> takes precedence over this provider.
+    /// </summary>
+    public static System.Func<float>? GameStartTimeProvider { get; set; }
 
     // ===================================================================
     //  trigger_magicear (magicear.qc) — chat pattern match -> SUB_UseTargets / text replace
-    //  LOWEST PRIORITY: no say-processing pipeline exists yet, so this is ported but UNWIRED. The TUBA
-    //  melody branch is out of scope (W_Tuba_HasPlayed). The magicears list is kept (linked via Enemy)
-    //  so a future say hook can walk it exactly like QC's trigger_magicear_processmessage_forallears.
+    //  LIVE: the server Chat.Say pipeline (XonoticGodot.Server/Chat.cs) calls MagicEarProcessAllEars on every
+    //  non-empty player say (chat.qc:75-76), so registered ears now see messages on the live path. The TUBA
+    //  melody branch is out of scope (W_Tuba_HasPlayed). The magicears list is linked via Enemy and walked
+    //  exactly like QC's trigger_magicear_processmessage_forallears.
     // ===================================================================
 
     public const int MagicEarIgnoreSay = 1 << 0;             // MAGICEAR_IGNORE_SAY
@@ -465,7 +512,7 @@ public static class LogicGates
     /// <summary>QC <c>magicear_matched</c> — set by the last <see cref="MagicEarProcessMessage"/> call.</summary>
     public static bool MagicEarMatched;
 
-    /// <summary><c>spawnfunc(trigger_magicear)</c> — register a chat-trigger ear (unwired; no say pipeline yet).</summary>
+    /// <summary><c>spawnfunc(trigger_magicear)</c> — register a chat-trigger ear (live: driven by Chat.Say).</summary>
     public static void MagicEarSetup(Entity this_)
     {
         this_.Enemy = MagicEars;
@@ -500,8 +547,36 @@ public static class LogicGates
 
         if (string.IsNullOrEmpty(msgin))
         {
-            // TUBA mode (msgin empty) — out of scope (W_Tuba_HasPlayed). Always returns msgin here.
-            return msgin;
+            // TUBA mode (an empty say message — fired from W_Tuba_NoteOff). Only a MAGICEAR_TUBA ear listens for
+            // a played melody; every other ear ignores the empty message. magicear.qc:19-46.
+            if ((ear.SpawnFlags & MagicEarTuba) == 0)
+                return msgin;
+
+            // ear.movedir = (instrument+1, mintempo, maxtempo); MagicEarSetup already did --movedir.x so movedir.x
+            // is the instrument index (-1 = any). EXACTPITCH disables transposition (ignorePitch = !exactpitch).
+            System.Numerics.Vector3 md = ear.MoveDir;
+            bool ignorePitch = (ear.SpawnFlags & MagicEarTubaExactPitch) == 0;
+
+            // Every weapon slot must match the melody (QC loops slots and returns on the first miss). A bot/dead
+            // source can still match a MAGICEAR_REPLACE_OUTSIDE ear (domatch passed above).
+            for (int slot = 0; slot < WeaponFireDriver.MaxWeaponSlots; ++slot)
+            {
+                if (!Tuba.HasPlayed(source, new WeaponSlot(slot), ear.Message, (int)md.X, ignorePitch, md.Y, md.Z))
+                    return msgin;
+            }
+
+            MagicEarMatched = true;
+
+            if (dotrigger)
+            {
+                // QC blanks .message so SUB_UseTargets doesn't centerprint the pattern, fires, then restores it.
+                string savemessage = ear.Message;
+                ear.Message = "";
+                MapMover.UseTargets(ear, source, null);
+                ear.Message = savemessage;
+            }
+
+            return !string.IsNullOrEmpty(ear.NetName) ? ear.NetName : msgin;
         }
 
         if ((ear.SpawnFlags & MagicEarTuba) != 0) // ENOTUBA
@@ -604,8 +679,8 @@ public static class LogicGates
     /// <summary>
     /// Port of <c>trigger_magicear_processmessage_forallears</c>: run <paramref name="msgin"/> through every
     /// registered ear (walking <see cref="MagicEars"/> via <see cref="Entity.Enemy"/>), short-circuiting on the
-    /// first match unless that ear has MAGICEAR_CONTINUE. Returns the (possibly replaced) message. Unwired until
-    /// a say pipeline calls it.
+    /// first match unless that ear has MAGICEAR_CONTINUE. Returns the (possibly replaced) message. Called live by
+    /// the server Chat.Say pipeline for every non-empty player say.
     /// </summary>
     public static string MagicEarProcessAllEars(Entity source, int teamsay, Entity? privatesay, string msgin)
     {

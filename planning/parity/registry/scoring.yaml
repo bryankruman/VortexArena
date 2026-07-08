@@ -1,0 +1,723 @@
+unit: scoring
+category: scoring
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-27"
+summary:
+  feature_count: 22
+  worst_gaps:
+    - "XonStat per-weapon accuracy export is DEAD: PlayerStats registers the acc-<w>-* event ids and exposes an AccuracyProvider seam, but no host code ever wires it (grep AccuracyProvider 2026-07-02 = definition + internal use only), so every game report ships with zero accuracy data despite Scores.WeaponAccuracy holding all six counters"
+    - "Accuracy data-share is owner-only: the spectator forward (IS_SPEC -> a.enemy) and the sv_accuracy_data_share / cl_accuracy_data_share / cl_accuracy_data_receive gate (accuracy.qc:34-36) are not ported — spectators never see the spectatee's accuracy panel"
+    - "getstatus worldstatus/clientstatus strings (WinningConditionHelper + g_full_getstatus_responses) are entirely missing — no rcon/getstatus standings response exists in the port"
+    - "REMAINING_FRAG_{1,2,3} announcer LIVE for 8 of Base's 11 modes (dm/tdm/ka/ca/ft/duel/rc/tka, via the GameWorld per-frame driver); Mayhem + TeamMayhem are intended-off (Base disables their hook); Survival is the lone genuinely-missing enabled mode (Survival.cs has no CountFragsRemaining caller)"
+    - "Score_NicePrint's race/cts INTERMISSION broadcast (Score_NicePrint(NULL) at sv_race.qc:203 / sv_cts.qc:150) is still not auto-emitted at intermission; the on-demand `teamstatus` standings dump and the `:scores:` score-log dump ARE both ported"
+    - "WinningCondition_Scores degenerate special-cases (topscore 0 with ZERO_IS_WORST => +/-999999999; empty server forces equality=0) remain unverified in the port"
+features:
+  - id: scoring.registry.fields_and_flags
+    name: "SP_* score-field registry + SFL_* sort/display flags"
+    layer: [shared]
+    base_refs:
+      - "common/scores.qh:REGISTER_SP"
+      - "common/scores.qh:SFL_LOWER_IS_BETTER..SFL_NOT_SORTABLE"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:RegisterAll"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/ScoreField.cs:ScoreFlags"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/ScoreField.cs:ScoreField"
+    constants:
+      - { name: "MAX_SCORE", base: "64", port: "registry size (dynamic)", match: true }
+      - { name: "SFL bit layout (LOWER_IS_BETTER..NOT_SORTABLE)", base: "BIT0..BIT7", port: "1<<0..1<<7", match: true }
+      - { name: "SFL_ZERO_IS_WORST == SFL_TIME", base: "BIT6 alias", port: "ZeroIsWorst()==Time", match: true }
+      - { name: "full SP_* set (51 fields, RACE_LAPS..FRAGS incl. SURV_SURVIVALS/SURV_HUNTS)", base: "common/scores.qh REGISTER_SP list", port: "RegisterAll registers the identical 51 in QC order", match: true }
+      - { name: "registration order = sort tiebreak", base: "declaration order (not sorted)", port: "declaration order (not sorted)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "GameScores.RegisterAll vs common/scores.qh REGISTER_SP list (re-diffed 2026-06-27: all 51 SP_* present in byte-identical QC declaration order, name-for-name verified) + SFL_* bits", result: pass }
+    confidence: high
+    notes: "Full SP_* set registered in QC declaration order with bit-faithful SFL_* flags. SP_SKILL/SP_FPS are present but the skill column is an unpopulated stub (see scoring.rules.scorerules_basics)."
+
+  - id: scoring.rules.scorerules_basics
+    name: "Per-match column setup (ScoreRules_basics: blank then re-declare common columns)"
+    layer: [authority, shared]
+    base_refs:
+      - "server/scores_rules.qc:ScoreRules_basics"
+      - "common/gametypes/sv_rules.qh:GameRules_scoring"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:ScoreRulesBasics"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:TeamRulesBasics"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:DeclareColumn"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:SetSortKeys"
+    constants:
+      - { name: "common columns (kills/deaths/suicides/teamkills/score/dmg/dmgtaken)", base: "set per teams/score_enabled", port: "same set + same flags", match: true }
+      - { name: "sv_showskill", base: "0", port: "not gating a live skill column", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "SP_SKILL gating (sv_showskill 1/2) is not honored by a live skill column (the column registers but stays empty); cosmetic at the default sv_showskill 0."
+    verification:
+      - { kind: code_read, ref: "all gametype files call ScoreRulesBasics/TeamRulesBasics/SetSortKeys/DeclareColumn at OnInit; Deathmatch.Activate re-pins ScoreRulesBasics(false)+SetSortKeys(Score), Tdm.Activate calls ScoreRulesBasics(true)+TeamRulesBasics", result: pass }
+    confidence: high
+    notes: "Faithful blank-then-redeclare; every gametype invokes it live at match start. The deaths/suicides/teamkills LOWER_IS_BETTER flags match."
+
+  - id: scoring.player.add_set
+    name: "Per-player score add/set (PlayerScore_Add/_Set + AddPlayerScore/AddedPlayerScore hooks + game_stopped clamp)"
+    layer: [authority]
+    base_refs:
+      - "server/scores.qc:PlayerScore_Add"
+      - "server/scores.qc:PlayerScore_Set"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:AddToPlayer"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:SetPlayer"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:AddPlayerScoreHook"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:AddedPlayerScoreHook"
+      - "src/XonoticGodot.Server/Scores.cs:Add"
+    constants:
+      - { name: "SendFlags |= BIT(m_id%16) when labeled", base: "yes", port: "ScoreDirty |= 1<<(id&31) when label!=\"\"", match: true }
+      - { name: "AddPlayerScore mutator hook + claimed/game_stopped semantics", base: "!mutator_returnvalue && game_stopped => 0", port: "forced=claimed; GameStopped&&!forced => 0", match: true }
+      - { name: "AddedPlayerScore post-write hook (scores.qc:377)", base: "MUTATOR_CALLHOOK after non-zero delta applied", port: "AddedPlayerScoreHook?.Invoke after column changed", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "AddToPlayer mirrors PlayerScore_Add (pre-write AddPlayerScore hook veto/rewrite/claimed, dirty-bit, game_stopped clamp, post-write AddedPlayerScore hook); the static GameScores.GameStopped clamp is LIVE — published from GameWorld.GameStopped every tick (GameWorld.cs:2452)", result: pass }
+    confidence: high
+    notes: "Both the pre-write AddPlayerScoreHook (veto/rewrite/claimed) and the post-write AddedPlayerScoreHook (scores.qc:377, e.g. dynamic_handicap) are now modeled faithfully. Live across CTF/DOM/KH/CA-damage2score etc. The game_stopped clamp inside AddToPlayer is armed."
+
+  - id: scoring.team.two_slot_model
+    name: "Two-slot per-team score model (TeamScore_AddToTeam / teamscorekeepers / ST_SCORE + per-mode slot)"
+    layer: [authority]
+    base_refs:
+      - "server/scores.qc:TeamScore_AddToTeam"
+      - "server/scores.qc:ScoreInfo_SetLabel_TeamScore"
+      - "common/scores.qh:MAX_TEAMSCORE"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:AddToTeam"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:SetTeamLabel"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:TeamRulesBasics"
+    constants:
+      - { name: "MAX_TEAMSCORE", base: "2", port: "MaxTeamScore=2", match: true }
+      - { name: "ST_SCORE slot", base: "0", port: "TeamSlotScore=0", match: true }
+      - { name: "per-gametype slot", base: "slot 1 (ST_CTF_CAPS/ST_DOM_TICKS/…)", port: "TeamSlotSecondary=1", match: true }
+      - { name: "game_stopped => delta 0 in TeamScore_AddToTeam", base: "yes", port: "AddToTeam: if(GameStopped) delta=0 (live)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "AddToTeam(team,slot,delta) + two _teamScores dicts; CTF caps -> slot1, ST_SCORE -> slot0; live via TeamScoreSource wiring in GameWorld.cs; the game_stopped clamp in AddToTeam is armed (GameScores.GameStopped published live)", result: pass }
+    confidence: high
+    notes: "Team totals route through GameScores; GameWorld wires TeamScoreSource per mode (read-through) so the gametype owns the authoritative total and the table doesn't double-count."
+
+  - id: scoring.compare.field_player_team
+    name: "Comparison + sort (ScoreField_Compare / PlayerScore_Compare / TeamScore_Compare / PlayerScore_Sort)"
+    layer: [authority, shared]
+    base_refs:
+      - "server/scores.qc:ScoreField_Compare"
+      - "server/scores.qc:PlayerScore_Compare"
+      - "server/scores.qc:TeamScore_Compare"
+      - "server/scores.qc:PlayerScore_Sort"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:CompareValues"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:ComparePlayers"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:CompareTeams"
+      - "src/XonoticGodot.Server/Scores.cs:Sorted"
+    constants:
+      - { name: "compare order", base: "primary, secondary, registration-order others, playerid", port: "primary, secondary, registry-order labeled non-prio, 0", match: false }
+      - { name: "ZERO_IS_WORST / LOWER_IS_BETTER handling", base: "ScoreField_Compare", port: "CompareValues (same)", match: true }
+      - { name: "nospectators (FRAGS_SPECTATOR skipped)", base: "frags==FRAGS_SPECTATOR", port: "IsSpectator (Frags==-666)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Final tiebreak differs: QC PlayerScore_Compare ends with t1.owner.playerid - t2.owner.playerid; the port returns 0 (stable-sort order) when all columns tie. Only affects the display order of two players with byte-identical scoreboards — no gameplay effect."
+    verification:
+      - { kind: code_read, ref: "ComparePlayers/CompareTeams/CompareValues vs the QC compares; spectator guard matches; playerid tiebreak omitted", result: pass }
+    confidence: high
+    notes: "Flag-aware compare, declaration-order tiebreak chain, and the nospectators guard are faithful. The omitted playerid final tiebreak is cosmetic."
+
+  - id: scoring.winningcondition.scores
+    name: "Winning-condition reduction (WinningConditionHelper / WinningCondition_Scores / GetWinningCode)"
+    layer: [authority]
+    base_refs:
+      - "server/scores.qc:WinningConditionHelper"
+      - "server/world.qc:WinningCondition_Scores"
+      - "server/world.qc:GetWinningCode"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:CheckWinningCondition"
+      - "src/XonoticGodot.Server/OverTimeManager.cs:ResolveWinningCode"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:Leader"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:LeaderTeam"
+    constants:
+      - { name: "fraglimit_reached", base: "limit && topscore>=limit", port: "MatchEnded latch via primary key", match: true }
+      - { name: "leadlimit_reached / leadlimit_and_fraglimit AND-OR", base: "modeled", port: "OverTimeManager.ResolveWinningCode + per-gametype RecomputeLeader/UpdateLeaderAndCheckLimit", match: true }
+      - { name: "equality => STARTSUDDENDEATHOVERTIME / NEVER", base: "GetWinningCode table", port: "ResolveWinningCode (same table)", match: true }
+      - { name: "empty server forces equality=0 (0:0 still ends)", base: "player_count==0", port: "unverified", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The QC 'topscore 0 with ZERO_IS_WORST => +/-999999999' and 'empty server forces equality=0' special cases were not located in the port; an all-zero / empty-server end-of-time tie may resolve differently. Low impact (degenerate cases)."
+    verification:
+      - { kind: code_read, ref: "GameWorld.CheckWinningCondition + OverTimeManager.ResolveWinningCode vs WinningCondition_Scores/GetWinningCode; Deathmatch.RecomputeLeader + Tdm.UpdateLeaderAndCheckLimit compute the same fraglimit/leadlimit AND-OR live each tick (GameWorld.DriveGametypeFrame)", result: pass }
+    confidence: medium
+    notes: "Core fraglimit/leadlimit + sudden-death/overtime decision is faithful and live (drives intermission). The degenerate zero/empty-server special-cases are unverified."
+
+  - id: scoring.winningcondition.remaining_frags_announce
+    name: "Remaining-frags announcer (Scores_CountFragsRemaining -> REMAINING_FRAG_{1,2,3})"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:WinningCondition_Scores"
+      - "server/mutators/events.qh:Scores_CountFragsRemaining"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:CountFragsRemaining"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:ResetFragsRemaining"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:314"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Tdm.cs:389"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Keepaway.cs:687"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:905"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/FreezeTag.cs:1116"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Duel.cs:265"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:1273"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/TeamKeepaway.cs:731"
+    constants:
+      - { name: "announce thresholds", base: "fragsleft == 1 / 2 / 3 (once via fragsleft_last)", port: "fragsleft 1/2/3 once via _fragsLeftLast", match: true }
+      - { name: "fragsleft = limit - topscore; leadingfragsleft = second + leadlimit - top", base: "world.qc:1592-1604", port: "same formula", match: true }
+      - { name: "leadlimit_and_fraglimit => MAX(frag,lead) else MIN", base: "world.qc:1605-1609", port: "Math.Max/Min on CvarLeadAndFrag", match: true }
+      - { name: "announcer sounds 1fragleft/2fragsleft/3fragsleft (Annce broadcast all)", base: "ANNCE_REMAINING_FRAG_*", port: "NotificationSystem.Send(All, Annce, REMAINING_FRAG_*)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "PARTIAL MODE COVERAGE (re-verified 2026-06-27 against current src): 8 of Base's 11 Scores_CountFragsRemaining modes call CountFragsRemaining live — Deathmatch (cs:314), TDM (cs:389), Keepaway (cs:687, gated g_keepaway_score_timepoints==0), ClanArena (cs:905), FreezeTag (cs:1116), Duel (cs:265), Race (cs:1273, gated !g_race_qualifying), TeamKeepaway (cs:731, gated !g_tka_score_timepoints), all driven by the GameWorld per-frame leader recompute. Mayhem (Mayhem.cs:706) and TeamMayhem (TeamMayhem.cs:416) deliberately do NOT call it — Base comments-out their hook (intended divergence, not a gap). Survival is the ONE genuinely-missing enabled mode: Base registers MUTATOR_HOOKFUNCTION(surv, Scores_CountFragsRemaining) but the port's Survival.cs has zero CountFragsRemaining caller (grep 2026-06-27 = no match). So 8/11 wired, 2/11 intended-off, 1/11 (surv) missing. (Prior audit's '9 of 11' double-counted the GameWorld driver as a mode.)"
+      - "suddenDeathEnding is always passed false (all callers note checkrules_suddendeathend is framework-owned and not surfaced), so the QC 'force fragsleft=1 during sudden-death overtime end' branch never fires."
+    verification:
+      - { kind: code_read, ref: "GameScores.CountFragsRemaining mirrors world.qc:1592-1622 (formula, leadlimit_and_fraglimit MAX/MIN, _fragsLeftLast once-gate); grep CountFragsRemaining over src (2026-06-27, re-verified) -> live callers at Deathmatch.cs:314 / Tdm.cs:389 / Keepaway.cs:687 / ClanArena.cs:905 / FreezeTag.cs:1116 / Duel.cs:265 / Race.cs:1273 / TeamKeepaway.cs:731; latch reset in each mode's Activate via ResetFragsRemaining", result: pass }
+      - { kind: code_read, ref: "Base enables the hook for 11 modes (ca/dm/duel/ft/ka/mayhem/rc/surv/tdm/tka/tmayhem); port wires 8 (above); Mayhem.cs:706/TeamMayhem.cs:416 deliberately skip it (Base disables those = intended divergence); Survival.cs has NO CountFragsRemaining caller (grep 2026-06-27 = no match) = the single genuine miss", result: fail }
+    confidence: high
+    notes: "Logic/values/timing/audio faithful and LIVE for 8 modes via the per-tick leader recompute. Mayhem/TeamMayhem are intended-off (Base comments their hook out), so the only outstanding gap is Survival + surfacing suddenDeathEnding. The sibling REMAINING_MIN_{1,5} minutes announcer remains live in AnnouncerController. (Re-verified 2026-06-27: port_refs line numbers refreshed; prior '9 modes' corrected to 8 — the GameWorld driver is not a mode.)"
+
+  - id: scoring.lifecycle.clear
+    name: "Score clearing (PlayerScore_Clear via g_score_resetonjoin / Score_ClearAll)"
+    layer: [authority]
+    base_refs:
+      - "server/scores.qc:PlayerScore_Clear"
+      - "server/scores.qc:Score_ClearAll"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:ClearPlayer"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:ClearPlayerOnJoin"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:ClearAll"
+      - "src/XonoticGodot.Server/ClientManager.cs:294"
+      - "src/XonoticGodot.Server/Scores.cs:ClearAll"
+    constants:
+      - { name: "g_score_resetonjoin", base: "0 (0/-1/1)", port: "read by ClearPlayerOnJoin (mode 0/-1/1 + PreferPlayerScore_Clear hook), now invoked live on join", match: true }
+      - { name: "resetonjoin == -1 needs !PreferPlayerScore_Clear", base: "yes", port: "ClearPlayerOnJoin consults MutatorHooks.FirePreferPlayerScore_Clear + optional preferClear delegate", match: true }
+      - { name: "ClearPlayer preserves SP_SKILL", base: "yes (i != SP_SKILL)", port: "yes (skips SKILL column)", match: true }
+      - { name: "Score_ClearAll (players + both team slots)", base: "yes", port: "ClearAll(players)+team slots", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "ClearPlayerOnJoin (GameScores.cs:629) is faithful to server/scores.qc:286 mode gate AND now consults the global PreferPlayerScore_Clear hook chain; grep ClearPlayerOnJoin over src (2026-06-27) -> LIVE caller at ClientManager.Join (ClientManager.cs:294), invoked on every (re)join", result: pass }
+      - { kind: code_read, ref: "ClearPlayer preserves SKILL + Score_ClearAll clears team slots — both faithful and live (match restart / team change)", result: pass }
+    confidence: high
+    notes: "FIX from baseline (liveness partial->live): the resetonjoin arm is now wired. ClientManager.Join calls GameScores.ClearPlayerOnJoin on every join (mirrors QC PutClientInServer's spectator-rejoin PlayerScore_Clear). No-op at the default g_score_resetonjoin 0; takes effect at admin 1/-1. The -1 branch now consults the global PreferPlayerScore_Clear hook (e.g. TKA) plus an optional delegate override."
+
+  - id: scoring.display.scorestring
+    name: "Scoreboard value formatting (ScoreString / count_ordinal / mmssth / TIME_ENCODE)"
+    layer: [shared]
+    base_refs:
+      - "common/util.qc:ScoreString"
+      - "lib/counting.qh:count_ordinal"
+      - "common/util.qh:TIME_FACTOR"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:ScoreString"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:CountOrdinal"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:TimeEncodedToString"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:TimeEncode"
+    constants:
+      - { name: "TIME_FACTOR", base: "100 (hundredths)", port: "TimeEncode floor(t*100+0.5)", match: true }
+      - { name: "hide-zero set", base: "HIDE_ZERO|RANK|TIME", port: "same mask", match: true }
+      - { name: "RANK 'N/A' cutoff", base: ">= 256", port: ">= 256", match: true }
+      - { name: "rounds_played average", base: "value/rounds to 1 dp", port: "(value/rounds).ToString(0.0)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "ScoreString/CountOrdinal/TimeEncodedToString mirror util.qc:421 + counting.qh:66; TIME_FACTOR 100 matches", result: pass }
+    confidence: high
+    notes: "Formatting (ordinal/time/per-round/hide-zero) is faithful; consumed by the scoreboard panel (presentation unit). count_ordinal negative guard added in the port (QC interval%100)."
+
+  - id: scoring.net.replication
+    name: "Score networking (ScoreInfo layout + Scoreboard values, change-gated, int24)"
+    layer: [authority]
+    base_refs:
+      - "server/scores.qc:ScoreInfo_SendEntity"
+      - "server/scores.qc:PlayerScore_SendEntity"
+      - "server/scores.qc:TeamScore_SendEntity"
+    port_refs:
+      - "src/XonoticGodot.Net/ScoreInfoBlock.cs"
+      - "src/XonoticGodot.Net/ScoreboardBlock.cs"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:LayoutGeneration"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:Version"
+    constants:
+      - { name: "int24 score quantization", base: "WriteInt24_t for >127/<=-128, else char", port: "WriteInt24_t", match: true }
+      - { name: "layout change-gate", base: "ScoreInfo_Init SendFlags|=1 on mode switch", port: "Hash() over LayoutGeneration", match: true }
+      - { name: "value change-gate", base: "per-field SendFlags BIT(m_id%16)", port: "Version stamp + ScoreDirty", match: true }
+      - { name: "networked set = labeled non-client-only fields", base: "FOREACH(Scores) non-empty label", port: "NetworkedFields (label!=\"\")", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The port replaces QC's three per-entity linked-entity classes (ENT_CLIENT_SCORES_INFO/SCORES/TEAMSCORES with per-field SendFlags) with two snapshot-channel blocks gated by LayoutGeneration/Version (ADR-0007/0011: the port owns the score layout and networks the whole table positionally). Wire-equivalent: positional, int24, change-gated; a remote --connect client applies ScoreInfoBlock so its label-derived NetworkedFields hash matches the server."
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "ScoreInfoBlock (labels/flags/gametype/teamplay, LayoutGeneration-gated) + ScoreboardBlock (int24 values, Version-gated); listen-server idempotent-apply nuance documented", result: pass }
+    confidence: high
+    notes: "Build-parity gate folds the registry content hash into NetProtocol.BuildParity so positional column indexing is safe. Faithful + live on the snapshot channel."
+
+  - id: scoring.report.playerstats
+    name: "End-of-match XonStat game report (PlayerStats_GameReport pipeline, V9)"
+    layer: [authority]
+    base_refs:
+      - "common/playerstats.qc:PlayerStats_GameReport"
+      - "common/playerstats.qc:PlayerStats_GameReport_Init"
+      - "common/playerstats.qc:PlayerStats_GameReport_FinalizePlayer"
+    port_refs:
+      - "src/XonoticGodot.Server/PlayerStats.cs"
+      - "src/XonoticGodot.Server/GameWorld.cs:681"
+      - "src/XonoticGodot.Server/GameWorld.cs:1923"
+    constants:
+      - { name: "DB enabled iff g_playerstats_gamereport_uri != \"\"", base: "yes", port: "Enabled = uri set", match: true }
+      - { name: "warmup suppresses accumulation", base: "yes", port: "IsWarmup guard", match: true }
+      - { name: "report format version", base: "V 9", port: "V9 serializer", match: true }
+      - { name: "events (alivetime/wins/matches/joins/rank/handicap/accuracy/total-*/scoreboard-*/kills-id)", base: "full set", port: "same id strings", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The HTTP upload itself is left to an engine concern: PlayerStats.BuildReport produces the V9 body and GameReport clears DelayMapVote synchronously (QC clears it in the async url callback), so map voting is never blocked. The Godot-free core builds a wire-compatible report; the POST transport is out of the core."
+    gaps:
+      - "Handicap given/taken averaging and avglatency depend on host-wired providers (PingProvider defaults to 0); skill (SP_SKILL) is not fetched from a playerbasic/XonStat endpoint. The report is wire-compatible but some advanced fields are 0 without host wiring."
+    verification:
+      - { kind: code_read, ref: "PlayerStats.Init/AddPlayer/FinalizePlayer/GameReport called from GameWorld; V9 keys match playerstats.qc handler spec", result: pass }
+    confidence: high
+    notes: "Pipeline is faithful + live (Init at match start, GameReport at end). Identity (crypto fp else bot#/player#), per-match unique fallback, joins-only-if-played, and the event-id strings match QC."
+
+  - id: scoring.helper.float2int_decimal_carry
+    name: "Fractional-score accumulator (_GameRules_scoring_add_float2int decimal carry)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/sv_rules.qc:_GameRules_scoring_add_float2int"
+      - "common/gametypes/gametype/clanarena/sv_clanarena.qc:PlayerDamage_SplitHealthArmor"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:AddScoreFloat2Int"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/ClanArena.cs:OnSplitHealthArmor"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:468"
+    constants:
+      - { name: "carry remainder across calls", base: "decimal_field accumulates; emit floor(counter+0.5); subtract emitted", port: "_scoreDecimal[scorer] carry; whole=floor(carry+0.5); carry-=whole", match: true }
+      - { name: "g_ca_damage2score", base: "100", port: "DefaultDamage2Score 100", match: true }
+      - { name: "value*factor/100 per hit", base: "GameRules_scoring_add_float2int(scorer,SCORE,value,fld,factor)", port: "carry += value*factor/100f", match: true }
+      - { name: "enemy hit credits / friendly fire debits / env-suicide self-debits", base: "sv_clanarena.qc PlayerDamage_SplitHealthArmor", port: "scorerDamage = SameTeam ? -effective : effective; env-death -> -effective on target", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Powerup/excess edge: effective = FragDamage - max(0, FragDamage - take - save) mirrors QC, but the per-player _scoreDecimal carry is keyed by Player and cleared only on Activate/Deactivate (not per-round); QC's float2int_decimal_fld is a persistent player field too, so this matches, but a player object reused across a full map reset relies on the Activate clear. Low risk."
+    verification:
+      - { kind: code_read, ref: "ClanArena.OnSplitHealthArmor subscribes to GameHooks.PlayerDamageSplitHealthArmor; that hook is Called unconditionally on the live damage path (DamageSystem.cs:468) for every damage application; CA.Activate (subscribed) is invoked live at GameWorld.cs", result: pass }
+      - { kind: code_read, ref: "AddScoreFloat2Int does carry += value*factor/100; whole=floor(carry+0.5); AddToPlayer(scorer,Score,whole); carry-=whole — the QC _GameRules_scoring_add_float2int accumulate-and-carry", result: pass }
+    confidence: high
+    notes: "LIVE for CA (hook subscribed at Activate, fired every damage app) and the rounding matches QC across many small hits. Still scoreboard-only (does not feed the round-win limit)."
+
+  - id: scoring.lifecycle.game_stopped
+    name: "game_stopped score clamp (drop score additions post-match/warmup-end)"
+    layer: [authority]
+    base_refs:
+      - "server/scores.qc:PlayerScore_Add"
+      - "server/scores.qc:TeamScore_AddToTeam"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:GameStopped"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:AddToPlayer"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:AddToTeam"
+      - "src/XonoticGodot.Server/GameWorld.cs:2567"
+    constants:
+      - { name: "game_stopped => delta 0 (unless mutator claimed)", base: "yes, central in PlayerScore_Add/TeamScore_AddToTeam", port: "static GameScores.GameStopped published live each tick (OnEndFrame); the central clamp fires", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "GameWorld.cs:2567 `GameScores.GameStopped = GameStopped;` runs in OnEndFrame (alongside the VehicleCommon.GameStopped publish), wired as Simulation.EndFrame → executes every server tick. GameWorld.GameStopped => Intermission.Running || MatchEnded || Timeout.IsPaused. The static flag the central clamps in AddToPlayer/AddToTeam read is raised on the live path. AddPlayerScore-claimed bypass is honored (forced); TeamScore_AddToTeam has no bypass (matches QC). Re-verified 2026-06-27.", result: pass }
+    confidence: high
+    notes: "Faithful + live. Publish line is GameWorld.cs:2567 (drifted from 2507; OnEndFrame body unchanged in effect). The single QC clamp point in PlayerScore_Add/TeamScore_AddToTeam fires during intermission/match-end/timeout."
+
+  - id: scoring.display.niceprint
+    name: "Server `teamstatus` console standings dump (Score_NicePrint)"
+    layer: [authority]
+    base_refs:
+      - "server/scores.qc:Score_NicePrint"
+      - "server/scores.qc:Score_NicePrint_Team"
+      - "server/scores.qc:Score_NicePrint_Player"
+      - "server/scores.qc:Score_NicePrint_Spectators"
+      - "server/command/common.qc:CommonCommand_teamstatus"
+    port_refs:
+      - "src/XonoticGodot.Server/Commands.cs:CmdTeamStatus"
+      - "src/XonoticGodot.Server/Commands.cs:NicePrintTeamHeader"
+      - "src/XonoticGodot.Server/Commands.cs:NicePrintPlayer"
+      - "src/XonoticGodot.Server/Commands.cs:NicePrintItemColor"
+    constants:
+      - { name: "NAMEWIDTH / SCORESWIDTH", base: "22 / 58", port: "NicePrintNameWidth=22 / NicePrintScoresWidth=58", match: true }
+      - { name: "per-column width", base: "bound(6, floor(SCORESWIDTH/t - 1), 9)", port: "Math.Clamp(floor(58/labeled - 1), 6, 9)", match: true }
+      - { name: "column color by sort prio (primary ^3 / secondary ^5 / other ^7)", base: "Score_NicePrint_ItemColor", port: "NicePrintItemColor (same)", match: true }
+      - { name: "name pad/trim to NAMEWIDTH (strlennocol-aware)", base: "yes", port: "VisibleLen-driven trim+pad loop", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Score_NicePrint's race/cts INTERMISSION broadcast (Base calls Score_NicePrint(NULL) at sv_race.qc:203 / sv_cts.qc:150 when the round ends, broadcasting the standings to all) is not auto-emitted at intermission in the port — only the on-demand `teamstatus` per-caller dump is wired. Low impact: race/cts players still see the networked scoreboard HUD."
+    verification:
+      - { kind: code_read, ref: "Commands.cs CmdTeamStatus (Commands.cs:2427) + NicePrintTeamHeader/NicePrintPlayer/NicePrintItemColor reproduce Score_NicePrint (header row + per-player row + spectators block, NAMEWIDTH/SCORESWIDTH, sort-prio colors, strlennocol pad/trim); registered as the `teamstatus` command (Commands.cs:884)", result: pass }
+      - { kind: code_read, ref: "Base CommonCommand_teamstatus (common.qc:593) -> Score_NicePrint(caller); the port wires the identical command; the race/cts intermission Score_NicePrint(NULL) broadcast is the only unported caller (grep Score_NicePrint over Race.cs 2026-06-27 -> no match)", result: pass }
+    confidence: high
+    notes: "Fully ported as the `teamstatus` console command in Commands.cs (registered Commands.cs:884) with faithful column layout/colors/pad-trim, live and registered. Only the race/cts intermission auto-broadcast variant remains unported."
+
+  - id: scoring.display.scorelog
+    name: "Server score-log / event-log standings dump (DumpStats / GetPlayerScoreString / GetTeamScoreString)"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:DumpStats"
+      - "server/scores.qc:GetPlayerScoreString"
+      - "server/scores.qc:GetTeamScoreString"
+      - "server/scores.qc:GetScoreLogLabel"
+    port_refs:
+      - "src/XonoticGodot.Server/Commands.cs:DumpStats"
+      - "src/XonoticGodot.Server/Commands.cs:GetPlayerScoreString"
+      - "src/XonoticGodot.Server/Commands.cs:GetTeamScoreString"
+      - "src/XonoticGodot.Server/Commands.cs:GetScoreLogLabel"
+      - "src/XonoticGodot.Server/Commands.cs:CmdPrintStats"
+      - "src/XonoticGodot.Server/GameWorld.cs:3960"
+    constants:
+      - { name: ":labels:player: / :player:see-labels: / :teamscores: log lines (console/eventlog/sv_logscores file)", base: "DumpStats writes the formatted score-log via GetPlayerScoreString/GetTeamScoreString", port: "DumpStats emits :scores:/:status: + :labels:player: + :player:see-labels: + :teamscores: + :end", match: true }
+      - { name: "GetScoreLogLabel suffixes (< lower-is-better, !! primary, ! secondary)", base: "server/scores.qc:599", port: "GetScoreLogLabel appends </!!/!", match: true }
+      - { name: "sink gating (sv_logscores_console / sv_eventlog / sv_eventlog_console double-suppress / sv_logscores_bots)", base: "DumpStats sink logic", port: "same gating; printstats forces console, never eventlog", match: true }
+      - { name: "file sink (sv_logscores_filename append)", base: "per-call file open/close", port: "omitted (port relies on sv_eventlog_files for structured logging)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The per-call score-log FILE sink (Base appends each dump to sv_logscores_filename via a fopen/fclose) is omitted; the port's structured event-log file sink (sv_eventlog_files) already covers file logging, so the dedicated scores.log file is not reproduced. The console + eventlog sinks (the parsed-by-tooling outputs) are faithful."
+    gaps:
+      - "The dedicated sv_logscores_filename file output (Base's fopen-append of the score-log to scores.log) is not written; only the console + eventlog sinks are emitted. The sv_logscores_file cvar is registered but does not drive a separate file. Low impact: server-admin file-logging convenience superseded by the event-log file."
+    verification:
+      - { kind: code_read, ref: "Commands.cs:2675 DumpStats + GetPlayerScoreString/GetTeamScoreString/GetScoreLogLabel (Commands.cs:2546) reproduce server/world.qc:1264 + scores.qc:599-726 (label header w/ </!!/! suffixes, per-player :player:see-labels: rows w/ elapsed+team+id+name, teamplay :teamscores: rows for active team colours, :end terminator)", result: pass }
+      - { kind: code_read, ref: "LIVE callers (re-verified 2026-06-27): GameWorld.cs:3960 DumpStats(final:true) at intermission (mirrors world.qc:1429); `printstats` server command -> CmdPrintStats (Commands.cs:2773) -> DumpStats(final:false), registered Commands.cs:885", result: pass }
+    confidence: high
+    notes: "FIX from baseline (was missing, empty port_refs): the score-log/eventlog text dump is now fully ported in Commands.cs and live at intermission + via `printstats`. cvars sv_logscores_console/file/filename/bots registered in Cvars.cs:423-426. Only the dedicated scores.log file sink is intentionally omitted in favor of sv_eventlog_files."
+
+  - id: scoring.accuracy.tracking
+    name: "Per-weapon accuracy tallies (accuracy_add: fired/hit/real damage + once-per-frame cnt counters + isgooddamage/canbegooddamage gates + per-weapon frag credit)"
+    layer: [authority]
+    base_refs:
+      - "server/weapons/accuracy.qc:accuracy_add"
+      - "server/weapons/accuracy.qc:accuracy_byte"
+      - "server/weapons/accuracy.qc:accuracy_isgooddamage"
+      - "server/weapons/accuracy.qc:accuracy_canbegooddamage"
+      - "server/weapons/accuracy.qh:accuracy_hit"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponAccuracyEvents.cs:Add"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponAccuracyEvents.cs:IsGoodDamage"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponAccuracyEvents.cs:CanBeGoodDamage"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponAccuracyEvents.cs:AccuracyByte"
+      - "src/XonoticGodot.Server/Scores.cs:OnAccuracyAdd"
+      - "src/XonoticGodot.Server/Scores.cs:RecordWeaponKill"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponFiring.cs:151"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/WeaponSplash.cs:259"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:602"
+    constants:
+      - { name: "accuracy_byte encoding (0 never fired / 1+rint(n*100/d) / 255 when hit>fired)", base: "accuracy.qc:17-24", port: "AccuracyByte with MidpointRounding.AwayFromZero (DP rint)", match: true }
+      - { name: "cnt_hit/cnt_fired once per server frame (fired_time / STAT(HIT_TIME) guards)", base: "accuracy.qc:115-123", port: "acc.HitTime/FiredTime != Api.Clock.Time guards (Scores.cs:440-449)", match: true }
+      - { name: "isgooddamage gates (warmup/game_stopped, dead target, SAME_TEAM, both clients, AccuracyTargetValid hook)", base: "accuracy.qc:133-150", port: "IsGoodDamage (WarmupStage/GameScores.GameStopped/DeadState/SameTeam/EntFlags.Client + TargetValidProvider)", match: true }
+      - { name: "IS_INDEPENDENT_PLAYER / WEP_Null / all-zero add early-outs", base: "accuracy.qc:104-108", port: "WeaponAccuracyEvents.Add guards", match: true }
+      - { name: "per-weapon frag credit (++accuracy_frags on weapon kill when isgooddamage)", base: "server/player.qc:493-495 (fields in accuracy.qh)", port: "RecordWeaponKill -> Accuracy.AddFrag (Scores.cs:961-971)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC's dead-target exception (damage in the exact frame the target died still counts: IS_DEAD && time > death_time) is replaced by a plain not-dead test; documented in-code as behaviourally identical because every port credit site evaluates the gate BEFORE Damage() while the target is alive. Holds today; any future post-damage credit site would silently diverge."
+    verification:
+      - { kind: code_read, ref: "WeaponAccuracyEvents.Add/IsGoodDamage/CanBeGoodDamage/AccuracyByte vs accuracy.qc:17-157 line-by-line; tally half in Scores.OnAccuracyAdd (Scores.cs:426-453) incl. the two once-per-frame guards + the accuracy_byte change detection; LIVE: Scores.SubscribeToDeaths wires WeaponAccuracyEvents.Added at Scores.cs:1135, called from GameWorld.cs:608; credit sites live on the fire/hit/real paths (WeaponFiring.cs:151/390/566, WeaponSplash.cs:259, DamageSystem.cs:602-603)", result: pass }
+      - { kind: code_read, ref: "tests/XonoticGodot.Tests/WeaponAccuracyTests.cs exercises the byte encoding + gates", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). Faithful split port: pure logic in WeaponAccuracyEvents (bus), tallies in Server Scores (subscriber) — no subscriber = no-op, like QC with no accuracy entity. GameScores.GameStopped read by IsGoodDamage is live-published (see scoring.lifecycle.game_stopped). AccuracyTargetValid mutator hook ported as TargetValidProvider (Invasion installs it so monster hits count)."
+
+  - id: scoring.accuracy.networking
+    name: "Accuracy networking to the scoreboard/weapons HUD (ENT_CLIENT_ACCURACY per-weapon byte array, change-gated; data-share to spectators/others)"
+    layer: [authority, presentation]
+    base_refs:
+      - "server/weapons/accuracy.qc:accuracy_send"
+      - "server/weapons/accuracy.qh:autocvar_sv_accuracy_data_share"
+    port_refs:
+      - "game/net/ServerNet.cs:2858"
+      - "src/XonoticGodot.Server/Scores.cs:AccuracyBytes"
+      - "src/XonoticGodot.Server/Scores.cs:AccuracyGeneration"
+      - "game/net/ClientNet.cs:1031"
+      - "game/net/NetGame.cs:4947"
+    constants:
+      - { name: "wire byte per weapon (0 / pct+1 / 255)", base: "accuracy_send WriteByte(accuracy_byte(...))", port: "AccuracyBytes (Scores.cs:459-469); client decode b==0 -> never fired, 255 -> 100, else b-1 (NetGame.cs:4962)", match: true }
+      - { name: "change-gated resend (zero SendFlags = send nothing)", base: "SendFlags |= BIT(wepid%24) on byte change; sf==0 skips", port: "row.AccuracyGeneration++ on byte change (Scores.cs:451-452) + per-peer LastAccuracyGen gate (ServerNet.cs:2858-2869)", match: true }
+      - { name: "sv_accuracy_data_share", base: "1", port: "cvar absent (CVAR-DIFF.md)", match: false }
+      - { name: "cl_accuracy_data_share / cl_accuracy_data_receive", base: "replicated client cvars", port: "absent", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Owner-only: the spectator forward (accuracy_send: IS_SPEC(a) -> a.enemy, so a spectator receives the spectatee's accuracy) and the non-owner data-share gate (sv_accuracy_data_share default 1 / cl_accuracy_data_share / cl_accuracy_data_receive, accuracy.qc:34-36) are not ported — the port writes the accuracy block only inside the OWNER snapshot block (ServerNet.cs:2851 comment cites drawonlytoclient), so spectators/others never receive another player's accuracy. All three data-share cvars are missing (planning/parity/CVAR-DIFF.md)."
+    verification:
+      - { kind: code_read, ref: "server encode ServerNet.cs:2858-2869 (generation + changed-bool + length-prefixed bytes, per-peer LastAccuracyGen at ServerNet.cs:256); client decode ClientNet.cs:1031-1046 -> LocalAccuracyBytes/LocalAccuracyGeneration; NetGame.UpdateAccuracy (NetGame.cs:4947-4969, called live at NetGame.cs:3263) feeds ScoreboardPanel.SetAccuracy + WeaponsPanel.SetAccuracy with the QC decode", result: pass }
+      - { kind: code_read, ref: "grep data_share/data_receive over all .cs 2026-07-02 = zero hits (only TODO.md + CVAR-DIFF listings) — the share path has no port code", result: fail }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). The owner path is faithful end-to-end (byte encoding, change gating, HUD decode) and live; snapshot-channel framing instead of a linked entity is the documented ADR-0007 pattern (see scoring.net.replication). The whole-array generation replaces QC's 24-bit per-weapon SendFlags — coarser resend granularity, same wire truth. The missing piece is exclusively the spectator/other-player share."
+
+  - id: scoring.accuracy.lifecycle
+    name: "Accuracy lifecycle (accuracy_init/free on connect/disconnect, accuracy_reset, accuracy_resend force-resend)"
+    layer: [authority]
+    base_refs:
+      - "server/weapons/accuracy.qc:accuracy_init"
+      - "server/weapons/accuracy.qc:accuracy_free"
+      - "server/weapons/accuracy.qc:accuracy_reset"
+      - "server/weapons/accuracy.qc:accuracy_resend"
+    port_refs:
+      - "src/XonoticGodot.Server/Scores.cs:134"
+      - "src/XonoticGodot.Server/Scores.cs:88"
+      - "src/XonoticGodot.Server/Scores.cs:113"
+      - "src/XonoticGodot.Server/ClientManager.cs:858"
+      - "game/net/ServerNet.cs:256"
+    constants:
+      - { name: "reset zeros all six per-weapon counters", base: "accuracy_reset (real/frags/hit/fired/cnt_hit/cnt_fired)", port: "WeaponAccuracy.Clear() in PlayerScoreRow.Clear/ClearForTeamChange", match: true }
+      - { name: "force-resend after reset / on connect", base: "accuracy_resend SendFlags=0xFFFFFF", port: "AccuracyGeneration++ on Clear (Scores.cs:92/119) + per-peer LastAccuracyGen=-1 initial (ServerNet.cs:256) so the first snapshot always sends", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "PlayerScoreRow.Accuracy constructed with the row (Scores.cs:134, row created in Register on demand = QC accuracy_init at attach); freed with the row at Unregister (live caller ClientManager.cs:858 on disconnect = accuracy_free); Clear/ClearForTeamChange wipe the tallies + bump AccuracyGeneration (the accuracy_reset + accuracy_resend pair)", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). No separate sub-entity: the tallies live on PlayerScoreRow (intended structural divergence shared with the whole scoring table, see scoring.net.replication). Reset-on-match-restart flows through the same row Clear as the score columns."
+
+  - id: scoring.accuracy.playerstats_export
+    name: "Per-weapon accuracy export to the XonStat game report (acc-<weapon>-{fired,hit,real,cnt-hit,cnt-fired,frags} events)"
+    layer: [authority]
+    base_refs:
+      - "server/weapons/accuracy.qh:accuracy_frags"
+      - "common/playerstats.qc:PlayerStats_GameReport_Accuracy"
+    port_refs:
+      - "src/XonoticGodot.Server/PlayerStats.cs:63"
+      - "src/XonoticGodot.Server/PlayerStats.cs:111"
+      - "src/XonoticGodot.Server/PlayerStats.cs:272"
+    constants:
+      - { name: "event id strings acc-<netname>-{real,hit,fired,cnt-hit,cnt-fired,frags}", base: "playerstats.qc accuracy event ids", port: "PlayerStats.cs:111-116 registers identical ids", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "DEAD: PlayerStats.AccuracyProvider (PlayerStats.cs:63, 'Host-wired to the accuracy subsystem; default yields nothing') has NO wiring anywhere — grep AccuracyProvider over all .cs 2026-07-02 finds only the property + its null-checked use (PlayerStats.cs:272). Scores.WeaponAccuracy holds all six counters per weapon (incl. the frag credit), so the data exists server-side, but every V9 game report ships with zero acc-* values."
+    verification:
+      - { kind: code_read, ref: "event ids registered (PlayerStats.cs:111-116) and emitted only via AccuracyProvider (PlayerStats.cs:272-273); grep AccuracyProvider = no assignment outside PlayerStats.cs => unreachable on the live path", result: fail }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). The report scaffold + id strings are faithful (counted under scoring.report.playerstats), but the accuracy feed specifically is an unwired seam — one host lambda mapping Scores.Row(p).Accuracy to (eventId,value) pairs would close it."
+
+  - id: scoring.player.attach_detach
+    name: "Scorekeeper attach/detach lifecycle (PlayerScore_Attach on connect / PlayerScore_Detach on disconnect)"
+    layer: [authority]
+    base_refs:
+      - "server/scores.qh:PlayerScore_Attach"
+      - "server/scores.qh:PlayerScore_Detach"
+      - "server/scores.qc:PlayerScore_Attach"
+    port_refs:
+      - "src/XonoticGodot.Server/Scores.cs:Register"
+      - "src/XonoticGodot.Server/Scores.cs:Unregister"
+      - "src/XonoticGodot.Server/Scores.cs:Row"
+      - "src/XonoticGodot.Server/ClientManager.cs:858"
+    constants:
+      - { name: "one score row per connected player, dropped on disconnect", base: "scorekeeper entity attach/detach", port: "_rows dict Register/Unregister; Row() attaches on demand (idempotent)", match: true }
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "Scores.Register/Unregister/Row (Scores.cs:359-373, commented as QC PlayerScore_Attach/_Detach); LIVE detach at ClientManager.cs:858 on disconnect; attach is on-demand via Row() from every scoring site (QC errors on double-attach, port is idempotent — strictly safer, no behavioral difference on the normal path)", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). No scorekeeper sub-entity: columns live on Entity.ScoreColumns + PlayerScoreRow (the documented ADR structural divergence, see scoring.net.replication). scores.qh is the declaration header for scores.qc, whose behaviors the existing rows own; this row covers the one API pair no existing row cited."
+
+  - id: scoring.status.getstatus_strings
+    name: "getstatus/rcon standings strings (worldstatus/clientstatus built by WinningConditionHelper, gated by g_full_getstatus_responses)"
+    layer: [authority]
+    base_refs:
+      - "server/scores.qh:autocvar_g_full_getstatus_responses"
+      - "server/scores.qc:WinningConditionHelper"
+    port_refs: []
+    constants:
+      - { name: "g_full_getstatus_responses", base: "declared server/scores.qh:5 (default 0)", port: "cvar absent", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC WinningConditionHelper rebuilds the worldstatus string (gametype:mapname:scorelog-labels) and each client's clientstatus (score string) every winning-condition pass so the engine's getstatus query response carries live standings; the port has no getstatus/worldstatus/clientstatus code at all (grep -i getstatus|worldstatus|clientstatus over all .cs 2026-07-02 = zero hits). Server-browser/rcon status queries cannot report standings. Low gameplay impact; matters for external server tooling."
+    verification:
+      - { kind: code_read, ref: "grep getstatus/worldstatus/clientstatus (case-insensitive) over src/ + game/ + tests/ = no matches; the port's CheckWinningCondition (GameWorld.cs) has no status-string side channel", result: fail }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). This is the only observable behavior in server/scores.qh not already owned by an existing row (the rest of the header declares the scores.qc API covered by scoring.player.add_set / scoring.team.two_slot_model / scoring.compare.field_player_team / scoring.winningcondition.scores / scoring.lifecycle.clear / scoring.display.*)."
+
+  - id: scoring.rules.scorerules_basics_end
+    name: "Column-declaration finalize (ScoreRules_basics_end -> ScoreInfo_Init(teamplay_bitmask): broadcast the new layout + init teams via NumTeams)"
+    layer: [authority]
+    base_refs:
+      - "server/scores_rules.qh:ScoreRules_basics_end"
+      - "server/scores_rules.qc:ScoreRules_basics_end"
+      - "server/scores_rules.qc:NumTeams"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:902"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:913"
+      - "src/XonoticGodot.Net/ScoreInfoBlock.cs"
+    constants:
+      - { name: "layout (re)broadcast after a mode declares its columns", base: "explicit ScoreInfo_Init -> SendFlags|=1", port: "implicit: every SetLabel/SetTeamLabel change bumps LayoutGeneration (InvalidateLayout, GameScores.cs:902) and the ScoreInfo block re-sends on the stamp", match: true }
+      - { name: "NumTeams bitmask -> team count -> Team_InitTeams", base: "scores_rules.qc:12-15,27-30", port: "team init handled by the teamplay path in GameWorld/Teamplay, not by the scoring finalize", match: false }
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The port has no explicit basics_end/ScoreInfo_Init call: the layout re-broadcast is event-driven (LayoutGeneration bumps on every actual label/flag change; the ScoreInfo snapshot block change-gates on the stamp — same ADR-0007/0011 snapshot-channel divergence recorded in scoring.net.replication). The NumTeams/Team_InitTeams side effect is owned by the port's teamplay bootstrap, not the scoring finalize."
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "GameScores.InvalidateLayout (GameScores.cs:902) bumped by SetLabel (:305) / ScoreRulesBasics (:338) / SetTeamLabel (:482); LayoutGeneration consumed by the ScoreInfoBlock change-gate (verified live in scoring.net.replication); net effect = clients receive the finalized column set after every mode's declarations, which is what basics_end exists for", result: pass }
+    confidence: medium
+    notes: "added 2026-07-02 (coverage fold). scores_rules.qh is a 7-line declaration header; ScoreRules_basics itself is owned by scoring.rules.scorerules_basics. Confidence medium: the equivalence is per-change gating vs one explicit end-of-declaration broadcast — wire-equivalent in steady state, but a hypothetical mode that transiently declares-then-blanks a column would send an extra intermediate layout (harmless, change-gated)."

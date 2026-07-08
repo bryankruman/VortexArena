@@ -1,0 +1,889 @@
+unit: mapobject-func
+category: mapobject
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+# OPUS re-verify 2026-06-28 (post Phase-2/3a/4 + warpzone fixes, branch claude/parity-port-waves): this wave did NOT
+# touch ANY of the unit's gameplay code — `git diff 2f0bfdb..HEAD` over Doors/Buttons/Platforms/MovingBrushes/Breakable/
+# AdvancedMovers/MapVolumes/MapObjectsCommon/TargetUtilities.cs is EMPTY (all byte-identical to the Wave-17 re-verify).
+# The wave's only edits touching a port_ref are in GameWorld.cs (spectator-kick fix, CA join-refused hook, Race timelimit
+# default) — NONE in ResetMapObjects itself. NO gaps closed (none were open — all 17 rows were already faithful/live from
+# prior waves), NO regressions. Re-confirmed in code this pass: all six Reset assignments still present (Doors.cs:73/133,
+# Buttons.cs:42, Platforms.cs:84, MovingBrushes.cs:77, Breakable.cs:82, TargetUtilities.cs:786); Play2->Play2Raw
+# (MapObjectsCommon.cs:845/848), Centerprint->SendCenterRaw (:910/919); Buttons InstallEventDamage(ButtonDamage) :50;
+# secret GtEventDamage :776. LINE-NUMBER DRIFT (GameWorld.cs edits shifted the seam down): ResetMapObjects body now at
+# GameWorld.cs:4786 (was :4683), e.Reset?.Invoke(e) at :4807 (was :4704), the ResetMapObjects() call at :4746. Seam LIVE,
+# unchanged in behavior. NO STATUS DRIFT — all 17 rows stay faithful/live.
+# ---- prior pass: OPUS re-verify 2026-06-27 (post-Wave-16/17, branch claude/parity-port-waves): re-read the CURRENT port files
+# against every claim below — NO STATUS DRIFT, all 17 feature rows stay faithful/live. Confirmed in code this pass:
+#   (1) MapObjectsCommon.cs Play2 (:845-849) -> SoundSystem.Play2Raw (SoundSystem.cs:255-256 =
+#       Api.Sound.Play(recipient, SoundChannel.Auto, sample, VolBase 0.7, AttenNone 0)) — the CH_INFO/2D-full-volume
+#       play2 mix is exact byte-for-byte (this is the Wave-16/17 audio refinement). UseTargets fires
+#       Play2(actor,"misc/talk.wav") at :424; Centerprint (:910) -> NotificationSystem.SendCenterRaw(OneOnly) at :919.
+#   (2) Doors.cs DoorTouch Centerprint+Play2 at :469-470; DoorCheckKeys (:510-543) faithful incl. valid==0?NEED:ALSONEED
+#       split + 2s KeyDoorMessageTime throttle + 3 live NotificationSystem.Send(MsgType.Center) calls; DoorReset assigned :73/:133.
+#   (3) Buttons.cs InstallEventDamage(ButtonDamage) :50, ButtonReset :42, fire via positional MapMover.Sound :156 (QC _sound, correct).
+#   (4) GameWorld.ResetMapObjects body :4683, e.Reset?.Invoke(e) :4704 (snapshot two-pass reset/reset2) — LIVE.
+#   (5) Notification names DOOR_UNLOCKED/LOCKED_NEED/LOCKED_ALSONEED defined NotificationsList.cs:962-964. Common build green (0/0).
+# DOC-FIX: prior passes cite the centerprint sink as "game/net/ServerNet.cs:300 / NotificationNetSink" — that exact path
+# is STALE (no such symbol/path in the repo now); the live seam is NotificationSystem.Sink, wired by the server host and
+# exercised by SendCenterRaw/Send. Seam is live; only the path string was outdated. No status impact.
+# ---- prior pass (2026-06-27 post-Wave-15/16) ----
+# re-audited 2026-06-27 post-Wave-15/16 (render/state-producer passes) on branch claude/parity-port-waves.
+# WAVE EDIT TO THIS UNIT = a narrow AUDIO-FIDELITY refinement, NO status change: the toucher-recipient map-object
+# cues (door touch .message beep, key-door unlocked/locked beeps, UseTargets default misc/talk.wav, key pickup)
+# were rewired from the spatialized MapMover.Sound (CH_VOICE, vol=1, atten=1 — which spatialized the beep) to the
+# new MapMover.Play2 -> SoundSystem.Play2Raw (CH_INFO=Auto, VOL_BASE 0.7, ATTEN_NONE 0), matching QC play2's 2D
+# full-volume UI cue byte-for-byte (SoundSystem.cs:255, MapObjectsCommon.cs:845). door.slide / door.keys were
+# already audio:faithful so no dimension flips; the mix is now exact. Centerprint seam re-verified LIVE
+# (MapObjectsCommon.Centerprint:910 -> NotificationSystem.SendCenterRaw OneOnly:919). Per-recipient MSG_ONE
+# targeting is still the documented broadcast approximation (Play2 broadcasts; only the volume/attenuation mix
+# is now correct). NO STATUS DRIFT — all 17 feature rows re-verified faithful/live exactly as recorded.
+# Line numbers shifted post-Wave-16: GameWorld.ResetMapObjects body now at GameWorld.cs:4683, e.Reset?.Invoke at
+# :4704 (was :4619/:4640), reset_map body calls it at :4643; live caller chain Warmup.ResetMap(GameWorld.cs:864) +
+# Rounds.OnRoundReset(GameWorld.cs:1647) -> ResetMap(:4600) -> ResetMapObjects intact. Prior-pass notes below remain accurate.
+# ---- prior pass (2026-06-25) ----
+# re-audited 2026-06-25 on branch claude/parity-port-waves (drift check). KEY DELTA vs the prior pass:
+# DOOR_ROTATING_BIDIR / BIDIR_IN_DOWN trigger-side reverse-open is now PORTED (commit ff8a699 Waves 9-11).
+# DoorUse reads the firing trigger's .trigger_reverse via MapMover.CurrentUseTrigger (set by UseTargets,
+# MapObjectsCommon.cs:463-466/475-478): on a BIDIR rotating door, trigger_reverse!=0 sets lip=666 + flips
+# pos2 (Doors.cs:431-436), and BIDIR_IN_DOWN gates the wrong-side re-open during close (Doors.cs:440-444);
+# RotatingBidirInDown is now defined (Doors.cs:45). So mapobject-func.door.rotating logic partial->faithful
+# and the BIDIR_IN_DOWN constant match false->true. This was the unit's one remaining real LOGIC omission —
+# the whole unit is now logic-faithful. Prior-pass facts still hold: key-door cpid notifications LIVE
+# (DoorCheckKeys -> NotificationSystem.Send MsgType.Center, NotificationsList.cs:937-939 -> NotificationNetSink
+# game/net/ServerNet.cs:300); round-restart reset LIVE for all six movers (GameWorld.ResetMapObjects, now
+# GameWorld.cs:4216; e.Reset?.Invoke at :4234). Line numbers shifted post-Wave-9-11 but seams intact.
+summary:
+  feature_count: 23
+  worst_gaps:
+    - "COVERAGE FOLD 2026-07-02: LODmodel_attach/LOD_customize (subs.qc server-side per-mover lodmodel1/lodmodel2 distance swap via SetCustomizer) is MISSING (the client CsqcModelLod is the separate csqcmodel player-LOD, not this); func_stardust's EF_STARDUST sparkle render on an inline-brush prop is UNVERIFIED presentation (consumer exists, brush-entity reachability untraced); func_rain/func_snow are ported+live but the dedicated ENT_CLIENT_RAINSNOW wire is replaced by the facade scan (remote-dedicated-client field sync unverified)."
+    - "DOOR_ROTATING_BIDIR / BIDIR_IN_DOWN trigger-side reverse-open is NOW PORTED (DRIFT-FIX 2026-06-25, commit ff8a699): DoorUse threads the firing trigger via MapMover.CurrentUseTrigger (set by UseTargets), sets lip=666 + flips pos2 on trigger_reverse, and guards wrong-side re-open during close (Doors.cs:391-449). The HitBottom 666 undo (Doors.cs:664) is now actually reachable. This closes the unit's last real LOGIC omission — the whole unit is logic-faithful."
+    - "func_breakable damage-indication colormod / waypoint sprites / bot_attack registration; train moving-sound stop; func_rotating ambient start/stop on setactive + init_for_player late-join resend — all minor presentation/audio reductions, several intended_divergence. These are now the worst remaining gaps."
+    - "no CSQC ENT_CLIENT_* networking/draw for any func_* (door/plat/train/conveyor/ladder); brushes sync via engine entity state. (Net_LinkEntity is commented out in Base too — the CSQC handlers are latent there.)"
+    - "RESOLVED & RE-VERIFIED 2026-06-25 (drift): (1) ROUND-RESTART RESET IS LIVE — GameWorld.ResetMapObjects (GameWorld.cs:4216-4236) iterates every non-client server entity and invokes e.Reset?.Invoke(e) at :4234; door/plat/button/breakable/rotating(MovingBrushes)/secret all assign Entity.Reset at spawn (grep `.Reset =` in MapObjects/ finds all six + dynlight/targetmusic/targetspeaker/voicescript). Live caller chain confirmed: Warmup.ResetMap and Rounds.OnRoundReset(fakeRoundStart:true) → ResetMap → ResetMapObjects (GameWorld.cs:4183). The Buttons.cs:15 comment is CORRECT. (2) CENTERPRINT SEAM IS LIVE — both the free-text .message path (MapMover.Centerprint → NotificationSystem.SendCenterRaw, MsgType.CenterRaw) AND the cpid notification path (NotificationSystem.Send, MsgType.Center) route through NotificationSystem.Sink = new NotificationNetSink(this) (game/net/ServerNet.cs:300) → WriteNotification → client HudNotifications.cs. Door/secret/trigger free-text AND key-door notifications both show. (3) KEY-DOOR NOTIFICATIONS LIVE. (4) DOOR_ROTATING_BIDIR / BIDIR_IN_DOWN now ported (this drift pass) — see mapobject-func.door.rotating."
+features:
+  - id: mapobject-func.driver.calcmove
+    name: "Shared mover driver: SUB_CalcMove / SUB_CalcAngleMove + cubic_speedfunc bezier easing"
+    layer: [authority, shared]
+    base_refs:
+      - "common/mapobjects/subs.qc:SUB_CalcMove"
+      - "common/mapobjects/subs.qc:SUB_CalcMove_Bezier"
+      - "common/mapobjects/subs.qc:SUB_CalcAngleMove"
+      - "common/mapobjects/subs.qc:SUB_CalcMove_controller_think"
+      - "common/mapobjects/subs.qc:SUB_CalcMovePause"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:CalcMove"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:CalcMoveBezier"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:CalcAngleMove"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:CalcMoveControllerThink"
+    constants:
+      - { name: "linear-shortcut traveltime", base: "< 0.15s OR platmovetype 1 1", port: "< 0.15f OR PlatMoveStart==1 && PlatMoveEnd==1", match: true }
+      - { name: "traveltime<=0 fallback", base: "0.001", port: "0.001f", match: true }
+      - { name: "bezier midpoint control", base: "(origin+dest)*0.5", port: "(Origin+dest)*0.5", match: true }
+      - { name: "controller overshoot", base: "dest + '0 0 0.125'", port: "dest + (0,0,0.125)", match: true }
+      - { name: "cubic_speedfunc", base: "((s+e-2)*p -2s-e+3)*p +s)*p", port: "same", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "SUB_CalcMovePause (door_blocked pauses an in-flight bezier controller when a non-linear door is blocked without reversing) is NOT ported — DoorBlocked omits the move_controller pause. Only affects eased (non-default) doors that get blocked; default doors are linear so unaffected."
+    verification:
+      - { kind: code_read, ref: "subs.qc SUB_CalcMove/Bezier/CalcAngleMove vs MapObjectsCommon.cs — linear branch, bezier controller setbezier (destvec=2*c, destvec2=d-2c), cubic ease, shortest-path angle wrap, arrive-next-frame velocity, TRAIN_TURN avelocity all match", result: pass }
+    confidence: high
+    notes: "Now also exposes SetPlatMoveType (platforms.qc set_platmovetype) + CubicSpeedFuncIsSane (lib/math.qh), used by plat/train/path_corner to parse .platmovetype. TSPEED_START/END collapse to LINEAR for non-bezier; START/END honored in CalcMoveBezier. cubic_speedfunc bit-exact."
+
+  - id: mapobject-func.driver.pushmove
+    name: "MOVETYPE_PUSH integrator: rider carry, block->revert->.blocked, local-clock think (SV_PushMove)"
+    layer: [authority]
+    base_refs:
+      - "(engine) DarkPlaces sv_phys.c:SV_PushMove / SV_Physics_Pusher"
+    port_refs:
+      - "src/XonoticGodot.Engine/Simulation/FlyMove.cs:PushMove"
+      - "src/XonoticGodot.Engine/Simulation/MoveTypePhysics.cs:RunEntity"
+    constants:
+      - { name: "rider carry", base: "standing-on OR inside swept box", port: "OnGround+GroundEntity==pusher OR BoxesOverlap final box", match: true }
+      - { name: "blocked -> revert + .blocked()", base: "yes", port: "yes (FlyMove.cs)", match: true }
+      - { name: "SOLID_NOT/TRIGGER pushers", base: "translate, no riders", port: "same (FlyMove.cs)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "PushEntity has no unstick pass yet (FLY checkstuck=false nuance noted in PhysicsToss); not exercised by these movers in normal play."
+    verification:
+      - { kind: code_read, ref: "FlyMove.PushMove: rider gather/move, rotation pivot carry, startsolid nudge, full revert + pusher.Blocked?.Invoke; dispatched by MoveTypePhysics MoveType.Push", result: pass }
+    confidence: high
+    notes: "This is the seam that makes every func_* mover ACTUALLY move + crush + reverse. Verified live; runs each server tick."
+
+  - id: mapobject-func.reset
+    name: "Map-object .reset / .reset2 pass on round/match restart (reset_map_global entity-reset)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/door.qc:door_reset"
+      - "common/mapobjects/func/plat.qc:plat_reset"
+      - "common/mapobjects/func/button.qc:button_reset"
+      - "common/mapobjects/func/breakable.qc:func_breakable_reset"
+      - "common/mapobjects/func/rotating.qc:func_rotating_reset"
+      - "common/mapobjects/func/door_secret.qc:secret_reset"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:ResetMapObjects"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "func_breakable_reset's team_saved restore is not reproduced (no team_saved field at this layer) and func_breakable_look_restore is presentation-only (colormod); the core behave-restore/destroyed state IS reset. door_reset's CSQC SendFlags |= SF_TRIGGER_RESET is skipped (door networking latent/commented in Base)."
+    verification:
+      - { kind: code_read, ref: "RE-VERIFIED 2026-06-28: GameWorld.ResetMapObjects (GameWorld.cs:4786 body, ResetMapObjects() call at :4746) snapshots every non-client server entity (new List(ServerEntities.Inner.All)) and invokes e.Reset?.Invoke(e) at :4807 (after the projectile/weapon_proj* cull). Line numbers shifted again (:4683/:4704 -> :4786/:4807) by this wave's GameWorld.cs edits (spectator-kick/CA-join/Race-timelimit, unrelated to reset); seam unchanged. Each mover installs Entity.Reset at spawn (grep `.Reset =` in MapObjects/): Doors.cs DoorReset (Doors.cs:209; assigned at Doors.cs:73 DoorSetup + :133 DoorRotatingSetup; snaps Origin/Angles to Pos1, STATE_BOTTOM, ACTIVE, clears Think/Velocity, re-inits keys), Buttons.cs ButtonReset (assigned :42), Platforms.cs PlatReset (assigned :80), MovingBrushes.cs RotatingReset (assigned :77), Breakable.cs BreakableReset (assigned :82), TargetUtilities.cs SecretReset (assigned :786). Buttons.cs:15 comment is CORRECT.", result: pass }
+      - { kind: liveness, ref: "Live caller chain RE-CONFIRMED 2026-06-27: Warmup.ResetMap = ResetMap (GameWorld.cs:864, fired by WarmupController ready-restart :301/:385 + ReadyRestart :4565) + Rounds.OnRoundReset = ResetMap(fakeRoundStart:true) (GameWorld.cs:1647) + the :2975 round-reset call -> ResetMap (:4600) -> ResetMapObjects on the real `restart`/vote-restart/round-restart path. Snapshot iteration so MonsterAI.Reset (which removes SPAWNED monsters) is safe.", result: pass }
+    confidence: high
+    notes: "WAVE-5 FIX-UP: the round-restart .reset pass is now genuinely live. ResetMapObjects fires every map entity's Entity.Reset (the QC reset_map_global model) — door/plat/button/breakable/rotating/secret all snap home + re-arm, and monster/logic-gate/target-music .Reset hooks (previously assigned but never dispatched from GameWorld) now fire too. Spawn-time initial placement was already live; this closes the round-restart hole. Residual: breakable team_saved + colormod look_restore (minor, noted in gaps)."
+
+  - id: mapobject-func.door.slide
+    name: "func_door — sliding door state machine, LinkDoors groups, field, touch/use/blocked"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/door.qc:spawnfunc(func_door)"
+      - "common/mapobjects/func/door.qc:door_use"
+      - "common/mapobjects/func/door.qc:door_go_up"
+      - "common/mapobjects/func/door.qc:LinkDoors"
+      - "common/mapobjects/func/door.qc:door_blocked"
+      - "common/mapobjects/func/door.qc:door_damage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs:DoorSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs:DoorUse"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs:DoorGoUp"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs:LinkDoors"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs:DoorBlocked"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs:OnDeath"
+    constants:
+      - { name: "wait default (s)", base: "3 (-1 never)", port: "3 (-1 never)", match: true }
+      - { name: "lip default", base: "8", port: "8", match: true }
+      - { name: "speed default", base: "100", port: "100", match: true }
+      - { name: "pos2", base: "pos1 + movedir*(|movedir.size| - lip)", port: "same", match: true }
+      - { name: "link slop", base: "4u", port: "4f", match: true }
+      - { name: "door_spawnfield extent", base: "mins-'60 60 8' .. maxs+'60 60 8'", port: "same", match: true }
+      - { name: "door_finished throttle (s)", base: "2", port: "2", match: true }
+      - { name: "blocked crush dmg", base: "10000 / .dmg bite (DEATH_HURTTRIGGER)", port: "10000 / .Dmg (DeathTypes.Void = DEATH_HURTTRIGGER)", match: true }
+      - { name: "NOSPLASH bit", base: "BIT(8)=256 (defs.qh)", port: "Doors.NoSplash 1<<8", match: true }
+      - { name: "EF_LOWPRECISION", base: "set (door.qc:779)", port: "Effects |= AdvancedMovers.EfLowPrecision", match: true }
+      - { name: "soundpack gate", base: "noise2 medplat1 / noise1 medplat2 ONLY IF sounds>0|q3 (else empty)", port: "MapMover.ApplyDoorSounds gates on Entity.Sounds (sounds key now promoted)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "door_reset (snap to pos1, STATE_BOTTOM, active, re-init keys) IS ported (DoorReset, Doors.cs:209; assigned Doors.cs:73) and LIVE (dispatched by GameWorld.ResetMapObjects). (see mapobject-func.reset.) Residual: the CSQC SendFlags|=SF_TRIGGER_RESET is skipped (door networking latent/commented in Base)."
+      - "no CSQC ENT_CLIENT_DOOR networking/draw (latent in Base too — door_link Net_LinkEntity is commented out); brush syncs via engine entity state."
+    verification:
+      - { kind: code_read, ref: "RE-VERIFIED 2026-06-27 post-Wave-16: door.qc:313 vs Doors.cs DoorTouch (Doors.cs:453) calls MapMover.Centerprint(other, door.Message) + MapMover.Play2(other, door.Noise); Centerprint (MapObjectsCommon.cs:910) routes to NotificationSystem.SendCenterRaw OneOnly (:919, CenterRaw channel) — LIVE on the match path, so the .message text shows; Play2 (MapObjectsCommon.cs:845) -> SoundSystem.Play2Raw (SoundSystem.cs:255) emits CH_INFO/VOL_BASE 0.7/ATTEN_NONE 0, matching QC play2 byte-for-byte (was the spatialized MapMover.Sound this wave). NOSPLASH early-out present in OnDeath; ApplyDoorSounds gated on Sounds (sounds key promoted); EF_LOWPRECISION set; LinkDoors/door_use/TOGGLE/auto-close/blocked-reverse reproduced", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_door) (MapObjectsRegistry.cs); MapObjectFieldsExtra.Apply runs before SpawnFuncs.TrySpawn so .sounds is set before ApplyDoorSounds reads it; centerprint reaches the client via the live NotificationSystem.Sink seam (SendCenterRaw, NotificationSystem.cs:267) -> host net sink -> HudNotifications (the old game/net/ServerNet.cs:300/NotificationNetSink path string is stale — symbol/path no longer exists; seam itself is live)", result: pass }
+    confidence: high
+    notes: "WAVE-5 FIX: door .message centerprint is now shown — MapObjectsCommon.Centerprint was rewired from the dead CenterprintHandler delegate to a direct NotificationSystem.SendCenterRaw(CenterRaw) call (live channel), closing the last real presentation gap (presentation partial->faithful). Only the CSQC draw remains, which is latent/commented-out in Base too. NOSPLASH + sounds-key + EF_LOWPRECISION from prior waves still hold. No dedicated unit test (code-read)."
+
+  - id: mapobject-func.door.rotating
+    name: "func_door_rotating — swinging door (angle-move between two angle positions)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/door_rotating.qc:spawnfunc(func_door_rotating)"
+      - "common/mapobjects/func/door_rotating.qc:door_rotating_go_up"
+      - "common/mapobjects/func/door_rotating.qc:door_rotating_hit_bottom"
+      - "common/mapobjects/func/door.qc:door_use (DOOR_ROTATING_BIDIR branch)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs:DoorRotatingSetup (Doors.cs:109)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs:DoorRotatingGoUp"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs:DoorUse (BIDIR/trigger_reverse path, Doors.cs:431-444)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs:DoorRotatingHitBottom (lip==666 undo at Doors.cs:664)"
+    constants:
+      - { name: "swing magnitude default", base: "angles_y default 90", port: "Angles.Y default 90", match: true }
+      - { name: "axis", base: "Z(yaw) default / X_AXIS BIT(6)=64 / Y_AXIS BIT(7)=128", port: "same (MoveDir 0/0/1 etc.; RotatingXAxis 1<<6, RotatingYAxis 1<<7)", match: true }
+      - { name: "BIDIR / BIDIR_IN_DOWN bits", base: "BIT(1)=2 / BIT(3)=8", port: "RotatingBidir 1<<1; RotatingBidirInDown 1<<3 (now defined, Doors.cs:44-45)", match: true }
+      - { name: "speed default", base: "50", port: "50", match: true }
+      - { name: "lip", base: "0 (reverse-open marker 666)", port: "0 (666 marker set in DoorUse, undone in HitBottom)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "shares the (LIVE) reset + CSQC gaps of mapobject-func.door.slide; inherits its NOSPLASH fix + sounds-key fix + the live .message centerprint (door_rotating runs the shared DoorTouch -> MapMover.Centerprint) AND the live key-door cpid notifications. Only the CSQC ENT_CLIENT draw remains (latent in Base; door_link Net_LinkEntity commented out)."
+    verification:
+      - { kind: code_read, ref: "DRIFT RE-AUDIT 2026-06-25: door.qc:242-262 (door_use BIDIR branch) vs Doors.cs DoorUse:391-449 — trigger_reverse read from MapMover.CurrentUseTrigger (Doors.cs:403-404); BIDIR + trigger_reverse!=0 + lip!=666 + STATE_BOTTOM -> lip=666 + pos2=-pos2 (Doors.cs:431-436) matches door.qc:249-252; BIDIR_IN_DOWN wrong-side re-open guard (Doors.cs:440-444) matches door.qc:254-258; HitBottom 666 undo (Doors.cs:664-672) now reachable. CurrentUseTrigger set/restored by UseTargets (MapObjectsCommon.cs:463-466,475-478) on the SUB_UseTargets dispatch (the QC `this` firing-trigger arg), NULL on touch/damage/blocked — faithful. Axis selection, angle pos1/pos2, START_OPEN reverse, CalcAngleMove all present.", result: pass }
+      - { kind: liveness, ref: "DoorUse reached via SUB_UseTargets (trigger->.use) with CurrentUseTrigger set, and via DoorTriggerTouch/DoorBlocked with it NULL; trigger_reverse plumbed onto the firing trigger by MapObjectFieldsExtra.cs:200 (trigger_reverse map key) into Entity.TriggerReverse (EntityMapObjectStateExtra.cs:76)", result: pass }
+    confidence: high
+    notes: "DRIFT-FIX 2026-06-25 (commit ff8a699 Waves 9-11): the DOOR_ROTATING_BIDIR / BIDIR_IN_DOWN trigger-side reverse-open path is now ported — logic partial->faithful, BIDIR_IN_DOWN constant match false->true. DoorUse still has a (self, actor) C# signature but threads the QC third `trigger` arg via the MapMover.CurrentUseTrigger static seam (the same seam MapModels uses for .antiwall). Doors.cs:14-17 header updated to reflect this is now in-scope/ported. audio faithful (shares InitShared/ApplyDoorSounds with door.slide). This was the unit's last real logic omission."
+
+  - id: mapobject-func.door.keys
+    name: "func_door key locks (gold/silver itemkeys, consume + locked/unlocked sounds)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/door.qc:door_check_keys"
+      - "common/mapobjects/func/door.qc:door_init_keys"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs:DoorCheckKeys"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs:DoorInitKeys"
+    constants:
+      - { name: "gold/silver bits", base: "BIT(0)/BIT(1)", port: "1<<0 / 1<<1", match: true }
+      - { name: "key door wait", base: "-1 (never return)", port: "-1", match: true }
+      - { name: "locked msg throttle (s)", base: "2", port: "2", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "key doors can't be damage-opened (faithful early-out in OnDeath: itemkeys!=0 keeps it alive) — the NOSPLASH branch and the itemkeys early-out are both independent OnDeath early-outs so order is immaterial."
+    verification:
+      - { kind: code_read, ref: "RE-AUDITED 2026-06-27 post-Wave-16: door_check_keys vs DoorCheckKeys (Doors.cs:510-543): itemkeys & player.itemkeys consume; all-given -> play2(noise) + Send_Notification(CENTER_DOOR_UNLOCKED) reproduced as MapMover.Play2(player, door.Noise) (now CH_INFO/VOL_BASE/ATTEN_NONE, byte-exact play2; was MapMover.Sound this wave) + NotificationSystem.Send(NotifBroadcast.One, player, MsgType.Center, \"DOOR_UNLOCKED\") (Doors.cs:526); partial -> Play2(noise3) + CENTER_DOOR_LOCKED_NEED (valid==0) / CENTER_DOOR_LOCKED_ALSONEED (valid!=0) with item_keys_keylist, throttled 2s (KeyDoorMessageTime), reproduced at Doors.cs:534-541 with the SAME valid==0 branch split. door_init_keys spawnflag->bits. Notification names defined in NotificationsList.cs:962-964 (DOOR_LOCKED_NEED/ALSONEED/UNLOCKED — line shifted from the prior pass's :937-939 by later notification-table edits; names intact).", result: pass }
+      - { kind: liveness, ref: "NotificationSystem.Send(MsgType.Center) reaches the client via the live NotificationSystem.Sink seam -> host net sink -> HudNotifications (names DOOR_UNLOCKED/LOCKED_NEED/LOCKED_ALSONEED defined NotificationsList.cs:962-964; the old game/net/ServerNet.cs:300 path string is stale); ItemKeysKeylist defined MapObjectsRegistry.cs:379", result: pass }
+    confidence: high
+    notes: "DRIFT-FIX 2026-06-25: the key-door cpid notifications are now FAITHFUL — DoorCheckKeys was rewired from the prior 'CENTER_DOOR_UNLOCKED is client-side' sound-only stub to real NotificationSystem.Send(MsgType.Center) calls for all three messages, AND the QC NEED-vs-ALSONEED two-branch split (valid==0 ? NEED : ALSONEED) is now reproduced (the prior single-noise3-throttle collapse is gone). presentation missing->faithful, audio partial->faithful. QC reads keys off PS(player); port reads player.ItemKeys directly — equivalent."
+
+  - id: mapobject-func.button
+    name: "func_button — press-to-fire (touch/use/damage), wait+return, setactive timer, alt texture"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/button.qc:spawnfunc(func_button)"
+      - "common/mapobjects/func/button.qc:button_fire"
+      - "common/mapobjects/func/button.qc:button_setactive"
+      - "common/mapobjects/func/button.qc:button_touch"
+      - "common/mapobjects/func/button.qc:button_damage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Buttons.cs:ButtonSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Buttons.cs:ButtonFire"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Buttons.cs:ButtonSetActive"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Buttons.cs:ButtonTouch"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Buttons.cs:ButtonDamage"
+    constants:
+      - { name: "speed default", base: "40", port: "40", match: true }
+      - { name: "wait default (s)", base: "1 (-1 never)", port: "1 (-1 never)", match: true }
+      - { name: "lip default", base: "4", port: "4", match: true }
+      - { name: "touch gate", base: "creature & velocity.movedir >= 0 (reject if < 0)", port: "IsCreature & Dot(vel,movedir) >= 0", match: true }
+      - { name: "DONTACCUMULATEDMG bit", base: "BIT(7)=128", port: "1<<7", match: true }
+      - { name: "NOSPLASH bit", base: "BIT(8)=256", port: "MapMover.SpawnNoSplash 1<<8", match: true }
+      - { name: "alt texture frame", base: "frame=1 pressed / 0 normal", port: "Frame=1 / 0", match: true }
+      - { name: "DONTACCUMULATEDMG semantics", base: "fire IFF single-hit damage >= health (no accumulation)", port: "if(Health <= damage) fire; no subtract (ButtonDamage)", match: true }
+      - { name: "health == -1 (fire on ANY attack)", base: "any damage opens it", port: "accumulate path: Health(-1) <= 0 already, any hit fires; single-hit path: -1 <= damage always", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "the pressed-state alternate texture (Frame=1) is set on the entity but whether the brush model renders the alt frame in-engine is unverified (presentation)."
+      - "button_reset round-restart re-arm is LIVE — ButtonReset is assigned at Buttons.cs:42 and dispatched by GameWorld.ResetMapObjects (e.Reset?.Invoke at GameWorld.cs:4807, body :4786; line shifted 2026-06-28 by unrelated GameWorld edits). The Buttons.cs:15 comment is correct. (See mapobject-func.reset.)"
+    verification:
+      - { kind: code_read, ref: "button.qc vs Buttons.cs: button_damage is now a per-hit .event_damage callback installed via MapMover.InstallEventDamage(this_, ButtonDamage); NOSPLASH (!IsSpecial & HasHitType Splash -> return), DONTACCUMULATEDMG (Health<=damage single-hit, no subtract), default accumulate (Health-=damage; <=0 -> fire), health=-1 fire-on-any all reproduced; Active gate matches QC. The old Combat.Death accumulate-hook is REMOVED.", result: pass }
+      - { kind: liveness, ref: "Entity.GtEventDamage dispatched per-hit by DamageSystem.EventDamage (DamageSystem.cs:331-335) on the live Damage() path (line 280); SpawnFuncs.Register(func_button); fire sound via MapMover.Sound", result: pass }
+    confidence: high
+    notes: "WAVE-1/2 MAJOR FIX: shootable buttons rewritten from the accumulate-then-die Combat.Death workaround to a faithful per-hit event_damage shim. DONTACCUMULATEDMG inversion, NOSPLASH, and health==-1 are now all faithful; intended_divergence cleared (logic partial->faithful). DeathTypes.IsSpecial/HasHitType(Splash) verified to exist. No dedicated unit test (code-read)."
+
+  - id: mapobject-func.plat
+    name: "func_plat — riding platform (center trigger raises, 3s top dwell, crush/reverse)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/plat.qc:spawnfunc(func_plat)"
+      - "common/mapobjects/platforms.qc:plat_spawn_inside_trigger"
+      - "common/mapobjects/platforms.qc:plat_center_touch"
+      - "common/mapobjects/platforms.qc:plat_crush"
+      - "common/mapobjects/platforms.qc:plat_reset"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:PlatSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:SpawnInsideTrigger"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:PlatCenterTouch"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:PlatCrush"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Platforms.cs:PlatReset"
+    constants:
+      - { name: "speed default", base: "150", port: "150", match: true }
+      - { name: "lip default", base: "16", port: "16", match: true }
+      - { name: "height default", base: "size.z - lip", port: "Size.Z - Lip", match: true }
+      - { name: "top dwell (s)", base: "3", port: "3", match: true }
+      - { name: "top refresh on re-touch (s)", base: "1", port: "1", match: true }
+      - { name: "inside-trigger inset", base: "+25 25 0 / -25 25 -8 / LOW_TRIGGER +8z", port: "same", match: true }
+      - { name: "CRUSH dmg", base: "10000", port: "10000", match: true }
+      - { name: "soundpack", base: "sounds==1 plat1/2, sounds==2|q3 medplat, then sound1/sound2 overrides", port: "MapMover.ApplyPlatSounds (sounds/sound1/sound2 keys promoted)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "plat_reset initial placement is live + faithful (targeted->raised, untargeted->bottom); the round-restart .reset is ALSO live now — PlatReset is assigned at Platforms.cs:82 and dispatched by GameWorld.ResetMapObjects. (CORRECTED 2026-06-25; the prior 'STILL NOT wired' note was stale — see mapobject-func.reset.)"
+      - "plat_outside_touch (the CSQC-side outside trigger that sends a top plat down when a player leaves) is not ported — it is gated to CSQC in Base; minor."
+      - "no CSQC ENT_CLIENT_PLAT draw/networking."
+    verification:
+      - { kind: code_read, ref: "plat.qc + platforms.qc vs Platforms.cs: ApplyPlatSounds now selects plat1/2 vs medplat vs sound1/sound2 overrides per the promoted sounds key (Platforms.cs:57); SetPlatMoveType parses platmovetype (Platforms.cs:68); pos1/pos2, inside-trigger sizing, center-touch raise + top-dwell, crush reverse, targeted start-raised all reproduced", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_plat); MapObjectFieldsExtra promotes sounds/sound1/sound2/platmovetype before the spawnfunc runs", result: pass }
+    confidence: high
+    notes: "WAVE-1/2 FIX: sounds-key soundpack + sound1/sound2 backwards-compat overrides + platmovetype ease now promoted & live (audio->faithful). Targeted plat starts RAISED; untargeted starts at bottom — both match. Round-restart reset still dead. No dedicated unit test (code-read)."
+
+  - id: mapobject-func.train
+    name: "func_train — path_corner chain ride (TURN/CURVE/NEEDACTIVATION/random, per-corner speed/wait)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/train.qc:spawnfunc(func_train)"
+      - "common/mapobjects/func/train.qc:train_next"
+      - "common/mapobjects/func/train.qc:train_wait"
+      - "common/mapobjects/func/train.qc:train_use"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MovingBrushes.cs:TrainSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MovingBrushes.cs:TrainNext"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MovingBrushes.cs:TrainWait"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MovingBrushes.cs:TrainUse"
+    constants:
+      - { name: "speed default", base: "100", port: "100", match: true }
+      - { name: "corner wait default (s)", base: "0.1", port: "0.1", match: true }
+      - { name: "view_ofs", base: "mins (non-turn) / 0 (TURN)", port: "DestVec = Mins / Zero", match: true }
+      - { name: "TURN/CURVE/NEEDACTIVATION bits", base: "BIT(1)/BIT(0)/BIT(2) = 2/1/4", port: "1<<1 / 1<<0 / 1<<2", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "no func_train reset (QC explicitly has `// TODO make a reset function for this one` — so this is faithful to Base's own omission, unlike door/plat/button)."
+      - "train moving-sound stop (stopsoundto MSG_BROADCAST on arrival) is not done; the moving noise plays but is not explicitly stopped at each dwell (cosmetic). Port uses SoundChannel.Voice vs QC ATTEN_IDLE (cosmetic)."
+      - "no CSQC ENT_CLIENT_TRAIN draw/networking."
+    verification:
+      - { kind: code_read, ref: "train.qc vs MovingBrushes.cs: per-corner NEEDACTIVATION re-arm now present in TrainWait (MovingBrushes.cs:424-431: tg=FutureTarget; if(tg.SpawnFlags & TrainNeedActivation){ Use=TrainUse; Think=null; } ) — matches train_wait lines 45-48; path-corner lookahead, per-corner speed/wait, CURVE bezier, TURN dwell-rotate, target_random pick, target2 retarget, platmovetype via SetPlatMoveType all reproduced", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_train + path_corner); TrainUse re-armed, FutureTarget populated by TrainNext", result: pass }
+    confidence: high
+    notes: "WAVE-1/2 FIX: the intermediate TRAIN_NEEDACTIVATION re-arm (train_wait future_target check that pauses + re-installs train_use) is now ported (logic partial->faithful). platmovetype per-corner ease wired via SetPlatMoveType. confidence raised to high. No dedicated unit test."
+
+  - id: mapobject-func.rotating
+    name: "func_rotating — constant-axis spin, setactive toggle, STARTOFF, ambient noise"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/rotating.qc:spawnfunc(func_rotating)"
+      - "common/mapobjects/func/rotating.qc:func_rotating_setactive"
+      - "common/mapobjects/func/rotating.qc:func_rotating_reset"
+      - "common/mapobjects/func/rotating.qc:func_rotating_init_for_player"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MovingBrushes.cs:RotatingSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MovingBrushes.cs:RotatingSetActive"
+    constants:
+      - { name: "speed default (deg/s)", base: "100", port: "100", match: true }
+      - { name: "axis bits", base: "Z default / X_AXIS BIT(2)=4 / Y_AXIS BIT(3)=8 / STARTOFF BIT(4)=16", port: "1<<2 / 1<<3 / 1<<4", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: partial
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Looping ambient noise (CH_AMBIENT_SINGLE) uses the sound facade Play, not QC's per-player soundto(MSG_ONE)/init_for_player resend — no client roster at this layer (project-wide reduction). Spin behavior is fully faithful."
+    gaps:
+      - "func_rotating_init_for_player (resend the ambient to a player who joins after spawn) is STILL not implemented; a late joiner may not hear an already-spinning rotator's loop. (Unchanged by Wave-1/2.)"
+      - "func_rotating_reset (re-apply STARTOFF active state on round restart) is LIVE — RotatingReset is assigned at MovingBrushes.cs:75 and dispatched by GameWorld.ResetMapObjects; STARTOFF spawn state is also applied at spawn-time and faithful. (CORRECTED 2026-06-25; prior 'STILL not wired' note was stale — see mapobject-func.reset.)"
+      - "RotatingSetActive does not start/stop the ambient on toggle (QC setactive plays/stops CH_AMBIENT_SINGLE) — only AVelocity is toggled. Cosmetic given the facade-only ambient. (Unchanged by Wave-1/2.)"
+    verification:
+      - { kind: code_read, ref: "rotating.qc vs RotatingSetup/SetActive (no diff this wave): avelocity per axis, pos1-stored spin, setactive toggle, STARTOFF spawn-stopped, generic_plat_blocked; spin integrated by PushMove", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_rotating)", result: pass }
+    confidence: high
+    notes: "Unchanged by Wave-1/2. Port leaves Think null and relies on PushMove integrating the constant avelocity. Axis-bit constants verified against rotating.qh BIT(2)/BIT(3)/BIT(4)."
+
+  - id: mapobject-func.bobbing
+    name: "func_bobbing — sine translation via 0.1s controller"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/bobbing.qc:spawnfunc(func_bobbing)"
+      - "common/mapobjects/func/bobbing.qc:func_bobbing_controller_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MovingBrushes.cs:BobbingSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MovingBrushes.cs:BobbingControllerThink"
+    constants:
+      - { name: "speed default (s/cycle)", base: "4", port: "4", match: true }
+      - { name: "height default", base: "32", port: "32", match: true }
+      - { name: "cnt timescale", base: "360/speed", port: "360f/Speed", match: true }
+      - { name: "controller tick (s)", base: "0.1", port: "0.1", match: true }
+      - { name: "arrive scale", base: "*10", port: "*10f", match: true }
+      - { name: "axis bits", base: "X_AXIS BIT(0)=1 / Y_AXIS BIT(1)=2", port: "1<<0 / 1<<1", match: true }
+      - { name: "phase", base: "0-1 cycle fraction", port: "Entity.Phase (plumbed from map key)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "the spawn-time soundto(MSG_INIT) looping ambient is not resent per-player; played through the facade where present."
+    verification:
+      - { kind: code_read, ref: "bobbing.qc vs BobbingSetup/ControllerThink: makevectors sine, destvec+movedir*v_forward_y target, *10 velocity, controller 0.1s tick, phase plumbed via MapObjectFieldsExtra (phase key)", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_bobbing); controller Spawn at setup", result: pass }
+    confidence: high
+    notes: "Unchanged by Wave-1/2. QMath.Forward(yaw) reproduces makevectors v_forward.y. No dedicated unit test (code-read)."
+
+  - id: mapobject-func.pendulum
+    name: "func_pendulum — sine roll via 0.1s controller (Q3A freq formula)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/pendulum.qc:spawnfunc(func_pendulum)"
+      - "common/mapobjects/func/pendulum.qc:func_pendulum_controller_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MovingBrushes.cs:PendulumSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MovingBrushes.cs:PendulumControllerThink"
+    constants:
+      - { name: "speed default", base: "30", port: "30", match: true }
+      - { name: "freq formula", base: "1/(2pi)*sqrt(sv_gravity/(3*max(8,|mins_z|)))", port: "same (Api.Cvars sv_gravity, fallback 800)", match: true }
+      - { name: "rest roll", base: "cnt = angles_z", port: "MoverCnt = Angles.Z", match: true }
+      - { name: "remainder(v,360)*10", base: "remainder*10", port: "Remainder(...)*10f", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "ambient .noise not resent per-player (same reduction as bobbing)."
+    verification:
+      - { kind: code_read, ref: "pendulum.qc vs PendulumSetup/ControllerThink: freq formula, cnt rest-roll, makevectors sine to roll avelocity, remainder shortest-arc, 0.0000001 kick", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_pendulum)", result: pass }
+    confidence: high
+    notes: "Unchanged by Wave-1/2. sv_gravity read from the cvar store (fallback 800 = Xonotic default). No dedicated unit test (code-read)."
+
+  - id: mapobject-func.fourier
+    name: "func_fourier — sum-of-sines mover (netname quintuple list)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/fourier.qc:spawnfunc(func_fourier)"
+      - "common/mapobjects/func/fourier.qc:func_fourier_controller_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/AdvancedMovers.cs:FourierSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/AdvancedMovers.cs:FourierControllerThink"
+    constants:
+      - { name: "speed default", base: "4", port: "4", match: true }
+      - { name: "height default", base: "32", port: "32", match: true }
+      - { name: "netname default", base: "\"1 0 0 0 1\"", port: "\"1 0 0 0 1\"", match: true }
+      - { name: "quintuple stride", base: "5 (<freqmul phase x y z>)", port: "5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "looping ambient .noise resent per-player (soundto MSG_INIT) reduced to a single facade Play."
+    verification:
+      - { kind: code_read, ref: "fourier.qc vs FourierSetup/ControllerThink: netname tokenize/stof, n=len/5, per-term makevectors sine scaled by height*v_forward_y onto destvec, *10 velocity", result: pass }
+      - { kind: unit_test, ref: "MapObjectLongTailTests.cs — controller spawn + netname default verified", result: pass }
+    confidence: high
+    notes: "Unchanged by Wave-1/2. tokenize_console reduced to whitespace split; stof invariant-culture parse. EF_LOWPRECISION set (bandwidth hint)."
+
+  - id: mapobject-func.vectormamamam
+    name: "func_vectormamamam — 4-reference projected mover"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/vectormamamam.qc:spawnfunc(func_vectormamamam)"
+      - "common/mapobjects/func/vectormamamam.qc:func_vectormamamam_origin"
+      - "common/mapobjects/func/vectormamamam.qc:func_vectormamamam_controller_think"
+      - "common/mapobjects/func/vectormamamam.qc:func_vectormamamam_findtarget"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/AdvancedMovers.cs:VectormamamamSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/AdvancedMovers.cs:VectormamamamOrigin"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/AdvancedMovers.cs:VectormamamamControllerThink"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/AdvancedMovers.cs:VectormamamamFindTarget"
+    constants:
+      - { name: "timestep (s)", base: "VECTORMAMAMAM_TIMESTEP 0.1", port: "0.1f", match: true }
+      - { name: "factor default", base: "1 (each of 4)", port: "1f", match: true }
+      - { name: "predict", base: "origin + timestep*velocity", port: "same", match: true }
+      - { name: "project on/off normal", base: "PROJECT_ON_* bits 1/2/4/8", port: "1<<0..1<<3", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: partial
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "looping ambient .noise per-player resend reduced to facade Play in setactive."
+    verification:
+      - { kind: code_read, ref: "vectormamamam.qc vs AdvancedMovers.cs: per-reference project-onto/off normal*factor accumulate, destvec=origin-origin(0), controller *10, findtarget at INITPRIO_FINDTARGET (RunDeferredInit)", result: pass }
+      - { kind: unit_test, ref: "MapObjectLongTailTests.cs — controller spawn, destvec-at-timestep-0, no-reference abort verified", result: pass }
+    confidence: high
+    notes: "Unchanged by Wave-1/2. Reference lookups drained by MapObjectsRegistry.RunPostSpawn -> AdvancedMovers.RunDeferredInit."
+
+  - id: mapobject-func.breakable
+    name: "func_breakable / misc_breakablemodel — destructible BSP (debris, blast, respawn)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/breakable.qc:func_breakable_setup"
+      - "common/mapobjects/func/breakable.qc:func_breakable_destroy"
+      - "common/mapobjects/func/breakable.qc:LaunchDebris"
+      - "common/mapobjects/func/breakable.qc:func_breakable_damage"
+      - "common/mapobjects/func/breakable.qc:func_breakable_reset"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Breakable.cs:BreakableSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Breakable.cs:BreakableDestroy"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Breakable.cs:LaunchDebris"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Breakable.cs:OnDeath"
+    constants:
+      - { name: "health default", base: "100", port: "100", match: true }
+      - { name: "dmg_radius default", base: "150", port: "150", match: true }
+      - { name: "dmg_force default", base: "200", port: "200", match: true }
+      - { name: "debris movetype", base: "MOVETYPE_BOUNCE", port: "MoveType.Bounce", match: true }
+      - { name: "debris velocity / jitter / avel-jitter", base: "0 0 140 / 70 70 70 / 600 600 600", port: "same", match: true }
+      - { name: "debris time", base: "3.5", port: "3.5", match: true }
+      - { name: "debristimejitter QC bug", base: "!debristimejitter -> debristime=2.5 (NOT jitter); jitter stays 0", port: "if(DebrisTimeJitter==0) DebrisTime=2.5 — NOW reproduces the QC bug", match: true }
+      - { name: "NOSPLASH bit", base: "BIT(8)=256", port: "MapMover.SpawnNoSplash 1<<8", match: true }
+      - { name: "team friendly-fire guard", base: "attacker.team == this.team -> return", port: "v.Team!=0 & atk.Team==v.Team -> restore HP, no break", match: true }
+      - { name: "spawnflags", base: "START_DISABLED(1)/INDICATE_DAMAGE(2)/NODAMAGE(4)", port: "1<<0/1<<1/1<<2", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "func_breakable_damage realized via the Combat.Death hook (OnDeath) rather than a per-hit .event_damage shim: the pipeline drives HP below 1, then OnDeath restores HP so the kill early-out keeps it intact and either bounces (NOSPLASH/team-guard) or breaks. The killing-hit force (QC debrisforce) is not carried by the Death hook, but .debrisdamageforcescale defaults to 0 so QC's force contribution to debris is normally nil. Functionally equivalent for the modelled cases (NOSPLASH + team-guard now evaluated inside OnDeath before the break)."
+    gaps:
+      - "func_breakable_colormod damage-indication (BREAKABLE_INDICATE_DAMAGE tint), waypoint sprites (WaypointSprite_*), and bot_attack/monster_attack registration are not ported (BehaveRestore/Destroyed don't toggle bot_attack or remove grappling hooks)."
+      - "func_breakable_reset (behave/destroyed-state restore) IS ported (BreakableReset, assigned Breakable.cs:82) and LIVE (dispatched by GameWorld.ResetMapObjects); spawn-time START_DISABLED/restore is also applied and faithful. Residual: team_saved restore + colormod look_restore not reproduced (minor; no team_saved field at this layer). (CORRECTED 2026-06-25; prior 'STILL not ported/wired' note was stale — see mapobject-func.reset.)"
+      - "mdl_dead wreck-model swap + debris MODEL rendering are presentation (debris entities spawn + fade but their visual is client-side); pointparticles break effect (.cnt/.count) not emitted."
+      - "the killing-hit force isn't applied to debris (Death hook carries no force; near-zero effect at default debrisdamageforcescale 0)."
+    verification:
+      - { kind: code_read, ref: "breakable.qc vs Breakable.cs: OnDeath now adds the NOSPLASH early-out (!IsSpecial & HasHitType Splash -> restore HP, no break, Breakable.cs:248-257) and the team friendly-fire guard (Breakable.cs:260-266), both matching func_breakable_damage lines 271-276; debristimejitter QC bug reproduced (DebrisTime=2.5 when jitter unset). LaunchDebris/RadiusDamage/respawn/START_DISABLED/NODAMAGE reproduced", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_breakable + misc_breakablemodel); OnDeath subscribed to Combat.Death; v.Team read from the map team field via ApplyDictFields", result: pass }
+    confidence: high
+    notes: "WAVE-1/2 FIXES: NOSPLASH guard + team friendly-fire guard now honored (logic partial->faithful); debristimejitter default now matches Base's own bug (values partial->faithful). Verified against breakable.qc:271-276 + 330-331. Uses DAMAGE_AIM (matches QC). No dedicated unit test for the break path (code-read)."
+
+  - id: mapobject-func.door_secret
+    name: "func_door_secret — Quake-1 secret door (slide back/down, then sideways, return, re-arm)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/door_secret.qc:spawnfunc(func_door_secret)"
+      - "common/mapobjects/func/door_secret.qc:fd_secret_use"
+      - "common/mapobjects/func/door_secret.qc:fd_secret_move1"
+      - "common/mapobjects/func/door_secret.qc:fd_secret_damage"
+      - "common/mapobjects/func/door_secret.qc:secret_reset"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:DoorSecretSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:SecretUse"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:SecretMove1"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:OnSecretDeath"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs:SecretReset"
+    constants:
+      - { name: "dmg default", base: "2", port: "2f", match: true }
+      - { name: "speed", base: "50 (hardcoded)", port: "50f", match: true }
+      - { name: "wait default (s)", base: "5", port: "5f", match: true }
+      - { name: "shootable HP", base: "10000 (never dies; opens on ANY hit)", port: "10000 (GtEventDamage opens on any hit)", match: true }
+      - { name: "move1/move5 dwell (s)", base: "0.1 then 1.0", port: "0.1 then 1.0", match: true }
+      - { name: "spawnflags", base: "OPEN_ONCE(1)/1ST_LEFT(2)/1ST_DOWN(4)/NO_SHOOT(8)/YES_SHOOT(16)", port: "1<<0..1<<4", match: true }
+      - { name: "soundpack", base: "sounds>0 -> medplat1/medplat1/medplat2", port: "MapMover.ApplySecretSounds (sounds key now promoted)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "QC sets classname='door' and a per-entity .event_damage; the port uses a DISTINCT classname 'door_secret' (so it stays out of the shared door OnDeath/LinkDoors classname dispatch) and a real per-entity event_damage analogue (Entity.GtEventDamage, dispatched by DamageSystem.EventDamage). Slide mechanics, touch, blocked, use are otherwise identical. Forced by the shared-dispatch architecture."
+    gaps:
+      - "secret_reset round-restart re-arm is LIVE — SecretReset is assigned at TargetUtilities.cs:786 and dispatched by GameWorld.ResetMapObjects; spawn-time placement (oldorigin, shootable re-arm) is also applied and faithful. (CORRECTED 2026-06-25; prior 'STILL dead' note was stale — see mapobject-func.reset.)"
+      - "secret_blocked deals no damage (QC leaves the T_Damage commented out too — faithful)."
+      - "no CSQC ENT_CLIENT draw/networking (latent in Base); brush syncs via engine entity state."
+    verification:
+      - { kind: code_read, ref: "door_secret.qc vs TargetUtilities.cs: SecretUse/touch (TargetUtilities.cs:509/805) call MapMover.Centerprint(...) which now routes to the live CenterRaw channel — the .message text shows. ApplySecretSounds selects the medieval/metal pack per the promoted sounds key; fd_secret_use back/down-then-side dest, move1-6 chain, OPEN_ONCE/wait<0 no-return, fd_secret_damage open-on-any-hit (via GtEventDamage), shootable-if-untargeted all reproduced", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_door_secret); GtEventDamage dispatched by DamageSystem.EventDamage (DamageSystem.cs:331-333); OnSecretDeath subscribed to Combat.Death; centerprint reaches the client via the live NotificationSystem.Sink seam (the old NotificationNetSink/game/net/ServerNet.cs:300 path string is stale; seam is live)", result: pass }
+    confidence: high
+    notes: "WAVE-5 FIX: secret .message centerprint now shows — MapObjectsCommon.Centerprint rewired to NotificationSystem.SendCenterRaw (live CenterRaw channel), closing the last real presentation gap (presentation partial->faithful). sounds-key soundpack (prior wave) still holds. Fully ported, live func/ map object (in TargetUtilities.cs due to the classname-dispatch issue)."
+
+  - id: mapobject-func.conveyor_ladder
+    name: "trigger_conveyor/func_conveyor + func_ladder/func_water — per-frame volume scanners (producer)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/conveyor.qc:conveyor_think"
+      - "common/mapobjects/func/conveyor.qc:spawnfunc(func_conveyor)"
+      - "common/mapobjects/func/ladder.qc:func_ladder_think"
+      - "common/mapobjects/func/ladder.qc:spawnfunc(func_ladder)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapVolumes.cs:ConveyorThink"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapVolumes.cs:FuncConveyorSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapVolumes.cs:LadderThink"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapVolumes.cs:FuncLadderSetup"
+    constants:
+      - { name: "conveyor speed default", base: "200", port: "200", match: true }
+      - { name: "conveyor movedir cache", base: "movedir *= speed", port: "MoveDir *= Speed", match: true }
+      - { name: "non-client nudge", base: "movedir * frametime", port: "MoveDir * FrameTime()", match: true }
+      - { name: "ladder claim filter", base: "player & !noclip & !dead & !already-held", port: "Client & !Noclip & !IsDead & !held", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "QC kept carried entities in global inventory lists (g_conveyed/g_ladderents) so the release pass sees an entity that left the sphere in one frame; the port has no IL, so each producer tracks its held set in a per-producer dictionary (faithful net effect). Overlap uses an AABB BoxesOverlap test rather than WarpZoneLib_ExactTrigger_Touch (exact brush-plane) — close approximation. The consumer (PlayerPhysics conveyor frame-of-reference + ladder climb + func_water waterlevel) is a separate already-ported physics unit."
+    gaps:
+      - "func_ladder bot waypoint tracetest (waypoint_spawnforteleporter_boxes) is bot-navigation only and is skipped — bots won't path up a func_ladder via this seam."
+      - "overlap uses AABB BoxesOverlap not exact-trigger plane test (a non-axis-aligned conveyor/ladder brush could tag slightly outside its true volume)."
+      - "no CSQC ENT_CLIENT_CONVEYOR/LADDER draw/think (the client also runs the producer scan in Base for prediction)."
+    verification:
+      - { kind: code_read, ref: "conveyor.qc/ladder.qc vs MapVolumes.cs: per-frame release-then-retag, FindInRadius box scan + AABB overlap, isPushable/claimable gate, non-client nudge, targeted-conveyor toggle; consumer fields (ConveyorEntity/MoveDir, LadderEntity) read by PlayerPhysics", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(trigger_conveyor/func_conveyor/func_ladder/func_water)", result: pass }
+    confidence: medium
+    notes: "Unchanged by Wave-1/2. Producer is code-read live; the FULL chain (volume tag -> PlayerPhysics consumer) is not exercised end-to-end by a test here. Conveyor generic_netlinked_reset applied at spawn; its round-restart wiring shares the dead-reset issue but is cosmetic (active-state only)."
+
+  - id: mapobject-func.rainsnow.spawn
+    name: "func_rain / func_snow — weather volume spawnfuncs (dest/cnt/count defaults + clamps)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/rainsnow.qc:spawnfunc(func_rain)"
+      - "common/mapobjects/func/rainsnow.qc:spawnfunc(func_snow)"
+      - "common/mapobjects/func/rainsnow.qh:RAINSNOW_SNOW"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/RainSnow.cs:RainSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/RainSnow.cs:SnowSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/RainSnow.cs:Setup"
+    constants:
+      - { name: "rain default fall dir", base: "'0 0 -700'", port: "(0,0,-700)", match: true }
+      - { name: "snow default fall dir", base: "'0 0 -300'", port: "(0,0,-300)", match: true }
+      - { name: "cnt (palette colorbase) default", base: "12", port: "12", match: true }
+      - { name: "count (density) default / clamp", base: "2000 / 1..65535", port: "2000 / 1..65535", match: true }
+      - { name: "state enum", base: "RAINSNOW_SNOW=0 / RAINSNOW_RAIN=1", port: "StateSnow=0 / StateRain=1", match: true }
+      - { name: "movetype/solid", base: "MOVETYPE_NONE / SOLID_NOT", port: "MoveType.None / Solid.Not", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "rainsnow.qc:31-97 vs RainSnow.cs:29-68 — dest<-velocity swap (entity never moves), default fall dirs, cnt 12, count 2000 clamp 1..65535, state RAIN=1/SNOW=0, brush model set; QC .state reused via MoverState", result: pass }
+      - { kind: unit_test, ref: "MusicSystemTests.cs:256-268 — func_rain spawned through the live entity-lump dict path carries velocity->Dest, count, cnt", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_rain/func_snow) MapObjectsRegistry.cs:185-186 on the standard BSP spawn path", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). RainSnow.cs header notes no shipped stock map places func_rain/func_snow (31-BSP census) — live path exists but is exercised only by tests/custom maps."
+
+  - id: mapobject-func.rainsnow.net_draw
+    name: "ENT_CLIENT_RAINSNOW wire + Draw_RainSnow client weather particle rendering"
+    layer: [presentation]
+    base_refs:
+      - "common/mapobjects/func/rainsnow.qc:rainsnow_SendEntity"
+      - "common/mapobjects/func/rainsnow.qc:NET_HANDLE(ENT_CLIENT_RAINSNOW)"
+      - "common/mapobjects/func/rainsnow.qc:Draw_RainSnow"
+    port_refs:
+      - "game/client/WeatherSystem.cs:Build"
+      - "game/client/WeatherSystem.cs:UpdateVolume"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/RainSnow.cs:DrawCount"
+    constants:
+      - { name: "cl_rainsnow_maxdrawdist default", base: "1000 (autocvar)", port: "1000 (registered WeatherSystem.cs:62; RainSnow.DefaultMaxDrawDist fallback)", match: true }
+      - { name: "per-box density formula", base: "bound(1, 0.1*count*(sx/1024)*(sy/1024), 65535)", port: "RainSnow.DrawCount — same", match: true }
+      - { name: "drawdist source", base: "fade_end if set else cvar", port: "e.FadeEndDist>0 ? it : cvar", match: true }
+      - { name: "DP rain count multiplier / alphas", base: "count*4; rain alpha 32-64, snow 64-128 (cl_particles.c)", port: "*4f rain; aMin/aMax 32/64 rain, 64/128 snow", match: true }
+      - { name: "cl_particles_rain / cl_particles_snow gate", base: "default 1 (DP engine)", port: "registered default 1, gates Emitting", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: partial
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The dedicated ENT_CLIENT_RAINSNOW Net_LinkEntity wire (state/org/size/compressed dest/count/cnt/fade_end) is replaced by the shared-entity facade: WeatherSystem rescans Api.Entities.FindByClass(func_rain/func_snow) every 2s and reads the server entity fields directly (the same listen-server/demo seam as LaserRenderer). Per-frame te_particlerain/te_particlesnow spawning is replaced by one pooled GpuParticles3D per volume whose emission box is the same view-clipped effbox and whose budget is rate-matched to the QC density formula."
+    gaps:
+      - "whether Dest/ParticleCount/Cnt/FadeEndDist reach a REMOTE dedicated-server client over the generic entity wire is unverified (facade scan is exact only where server entities are locally visible — listen server/demo)."
+      - "per-frame emission is a continuous emitter sized perSec*lifetime, not DP's floor(mycount*drawframetime+random()) per-frame batch — rate-equivalent, not per-frame-exact (timing partial)."
+      - "visuals approximated: rain streak quad 0.5x24 vs DP spark-stretch, snow ±16/axis drift modeled as Spread 8, Quake palette reduced to the 16-gray ramp; MaxAmountPerVolume 4000 cap."
+    verification:
+      - { kind: code_read, ref: "Draw_RainSnow (rainsnow.qc:101-119) vs WeatherSystem.UpdateVolume: effbox = volume clipped to view±drawdist, boxesoverlap early-out (Emitting=false), density via RainSnow.DrawCount, fade_end override, cvar gates", result: pass }
+      - { kind: liveness, ref: "WeatherSystem hosted by ClientWorld (ClientWorld.cs:453-454, ViewOriginProvider wired), _Process rescans every 2s", result: pass }
+    confidence: medium
+    notes: "added 2026-07-02 (coverage fold). No stock map carries these volumes so the node idles at zero cost; remote-client sync gap is untestable on stock content."
+
+  - id: mapobject-func.stardust
+    name: "func_stardust — EF_STARDUST sparkle prop with 0.25s csqcmodel autoupdate heartbeat"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mapobjects/func/stardust.qc:spawnfunc(func_stardust)"
+      - "common/mapobjects/func/stardust.qc:func_stardust_think"
+      - "common/mapobjects/func/stardust.qh"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Stardust.cs:StardustSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Stardust.cs:StardustThink"
+      - "game/client/CsqcModelEffects.cs:139 (EF_STARDUST particle consumer)"
+    constants:
+      - { name: "think interval (s)", base: "0.25", port: "ThinkInterval 0.25f", match: true }
+      - { name: "EF_STARDUST bit", base: "2048 (dpextensions)", port: "EffectFlags.Stardust 2048 / CsqcModelEffectFlags.EF_STARDUST 2048", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: unknown
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "QC CSQCMODEL_AUTOINIT/AUTOUPDATE (per-entity Net_LinkEntity re-send each 0.25s) is subsumed by the port's shared-entity facade — the entity fields ARE the csqcmodel channel, so StardustThink is a reschedule-only heartbeat. The server contract (Effects=EF_STARDUST) is what matters and is set."
+    gaps:
+      - "presentation UNVERIFIED: the EF_STARDUST particle consumer is live for entities in the client _entityNodes pass (CsqcModelEffects.Apply called at ClientWorld.cs:1351), but whether an inline-BRUSH func_stardust prop enters _entityNodes (vs only item/player/monster models) was not traced — the sparkle field may never render over a brush stardust."
+    verification:
+      - { kind: code_read, ref: "stardust.qc:3-18 vs Stardust.cs:25-50 — model precache/set, effects=EF_STARDUST (assignment, not OR — matches QC), think+0.25 reschedule", result: pass }
+      - { kind: unit_test, ref: "MapObjectLongTailTests.cs:55-57 — func_stardust spawn on the registry path", result: pass }
+      - { kind: liveness, ref: "SpawnFuncs.Register(func_stardust) MapObjectsRegistry.cs:204 (server half live); client brush-entity reachability NOT traced (see gap)", result: pass }
+    confidence: medium
+    notes: "added 2026-07-02 (coverage fold). stardust.qh is an empty '#pragma once' stub (cited for coverage)."
+
+  - id: mapobject-func.driver.subs_helpers
+    name: "subs.qh generic helpers — SUB_SetFade/SUB_SetFade_Think/SUB_VanishOrRemove (+ SUB_NullThink, SUB_Friction)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/subs.qh:SUB_SetFade"
+      - "common/mapobjects/subs.qh:SUB_VanishOrRemove"
+      - "common/mapobjects/subs.qh:SUB_Friction"
+      - "common/mapobjects/subs.qc:SUB_SetFade_Think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:SubSetFade (:1190)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:SubSetFadeThink (:1200)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/EntityMapObjectStateExtra.cs:140 (.fade_rate)"
+    constants:
+      - { name: "vanish semantics", base: "client -> alpha=-1 invisible; non-client -> remove", port: "SubSetFadeThink: client Alpha=-1, else Remove", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "SUB_Friction is declared+defined in Base but has ZERO Base callers (grep: only subs.qh:5 decl + subs.qc:24 def) — not ported, faithful to its own deadness."
+      - "SUB_NullThink not ported as a symbol — the port leaves Think null where QC parks SUB_NullThink 'for PushMove' (equivalent: MoveTypePhysics runs Push movers regardless of Think)."
+      - "Spiderbot.cs:562 carries a private duplicate FadeGib re-implementation of SUB_SetFade rather than calling MapMover.SubSetFade (cosmetic code-reuse nit, both faithful)."
+    verification:
+      - { kind: code_read, ref: "subs.qc SUB_SetFade/SUB_SetFade_Think/SUB_VanishOrRemove vs MapObjectsCommon.cs:1186-1213 — fade_rate decrement per think, vanish-or-remove floor; live caller Breakable.LaunchDebris (Breakable.cs:197) on the breakable debris path", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). subs.qh's remaining content is field decls (finaldest/state/pos1/pos2/target2-4/itemkeys/key_door_messagetime/TSPEED_* etc.) — the contract side of behaviors audited in the driver.calcmove/door/train rows."
+
+  - id: mapobject-func.driver.lodmodel
+    name: "LODmodel_attach / LOD_customize — server-side per-mover lodmodel1/lodmodel2 distance LOD swap"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mapobjects/subs.qh:LODmodel_attach"
+      - "common/mapobjects/subs.qc:LODmodel_attach"
+      - "common/mapobjects/subs.qc:LOD_customize"
+    port_refs: []
+    constants: []
+    status:
+      logic: missing
+      values: missing
+      timing: na
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "SetBrushEntityModel(with_lod) -> InitializeEntity(LODmodel_attach, INITPRIO_FINDTARGET) -> SetCustomizer(LOD_customize) (subs.qc:436/473/530) is not ported: a map's lodmodel1/lodmodel2/loddistance1/loddistance2 keys on brush entities do nothing (the full-detail model always shows). NOT the same thing as the ported client CsqcModelLod (cl_playerdetailreduction csqcmodel player LOD, CsqcModelLod.cs) — that one is unrelated to these map keys."
+      - "per-client customizeentityforclient has no port seam (the entity wire sends one model to all), so a faithful port would need a per-client model-index override channel."
+    verification:
+      - { kind: code_read, ref: "grep lodmodel/loddistance/lodtarget across src/ + game/: only CsqcModelLod.cs + ClientWorld.cs:1548 (cl_loddistance* player-model LOD) — no map-key consumer; MEMORY graphics-settings note independently records player LOD as bugged-dead", result: pass }
+    confidence: medium
+    notes: "added 2026-07-02 (coverage fold). Impact limited to custom maps using lodmodel keys on func_* brushes; harmless (renders full detail) but a perf/visual parity gap there. The spec's presentation section already flagged 'LODmodel_attach not ported' — now a tracked row."
+
+  - id: mapobject-func.contracts.headers
+    name: "func_* header contracts — spawnflag bits / state enums / IL decls (.qh files)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/func/door.qh"
+      - "common/mapobjects/func/door_rotating.qh"
+      - "common/mapobjects/func/door_secret.qh"
+      - "common/mapobjects/func/breakable.qh"
+      - "common/mapobjects/func/button.qh"
+      - "common/mapobjects/func/rotating.qh"
+      - "common/mapobjects/func/bobbing.qh"
+      - "common/mapobjects/func/fourier.qh"
+      - "common/mapobjects/func/vectormamamam.qh"
+      - "common/mapobjects/func/conveyor.qh"
+      - "common/mapobjects/func/ladder.qh"
+      - "common/mapobjects/func/rainsnow.qh"
+      - "common/mapobjects/func/stardust.qh"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Doors.cs:34-51 (door + rotating + key bits)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Breakable.cs:31-32 (STATE_ALIVE/BROKEN)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Buttons.cs (DONTACCUMULATEDMG)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MovingBrushes.cs (rotating/bobbing axis bits)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/AdvancedMovers.cs (PROJECT_ON_* / TIMESTEP)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetUtilities.cs (door_secret bits)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/RainSnow.cs:22-23 (RAINSNOW_*)"
+    constants:
+      - { name: "door.qh bits", base: "START_OPEN 1 / DONT_LINK 4 / GOLD 8 / SILVER 16 / TOGGLE 32 / NONSOLID 1024 / CRUSH 2048", port: "Doors.cs:34-41 identical (verified this pass)", match: true }
+      - { name: "breakable.qh states", base: "STATE_ALIVE 0 / STATE_BROKEN 1", port: "Breakable.cs:31-32 (MoverState slot)", match: true }
+      - { name: "remaining per-family bits", base: "door_rotating/door_secret/button/rotating/bobbing/vectormamamam .qh consts", port: "verified in each family row's constants table (door.rotating, door_secret, button, rotating, bobbing, vectormamamam)", match: true }
+    status:
+      logic: na
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "door.qh sv_doors_always_open autocvar + Q3_DOOR_CRUSHER are q3compat — omitted per repo policy (documented intended divergence in the spec, not re-flagged)."
+      - "conveyor.qh g_conveyed / ladder.qh g_ladderents IntrusiveLists are replaced by per-producer held-set dictionaries (the mapobject-func.conveyor_ladder row's recorded intended divergence); ladder.qh .ladder_entity -> Entity.LadderEntity is ported+live there."
+      - "door.qh CSQC .door_finished preload field has no port CSQC half (door networking latent in Base too)."
+    verification:
+      - { kind: code_read, ref: "door.qh/breakable.qh consts read against Doors.cs:34-51 + Breakable.cs:31-32 this pass; the other headers' consts were already verified inside the per-family rows (door.rotating BIDIR/axis bits, door_secret 5 bits, button BIT(7), rotating BIT(2-4), bobbing BIT(0-1), vectormamamam PROJECT_ON_*+TIMESTEP, rainsnow RAIN/SNOW enum). fourier.qh + stardust.qh are empty '#pragma once' stubs", result: pass }
+    confidence: high
+    notes: "added 2026-07-02 (coverage fold). Pure-declaration coverage row: cites the 13 .qh files so the coverage ledger counts them; the behavior audits live in the per-family rows."

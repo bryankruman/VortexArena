@@ -99,8 +99,9 @@ public static class Resources
     /// <summary>SetResource(e, res_type, amount) — clamps to the resource limit (waste is dropped).</summary>
     public static void SetResource(this Entity e, ResourceType res, float amount)
     {
-        // QC: MUTATOR_CALLHOOK(SetResource, …) may forbid the change or rewrite the amount.
-        if (ResourceHooks.CallSetResource(e, res, ref amount)) return;
+        // QC sv_resources.qc:89-95: MUTATOR_CALLHOOK(SetResource, …) may forbid the change, rewrite the amount,
+        // OR rewrite the resource type (M_ARGV(8) entity read-back). Both res and amount are written back.
+        if (ResourceHooks.CallSetResource(e, ref res, ref amount)) return;
 
         float max = GetResourceLimit(e, res);
         if (max != LimitNone && amount > max)
@@ -117,8 +118,10 @@ public static class Resources
     public static void GiveResource(this Entity e, ResourceType res, float amount)
     {
         if (amount <= 0f) return;
-        // QC: MUTATOR_CALLHOOK(GiveResource, …) may rewrite the amount (e.g. resistance/vampire buffs).
-        amount = ResourceHooks.CallGiveResource(e, res, amount);
+        // QC sv_resources.qc:121-131: MUTATOR_CALLHOOK(GiveResource, …) may forbid the give (return true),
+        // rewrite the amount (e.g. resistance/vampire buffs), OR rewrite the resource type (M_ARGV(8) entity
+        // read-back). Both res and amount are written back, then amount<=0 is re-checked.
+        if (ResourceHooks.CallGiveResource(e, ref res, ref amount)) return;
         if (amount <= 0f) return;
         SetResource(e, res, GetResource(e, res) + amount);
 
@@ -145,6 +148,10 @@ public static class Resources
     public static void GiveResourceWithLimit(this Entity e, ResourceType res, float amount, float limit)
     {
         if (amount <= 0f) return;
+        // QC sv_resources.qc:165: MUTATOR_CALLHOOK(GiveResourceWithLimit, …) may forbid or rewrite
+        // amount/limit before the trim (M_ARGV read-back on res_type/amount/limit).
+        if (ResourceHooks.CallGiveResourceWithLimit(e, ref res, ref amount, ref limit)) return;
+        if (amount <= 0f) return;
         float current = GetResource(e, res);
         if (limit != LimitNone && current + amount > limit)
             amount = limit - current;
@@ -155,7 +162,27 @@ public static class Resources
     public static void TakeResource(this Entity e, ResourceType res, float amount)
     {
         if (amount <= 0f) return;
+        // QC sv_resources.qc:191: MUTATOR_CALLHOOK(TakeResource, …) may forbid or rewrite the drain.
+        if (ResourceHooks.CallTakeResource(e, ref res, ref amount)) return;
+        if (amount <= 0f) return;
         SetResource(e, res, GetResource(e, res) - amount);
+    }
+
+    /// <summary>
+    /// TakeResourceWithLimit(receiver, res_type, amount, limit) — common/resources/sv_resources.qc:205.
+    /// Clamps the drain so the post-take total can't drop below -limit (the SVQC form, not the odd CSQC one).
+    /// </summary>
+    public static void TakeResourceWithLimit(this Entity e, ResourceType res, float amount, float limit)
+    {
+        if (amount <= 0f) return;
+        // QC sv_resources.qc:211: MUTATOR_CALLHOOK(TakeResourceWithLimit, …) may forbid or rewrite
+        // amount/limit before the clamp (M_ARGV(8) res_type, M_ARGV(9) amount, M_ARGV(10) limit read-back).
+        if (ResourceHooks.CallTakeResourceWithLimit(e, ref res, ref amount, ref limit)) return;
+        if (amount <= 0f) return;
+        float current = GetResource(e, res);
+        if (current - amount < -limit)
+            amount = current - limit; // QC: amount = -limit + current_amount
+        TakeResource(e, res, amount);
     }
 
     private static float Cvar(string name, float fallback)

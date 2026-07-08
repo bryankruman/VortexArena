@@ -131,6 +131,7 @@ public partial class VehicleVisuals : Node3D
 
     public override void _Process(double delta)
     {
+        using var _scope = FrameProfiler.Scope("vehicle.vis"); // [profiling] §18: out of proc:other
         // If the host doesn't push state, at least keep the rotors turning + idle sound while alive.
         if (!_dead && _rotors.Count > 0)
             SpinRotors((float)delta);

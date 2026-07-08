@@ -32,7 +32,8 @@ public partial class GpuWarmPass : Node
     /// map load, AFTER <see cref="EffectSystem.Warmup"/> / <see cref="ProjectileRenderer.WarmupTrails"/> (which
     /// populate the resource caches this renders).
     /// </summary>
-    public static GpuWarmPass Run(Node parent, EffectSystem? effects, ProjectileRenderer? projectiles)
+    public static GpuWarmPass Run(Node parent, EffectSystem? effects, ProjectileRenderer? projectiles,
+        IReadOnlyList<Node3D>? extra = null)
     {
         var pass = new GpuWarmPass { Name = "GpuWarmPass" };
         // Headless (dedicated server / CI): there is no GPU and no pipelines to warm, and the dummy renderer
@@ -42,9 +43,46 @@ public partial class GpuWarmPass : Node
             // Gather the instances before entering the tree; building them is pure CPU (uses the populated caches).
             if (effects is not null) pass._instances.AddRange(effects.BuildWarmupInstances());
             if (projectiles is not null) pass._instances.AddRange(projectiles.BuildWarmupInstances());
+            // (engine-perf 2026-06-16) Caller-supplied warm instances — e.g. the map-item / pickup MD3 models the
+            // host builds from the AssetLoader + item registry (NetGame.BuildItemWarmupInstances). Warmed alongside
+            // the effect/projectile families so an item first-seen mid-match doesn't compile its pipeline that frame.
+            if (extra is not null) pass._instances.AddRange(extra);
         }
         parent.AddChild(pass);
         return pass;
+    }
+
+    /// <summary>
+    /// (engine-perf 2026-06-16) Return <paramref name="node"/> with a per-instance ALPHA-transparent surface
+    /// override on each MeshInstance3D surface, so rendering it offscreen compiles the alpha-blend pipeline
+    /// variant. Gibs + casings flip their (shared) material to <see cref="BaseMaterial3D.TransparencyEnum.Alpha"/>
+    /// during their final-second fade-out (ModelGibs/ShellCasings ApplyAlpha) — a DISTINCT Vulkan PSO from the
+    /// opaque first-draw, otherwise compiled mid-match on the FIRST fade (~7s after the first death; confirmed as
+    /// the residual surface compile by fade-timed live captures). The alpha is cloned onto a surface OVERRIDE so
+    /// the shared opaque material the live mesh draws with is never mutated. For warm instances only (then freed).
+    /// </summary>
+    public static Node3D AlphaWarm(Node3D node)
+    {
+        ApplyAlphaOverride(node);
+        return node;
+    }
+
+    private static void ApplyAlphaOverride(Node node)
+    {
+        if (node is MeshInstance3D mi && mi.Mesh is { } mesh)
+        {
+            for (int s = 0; s < mesh.GetSurfaceCount(); s++)
+            {
+                if (mesh.SurfaceGetMaterial(s) is StandardMaterial3D mat)
+                {
+                    var clone = (StandardMaterial3D)mat.Duplicate();
+                    clone.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
+                    mi.SetSurfaceOverrideMaterial(s, clone);   // per-instance — the shared mesh material is untouched
+                }
+            }
+        }
+        foreach (Node child in node.GetChildren())
+            ApplyAlphaOverride(child);
     }
 
     /// <summary>
@@ -77,27 +115,53 @@ public partial class GpuWarmPass : Node
             return;
         }
 
-        // Isolated 64×64 viewport with its OWN World3D so the warm instances never render into the main scene.
         var vp = new SubViewport
         {
             Name = "WarmViewport",
             Size = new Vector2I(64, 64),
             RenderTargetUpdateMode = SubViewport.UpdateMode.Always,
-            OwnWorld3D = true,
         };
+        // (engine-perf 2026-06-15) The Vulkan graphics-pipeline key includes the MULTISAMPLE state AND the enabled
+        // render-feature set (glow, Sky ambient) AND the directional shadow/PSSM mode. Warming in an isolated empty
+        // OwnWorld3D therefore compiled the WRONG variant — the live first-draw recompiled the glow+PSSM SURFACE
+        // variant mid-match (the residual 105-137ms hitches, confirmed via the split RenderingInfo counters to be
+        // SURFACE compiles). Fix: SHARE the live World3D so the warm pass inherits the in-match WorldEnvironment +
+        // the Sun's EXACT config (a hand-built generic light regressed before — wrong PSSM split variant; sharing the
+        // live world makes the warmed variant byte-identical by construction), and match the main viewport's
+        // MSAA/AA/scaling (also part of the key — docs: differing MSAA levels across viewports cause stutter).
+        Viewport? mainVp = GetViewport();
+        if (mainVp is not null)
+        {
+            vp.World3D = mainVp.World3D;        // inherit the live WorldEnvironment + Sun → the SURFACE-variant fix
+            vp.Msaa3D = mainVp.Msaa3D;
+            vp.ScreenSpaceAA = mainVp.ScreenSpaceAA;
+            vp.UseTaa = mainVp.UseTaa;
+            vp.UseDebanding = mainVp.UseDebanding;
+            vp.Scaling3DMode = mainVp.Scaling3DMode;
+        }
+        else
+        {
+            vp.OwnWorld3D = true;               // headless / no main viewport: isolated fallback
+        }
         AddChild(vp);
 
-        // A camera looking at the origin (where the warm instances sit). Current is scoped to this SubViewport's
-        // world, so it never steals the main window's camera.
+        // Because we now SHARE the live World3D, the warm instances live in the same 3D scenario as the gameplay
+        // camera. Park the whole warm scene FAR outside any playable area (Quake maps span well under this) so the
+        // live camera never sees it — no on-screen flash — while the warm camera (in this SubViewport) still renders
+        // it. The Sun is directional (positionless) + glow/ambient are global, so the compiled variant is identical
+        // wherever the instances sit; only the cull-from-the-live-view matters.
+        var root = new Node3D { Name = "WarmRoot", Position = new Vector3(1_000_000f, 1_000_000f, 1_000_000f) };
+        vp.AddChild(root);
+
         var cam = new Camera3D { Name = "WarmCam", Position = new Vector3(0f, 20f, 140f), Current = true };
-        vp.AddChild(cam);
-        cam.LookAt(Vector3.Zero, Vector3.Up);
+        root.AddChild(cam);
+        cam.LookAt(root.GlobalPosition, Vector3.Up);
 
         // Park every warm instance in front of the camera. One render frame compiles each referenced pipeline;
         // the one-shot particles (Explosiveness near 1) emit + draw within the first couple of frames.
         foreach (Node3D n in _instances)
             if (GodotObject.IsInstanceValid(n))
-                vp.AddChild(n);
+                root.AddChild(n);
     }
 
     public override void _Process(double delta)

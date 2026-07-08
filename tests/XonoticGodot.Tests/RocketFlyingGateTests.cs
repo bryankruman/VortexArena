@@ -345,4 +345,50 @@ public class RocketFlyingGateTests : IDisposable
         rocket.Think!(rocket);
         Assert.True(rocket.IsFreed, "once the detonate timer elapses the flagged rocket detonates");
     }
+
+    // ---------------------------------------------------------------------------------------------
+    //  BuildMutatorsString / BuildMutatorsPrettyString — advertise active mutator to server-log and
+    //  client serverinfo (QC sv_rocketflying.qc:23-31)
+    // ---------------------------------------------------------------------------------------------
+
+    [Fact]
+    public void RocketFlying_BuildMutatorsString_AppendsToken_WhenActive()
+    {
+        // QC: MUTATOR_HOOKFUNCTION(rocketflying, BuildMutatorsString) → M_ARGV(0,string) = strcat(s, ":RocketFlying")
+        // The chain runner (MutatorActivation.BuildMutatorsString) calls each Added mutator's override.
+        Boot(("g_rocket_flying", "1"));
+        string result = MutatorActivation.BuildMutatorsString("");
+        Assert.Contains(":RocketFlying", result);
+    }
+
+    [Fact]
+    public void RocketFlying_BuildMutatorsPrettyString_AppendsToken_WhenActive()
+    {
+        // QC: MUTATOR_HOOKFUNCTION(rocketflying, BuildMutatorsPrettyString) → strcat(s, ", Rocket Flying")
+        // Used by PutClientInServer (server/client.qc:1107) and the server-browser modifications field.
+        Boot(("g_rocket_flying", "1"));
+        string raw = MutatorActivation.BuildMutatorsPrettyString("");
+        // QC strips the leading ", " with substring(s, 2, ...) at the call site; the raw result retains it.
+        Assert.Contains(", Rocket Flying", raw);
+        // Stripping the leader gives the display-ready string.
+        string stripped = raw.StartsWith(", ", System.StringComparison.Ordinal) ? raw.Substring(2) : raw;
+        Assert.Contains("Rocket Flying", stripped);
+    }
+
+    [Fact]
+    public void RocketFlying_BuildMutatorsString_EmitsNoToken_WhenInactive()
+    {
+        // When the mutator is off (g_rocket_flying unset) it is not Added → its override is never called.
+        Boot(); // no g_rocket_flying
+        string result = MutatorActivation.BuildMutatorsString("");
+        Assert.DoesNotContain("RocketFlying", result);
+    }
+
+    [Fact]
+    public void RocketFlying_BuildMutatorsPrettyString_EmitsNoToken_WhenInactive()
+    {
+        Boot(); // no g_rocket_flying
+        string result = MutatorActivation.BuildMutatorsPrettyString("");
+        Assert.DoesNotContain("Rocket Flying", result);
+    }
 }

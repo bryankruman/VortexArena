@@ -1,0 +1,739 @@
+unit: mapobject-triggers
+category: mapobject
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 24
+  worst_gaps:
+    - "trigger_viewlocation: no client 2.5D side-scroller camera consumer — server still stamps player.ViewLoc each frame (and the wave wired the .viewloc MOVEMENT gating into PlayerPhysics: swim/ladder/crouch), but the VIEW is never locked to the start->end line (presentation missing / liveness partial). The port client is free-look only."
+    - "trigger_push: no animdecide_setaction(ANIMACTION_JUMP) third-person jump pose on launch (jumppads.qc) — needs a LOWER-body anim-action seam (port AnimDecide only does UPPER-body TAUNT/MELEE); same gap as PlayerPhysics jump / walljump grunt. presentation stays partial; the jumppadcount/jumppadsused bookkeeping + q3 gravity correction + q3 1.5s debounce are ported."
+    - "trigger_gamestart wait>0 fidelity is now byte-faithful via the now-wired LogicGates.GameStartTimeProvider, but game_starttime still defaults to 0 in the headless gametype (the host applies the real countdown upstream) — intended_divergence."
+features:
+  - id: mapobject-triggers.common.sub_usetargets
+    name: "SUB_UseTargets — delay / killtarget / message / target_random fire primitive"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/triggers.qc:SUB_UseTargets_Ex"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:UseTargetsEx"
+    constants:
+      - { name: "talk_sound", base: "SND(TALK)=misc/talk.wav", port: "misc/talk.wav", match: true }
+      - { name: "target slots", base: "target..target4", port: "Target..Target4", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "triggers.qc:SUB_UseTargets_Ex vs MapObjectsCommon.UseTargetsEx; MapObjectsCommon.Centerprint (MapObjectsCommon.cs:825) routes the message text through NotificationSystem.SendCenterRaw(OneOnly) — a live channel", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-27 (unchanged): the centerprint message TEXT is delivered on the live CenterRaw notification channel. delay->DelayedUse, killtarget delete, target_random weighted reservoir, skiptargets bitmask, play2(actor, SND(TALK)) audio all faithful."
+
+  - id: mapobject-triggers.multi.trigger_multiple
+    name: "trigger_multiple / trigger_once — repeatable/one-shot volume trigger"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/trigger/multi.qc:multi_trigger"
+      - "common/mapobjects/trigger/multi.qc:multi_touch"
+      - "common/mapobjects/trigger/multi.qc:multi_eventdamage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:MultipleSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:MultiTrigger"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:MultiTouch"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:OnDeath"
+    constants:
+      - { name: "wait default", base: "0.2 (xon) / 0.5 (q3compat)", port: "0.2 (xon) / 0.5 (q3compat) — now applied", match: true }
+      - { name: "once wait", base: "-1", port: "-1", match: true }
+      - { name: "sounds 1/2/3", base: "misc/secret.wav / misc/talk.wav / misc/trigger1.wav", port: "same", match: true }
+      - { name: "ONLY_PLAYERS", base: "BIT(14)", port: "1<<14", match: true }
+      - { name: "ALL_ENTITIES", base: "BIT(1)", port: "1<<1", match: true }
+      - { name: "pressedkeys field", base: ".pressedkeys map-parsed mask (multi.qc:135-137)", port: "TriggerPressedKeys parsed (MapObjectFieldsExtra.cs:150)", match: true }
+      - { name: "INVERT_TEAMS gate", base: "((spawnflags&INVERT_TEAMS)==0)==(team!=toucher.team)", port: "exact match (noInvert == (Team != toucher.Team))", match: true }
+      - { name: "q3 red/blue spawnflag team filter", base: "spawnflag1=red/spawnflag2=blue (multi.qc:110-117)", port: "applied when IsQ3Compat (Triggers.cs:154-161)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "q3compat explicit-wait-0-means-forever edge not distinguishable (both 'unset' and 'set to 0' arrive as 0f, so the port applies the 0.5/0.2 default rather than wait-forever) — negligible, rare q3 map pattern"
+    verification:
+      - { kind: code_read, ref: "multi.qc:multi_trigger/multi_touch vs Triggers.cs MultiTrigger (CTS per-client CtsTriggerTimes dict keyed by Entity.Index, spawn_time respawn check — Triggers.cs:209-253) + MultiTouch (q3 red/blue team filter Triggers.cs:154-161, team/INVERT gate, pressedkeys gate Triggers.cs:184-188); q3 0.5 default at Triggers.cs:100-102", result: pass }
+    confidence: high
+    notes: "FIX 2026-06-27: the two baseline gaps are now CLOSED. (1) CTS client-specific .wait buffers ARE ported — MultipleSetup allocates per-client CtsTriggerTimes (Triggers.cs:122-123) and MultiTrigger applies the per-client wait/respawn check keyed by Entity.Index (Triggers.cs:209-253), porting multi.qc:31-45. (2) the q3compat wait default (0.5) AND the q3 red/blue spawnflag-1/2 team filter are now applied under IsQ3Compat (Triggers.cs:100-102, 154-161). logic/values partial->faithful. Only the negligible q3 explicit-wait-0-means-forever edge remains."
+
+  - id: mapobject-triggers.hurt.trigger_hurt
+    name: "trigger_hurt — damage volume"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/trigger/hurt.qc:trigger_hurt_touch"
+      - "common/mapobjects/trigger/hurt.qc:spawnfunc(trigger_hurt)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:HurtSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:HurtTouch"
+    constants:
+      - { name: "dmg default", base: "10000 (q3compat 5)", port: "IsQ3Compat ? 5 : 10000 (HurtSetup:306)", match: true }
+      - { name: "creature cooldown", base: "1s (q3compat non-HURT_SLOW 0.05s)", port: "(IsQ3Compat && !HurtSlow) ? 0.05 : 1 (HurtTouch:340)", match: true }
+      - { name: "SPAWNFLAG_HURT_SLOW", base: "BIT(0) (keeps 1s under q3)", port: "1<<0 (Triggers.HurtSlow:292)", match: true }
+      - { name: "deathtype", base: "DEATH_HURTTRIGGER (routes to DEATH_SELF/MURDER_VOID notif, all.inc:11)", port: "DeathTypes.Void", match: true }
+      - { name: "default message", base: "\"was in the wrong place\"", port: "same", match: true }
+      - { name: "INVERT_TEAMS gate", base: "((spawnflags&INVERT_TEAMS)==0)==(team!=toucher.team)", port: "exact match", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "hurt.qc:26/64 q3 values vs Triggers.cs HurtSetup:306 (dmg = IsQ3Compat ? 5 : 10000) + HurtTouch:340 (cooldown = (IsQ3Compat && (spawnflags & HurtSlow)==0) ? 0.05 : 1) + HurtSlow=1<<0; team gate present; non-creature gated on IsPushable as the damagedbytriggers stand-in; all.inc:11 HURTTRIGGER->VOID notif. IsQ3Compat is live (CompatRemaps, set per-map at load)", result: pass }
+    confidence: high
+    notes: "FIX (re-audit 2026-06-27): the q3compat gap is now CLOSED — the baseline row was STALE. The current port DOES apply the q3 path: HurtSetup:306 sets dmg = IsQ3Compat ? 5 : 10000, and HurtTouch:340 uses the 0.05s creature cooldown under q3compat UNLESS SPAWNFLAG_HURT_SLOW (Triggers.HurtSlow=1<<0) restores the 1s cadence. values partial->faithful, gap cleared. team/INVERT gate, non-creature IsPushable gate (damagedbytriggers stand-in), use-attacker takeover, DEATH_HURTTRIGGER->Void all faithful and live."
+
+  - id: mapobject-triggers.heal.trigger_heal
+    name: "trigger_heal / target_heal — heal volume / relay"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/trigger/heal.qc:trigger_heal_touch"
+      - "common/mapobjects/trigger/heal.qc:trigger_heal_init"
+      - "common/mapobjects/trigger/heal.qc:spawnfunc(target_heal)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:HealSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:TargetHealSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:HealTouch"
+    constants:
+      - { name: "delay default", base: "1", port: "1", match: true }
+      - { name: "health (per-tick)", base: "10", port: "10", match: true }
+      - { name: "max_health (topoff cap)", base: "200", port: "200", match: true }
+      - { name: "noise default", base: "misc/mediumhealth.wav", port: "misc/mediumhealth.wav", match: true }
+      - { name: "HEAL_SOUND_ALWAYS", base: "BIT(2)", port: "1<<2 (HealSoundAlways)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Base trigger_heal_touch only runs EXACTTRIGGER_TOUCH when is_trigger (targetname==\"\"); the port path does no exact-trigger clip (warpzone clip out of scope) — net effect on stock maps is none"
+    verification:
+      - { kind: code_read, ref: "heal.qc:trigger_heal_touch (playthesound||healed) vs Triggers.cs HealTouch; heal.qh HEAL_SOUND_ALWAYS=BIT(2) vs HealSoundAlways=1<<2", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-27 (unchanged): HEAL_SOUND_ALWAYS honored, heal-up-to-cap, per-toucher triggerhealtime cooldown, creature-only/takedamage/dead gates all faithful."
+
+  - id: mapobject-triggers.gravity.trigger_gravity
+    name: "trigger_gravity — gravity zone + non-sticky exit checker"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/trigger/gravity.qc:trigger_gravity_touch"
+      - "common/mapobjects/trigger/gravity.qc:trigger_gravity_check_think"
+      - "common/mapobjects/trigger/gravity.qc:trigger_gravity_remove"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:GravitySetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:GravityTouch"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:GravityCheckThink"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:GravityRemove"
+    constants:
+      - { name: "GRAVITY_STICKY", base: "BIT(0)", port: "1<<0", match: true }
+      - { name: "GRAVITY_START_DISABLED", base: "BIT(1)", port: "1<<1", match: true }
+      - { name: "no-op when gravity==1", base: "return", port: "return", match: true }
+      - { name: "checker .count reset", base: "2", port: "2", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "gravity.qc vs Triggers.cs Gravity* (checker think, .cnt priority, sticky vs restore)", result: pass }
+    confidence: high
+    notes: "Per-toucher checker entity, frame-count decrement, .cnt zone-priority arbitration, sticky-vs-restore, gravity-change sound all reproduced. Unchanged this wave."
+
+  - id: mapobject-triggers.impulse.trigger_impulse
+    name: "trigger_impulse — radial / directional / accel force fields"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mapobjects/trigger/impulse.qc:trigger_impulse_touch_radial"
+      - "common/mapobjects/trigger/impulse.qc:trigger_impulse_touch_directional"
+      - "common/mapobjects/trigger/impulse.qc:trigger_impulse_touch_accel"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:ImpulseSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:ImpulseTouchRadial"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:ImpulseTouchDirectional"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:ImpulseTouchAccel"
+    constants:
+      - { name: "DEFAULT_RADIAL_STRENGTH", base: "2000", port: "2000", match: true }
+      - { name: "DEFAULT_DIRECTIONAL_STRENGTH", base: "950", port: "950", match: true }
+      - { name: "DEFAULT_ACCEL_STRENGTH", base: "0.9", port: "0.9", match: true }
+      - { name: "MAX_PUSHDELTATIME", base: "0.15", port: "0.15", match: true }
+      - { name: "DIRECTIONAL_MAX_ACCEL_FACTOR", base: "8", port: "8", match: true }
+      - { name: "g_triggerimpulse_*_multiplier", base: "1", port: "1 (cvar fallback)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "impulse.qc vs Triggers.cs ImpulseTouch* (all 3 modes + lastpushtime dt + FALLOFF + strength**dt + accel_power)", result: pass }
+    confidence: high
+    notes: "Ticrate-independent accel (strength**dt), FALLOFF none/linear/inv, SPEEDTARGET accel cap, per-toucher lastpushtime timestep, accel_power, cvar multipliers all faithful. Unchanged this wave."
+
+  - id: mapobject-triggers.push.trigger_push
+    name: "trigger_push / target_push / trigger_push_velocity — jumppads"
+    layer: [authority, shared, presentation]
+    base_refs:
+      - "common/mapobjects/trigger/jumppads.qc:trigger_push_calculatevelocity"
+      - "common/mapobjects/trigger/jumppads.qc:jumppad_push"
+      - "common/mapobjects/trigger/jumppads.qc:trigger_push_velocity_calculatevelocity"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Jumppads.cs:CalculateVelocity"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Jumppads.cs:JumppadPush"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Jumppads.cs:CalculateVelocityPad"
+      - "src/XonoticGodot.Engine/Simulation/TriggerTouch.cs:PredictJumppadsAmbient"
+    constants:
+      - { name: "speed default", base: "1000", port: "1000", match: true }
+      - { name: "movedir scale", base: "speed*10 (trigger_push) / speed (target_push)", port: "same", match: true }
+      - { name: "sound", base: "misc/jumppad.wav", port: "misc/jumppad.wav", match: true }
+      - { name: "pushltime debounce", base: "0.2s (q3 target_push 1.5s)", port: "0.2s / 1.5s q3 — now applied", match: true }
+      - { name: "q3 gravity correction", base: "grav /= 750/800 (=0.9375)", port: "grav /= 750f/800f when IsQ3Compat (Jumppads.cs:372-373)", match: true }
+      - { name: "jumppadcount / NUM_JUMPPADSUSED", base: "ring of 3 (jumppads.qh:27)", port: "NumJumppadsUsed=3 ring (Jumppads.cs:248-257)", match: true }
+      - { name: "PUSH_ONCE / PUSH_STATIC", base: "BIT(0) / BIT(12)", port: "1<<0 / 1<<12", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "no animdecide_setaction(ANIMACTION_JUMP) third-person jump pose on launch (jumppads.qc) — needs a LOWER-body anim-action seam (the port's AnimDecide.cs only latches UPPER-body actions: TAUNT/MELEE; ANIMACTION_JUMP sets anim_lower_action). Same gap as PlayerPhysics jump / walljump grunt / Dodging; the locomotion blend still shows the generic airborne pose. STILL OPEN (re-audit 2026-06-28, confirmed by Jumppads.cs:266-267 comment + AnimDecide upper-only)"
+    verification:
+      - { kind: code_read, ref: "jumppads.qc:367-409 vs Jumppads.cs JumppadPush (q3 1.5s debounce Jumppads.cs:238-239; jumppadcount/jumppadsused ring Jumppads.cs:248-257; pushltime/istypefrag reset; message centerprint via live CenterRaw) + jumppads.qc:43-49 q3 gravity /= 750/800 vs Jumppads.cs CalculateVelocity:372-373", result: pass }
+    confidence: high
+    notes: "FIX 2026-06-27: TWO baseline gaps CLOSED. (1) jumppadcount / jumppadsused multi-pad combo bookkeeping IS now ported (Jumppads.cs:248-257, porting jumppads.qc:380-388 — bumps the count once per distinct pad in the air-time via a 3-slot ring). (2) the q3compat gravity correction (grav /= 750/800 = 0.9375, Jumppads.cs:372-373) AND the q3 target_push 1.5s debounce (Jumppads.cs:238-239) are now applied under IsQ3Compat. The earlier 'pushltime debounce'/'q3 gravity' constant mismatches now match. Ballistic solver, weighted-random dest, velocity pads, team-pad ownership, message centerprint (live), kill-credit reset all faithful; runs on server + client prediction. STILL OPEN (presentation stays partial): animdecide JUMP pose."
+
+  - id: mapobject-triggers.swamp.trigger_swamp
+    name: "trigger_swamp — slow + damage players inside"
+    layer: [authority, shared]
+    base_refs:
+      - "common/mapobjects/trigger/swamp.qc:swamp_think"
+      - "common/physics/player.qc:50"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:SwampSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:SwampThink"
+    constants:
+      - { name: "dmg default", base: "5", port: "5", match: true }
+      - { name: "swamp_interval default", base: "1", port: "1", match: true }
+      - { name: "swamp_slowdown default", base: "0.5", port: "0.5 (stored AND read into SpeedMultiplier)", match: true }
+      - { name: "deathtype", base: "DEATH_SWAMP", port: "DeathTypes.Swamp", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "swamp.qc + player.qc:50 vs Triggers.cs SwampThink (g_swamped clear/restamp + DeathTypes.Swamp) AND PlayerPhysics.cs:239-240 (player.SwampSlug.Active==ActiveActive => SpeedMultiplier *= SwampSlowdown)", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-27 (unchanged): the slowdown half is LIVE — PlayerPhysics.cs:239-240 reads player.SwampSlug.SwampSlowdown into SpeedMultiplier (the maxspd_mod chain, seeded from HighSpeed) whenever the slug's Active==ActiveActive, matching Base player.qc:50. Per-toucher swamp_interval damage, g_swamped clear-then-restamp, DeathTypes.Swamp obituary all faithful."
+
+  - id: mapobject-triggers.secret.trigger_secret
+    name: "trigger_secret — secrets-found counter trigger"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/trigger/secret.qc:trigger_secret_touch"
+      - "common/mapobjects/trigger/secret.qc:spawnfunc(trigger_secret)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:SecretSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:SecretTouch"
+    constants:
+      - { name: "default message", base: "\"You found a secret!\"", port: "same", match: true }
+      - { name: "default sound", base: "1 = misc/secret.wav", port: "same", match: true }
+      - { name: "delay forced", base: "0", port: "0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "secrets_found / secrets_total are counted (MapObjectsState) but the count is never surfaced as a 'N secrets found' HUD line (Base also lacks a built-in surface — latent)"
+    verification:
+      - { kind: code_read, ref: "secret.qc vs Triggers.cs SecretTouch (MapMover.Centerprint(toucher, self.Message) reaches the client via the live SendCenterRaw channel)", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-27 (unchanged): the 'You found a secret!' centerprint TEXT is surfaced via NotificationSystem.SendCenterRaw (live channel). Player-only touch, ++secrets_found, SUB_UseTargets secret noise, fire-once disarm, ++secrets_total all faithful."
+
+  - id: mapobject-triggers.counter.trigger_counter
+    name: "trigger_counter — fire after N uses (+ per-player)"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/trigger/counter.qc:counter_use"
+      - "common/mapobjects/trigger/counter.qc:counter_reset"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:CounterSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:CounterUse"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:CounterReset"
+    constants:
+      - { name: "count default", base: "2", port: "2", match: true }
+      - { name: "COUNTER_FIRE_AT_COUNT", base: "BIT(2)", port: "1<<2", match: true }
+      - { name: "COUNTER_PER_PLAYER", base: "BIT(3)", port: "1<<3", match: true }
+      - { name: "SPAWNFLAG_NOMESSAGE", base: "BIT(0)", port: "1<<0", match: true }
+      - { name: "sequence notif sound", base: "none (Send_Notification MSG_CENTER is text-only)", port: "none", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "counter.qc:counter_use vs Triggers.cs CounterUse — SEQUENCE_COMPLETED / SEQUENCE_COUNTER / SEQUENCE_COUNTER_FEWMORE emitted via NotificationSystem.Send(One, MsgType.Center, ...); both branches emit no sound (text-only MSG_CENTER)", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-27 (unchanged): the center-print countdown TEXT is surfaced through the live MsgType.Center notification channel. Shared + per-player count, COUNTER_FIRE_AT_COUNT, respawntime re-arm, counter_reset faithful."
+
+  - id: mapobject-triggers.relay.trigger_relay
+    name: "trigger_relay / target_relay / target_delay / trigger_delay"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/trigger/relay.qc:relay_use"
+      - "common/mapobjects/trigger/delay.qc:delay_use"
+      - "common/mapobjects/trigger/relay.qc:spawnfunc(target_delay)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:RelaySetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:TargetDelaySetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:DelaySetup"
+    constants:
+      - { name: "target_delay wait default", base: "1", port: "1", match: true }
+      - { name: "trigger_delay wait default", base: "1", port: "1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "delay_use in Base captures trigger as goalentity; the port DelayUse sets GoalEntity=null (the trigger arg is dropped at the 2-arg .use boundary) — harmless since no downstream .use reads the trigger arg"
+    verification:
+      - { kind: code_read, ref: "relay.qc + delay.qc vs Triggers.cs Relay/TargetDelay/Delay*", result: pass }
+    confidence: high
+    notes: "trigger_relay/target_relay (active-gated SUB_UseTargets), target_delay (wait->delay fallback), trigger_delay (own-think deferred fire capturing the activator) all faithful. relay/delay carry no .reset in Base. Unchanged this wave."
+
+  - id: mapobject-triggers.monoflop.trigger_monoflop
+    name: "trigger_monoflop — one input -> one ON + one delayed OFF"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/trigger/monoflop.qc:monoflop_use"
+      - "common/mapobjects/trigger/monoflop.qc:monoflop_fixed_use"
+      - "common/mapobjects/trigger/monoflop.qc:monoflop_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:MonoflopSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:MonoflopUse"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:MonoflopFixedUse"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:MonoflopThink"
+    constants:
+      - { name: "wait default", base: "1", port: "1", match: true }
+      - { name: "MONOFLOP_FIXED", base: "BIT(0)", port: "1<<0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "monoflop.qc:47 (this.reset = monoflop_reset) vs LogicGates.cs MonoflopSetup:104 (this_.Reset = MonoflopReset); ResetMapObjects (GameWorld.cs:4614) dispatches e.Reset in the first pass", result: pass }
+    confidence: high
+    notes: "FIX 2026-06-27: the monoflop_reset gap is CLOSED — MonoflopSetup now assigns this_.Reset = MonoflopReset (LogicGates.cs:104, porting monoflop.qc:47), and the central GameWorld.ResetMapObjects pump dispatches e.Reset (GameWorld.cs:4614). On a round restart an ON-state monoflop now re-arms (clears the latch + cancels the timer). Rising-edge ON fire, re-arm-each-press vs fixed timer, delayed OFF think all faithful and live."
+
+  - id: mapobject-triggers.flipflop.trigger_flipflop
+    name: "trigger_flipflop — pass only every 2nd event"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/trigger/flipflop.qc:flipflop_use"
+      - "common/mapobjects/trigger/flipflop.qc:spawnfunc(trigger_flipflop)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:FlipflopSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:FlipflopUse"
+    constants:
+      - { name: "START_ENABLED", base: "spawnflag (initial latch)", port: "SpawnStartEnabled", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "flipflop.qc:22 (this.reset = spawnfunc_trigger_flipflop) vs LogicGates.cs FlipflopSetup:68 (this_.Reset = FlipflopSetup); ResetMapObjects (GameWorld.cs:4614) dispatches e.Reset", result: pass }
+    confidence: high
+    notes: "FIX 2026-06-27: the .reset gap is CLOSED — FlipflopSetup now assigns this_.Reset = FlipflopSetup (LogicGates.cs:68, the QC 'perfect resetter' this.reset = spawnfunc_trigger_flipflop), driven by the live ResetMapObjects e.Reset pump, so the latch + active + START_ENABLED initial state are re-asserted on round restart. Active-gated toggle latch, fires SUB_UseTargets only on the ON flip faithful and live."
+
+  - id: mapobject-triggers.multivibrator.trigger_multivibrator
+    name: "trigger_multivibrator — free-running on/off oscillator"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/trigger/multivibrator.qc:multivibrator_send"
+      - "common/mapobjects/trigger/multivibrator.qc:multivibrator_toggle"
+      - "common/mapobjects/trigger/multivibrator.qc:spawnfunc(trigger_multivibrator)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:MultivibratorSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:MultivibratorSend"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:MultivibratorToggle"
+    constants:
+      - { name: "wait default (on cycle)", base: "1", port: "1", match: true }
+      - { name: "respawntime default (off cycle)", base: "= wait", port: "= wait", match: true }
+      - { name: "phase boundary epsilon", base: "+0.01", port: "+0.01", match: true }
+      - { name: "START_ENABLED", base: "spawnflag", port: "SpawnStartEnabled", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "multivibrator.qc:131-149 (spawnfunc installs NO this.reset; multivibrator_reset called inline only for the targeted-init branch) vs LogicGates.cs MultivibratorSetup:152-171 (no this_.Reset assigned; MultivibratorReset called inline for the TargetName branch) — byte-faithful", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-27 (unchanged, faithful): Base's spawnfunc(trigger_multivibrator) deliberately installs NO this.reset (unlike the other gates), and the port faithfully omits it too — multivibrator_reset is called inline only for the targeted-init branch. The earlier 'reset not driven' gap was a mischaracterization: there is no reset to drive (this is correct parity). Free-running phase math, state-flip SUB_UseTargets, toggle start/stop, +0.01 boundary nudge match QC. Registered live + thinks via SimulationLoop.RunThink."
+
+  - id: mapobject-triggers.disablerelay.trigger_disablerelay
+    name: "trigger_disablerelay — flip ACTIVE<->NOT on named targets"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/trigger/disablerelay.qc:trigger_disablerelay_use"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:DisableRelaySetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:DisableRelayUse"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "disablerelay.qc:30 (this.reset = spawnfunc_trigger_disablerelay) vs LogicGates.cs DisableRelaySetup:238 (this_.Reset = DisableRelaySetup); ResetMapObjects (GameWorld.cs:4614) dispatches e.Reset", result: pass }
+    confidence: high
+    notes: "FIX 2026-06-27: the .reset gap is CLOSED — DisableRelaySetup now assigns this_.Reset = DisableRelaySetup (LogicGates.cs:238, the QC self-resetting spawnfunc), driven by the live ResetMapObjects e.Reset pump (re-asserts active on round restart). Active-gated, flips each named target's active state, logs the all-on/all-off misconfiguration. Live."
+
+  - id: mapobject-triggers.relay_if.trigger_relay_if
+    name: "trigger_relay_if — cvar-compare gate"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/trigger/relay_if.qc:trigger_relay_if_use"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:RelayIfSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:RelayIfUse"
+    constants:
+      - { name: "RELAYIF_NEGATE", base: "BIT(0)", port: "1<<0", match: true }
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "relay_if.qc:22 (this.reset = spawnfunc_trigger_relay_if) vs LogicGates.cs RelayIfSetup:289 (this_.Reset = RelayIfSetup); ResetMapObjects (GameWorld.cs:4614) dispatches e.Reset", result: pass }
+    confidence: high
+    notes: "FIX 2026-06-27: the .reset gap is CLOSED — RelayIfSetup now assigns this_.Reset = RelayIfSetup (LogicGates.cs:289, the QC self-resetting spawnfunc), driven by the live ResetMapObjects e.Reset pump (re-asserts active on round restart). Compares the two named cvars' string values, NEGATE inverts, active-gated, fires SUB_UseTargets on a match. Live."
+
+  - id: mapobject-triggers.relay_teamcheck.trigger_relay_teamcheck
+    name: "trigger_relay_teamcheck — team gate on the activator"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/trigger/relay_teamcheck.qc:trigger_relay_teamcheck_use"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:RelayTeamCheckSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:RelayTeamCheckUse"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:RelayTeamCheckReset"
+    constants:
+      - { name: "RELAYTEAMCHECK_NOTEAM", base: "BIT(0)", port: "1<<0", match: true }
+      - { name: "RELAYTEAMCHECK_INVERT", base: "BIT(1)", port: "1<<1", match: true }
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "relay_teamcheck.qc:29-41 (team_saved capture + this.reset = trigger_relay_teamcheck_reset) vs LogicGates.cs RelayTeamCheckSetup:323/329 (TeamSaved = Team; this_.Reset = RelayTeamCheckReset) + RelayTeamCheckReset:334 (restore active + team); ResetMapObjects (GameWorld.cs:4614) dispatches e.Reset", result: pass }
+    confidence: high
+    notes: "FIX 2026-06-27: the .reset (team_saved restore) gap is CLOSED — RelayTeamCheckSetup now captures TeamSaved = Team (LogicGates.cs:323, porting relay_teamcheck.qc:38) and assigns this_.Reset = RelayTeamCheckReset (LogicGates.cs:329), which re-asserts active and restores the spawn-time team gate on a round/match restart. Driven by the live ResetMapObjects e.Reset pump. Teamed activator fires on SameTeam (or DIFF_TEAM when INVERT); teamless fires only when NOTEAM. Live."
+
+  - id: mapobject-triggers.relay_activators.relay_activate
+    name: "relay_activate / relay_deactivate / relay_activatetoggle — set targets' active state"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/trigger/relay_activators.qc:relay_activators_use"
+      - "common/mapobjects/trigger/relay_activators.qc:spawnfunc(relay_activate)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:RelayActivateSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:RelayDeactivateSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:RelayActivateToggleSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:RelayActivatorsUse"
+    constants:
+      - { name: ".cnt = ACTIVE_*", base: "ACTIVE_ACTIVE / ACTIVE_NOT / ACTIVE_TOGGLE", port: "same", match: true }
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "relay_activators.qc:23 (this.reset = relay_activators_init) vs LogicGates.cs RelayActivatorsInit:379 (this_.Reset = RelayActivatorsInit); ResetMapObjects (GameWorld.cs:4614) dispatches e.Reset", result: pass }
+    confidence: high
+    notes: "FIX 2026-06-27: the .reset gap is CLOSED — RelayActivatorsInit now assigns this_.Reset = RelayActivatorsInit (LogicGates.cs:379, the QC self-resetting init that doubles as reset), driven by the live ResetMapObjects e.Reset pump (re-asserts active on round restart). Each variant stamps .cnt then shares relay_activators_use, calling each target's .setactive (or generic_setactive). Live."
+
+  - id: mapobject-triggers.gamestart.trigger_gamestart
+    name: "trigger_gamestart — fire targets at game start, then delete"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/trigger/gamestart.qc:gamestart_use"
+      - "common/mapobjects/trigger/gamestart.qc:spawnfunc(trigger_gamestart)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:GamestartSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:GamestartUse"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:AdaptorThink2Use"
+    constants:
+      - { name: "fire time", base: "game_starttime + wait", port: "GameStartTime + wait (provider now wired)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "game_starttime defaults to 0 in the headless gametype (the host applies the real match countdown upstream via GameWorld.GameStartTime, which the now-wired LogicGates.GameStartTimeProvider reads); the no-wait branch uses a same-frame think instead of QC's InitializeEntity(INITPRIO_FINDTARGET) because the port has no priority-init pass for this family. Both are deliberate port-infra adaptations, faithful on a real countdown start."
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "gamestart.qc:13 (this.reset2 = spawnfunc_trigger_gamestart) vs LogicGates.cs GamestartSetup:440 (this_.Reset2 = GamestartSetup) + GameStartTime/GameStartTimeProvider; GameWorld.cs:4625 drives e.Reset2 in the second reset pass; GameWorld.cs:654 NOW wires LogicGates.GameStartTimeProvider = () => GameStartTime (alongside StartItem's at :651)", result: pass }
+    confidence: high
+    notes: "FIX 2026-06-27: the GameStartTimeProvider gap is CLOSED — GameWorld.cs:654 now wires LogicGates.GameStartTimeProvider = () => GameStartTime (the same live countdown-end source as StartItem's at :651), so the wait>0 branch now schedules relative to the real countdown end, not 0. values/timing partial->faithful, liveness partial->live. The .reset2 hook remains driven (GamestartSetup:440 assigns this_.Reset2; GameWorld.cs:4625 second pass dispatches e.Reset2). Fires targets then deletes. The remaining t=0-default behavior in the headless path is an intended divergence (the host supplies the real countdown)."
+
+  - id: mapobject-triggers.magicear.trigger_magicear
+    name: "trigger_magicear — chat pattern match -> SUB_UseTargets / text replace"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/trigger/magicear.qc:trigger_magicear_processmessage"
+      - "common/mapobjects/trigger/magicear.qc:trigger_magicear_processmessage_forallears"
+      - "common/mapobjects/trigger/magicear.qc:spawnfunc(trigger_magicear)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:MagicEarSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:MagicEarProcessMessage"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/LogicGates.cs:MagicEarProcessAllEars"
+      - "src/XonoticGodot.Server/Chat.cs:Say"
+    constants:
+      - { name: "MAGICEAR_* spawnflags", base: "BIT(0..9)", port: "1<<0..1<<9", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "strdecolorize is a no-op (chat color codes minimal) so MAGICEAR_NODECOLORIZE is largely inert"
+    verification:
+      - { kind: code_read, ref: "magicear.qc:19-46 (TUBA branch) vs LogicGates.cs MagicEarProcessMessage (slot loop over Tuba.HasPlayed, blank-message UseTargets, netname return) — Tuba.HasPlayed exists + Tuba.NoteOff drives MagicEarProcessAllEars; Chat.cs:143 calls MagicEarProcessAllEars on every non-empty player say", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-27 (unchanged): the TUBA melody-match branch (MAGICEAR_TUBA / W_Tuba_HasPlayed) is implemented and LIVE via Tuba.NoteOff; the chat string-match core (4 wildcard branches, replace modes, range gate, CONTINUE chaining) faithful and live via Chat.Say:143. Only the strdecolorize no-op (NODECOLORIZE inert) remains."
+
+  - id: mapobject-triggers.keylock.trigger_keylock
+    name: "trigger_keylock — fire target when all required keys supplied"
+    layer: [authority]
+    base_refs:
+      - "common/mapobjects/trigger/keylock.qc:trigger_keylock_touch"
+      - "common/mapobjects/trigger/keylock.qc:spawnfunc(trigger_keylock)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:KeylockSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:KeylockTouch"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Triggers.cs:KeylockTrigger"
+    constants:
+      - { name: "default message", base: "\"Unlocked!\"", port: "\"Unlocked!\"", match: true }
+      - { name: "wait default", base: "5", port: "5", match: true }
+      - { name: "noise (sounds 1/2/3)", base: "secret/talk/trigger1 (3 default)", port: "secret/talk/trigger1 (3 default)", match: true }
+      - { name: "noise1 (some-keys)", base: "misc/decreasevalue.wav", port: "misc/decreasevalue.wav", match: true }
+      - { name: "noise2 (missing-key)", base: "SND(TALK)=misc/talk.wav", port: "misc/talk.wav", match: true }
+      - { name: "message resend interval", base: "2s (key_door_messagetime)", port: "2s", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "PS(toucher) per-stats key store: the port reads toucher.ItemKeys directly (no PS indirection) — equivalent on the server path"
+    verification:
+      - { kind: code_read, ref: "keylock.qc vs Triggers.cs Keylock* (MapMover.Centerprint(toucher, 'Unlocked!') reaches the client via the live CenterRaw channel; DOOR_LOCKED_ALSONEED / _NEED emitted via NotificationSystem.Send(One, MsgType.Center, keylist))", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-27 (unchanged): the 'Unlocked!' centerprint AND the CENTER_DOOR_LOCKED_ALSONEED/_NEED 'you need the X key' text are both surfaced on the live path. Player-only, consumes matching itemkeys, fires target2 on cooldown with some keys, fires target + kills killtarget + removes self with all keys, sound map all faithful."
+
+  - id: mapobject-triggers.teleport.trigger_teleport
+    name: "trigger_teleport / target_teleporter — player teleport source"
+    layer: [authority, shared, presentation]
+    base_refs:
+      - "common/mapobjects/trigger/teleport.qc:Teleport_Touch"
+      - "common/mapobjects/trigger/teleport.qc:Teleport_Active"
+      - "common/mapobjects/teleporters.qc:Simple_TeleportPlayer"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:TeleportSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:SimpleTeleportPlayer"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:TeleportPlayer"
+      - "src/XonoticGodot.Engine/Simulation/TriggerTouch.cs:PredictTeleportsAmbient"
+    constants:
+      - { name: "TELEPORT_OBSERVERS_ONLY", base: "BIT(0)", port: "1<<0", match: true }
+      - { name: "TELEPORT_KEEP_SPEED", base: "BIT(1) (skips MIN/MAXSPEED clamp)", port: "1<<1 (no-op: clamps unported)", match: true }
+      - { name: "exit offset", base: "1 - mins.z - 24", port: "1 - mins.z - 24", match: true }
+      - { name: "out-velocity", base: "v_forward * vlen(velocity)", port: "forward * |velocity|", match: true }
+      - { name: "teleport sound", base: "misc/teleport.wav (CH_TRIGGER, gated by TELEPORT_FLAG_SOUND)", port: "same (TeleportSound default, SoundChannel.Item)", match: true }
+      - { name: "exit-flash offset", base: "to + v_forward*32 (and from)", port: "to + toForward*32 (and from)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "TELEPORT_MINSPEED/MAXSPEED STAT clamps (and the KEEP_SPEED branch that skips them) are out of scope: those stats default to 0 in stock physics, so omitting the clamp is a no-op on stock maps. TeleportRoundGateSuppressed() is a seam-stub returning false: the !g_race/!g_cts + round-pre-start telefrag suppression needs a gametype/round-state accessor not reachable from this file (faithful on non-race stock play). Bot waypoint probing and CSQC send/recv also deferred."
+    gaps:
+      - "TELEPORT_MIN/MAXSPEED magnitude clamps not implemented (no-op on stock maps where the stats are 0)"
+      - "telefrag !g_race/!g_cts + round-pre-start suppression stubbed (TeleportRoundGateSuppressed() returns false) — over-telefrags only in race/cts/round-pre-start, faithful otherwise"
+    verification:
+      - { kind: code_read, ref: "teleport.qc + teleporters.qc:Simple_TeleportPlayer/TeleportPlayer vs Teleporters.cs (team-ownership gate; sound via MapMover.Sound CH_TRIGGER under pushltime debounce; both-end flash under debounce; TELEPORT_FLAG telefrag gate)", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-27 (unchanged): teleport sound genuinely emitted (misc/teleport.wav via MapMover.Sound CH_TRIGGER) under the 0.2s debounce gated by TELEPORT_FLAG_SOUND; team-ownership gate ported; telefrag gate honors TELEPORT_FLAG_TDEATH/FORCE_TDEATH. Dest resolve, velocity reproject, both-end flash, SUB_UseTargets, single-dest client prediction faithful."
+
+  - id: mapobject-triggers.music.target_music
+    name: "target_music / trigger_music — map music overrides"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mapobjects/target/music.qc:target_music_use"
+      - "common/mapobjects/target/music.qc:Ent_TriggerMusic_Think"
+      - "common/mapobjects/target/music.qc:TargetMusic_Advance"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetMusic.cs:TargetMusicSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetMusic.cs:TargetMusicUse"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/TargetMusic.cs:TriggerMusicSetup"
+      - "game/client/MusicPlayer.cs:UpdateSources"
+    constants:
+      - { name: "volume default", base: "1", port: "1", match: true }
+      - { name: "priority order", base: "trigger_music > target_music(lifetime) > cdtrack", port: "same", match: true }
+      - { name: "START_DISABLED", base: "spawnflag", port: "1<<0", match: true }
+      - { name: "trigger touch freshness", base: "per-frame touch (inside)", port: "0.2s window", match: true }
+      - { name: "fade in/out", base: "state += frametime/fade_time (best, ramp UP); state -= frametime/fade_rate (others, ramp DOWN); ALL sources play simultaneously at state*volume*bgm", port: "per-source SourceState.State 0..1 ramp, same step math, all sources audible (MusicPlayer.AdvanceAllSources:376-390)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "QC fade_time/fade_rate == 0 means INSTANT (state step = 1.0); the port's Fades()/EnsureSource substitute DefaultFadeTime (2.0s) for an UNSET/0 map key (MusicPlayer.cs:325-327,347-348), keeping the established gentle default crossfade. No shipped map carries the fade_time/fade_rate keys, so nothing regresses; when a map DOES set them the ramp uses the real values byte-for-byte. The ramp math itself honors the 0->instant branch (FadeTime>0 ? dt/FadeTime : 1f); only the unset DEFAULT differs."
+    gaps: []
+    verification:
+      - { kind: code_read, ref: "music.qc:TargetMusic_Advance vs MusicPlayer.AdvanceAllSources:358-436 — per-source SourceState.State ramp (best: state += dt/fade_time; others: state -= dt/fade_rate; all sources play simultaneously at state*Volume*bgm, removed at state<=0). fade_time/fade_rate map keys parsed to MusicFadeIn/MusicFadeOut (MapObjectFieldsExtra.cs:174-175) and fed via Fades(). MusicPlayer instantiated in NetGame.cs:1376, ticked in _Process:123. this_.Reset = TargetMusicReset/TriggerMusicReset driven by ResetMapObjects (GameWorld.cs:4614)", result: pass }
+      - { kind: test, ref: "MusicSystemTests.LivePath_TargetMusic_CarriesLifetimeAndFades — fade_time 2.5/fade_rate 4 ride into MusicFadeIn/MusicFadeOut on the live path so TargetMusic_Advance can ramp", result: pass }
+    confidence: high
+    notes: "FIX (re-audit 2026-06-28): the fade-curve gap is CLOSED. The wave REWROTE game/client/MusicPlayer.cs from the old two-AudioStreamPlayer A/B crossfade to QC's faithful per-source .state model: every listed source keeps a SourceState (0..1), the BEST source ramps UP by dt/fade_time and ALL others ramp DOWN by dt/fade_rate, every source plays simultaneously at state*volume*bgm, and a source is freed when state hits 0 (AdvanceAllSources:358-436 ports TargetMusic_Advance). fade_time/fade_rate now ride the entity (MapObjectFieldsExtra parse -> Fades()). values/timing/presentation partial->faithful. Live via _Process. The lone residual (UNSET fade key -> 2.0s default instead of QC's instant) is now an intended_divergence, not a gap. 3-layer priority + lifetime window + touch freshness + reset hooks unchanged-faithful."
+
+  - id: mapobject-triggers.viewloc.trigger_viewlocation
+    name: "trigger_viewlocation + target_viewlocation_start/end — 2.5D camera regions"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/mapobjects/trigger/viewloc.qc:viewloc_think"
+      - "common/mapobjects/trigger/viewloc.qc:viewloc_init"
+      - "common/mapobjects/trigger/viewloc.qc:spawnfunc(target_viewlocation_start)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/ViewLocation.cs:TriggerViewLocationSetup"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/ViewLocation.cs:ViewLocThink"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/ViewLocation.cs:StartSetup"
+    constants:
+      - { name: "start cnt", base: "1", port: "1", match: true }
+      - { name: "end cnt", base: "2", port: "2", match: true }
+      - { name: "angle anglehack", base: "angle -> angles_y", port: "folded by field-parse layer", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: missing
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "no client 2.5D side-scroller CAMERA consumer: the server stamps player.ViewLoc each frame and the wave wired the .viewloc MOVEMENT gating into PlayerPhysics (swim drift/ladder/crouch — PlayerPhysics.cs:782,815,849,1101,1291), but no client locks the VIEW to the start->end line, so the side-scroller camera region has no visible effect (still no .ViewLoc camera consumer under game/client/)"
+    verification:
+      - { kind: code_read, ref: "viewloc.qc vs ViewLocation.cs (anchor resolve at INITPRIO_FINDTARGET, per-frame clear+re-stamp, angle fold — ViewLocation.cs unchanged this wave). .ViewLoc is now read in PlayerPhysics.cs (swim/ladder/crouch movement gating) but NO client camera consumer found in game/client/ (FirstPersonView 'ViewLock' is cl_lockview, a substring false-positive, not viewloc)", result: pass }
+    confidence: high
+    notes: "RE-VERIFIED 2026-06-28: server half faithful+live (anchors resolved post-spawn, per-frame think clears+re-stamps .viewloc via box-overlap). NEW this wave: the QC .viewloc MOVEMENT behavior (swim downward drift, ladder vertical-from-prev-wishmove, force-crouch on down without FREEMOVE) is now consumed live in PlayerPhysics.cs:782/815/849/1101/1291 — but that is the movement-side, NOT the camera. The CSQC 2.5D side-scroller CAMERA that locks the view to the start->end line is still unported (port client is free-look), so presentation stays MISSING and liveness PARTIAL. STILL OPEN."

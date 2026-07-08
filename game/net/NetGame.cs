@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using Godot;
 using XonoticGodot.Formats.Vfs;
 using XonoticGodot.Common;            // GameInit
@@ -13,6 +14,7 @@ using XonoticGodot.Game.Loaders;
 using XonoticGodot.Game.Client;
 using XonoticGodot.Game.Console;
 using XonoticGodot.Game.Hud;
+using XonoticGodot.Game.Menu;
 using XonoticGodot.Net;
 using XonoticGodot.Server;
 using EngineServices = XonoticGodot.Engine.Simulation.EngineServices;
@@ -66,7 +68,7 @@ public sealed partial class NetGame : Node3D
     private string _map = "";
     private string _gametype = "dm";
     private int _botCount;
-    private int _botSkill = 5;
+    private int _botSkill = -1;                 // -1 = unspecified: never write the `skill` cvar (MatchConfig.BotSkill)
     private string _campaignName = "";          // non-empty → host this listen server as a campaign level
     private int _campaignIndex;
     private bool _isReplay;                      // [T63] true → this listen server hosts a demo playback (ReplayMode)
@@ -117,16 +119,21 @@ public sealed partial class NetGame : Node3D
     private XonoticGodot.Game.Hud.Hud _fullHud = null!;
     private XonoticGodot.Game.Client.DamageTextLayer? _damageText; // [T51] floating damage numbers (cl_damagetext)
     private XonoticGodot.Game.Client.WaypointSpriteLayer? _waypointLayer; // 3D in-world waypoint/objective markers
+    private Node3D? _mapRoot;                                              // the built map scene (holds the "Portals" child)
+    private XonoticGodot.Game.Client.PortalRenderer? _portalRenderer;      // see-through warpzone portal render (listen host)
+    private XonoticGodot.Game.Client.PortalDiscRenderer? _portalDiscRenderer; // warpzone portal DISC (skinned model) — listen host, reads the same AmbientManager zones
+    private XonoticGodot.Game.Client.NadeOrbRenderer? _orbRenderer;        // 3D nade orb effect models (heal/ammo/entrap/veil/darkness) — fed by the entity stream, read for the in-orb color flash
     private XonoticGodot.Game.Client.ShowNamesLayer? _shownamesLayer; // [T68] floating player name + health/armor tags
     private XonoticGodot.Game.Client.HitSound? _hitSound;          // client-side hit-confirmation beep (cl_hitsound modes 0-3)
     private XonoticGodot.Game.Hud.ScoreboardPanel _scoreboard = null!; // the networked scoreboard (held while +showscores)
     private XonoticGodot.Game.Hud.HudNotifications? _notifications; // notification router (centerprint/killfeed/announcer) on the net path
     private MinigameClient? _minigame;          // client-side minigame coordinator (board overlay + menu + cmd forwarding)
-    private bool _minigameUiOwnedCursor;        // tracks the cursor show/recapture edge while a minigame UI is active
     private ViewEffects _viewEffects = null!;   // SEAM: T4's reusable screen-effects layer, on the net play path
     private AssetLoader? _assets;
     private ViewModel _viewModel = null!;       // first-person weapon view-model (CSQC viewmodel / wepent)
     private int _equippedWeaponId = int.MinValue; // weapon id currently in the viewmodel; rebuild only on a change
+    private string _equippedVmOverride = "";       // per-weapon wr_viewmodel override (Tuba note model); rebuild on change
+    private bool _viewmodelReloading;              // last-frame reload state (clip_load==-1) — play the reload anim on the rising edge
     private bool _weaponsPrecached;             // PrecacheWeaponModels ran once (warm the per-weapon asset caches)
     private bool _readyComplete;                // _Ready finished — _Process can run its full body (before this, fields are half-built)
     private bool _captureMarked;                // one-shot guard: CaptureGate.MarkReady() fired at first spawn (--screenshot)
@@ -142,6 +149,12 @@ public sealed partial class NetGame : Node3D
     // ViewState each frame; we read back EyeContents / ZoomFraction / SensitivityScale / ChaseActive.
     private readonly Client.FirstPersonView _view = new();
 
+    // The FAITHFUL Base view smoothing (CSQCPlayer_ApplySmoothing: stairsmoothz glide + viewheightavg eye-height
+    // blend), used by UpdateCamera when cl_movement_smoothing_faithful is on (the default) so the rendered eye
+    // matches stock Xonotic exactly. The port's adaptive stair offset + error-comp glide is the alternative
+    // (faithful 0). Reset on respawn/teleport via the same path that clears the reconciler smoothing.
+    private readonly XonoticGodot.Net.FaithfulViewSmoothing _faithfulSmoothing = new();
+
     // The zoom scope reticle overlay (QC crosshair.qc DrawReticle), fed each frame in _Process from the networked
     // active weapon (ClientNet.ActiveWeaponId) + the zoom/button state — the net-path twin of PlayerController's.
     private Client.ReticleOverlay _reticle = null!;
@@ -156,6 +169,7 @@ public sealed partial class NetGame : Node3D
     // engine world (the listen server's GameWorld, or the minimal client facade) so PlayerPhysics has a real
     // edict with a hull to slide-and-step. Mirrors PlayerController's spawned entity.
     private Entity? _carrier;
+    private EntityMovementStep? _movementStep; // the client predictor adapter (kept so the pre-match freeze mirrors onto it)
     private IEngineServices? _world; // the facade the carrier lives in (captured so teardown removes it correctly)
 
     // Accumulated view angles in DEGREES, Quake convention (X = pitch down-positive, Y = yaw, Z = roll) — the
@@ -171,15 +185,19 @@ public sealed partial class NetGame : Node3D
     // Local fire prediction (cl_predictfire, default on): a client-side refire clock that fires the view-model
     // muzzle flash + a local fire SOUND on every shot the moment the player fires (not just the first), so
     // sustained fire feels instant; the local player's own networked fire-sound/muzzle-flash is then suppressed
-    // so it isn't doubled. _fireClock is a monotonic frame accumulator; _nextFireTime is the next predicted shot.
+    // so it isn't doubled. _fireClock is a monotonic frame accumulator. _weaponReadyTime is a PERSISTENT
+    // per-weapon "next allowed shot" clock — a client mirror of the server's per-slot ATTACK_FINISHED
+    // (WeaponFireGate.st.AttackFinished). It survives button release, so tapping / wheel-firing can't out-run the
+    // weapon's refire rate (the spam this closes). Keyed by weapon id (Base INDEPENDENT_ATTACK_FINISHED) and
+    // SHARED by both fire modes (Base indexes ATTACK_FINISHED by [weapon][slot], not by primary/secondary).
     private bool _predictFire = true;
     private float _fireClock;
-    private bool _firePredictActive;
-    private float _nextFireTime;
+    private readonly Dictionary<int, float> _weaponReadyTime = new();
     private bool _loggedAccept;
     private bool _cameraReady;                   // C5: false until the first snapshot seeds the predicted eye
     private int _prevHealth = -1;               // previous networked local health, for the damage red-flash edge
     private bool _inputActive;                   // tracks the active→inactive edge to release held buttons (pause/console)
+    private bool _nadeDarknessActive;            // tracks the 0→positive darkness-remaining edge so SND_BLIND plays once per blind onset
 
     // C2S impulse (QC usercmd.impulse): a one-shot weapon-switch/reload number a weapon bind set this frame.
     // Edge-triggered — SampleInput stamps it onto the next InputCommand then clears it, so it is sent (and
@@ -242,6 +260,15 @@ public sealed partial class NetGame : Node3D
     /// the player spawns (camera ready + health &gt; 0).</summary>
     public Action? DismissLoadingScreen { get; set; }
 
+    /// <summary>True when this node is hosting a listen server (vs a pure remote <c>--connect</c> client).</summary>
+    public bool IsListenServer => _isListenServer;
+
+    /// <summary>True when a listen server has at least one REMOTE client connected (a peer beyond the local
+    /// host). Drives the local-only auto-pause gate in <see cref="Shell"/>: a solo local game may freeze on
+    /// menu/console/focus-loss, but a server with remote players must keep running. False for a remote client
+    /// (no server) and for a listen host that is alone (with or without bots — bots aren't peers).</summary>
+    public bool HasRemoteClients => _isListenServer && (_server?.ConnectedPeerCount ?? 0) > 1;
+
     /// <summary>
     /// Raised when this listen server must change level (DP <c>changelevel</c>) — carries (map, gametype,
     /// botCount, botSkill, campaignId, campaignIndex) captured from the live match so the host can reboot the
@@ -268,7 +295,11 @@ public sealed partial class NetGame : Node3D
     // Render clock used to drive the prediction (Predict/SendInput) AND read the decaying stair/error offsets.
     // The reconciler arms those decays stamped with the SERVER time (in HandleSnapshot), so the clock we read
     // them with must track server time — but advance smoothly BETWEEN snapshots (a snapshot only lands every
-    // few frames). So we accumulate real delta each frame and rebase to LatestServerTime on each new snapshot.
+    // few frames). So we advance it by real delta ONCE per frame (the `_renderClock += dt` in _Process) and
+    // rebase to LatestServerTime on each new snapshot. The input cadence (per-frame / legacy drain) reads this
+    // clock but MUST NOT advance it again — doing so ran it at ~2x wall time between rebases, which (once the
+    // error-decay window was corrected to one tick) made the prediction-error offset read as already-expired
+    // every frame, silently disabling the smoothing. Single advance point keeps the decay clock truthful.
     private float _renderClock;
     private float _lastSeenServerTime = -1f;
 
@@ -276,18 +307,50 @@ public sealed partial class NetGame : Node3D
     // is frame-rate independent). Capped so a frame hitch can't queue a huge input burst (spiral-of-death).
     private float _inputAccum;
     private const float MaxInputBacklog = 0.25f; // ≤ ~18 catch-up input ticks per frame
+    // GRACEFUL HITCH RECOVERY: cap how many fixed input ticks one render frame may drain. A frame hitch (bot
+    // pathfinding spike / GC / OS preempt) leaves a backlog in _inputAccum; draining it ALL in the recovery frame
+    // sends a burst of commands the server applies in one go → a one-frame movement lunge + a reconcile snap. With
+    // command-driven movement the server advances the player by exactly the commands we send, so capping the drain
+    // makes a hitch's backlog spread over the next few frames IN LOCKSTEP with the server (no lunge, no snap). Set
+    // to the server's interactive soft cap (SimulationLoop.MaxTicksPerFrame = 4 above): high enough not to clip
+    // sustained low-fps play (handles down to ~18 fps), low enough to smear a real hitch over several frames.
+    // (Used only by the LEGACY fixed-tick path / perframe 0; Path A's bounded single step subsumes it.)
+    private const int MaxClientCatchupTicksPerFrame = 4;
+
+    // PATH A (Base-faithful variable-dt local prediction) bounds, mirroring Darkplaces:
+    //   MaxInputFrameDt — hard spiral-guard cap on one render frame's simulated time (DP: bound(cl_timer, .., 0.1));
+    //                     a multi-100ms hitch simulates at most this, the rest is dropped (the graceful-recovery
+    //                     equivalent, now inherent to the bounded step instead of a tick-count cap).
+    //   MaxSubStepDt    — split a long frame into <= this so one huge physics step can't tunnel collisions
+    //                     (DP CL_ClientMovement_PlayerMove_Frame splits moves > 0.05 s).
+    private const float MaxInputFrameDt = 0.1f;
+    private const float MaxSubStepDt = 0.05f;
+
+    // PATH A render-clock damping (#2): fraction of the render-clock→server-time error closed per fresh snapshot
+    // (DP cl_nettimesyncfactor-style gradual catch-up), and the discontinuity threshold above which we hard-snap
+    // instead (respawn / teleport / level change / a big hitch).
+    private const float ClockSyncFactor = 0.2f;
+    private const float MaxClockResync = 0.25f;
+
+    // Fix B: a render frame longer than this (a stall on the shared listen-server thread — GC / heavy map streaming,
+    // ~3.6+ ticks) arms the reconciler's post-hitch hold so a transient server-behind correction glides/holds rather
+    // than snapping the camera back to spawn.
+    private const float HitchFrameSeconds = 0.05f;
+
+    // Fix C: seconds to defer the background idle-warmer past the spawn / pre-match-countdown / streaming-settle
+    // window (5s countdown + a couple seconds margin) so its stock-model builds don't hitch the opening seconds.
+    private const float IdleWarmupDelaySeconds = 7f;
 
     // Per-frame (variable-dt) input mode — cl_movement_perframe (DP-style: one command per rendered frame stamped
     // with the real frame dt, the server drains all pending commands that tick). DEFAULT 1 (on, user-approved per
     // PERFORMANCE_REPORT.md B2); `set cl_movement_perframe 0` = the legacy fixed 1/72 s cadence above (kept for
     // parity testing). Read live from the shared cvar store each frame so it A/B-toggles in-session.
     private bool _perFrameInput;
-    // The DeltaTime stamped onto the next sampled InputCommand: TicRate in legacy mode, the clamped real frame dt
-    // in per-frame mode. Bounds mirror DP's per-move msec clamp (kills 0-dt paused frames + hitch spikes); the
-    // server re-clamps each command's dt since the client is untrusted.
+    // The DeltaTime stamped onto the next sampled InputCommand. Always the fixed TicRate now — BOTH input modes
+    // integrate movement in fixed 1/72 s ticks (the bunnyhop-consistency fix); per-frame mode differs only in
+    // sending a command per render frame (snappy aim/fire + faster backlog catch-up via the server batch path),
+    // not in the movement dt.
     private float _inputDeltaTime = XonoticGodot.Engine.Simulation.SimulationLoop.TicRate;
-    private const float MinInputDt = 0.0005f;
-    private const float MaxInputDt = 0.05f;
 
     // FPS eye height (Xonotic PL_VIEW_OFS '0 0 35'). Mouse-look sensitivity now reads the live `sensitivity`
     // cvar (LookSensitivity), not a hardcoded constant, so the input-settings dialog drives it.
@@ -323,7 +386,7 @@ public sealed partial class NetGame : Node3D
     /// bots), then self-connect a local client to it. The shared <paramref name="vfs"/>/<paramref name="cvars"/>
     /// drive both the server's config + the client's rendering; pass null for a bare CLI host on a test floor.
     /// </summary>
-    public void ConfigureListenServer(string map, string gametype = "dm", int botCount = 0, int botSkill = 5,
+    public void ConfigureListenServer(string map, string gametype = "dm", int botCount = 0, int botSkill = -1,
         int port = DefaultPort, string playerName = "player", string serverName = "XonoticGodot Listen Server",
         VirtualFileSystem? vfs = null, XonoticGodot.Engine.Simulation.CvarService? cvars = null,
         string campaignName = "", int campaignIndex = 0)
@@ -373,7 +436,12 @@ public sealed partial class NetGame : Node3D
     {
         // The asset loader (models/sounds/maps) over the shared VFS, when the menu mounted one.
         if (_vfs is not null)
+        {
             _assets = new AssetLoader(_vfs);
+            // Wire the per-model player-sound resolver (QC LoadPlayerSounds): parses .sounds manifests so the
+            // jump grunt + pain/death voices resolve to real samples instead of the bogus default.sounds/<id>.
+            PlayerSoundResolver.Install(_vfs);
+        }
 
         // The load sequence runs as a coroutine: each BeginStage sets the bar's target and per-stage expected
         // time (the LoadingScreen animates asymptotically from where it is now toward that target), then we
@@ -461,15 +529,22 @@ public sealed partial class NetGame : Node3D
         await PrecacheCombatSoundsAndModelsAsync();
         if (!IsInsideTree()) return;
 
-        // S3: once the loading screen drops, a low-priority idle warmer mops up the long tail (announcer/pickup
-        // voices, the other stock player models) on a ~1.5 ms/frame budget so the WHOLE asset set goes hot within
-        // the first minute of play, without ever spiking a frame.
-        StartIdleWarmup();
+        // S3: a low-priority idle warmer mops up the long tail (announcer/pickup voices, the OTHER stock player
+        // models) so the whole asset set goes hot within the first minute. (Fix C) DEFER its start past the critical
+        // opening seconds: its 5 stock-model builds + GPU-warms otherwise land during the first ~5-7s — exactly the
+        // pre-match countdown + streaming-settle window the player spawns into — adding frame hitches right then (a
+        // contributor to the spawn-rubberband: Fix A/B stop it TELEPORTing, this keeps it SMOOTH). By go-live the
+        // local model + map are already hot and the player is moving; any model that appears sooner still resolves
+        // on-demand at High priority. cl_idle_warmup 0 still disables it entirely (checked in StartIdleWarmup).
+        GetTree().CreateTimer(IdleWarmupDelaySeconds).Timeout += () => { if (IsInsideTree()) StartIdleWarmup(); };
 
         LoadingScreen?.BeginStage("Connecting…", 0.90f, 0.5f);
 
-        // FPS mouse-look: capture the cursor (the Shell releases/recaptures it around the in-game menu).
-        Input.MouseMode = Input.MouseModeEnum.Captured;
+        // Keep the cursor FREE during load: the per-frame reassert in _Process grabs it for mouse-look the frame
+        // the local player spawns (gated on LoadingScreen going null), so there's nothing to capture here — and
+        // capturing now would trap the pointer in a windowed game for the whole load (DP keeps it free on the
+        // load screen so you can mouse out of the window).
+        MouseCapture.SetWantCapture(false);
 
         GD.Print(_isListenServer
             ? $"[NetGame] listen server on 127.0.0.1:{_port} (map '{_map}', {_gametype}, {_botCount} bots) — self-connecting."
@@ -577,14 +652,38 @@ public sealed partial class NetGame : Node3D
         //     the world origin with no items. Reuse the menu's shared cvar store via the config reader so the
         //     server reads authentic balance/physics; a bare CLI host (no preloaded store) loads them too. ---
         System.Collections.Generic.IReadOnlyList<EntityDict>? mapEntities = bsp is not null ? BuildEntityDicts(bsp) : null;
-        _serverWorld = new GameWorld(collision, mapEntities) { MapName = _map };
+
+        // Resolve the threading decision NOW — before the world is built — because it selects the CVAR-STORE MODEL,
+        // and the worker/gate setup further below must agree with that choice (so it's decided once, here).
+        //   • Default (sv_threaded 0): UNIFY — the world runs directly on the shared menu/console/client store
+        //     (DP's one engine cvar table). A host's console `set g_balance_…`/physics tweak is then live in the
+        //     match with no bridge, and client prediction (also on the shared store) and server authority read
+        //     identical values. The menu already loaded the cfg tree into it, so GameWorld.Boot skips the reload.
+        //   • sv_threaded 1 (experimental, non-headless only): keep a PRIVATE per-world store, isolated from the
+        //     main-thread menu/console writes and fed one-way by the bridge below — the sim runs on a worker
+        //     thread, so a shared mutable store would race. sv_threaded is read from the shared store (where the
+        //     menu/console writes it); with no shared store we stay single-threaded + private.
+        bool wantThreaded =
+            (_sharedCvars is not null && _sharedCvars.Has("sv_threaded") ? _sharedCvars.GetFloat("sv_threaded") : 0f) != 0f
+            && DisplayServer.GetName() != "headless";
+        bool unifyStore = _sharedCvars is not null && !wantThreaded;
+
+        _serverWorld = new GameWorld(collision, mapEntities,
+            sharedCvars: unifyStore ? _sharedCvars : null) { MapName = _map };
         if (_isReplay) _serverWorld.ReplayMode = true; // [T63] match logic inert; entities injected from the demo
         // B3: on the interactive client-hosted path (a windowed listen server), clamp the per-render-frame
         // catch-up so a hitch isn't followed by a frame running 16× the sim — that second spike would miss
         // another vblank. The small backlog drains over the next few frames instead. A headless dedicated host
         // (no vblank) keeps the full cap and catches up fast.
+        // (hitch-fix 2026-06-14) Lowered 4 -> 3. A recovery frame after a hitch runs MaxTicksPerFrame catch-up
+        // ticks, and every per-tick × per-player multiplier (WeaponThink, the bot strategy-token goal-rating)
+        // fires that many times in one frame — the measured `mp.weapon ×28` / `bot.think` spikes on catch-up
+        // frames. 3 trims that multiplier ~25% (the backlog just drains over one extra frame — brief, invisible
+        // slow-motion); tick SEMANTICS are bit-identical (same ticks run, only their per-render-frame distribution
+        // changes), so it is parity-safe. The primary cause of these backlogs (the bot-spawn model-build storm) is
+        // fixed by the AnimationLibrary cache, so this is a secondary smoother. Headless keeps the full cap.
         if (DisplayServer.GetName() != "headless")
-            _serverWorld.Simulation.MaxTicksPerFrame = 4;
+            _serverWorld.Simulation.MaxTicksPerFrame = 3;
         if (built is not null)
             _serverWorld.BrushModels = built.Submodels; // moving SOLID_BSP brushes (doors/plats) clip correctly
         if (bsp is not null)
@@ -625,11 +724,8 @@ public sealed partial class NetGame : Node3D
         // experiment with (it moves the 4-12 ms server tick off the render thread). Kept default-off for now;
         // flip to 1 to enable. See §13.5.
         _serverWorld.Services.Cvars.Register("sv_threaded", "0");
-        bool wantThreaded =
-            (_sharedCvars is not null && _sharedCvars.Has("sv_threaded")
-                ? _sharedCvars.GetFloat("sv_threaded")
-                : _serverWorld.Services.Cvars.GetFloat("sv_threaded")) != 0f
-            && DisplayServer.GetName() != "headless";
+        // wantThreaded + unifyStore were resolved above (before the world was built) since they pick the
+        // cvar-store model; the worker/gate setup below reuses that one decision so the two never disagree.
 
         // Create-a-match / `--host` is "host AND play": the local host should spawn straight into the match, not
         // sit as an observer. xonotic-server.cfg ships `sv_spectate 1` (spectating allowed) which — faithful to QC
@@ -669,33 +765,32 @@ public sealed partial class NetGame : Node3D
             }
         }
 
-        // Carry the chosen match limits onto the hosted world's own cvar store (GameWorld keeps a private store,
-        // so the values the menu wrote into MenuState.Cvars don't reach it automatically). Read them from the
-        // shared store the menu populated; only override when set (>0), else the cfg-loaded defaults stand.
-        // In campaign mode the limits are authored by the file (CampaignPostInit set them during Boot), so the
-        // menu's leftover timelimit/fraglimit must NOT clobber them.
-        if (_sharedCvars is not null && string.IsNullOrEmpty(_campaignName))
+        // Carry the chosen match limits onto the hosted world's own cvar store. ONLY needed on the threaded
+        // (private-store) path: there GameWorld keeps a separate store, so the values the menu wrote into
+        // MenuState.Cvars don't reach it automatically. When unified the world IS running on the shared store the
+        // menu populated (Shell already wrote timelimit/fraglimit there), so there's nothing to copy. In campaign
+        // mode the limits are authored by the file (CampaignPostInit set them during Boot), so the menu's leftover
+        // timelimit/fraglimit must NOT clobber them.
+        if (_sharedCvars is not null && !unifyStore && string.IsNullOrEmpty(_campaignName))
         {
             CopyCvarIfSet(_sharedCvars, _serverWorld.Services.Cvars, "timelimit");
             CopyCvarIfSet(_sharedCvars, _serverWorld.Services.Cvars, "fraglimit");
         }
 
-        // Bridge runtime cvar changes from the shared (console/menu) store into the listen server's PRIVATE store.
-        // The in-game console writes `set`/`seta`/bare assignments to the shared MenuState.Cvars, but GameWorld
-        // keeps its own store (loaded from the cfg tree at Boot), so without this a console `set g_balance_…` — or
-        // any server-cvar tweak — never reaches the live match. Mirror only cvars the server already knows (Has)
-        // so we don't pollute its store with client-only cvars; the server's own Changed event then re-derives any
-        // cached state (GameWorld re-runs Weapons.ConfigureAll on a g_balance_* change). One-way, idempotent
-        // (Set skips no-op writes), so the campaign progress mirror above can't feed back into a loop.
-        if (_sharedCvars is not null)
+        // THREADED PATH ONLY: bridge runtime cvar changes from the shared (console/menu) store into the listen
+        // server's PRIVATE store. Under sv_threaded the world keeps its own store (isolated from the main thread),
+        // so without this a console `set g_balance_…` — or any server-cvar tweak — never reaches the live match.
+        // The DEFAULT (unified) path doesn't need this at all: the world runs ON the shared store, so a console
+        // write IS the server's value (and its own Changed hook re-derives weapon balance). Mirror only cvars the
+        // server already knows (Has); one-way + idempotent so the campaign progress mirror above can't loop.
+        if (_sharedCvars is not null && !unifyStore)
         {
-            // INITIAL BACKFILL (fixes "console-set server cvar lost on map change / new server"): a new map boots a
-            // fresh GameWorld whose private store reloads from the cfg tree, so a sv_*/g_* the user changed in the
-            // console (shared store) reverts to its cfg default even though the console still shows the user's value
-            // (the two-store split). The bridge below only forwards FUTURE Changed events, so re-apply the user's
-            // CURRENT overrides now. Skip in campaign mode (the level file authors the cvars, like the limits copy
-            // above). BackfillModifiedCvars only touches cvars the user actually changed AND the server Has, so it
-            // never clobbers a map/ruleset value the user didn't set.
+            // INITIAL BACKFILL (private-store only): a new map boots a fresh GameWorld whose private store reloads
+            // from the cfg tree, so a sv_*/g_* the user changed in the console (shared store) would revert to its
+            // cfg default. Re-apply the user's CURRENT overrides now (the bridge only forwards FUTURE changes).
+            // Skip in campaign mode (the level file authors the cvars). BackfillModified only touches cvars the
+            // user actually changed AND the server Has, so it never clobbers a map/ruleset value they didn't set.
+            // (The unified path needs none of this — its store is never reloaded out from under the user.)
             if (string.IsNullOrEmpty(_campaignName))
                 XonoticGodot.Engine.Simulation.CvarService.BackfillModified(
                     _sharedCvars, _serverWorld.Services.CvarsImpl, BootAuthoredCvars);
@@ -718,8 +813,13 @@ public sealed partial class NetGame : Node3D
         {
             _serverWorld.Services.Cvars.Set("bot_number",
                 _botCount.ToString(System.Globalization.CultureInfo.InvariantCulture));
-            _serverWorld.Services.Cvars.Set("skill",
-                _botSkill.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            // Seed `skill` only when the caller actually chose one (menu slider / campaign level). A bare CLI
+            // `--host --bots N` leaves it -1 = unspecified — writing the old implicit default here silently
+            // stomped the user's/stock skill (a perf run left every bot at skill 0). Both cvars are plain-`set`
+            // in Base (never archived), so these writes affect the live match only, never config.cfg.
+            if (_botSkill >= 0)
+                _serverWorld.Services.Cvars.Set("skill",
+                    _botSkill.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
         // any bot leaving (fixcount trim / removebots / intermission teardown) must clear ServerNet's
         // per-player id/antilag maps, exactly like the old explicit remove handler did.
@@ -775,6 +875,23 @@ public sealed partial class NetGame : Node3D
             // map / gotomap / nextmap / map-vote / rotation / samelevel all funnel here (QC changelevel): record the
             // target; the deferred emit in _Process reboots the listen server on it (preserving gametype + bots).
             cmd.ChangeLevelHandler = RequestMapChange;
+
+            // QC DoNextMapOverride host exits: all three fire inside the server sim tick (DriveEndOfMatchMapFlow),
+            // so each must be DEFERRED (Callable.From...CallDeferred) exactly like MapChangeRequested — never tear
+            // down the game tree from inside the tick that drives it. The handlers route through MenuCommand so they
+            // behave identically to a player typing "quit" / "connect" / "disconnect" in the console.
+
+            // QC quit_when_empty → localcmd("quit"): shut the process when the last human leaves at match end.
+            cmd.QuitHandler = () => Callable.From(() => GetTree()?.Quit()).CallDeferred();
+
+            // QC quit_and_redirect → redirection_target: reconnect every client (here: the local player) to the
+            // target server. Routes through MenuCommand.Connect so Shell tears down the current game then connects.
+            cmd.RedirectHandler = addr => Callable.From(() => MenuCommand.Connect?.Invoke(addr)).CallDeferred();
+
+            // QC lastlevel → localcmd("set lastlevel 0\ntogglemenu 1\n"): after the final campaign/last-level map
+            // show the main menu instead of rotating. lastlevel is already cleared by the server before invoking this.
+            // MenuCommand.Disconnect (wired to Shell.ReturnToMainMenu) tears down the match and returns to the menu.
+            cmd.LastLevelHandler = () => Callable.From(() => MenuCommand.Disconnect?.Invoke()).CallDeferred();
         }
         else
         {
@@ -796,6 +913,72 @@ public sealed partial class NetGame : Node3D
             cmd.AddBotHandler = (name, skill) => { s.RunOnSimThread(() => _serverWorld?.Bots.AddBot(name, skill)); return true; };
             cmd.RemoveBotHandler = name => { s.RunOnSimThread(() => _serverWorld?.Bots.RemoveBot(name)); return true; };
             cmd.ChangeLevelHandler = map => s.RunOnSimThread(() => RequestMapChange(map));
+
+            // QC DoNextMapOverride host exits (threaded path): the handlers fire on the SIM thread (inside the
+            // server tick), so each uses CallDeferred to post the Godot tree operation to the main thread — the
+            // same pattern as the non-threaded path (no RunOnSimThread wrapper needed; the callers are already on
+            // the sim thread and just need to cross to the main thread, not the sim thread).
+            cmd.QuitHandler = () => Callable.From(() => GetTree()?.Quit()).CallDeferred();
+            cmd.RedirectHandler = addr => Callable.From(() => MenuCommand.Connect?.Invoke(addr)).CallDeferred();
+            cmd.LastLevelHandler = () => Callable.From(() => MenuCommand.Disconnect?.Invoke()).CallDeferred();
+        }
+
+        // QC localcmd("\nsv_vote_gametype_hook_all\n") + localcmd("\nsv_vote_gametype_hook_", name, "\n") from
+        // GameTypeVote_SetGametype: fires on the sim thread (ApplyGametypeSwitch → DriveEndOfMatchMapFlow), so the
+        // handler runs synchronously on that thread — no RunOnSimThread wrapper needed on either path.
+        // These hooks are ALIASES (gametypes-server.cfg defines `sv_vote_gametype_hook_<name>` for every gametype,
+        // empty by default), NOT registered server commands — so they live in the ConfigInterpreter's alias table
+        // (GameWorld.LoadedConfig), not in Commands' verb dictionary. Routing through Commands.Execute would just
+        // print "Unknown command" and never run the alias body; we must dispatch through LoadedConfig.ExecuteLine,
+        // which resolves the alias (DP localcmd → engine console → alias expansion). Stock empty aliases are a
+        // no-op (matching Base); a server.cfg that redefines one (e.g. `alias sv_vote_gametype_hook_dm
+        // "g_maxplayers 8"`) now runs against the server's cvar store. LoadedConfig is null only on a bare
+        // unit-test world (no cfg load) — the `?.` then makes this a harmless no-op, same as no alias defined.
+        cmd.GameTypeVoteHookHandler = name =>
+            _serverWorld?.LoadedConfig?.ExecuteLine($"sv_vote_gametype_hook_{name}");
+
+        // QC localcmd("\nsv_hook_gameend\n") (NextLevel): the once-per-match end-of-match admin-script alias. Same
+        // alias-resolution path as the gametype hooks above — dispatch through LoadedConfig.ExecuteLine so the
+        // engine console expands the `sv_hook_gameend` alias. Stock config leaves it empty (a no-op, matching
+        // Base); a server.cfg that redefines the alias runs against the server's cvar store. LoadedConfig is null
+        // only on a bare unit-test world (no cfg load) — the `?.` then makes this a harmless no-op.
+        cmd.GameEndHookHandler = () =>
+            _serverWorld?.LoadedConfig?.ExecuteLine("sv_hook_gameend");
+
+        // sandbox build mode (g_sandbox): wire the SandboxMutator's host seams (per-player print, crosshair trace,
+        // owner-UID/name/view-yaw, real-client roster, per-map file storage). The `g_sandbox` command routes to
+        // SandboxMutator.HandleCommand (Commands.CmdSandbox); without these the handler runs but every action is
+        // inert (spawns at origin, nothing selectable, no persistence). Runs on the sim thread (HandleCommand is
+        // dispatched there); the only main/worker-shared touch is the client print, routed through the sim thread
+        // when threaded. Safe even with g_sandbox 0 (the seams only fire while the mutator is added).
+        WireSandbox();
+
+        // superspec spectator commands (g_superspectate): wire the SuperSpecMutator's host seams (per-player sprint
+        // print + the live client roster used by the follow*/followkiller scans). The superspec/autospec/follow*
+        // verbs route to SuperSpecMutator.HandleCommand (Commands.CmdSuperspec); without these the option flags can
+        // be SET but the follow* switches have no roster and messages print nothing. Safe with g_superspectate 0
+        // (the seams only fire while the mutator is added). Same sim-thread ownership as WireSandbox.
+        WireSuperspec();
+
+        // target_speaker ACTIVATOR (BIT3) — QC soundto(MSG_ONE, …): play a one-shot sound to the TRIGGERING
+        // client ONLY (the `target_speaker_use_activator` path in speaker.qc). The Common layer exposes a
+        // PlayToClientHandler seam (TargetSpeaker.cs); without it the live path falls back to a broadcast play
+        // and every connected client hears the sound. Wire it here (after _server is live) using the new
+        // ServerNet.SendSoundToPlayer method, which encodes a per-peer SoundBundle via the same SoundWire codec
+        // as FlushSounds so the per-client sound rides an existing channel without protocol changes.
+        // The seam is re-wired on every server start (every NetGame.SetupListenServer call), so a map restart
+        // or gametype change never leaves it stale. On sv_threaded the seam fires on the sim thread (the
+        // GameWorld.Use → TargetSpeaker.SpeakerUseActivator call chain), which owns ServerNet writes — safe.
+        {
+            ServerNet sv = _server!;
+            XonoticGodot.Common.Gameplay.TargetSpeaker.PlayToClientHandler =
+                (client, emitter, ch, sample, vol, atten) =>
+                {
+                    // QC IS_REAL_CLIENT guard is already applied before this seam fires (SpeakerUseActivator).
+                    // Only route for a real Player; a bare Entity activator has no peer to target.
+                    if (client is Player p)
+                        sv.SendSoundToPlayer(p, emitter, ch, sample, vol, atten);
+                };
         }
 
         // S5: spin up the dedicated server-sim worker now that ServerNet + the world + the sinks are all wired.
@@ -825,6 +1008,204 @@ public sealed partial class NetGame : Node3D
     }
 
     /// <summary>
+    /// Wire the <see cref="SandboxMutator"/>'s host seams — the C# successor to the cross-file calls the QC
+    /// sandbox mutator makes into the engine/server (crypto_idfp/netname/v_angle, FOREACH_CLIENT, the crosshair
+    /// trace, print_to, and the <c>sandbox/storage_*.txt</c> file IO). Without these the command surface (now
+    /// routed via <c>g_sandbox</c> → Commands.CmdSandbox → HandleCommand) executes but every effect is inert.
+    /// Idempotent and harmless when g_sandbox 0 (the delegates are only invoked while the mutator is added).
+    ///
+    /// <para>Threading: the sandbox command + the autosave/think tick both run on the sim thread (HandleCommand is
+    /// dispatched from there; OnStartFrame fires inside the server tick), which is the thread that owns
+    /// <see cref="_server"/> / <see cref="_serverWorld"/> on the threaded path — so the print/trace touch the
+    /// right owner directly, no <c>RunOnSimThread</c> hop needed.</para>
+    /// </summary>
+    private void WireSandbox()
+    {
+        if (_serverWorld is null) return;
+        if (Mutators.ByName("sandbox") is not SandboxMutator sandbox) return;
+
+        ITraceService trace = _serverWorld.Services.TraceImpl;
+
+        // QC print_to(player, msg) → sprint(player, ..): one console line to the issuing player.
+        sandbox.PrintTo = (e, msg) => { if (e is Player p) _server?.SendChatToPlayer(p, msg); };
+
+        // QC .crypto_idfp / .netname / view yaw. PersistentId is the port's crypto_idfp (RaceRecords/SuperSpec
+        // use the same field); a bot's is "" so it can't own objects, faithful to "bots cannot own objects".
+        sandbox.CryptoIdfpProvider = e => e is Player p ? p.PersistentId : "";
+        sandbox.NetNameProvider = e => e?.NetName ?? "";
+        sandbox.ViewYawProvider = e => e?.Angles.Y ?? 0f; // angles.y is the view yaw (object_spawn angles_y = v_angle.y)
+
+        // QC FOREACH_CLIENT(IS_PLAYER && IS_REAL_CLIENT): the live real (non-bot) roster, pulled each think for the
+        // owner-UID resync (clear when the owner disconnects). Matches the Warmup/Voting/Bans .Roster seams.
+        sandbox.RealClientsProvider = () =>
+        {
+            var list = new List<Entity>();
+            foreach (Player p in _serverWorld.Clients.Players)
+                if (!p.IsBot) list.Add(p);
+            return list;
+        };
+
+        // QC sandbox_ObjectEdit_Get / object_spawn forward trace (crosshair_trace / WarpZone_TraceLine forward
+        // distance). Trace a point line from the player's eye along the view forward; the endpoint is the spawn
+        // origin, and a hit object is resolved by matching the trace entity to a live sandbox object's edict.
+        sandbox.Trace = new SandboxTraceProvider(sandbox, trace);
+
+        // QC sandbox_Database_Save/_Load: the per-map storage file is sandbox/storage_<name>_<map>.txt under the
+        // writable user dir (DP writes to the gamedir; the port's writable root is ~/XonData via UserPaths). This
+        // makes save/autosave/autoload genuinely persist. The object_duplicate copy clipboard (QC stuffcmd `set
+        // cl_sandbox_clipboard …`) is now live for the listen-server local host: SetClipboard sets the cvar
+        // directly on the shared store the local console reads. A remote client over a dedicated server still
+        // can't be reached (no svc_stufftext channel), and is silently skipped (the documented residual).
+        sandbox.Store = new SandboxObjectStore(SetSandboxClipboard);
+
+        // QC fexists(argv(2)): the asset VFS is the port's filesystem-existence check (DP's fexists). Wiring it
+        // makes object_spawn reject a model path that doesn't resolve in any mount, exactly like Base.
+        if (_vfs is not null)
+            sandbox.ModelExistsProvider = path => _vfs.Exists(path);
+
+        // QC FOR_EACH_TAG(e) for `object_info mesh`: enumerate the object model's tag (bone) names from the
+        // engine model-tag table (ModelService.ModelDef.Tags). Empty list when the model has no registered tags.
+        // _serverWorld.Services.ModelsImpl is the concrete ModelService (non-null), same accessor TraceImpl uses.
+        XonoticGodot.Engine.Simulation.ModelService models = _serverWorld.Services.ModelsImpl;
+        sandbox.MeshTagNamesProvider = model => models.TryGetModel(model, out var def)
+            ? new List<string>(def.Tags.Keys)
+            : (IReadOnlyList<string>)System.Array.Empty<string>();
+    }
+
+    /// <summary>
+    /// QC <c>stuffcmd(player, strcat("set ", cvar, " \"", value, "\""))</c> for the <c>object_duplicate copy</c>
+    /// clipboard. The only console the port can reach in-process is the listen-server local host's, which reads
+    /// the SAME <see cref="_sharedCvars"/> store the menu/client use — so for that recipient we set the cvar
+    /// directly (the local equivalent of the svc_stufftext the QC sends). A pure remote client over a dedicated
+    /// server has no in-process cvar store here and no stufftext channel, so it is skipped (documented residual).
+    /// </summary>
+    private void SetSandboxClipboard(Entity player, string cvar, string value)
+    {
+        if (string.IsNullOrEmpty(cvar) || _sharedCvars is null)
+            return;
+        if (!ReferenceEquals(player, LocalServerPlayer))
+            return; // only the local host's console shares this cvar store
+        // HandleCommand escapes the serialized object (\" ) for the QC stuffcmd `set cvar "…"` console parse;
+        // the engine console UN-escapes it back to real quotes before storing the cvar. We set the cvar value
+        // directly (no console reparse), so undo that escaping here to store the same value paste/ObjectPortLoad
+        // (which tokenizes "-quoted tokens) expects.
+        _sharedCvars.Set(cvar, value.Replace("\\\"", "\""));
+        _sharedCvars.MarkArchived(cvar); // cl_sandbox_clipboard is an archived client cvar
+    }
+
+    /// <summary>
+    /// Wire the <see cref="SuperSpecMutator"/>'s host seams — the C# successor to the engine calls the QC superspec
+    /// mutator makes from its SV_ParseClientCommand / PlayerDies hooks: <c>sprint(to, ..)</c> for the option/state
+    /// messages, and <c>FOREACH_CLIENT</c> for the follow* / followkiller player scans. Without these the option
+    /// flags can be set (the command surface routes via <c>superspec</c>/<c>autospec</c>/… → Commands.CmdSuperspec
+    /// → HandleCommand) but the manual follow* switches have no roster to scan and every message prints nothing.
+    /// Idempotent and harmless when g_superspectate is off (the delegates only fire while the mutator is added).
+    /// Same sim-thread ownership as <see cref="WireSandbox"/> (HandleCommand is dispatched there; PlayerDies fires
+    /// inside the server tick), so the print/roster touch the right owner directly.
+    /// </summary>
+    private void WireSuperspec()
+    {
+        if (_serverWorld is null) return;
+        if (Mutators.ByName("superspec") is not SuperSpecMutator superspec) return;
+
+        // QC sprint(to, strcat(con_title, msg)): one console line to the spectator. (The centered centerprint form
+        // goes through the notification CenterRaw channel directly inside SuperSpecMutator.Msg — no host seam.)
+        superspec.PrintTo = (p, msg) => _server?.SendChatToPlayer(p, msg);
+
+        // QC FOREACH_CLIENT: the live client roster the follow*/followkiller/ItemTouch scans iterate.
+        superspec.RosterProvider = () =>
+        {
+            var list = new List<Player>();
+            foreach (Player p in _serverWorld.Clients.Players) list.Add(p);
+            return list;
+        };
+
+        // QC .crypto_idfp — the player's auth UID, used to key the remote options file. PersistentId is the
+        // port's crypto_idfp (same field RaceRecords/Sandbox use); a bot's is "" (so it never persists).
+        superspec.CryptoIdfpProvider = p => p.PersistentId;
+
+        // QC the per-client options-file IO (fopen/fputs/fgets in superspec_save_client_conf / ClientConnect).
+        // Files live under the writable user dir (~/XonData/superspec/<filename>, DP's writable-gamedir analogue).
+        superspec.Store = new SuperspecOptionsStore();
+    }
+
+    /// <summary>The per-client options-file persistence seam for the superspec mutator (QC fopen/fputs/fgets in
+    /// superspec_save_client_conf / ClientConnect). Files live under the writable user dir
+    /// (<c>~/XonData/superspec/&lt;filename&gt;</c>), one line per field, exactly as the QC reader/writer expects.</summary>
+    private sealed class SuperspecOptionsStore : SuperSpecMutator.IOptionsStore
+    {
+        private static string PathFor(string filename) => UserPaths.Resolve($"superspec/{filename}");
+
+        public System.Collections.Generic.IReadOnlyList<string>? Read(string filename)
+        {
+            try
+            {
+                string p = PathFor(filename);
+                return System.IO.File.Exists(p) ? System.IO.File.ReadAllLines(p) : null;
+            }
+            catch { return null; }
+        }
+
+        public void Write(string filename, System.Collections.Generic.IReadOnlyList<string> lines)
+        {
+            try { System.IO.File.WriteAllLines(PathFor(filename), lines); } catch { /* read-only host */ }
+        }
+    }
+
+    /// <summary>The crosshair/forward trace seam for the sandbox mutator (QC crosshair_trace / WarpZone_TraceLine).
+    /// Resolves a hit sandbox object by matching the traced entity to a live object's edict.</summary>
+    private sealed class SandboxTraceProvider : SandboxMutator.ITraceProvider
+    {
+        private readonly SandboxMutator _sandbox;
+        private readonly ITraceService _trace;
+        public SandboxTraceProvider(SandboxMutator sandbox, ITraceService trace) { _sandbox = sandbox; _trace = trace; }
+
+        public void TraceForward(Entity player, float distance, out NVec3 endpos, out SandboxMutator.SandboxObject? hit)
+        {
+            NVec3 eye = player.Origin + player.ViewOfs;
+            NVec3 fwd = QMath.Forward(player.Angles);
+            NVec3 end = eye + fwd * distance;
+            TraceResult tr = _trace.Trace(eye, NVec3.Zero, NVec3.Zero, end, MoveFilter.Normal, player);
+            endpos = tr.EndPos;
+            hit = null;
+            if (tr.Ent is not null)
+                foreach (var o in _sandbox.Objects)
+                    if (ReferenceEquals(o.Edict, tr.Ent)) { hit = o; break; }
+        }
+    }
+
+    /// <summary>The per-map text persistence seam for the sandbox mutator (QC sandbox_Database_Save/_Load file IO).
+    /// File lives under the writable user dir (<c>~/XonData/sandbox/storage_&lt;name&gt;_&lt;map&gt;.txt</c>, DP's
+    /// writable-gamedir analogue). The object_duplicate copy clipboard is left inert (no svc_stufftext transport
+    /// to set a remote client's cvar — see <see cref="SetClipboard"/>).</summary>
+    private sealed class SandboxObjectStore : SandboxMutator.IObjectStore
+    {
+        private readonly Action<Entity, string, string> _setClipboard;
+        public SandboxObjectStore(Action<Entity, string, string> setClipboard) => _setClipboard = setClipboard;
+
+        private static string PathFor(string storageName, string mapName)
+            => UserPaths.Resolve($"sandbox/storage_{storageName}_{mapName}.txt");
+
+        public string? Read(string storageName, string mapName)
+        {
+            try { string p = PathFor(storageName, mapName); return System.IO.File.Exists(p) ? System.IO.File.ReadAllText(p) : null; }
+            catch { return null; }
+        }
+
+        public void Write(string storageName, string mapName, string contents)
+        {
+            try { System.IO.File.WriteAllText(PathFor(storageName, mapName), contents); } catch { /* read-only host */ }
+        }
+
+        // QC stuffcmd(player, strcat("set ", cvar, " \"", value, "\"")) — pushes the serialized object into the
+        // player's clipboard cvar. The host callback handles the only transport the port has: setting the cvar
+        // directly on the SHARED cvar store when the target is the listen-server local host (whose console reads
+        // the same store the menu/client read). A remote client over a dedicated server still can't be reached
+        // (no svc_stufftext channel) — that recipient is silently skipped, matching the documented residual.
+        public void SetClipboard(Entity player, string cvar, string value) => _setClipboard(player, cvar, value);
+    }
+
+    /// <summary>
     /// Boot a minimal ambient engine facade for a PURE CLIENT so the prediction sim has a world to trace
     /// against before/while connected. We use a flat floor: a remote client does not yet replicate the
     /// server's real map collision (that needs the map name in the handshake + a client-side BSP load — a
@@ -837,6 +1218,17 @@ public sealed partial class NetGame : Node3D
         GameInit.Boot(services);                 // Api.Services = services; + movement/registries
         // Seed weapon balance from whatever cvars are loaded (the menu preloaded the tree into _sharedCvars).
         XonoticGodot.Common.Gameplay.Weapons.ConfigureAll();
+        // QC: REGISTER_MUTATOR(walljump, true) on CSQC — Base registers movement mutators (walljump,
+        // doublejump, dodging, …) on the CLIENT unconditionally so their PlayerJump/PMPhysics hooks run
+        // inside client prediction. The port's MutatorHooks.PlayerJump chain is static and shared with the
+        // server, so prediction already works in a listen-server build (server Apply() populates the chain
+        // before the client sim runs). But on a DEDICATED-SERVER client the server runs in a separate
+        // process: the static chain is empty on the client, so every wall jump / dodge / doublejump is
+        // applied by the server only and the client mispredicts (rubberband). Calling Apply() here mirrors
+        // Base's CSQC unconditional registration: it subscribes every currently-enabled movement mutator's
+        // hooks onto the client process's static chain so prediction stays in lockstep.
+        // Apply() is idempotent (MutatorBase.Added guard) — safe to call even if called again later.
+        MutatorActivation.Apply();
     }
 
     /// <summary>
@@ -851,9 +1243,8 @@ public sealed partial class NetGame : Node3D
         // proper hull + client flags to slide-and-step.
         _carrier = SpawnCarrier();
 
-        IMovementStep step = _carrier is not null
-            ? new EntityMovementStep(_carrier)
-            : new NullMovementStep();
+        _movementStep = _carrier is not null ? new EntityMovementStep(_carrier) : null;
+        IMovementStep step = (IMovementStep?)_movementStep ?? new NullMovementStep();
 
         ClientNet? client = ClientNet.Connect(_host, _port, step, SampleInput);
         if (client is null)
@@ -907,6 +1298,11 @@ public sealed partial class NetGame : Node3D
         e.Mins = HullMins;
         e.Maxs = HullMaxs;
         e.ViewOfs = new NVec3(0f, 0f, EyeHeight);
+        // Fresh carrier = fresh input-sequence space (seqs restart per connection): reset the seq-keyed
+        // predicted-warp pulse or a stale high seq from the previous match would gate it shut forever.
+        XonoticGodot.Engine.Simulation.TriggerTouch.PredictionSeq = 0;
+        XonoticGodot.Engine.Simulation.TriggerTouch.LastPredictedWarpSeq = 0;
+        _consumedWarpSeq = 0;
         return e;
         }
         finally
@@ -951,7 +1347,20 @@ public sealed partial class NetGame : Node3D
         // grenademodel.md3) through the same VFS loader the world/weapon models use. Set after AddChild since
         // ClientWorld._Ready (which built _render.Projectiles) ran synchronously on it.
         if (_assets is not null)
+        {
             _render.Projectiles.ModelFactory = m => _assets.LoadModel(m);
+            // (engine-perf 2026-06-16) Wire the SAME loader into the gib + casing systems so they render their
+            // REAL MD3/IQM limb + brass models (faithful to DP gibs.qc/casings.qc) instead of the generated
+            // placeholder box/cylinder — the ModelLoader Func they support was never connected, so that path was
+            // dead. The GpuWarmPass below warms these models' pipelines, so the restored MD3s cost no mid-match
+            // SURFACE compile. (EffectSystem.ModelLoader propagates to its Gibs/Casings, both live post-AddChild.)
+            _render.Effects.ModelLoader = m => _assets.LoadModel(m);
+
+            // The cosmetic add-on layer (freezetag ice block / buff-carrier glow) reads its model files through
+            // the same AssetLoader (cached): LoadMd3 for the .md3 morph path, LoadModel for IQM/DPM.
+            _render.CosmeticMd3Loader = m => _assets.LoadMd3(m);
+            _render.CosmeticModelLoader = (m, skin) => _assets.LoadModel(m, skin);
+        }
 
         // Pre-warm the effect catalog + particlefont atlas now (map-load), so the FIRST weapon shot doesn't hitch
         // parsing effectinfo.txt + decoding the atlas on its render frame (DP precaches these at client init,
@@ -964,18 +1373,32 @@ public sealed partial class NetGame : Node3D
         // A2: render one hidden instance of every effect/projectile material family in a tiny offscreen viewport
         // so the GPU compiles their shader pipelines NOW (during load) — the first real explosion/rocket/gib in
         // play then hits a warm pipeline instead of stalling the frame. Self-frees after a few frames.
-        XonoticGodot.Game.Client.GpuWarmPass.Run(_render, _render.Effects, _render.Projectiles);
+        // The map-item / pickup MD3 models render through the entity feed (PVS-culled until first-seen), so warm
+        // them here too — built from the item registry + the same AssetLoader the live entity build uses.
+        XonoticGodot.Game.Client.GpuWarmPass.Run(_render, _render.Effects, _render.Projectiles, BuildItemWarmupInstances());
 
         // CSQC appearance context (FORCEMODEL/FORCECOLORS need the local player + gametype): read live each frame.
         _render.AppearanceProvider = BuildAppearanceContext;
+
+        // [W14b LI3] the server clock for the remote torso-action overlay — the networked Entity.AnimActionTime is
+        // stamped on this clock, so the client derives the action play phase as LatestServerTime − start.
+        _render.ServerTimeProvider = () => _client?.LatestServerTime ?? 0f;
 
         // Render the world geometry on the listen server: the client draws the worldmodel it loaded locally
         // (DP VF_DRAWWORLD=1 + renderscene(); the server ships no geometry). Reuses the SAME BSP + gametype filter
         // the collision was built from in StartListenServer — identical to GameDemo.cs:181's MapLoader.BuildMap.
         // A pure --connect client has no BSP yet (see the map-name handshake follow-up), so this is gated on _bsp.
         if (_bsp is not null && _assets?.Assets is not null)
+        {
             // Pass the loaded map name so external lm_NNNN lightmaps resolve (stock maps have no internal lump).
-            AddChild(MapLoader.BuildMap(_bsp, _assets.Assets, _map, _droppedSubmodels));
+            _mapRoot = MapLoader.BuildMap(_bsp, _assets.Assets, _map, _droppedSubmodels);
+            AddChild(_mapRoot);
+        }
+
+        // (§12.8) Hand the render world the map's PVS so it can DP-faithfully cull remote entities behind walls
+        // (r_pvs_cull_entities). Cheap — BspPvs just wraps the parsed lumps. Null map keeps entity culling inert.
+        if (_bsp is not null)
+            _render.Pvs = new XonoticGodot.Formats.Bsp.BspPvs(_bsp);
 
         // Client-side collision world for the particle systems: decal splats conform to the real brush faces
         // (DP R_DecalSystem — without it marks fall back to flat quads), and the chunked-SDF service builds
@@ -1130,8 +1553,38 @@ public sealed partial class NetGame : Node3D
         // EquipNetworkedWeapon(); the ViewStateProvider feeds the follow/lean/bob sway from the predicted view.
         _viewModel = new ViewModel { Name = "ViewModel", Effects = _render.Effects };
         _viewModel.ViewStateProvider = BuildViewState;
+        // QC W_MuzzleFlash attaches the weapon's m_muzzlemodel (flash.md3 for the Devastator/MineLayer,
+        // uziflash.md3 for the Machinegun/Shotgun; MDL_Null = no model flash for every other weapon) to the
+        // exterior weapon entity at the shot tag. The port equivalent: a path-keyed loader the ViewModel calls on
+        // each Fire() to spawn a fresh flash mesh node at the muzzle socket, gated by the per-weapon MuzzleModelPath
+        // set at equip (MuzzleModelFor). LoadModel returns null when the file is missing, degrading to no flash.
+        if (_assets is not null)
+        {
+            // Flash-model factory: for multi-frame MD3 flash files (flash.md3=30 frames, uziflash.md3=14 frames)
+            // return a ModelAnimator so SpawnMuzzleFlashModel can drive frame+=2 each 0.05 s tick
+            // (QC W_MuzzleFlash_Model_Think). Static/missing models fall back to plain LoadModel.
+            _viewModel.FlashModelFactory = path =>
+            {
+                XonoticGodot.Formats.Md3.Md3Data? md3 = _assets.LoadMd3(path);
+                if (md3 is not null && md3.FrameCount > 1)
+                    return ModelAnimator.Create(md3);
+                return _assets.LoadModel(path);
+            };
+        }
         _camera.AddChild(_viewModel);
         _render.ViewModel = _viewModel;
+
+        // Porto_Draw aim-trajectory preview: feed it the local player's view angles, active weapon id, and the
+        // alive/spectating/intermission gate (QC Porto_Draw early-return). The preview node itself reads the
+        // camera position for the eye + draws only when a porto is held in the non-default combined-shot mode.
+        if (_render.PortoPreview is not null)
+        {
+            _render.PortoPreview.ViewAnglesProvider = () => _viewAngles;
+            _render.PortoPreview.ActiveWeaponProvider = () => _client?.ActiveWeaponId ?? -1;
+            _render.PortoPreview.SuppressedProvider = () =>
+                _client is not { Accepted: true } || _client.Health <= 0
+                || _view.ChaseActive || _client.MatchIntermission;
+        }
 
         // Bridge the HUD's texture cache to the mounted game data so weapon icons / crosshairs / kill-notify
         // icons draw the REAL Xonotic art instead of colored-box fallbacks (mirrors GameDemo.SetupHud).
@@ -1172,6 +1625,13 @@ public sealed partial class NetGame : Node3D
         // -1 before the link is up (the panel then draws nothing). On a loopback listen server this reads ~0.
         _fullHud.Ping.PingProvider = () => _client?.PingMs ?? -1;
 
+        // Position readout (stacked above the FPS/ping counters): feed it the local player's predicted Quake-space
+        // origin — the same X Y Z space map entities use. The panel self-gates on cl_showposition/showposition
+        // (debug-default-on, like FPS) and returns null until we have a live local body (handshake assigns a
+        // non-zero LocalNetId), so it draws nothing in the menu / pre-spawn.
+        _fullHud.Position.PositionProvider =
+            () => _client is { LocalNetId: not 0 } c ? c.PredictedOrigin : (NVec3?)null;
+
         // [T51] Floating damage-number layer (QC cl_damagetext). Full-rect overlay; fed each frame in _Process
         // from the server-side DamagetextMutator's drained events, projected via the first-person _camera.
         _damageText = new XonoticGodot.Game.Client.DamageTextLayer { Name = "DamageText" };
@@ -1183,6 +1643,11 @@ public sealed partial class NetGame : Node3D
         if (_assets is not null)
             _hitSound.AudioLoader = _assets.LoadSound;
         _hitSound.Attach(_fullHud);
+
+        // In-vehicle low-health/shield alarm (QC vehicle_alarm, cl_vehicles.qc): feed the VehicleHud the VFS sound
+        // loader so it can play SND_VEH_ALARM / SND_VEH_ALARM_SHIELD (gated by cl_vehicles_alarm, default 0).
+        if (_assets is not null)
+            _fullHud.Vehicle.AudioLoader = _assets.LoadSound;
 
         // The lightweight crosshair + health/armor readout + radar + networked scoreboard, on a layer ABOVE the
         // full HUD so the crosshair sits on top.
@@ -1200,11 +1665,29 @@ public sealed partial class NetGame : Node3D
         // into the full HUD's panels. Previously only MSG_ANNCE was handled (via a hidden host Hud); now the full
         // HUD lets HudNotifications render center/info text too. OnNotificationReceived forwards EVERY type.
         _notifications = new XonoticGodot.Game.Hud.HudNotifications(_fullHud);
+        // QC client/announcer.qh autocvar_cl_announcer (voice pack dir, "default") + autocvar_cl_announcer_antispam
+        // (2s same-sound dedup window). Read from the client cvar store so the user setting actually takes effect
+        // (HudNotifications consumes AnnouncerVoice in the sound/announcer/<voice>/ resolve and AntiSpamInterval in
+        // the QueueRun dedup). Defaults match xonotic-client.cfg:357-358 when the cvars are unset.
+        // Then run the resolved voice through MUTATOR_CALLHOOK(AnnouncerOption) (QC AnnouncerFilename -> AnnouncerOption):
+        // a mutator MAY rewrite the voice pack via this hook. No stock Base mutator registers it (overkill included),
+        // so this is a no-op pass-through out of the box, exactly like Base.
+        if (_sharedCvars is not null)
+        {
+            string voice = _sharedCvars.GetString("cl_announcer");
+            if (!string.IsNullOrWhiteSpace(voice))
+                _notifications.AnnouncerVoice = voice;
+            // Fire the AnnouncerOption hook to allow mutators to override the voice (QC announcer.qc:14-20)
+            _notifications.AnnouncerVoice = MutatorHooks.FireAnnouncerOption(_notifications.AnnouncerVoice);
+            if (_sharedCvars.Has("cl_announcer_antispam"))
+                _notifications.AntiSpamInterval = _sharedCvars.GetFloat("cl_announcer_antispam");
+        }
         if (_assets is not null)
         {
             _notifications.AudioLoader = _assets.LoadSound; // sound/announcer/<voice>/<snd>.ogg from the mounted VFS
+            string fallbackVoice = _notifications.AnnouncerVoice;
             _notifications.AnnouncerResolver = name =>
-                string.IsNullOrWhiteSpace(name) ? null : $"res://sound/announcer/default/{name}.ogg";
+                string.IsNullOrWhiteSpace(name) ? null : $"res://sound/announcer/{fallbackVoice}/{name}.ogg";
         }
         if (_client is not null)
             _client.NotificationReceived += OnNotificationReceived;
@@ -1251,6 +1734,13 @@ public sealed partial class NetGame : Node3D
             Size = new Vector2(256, 256),
             Position = new Vector2(24, 24),
         };
+        // Maximized-radar wiring (QC HUD_Radar / +hud_panel_radar_maximized): the click-to-spawn channel is the same
+        // clc_stringcmd path a console command takes — emit `cmd ons_spawn <x> <y> <z>` (Onslaught.HandleOnsSpawnCommand
+        // parses argv 1..3 as world x/y/z). IsOnslaught gates the clickable spawn-point picking to Onslaught; it tracks
+        // the SAME gametype string the HUD/scoreboard read (the networked ScoreInfo block sets GameScores.Gametype,
+        // "ons" for Onslaught). Refreshed per-frame in _Process so a mid-match gametype change re-gates it.
+        _radar.SendServerCommand = line => _client.SendStringCommand(line);
+        _radar.IsOnslaught = XonoticGodot.Common.Gameplay.Scoring.GameScores.Gametype == "ons";
         // Feed the real minimap: the map name (resolves gfx/<map>_mini.jpg inside the map pk3 via the VFS) + the
         // map's world XY bounds (QC mi_min/mi_max = the BSP worldspawn model mins/maxs) so the image + blips align.
         _radar.MapName = _map;
@@ -1269,9 +1759,38 @@ public sealed partial class NetGame : Node3D
         AddChild(waypointLayer);
         _waypointLayer = new XonoticGodot.Game.Client.WaypointSpriteLayer { Name = "WaypointSprites", Camera = _camera };
         _waypointLayer.SetAnchorsPreset(Control.LayoutPreset.FullRect);
+        if (_bsp is { Models.Length: > 0 })
+        {
+            // QC WaypointSprite_Load: waypointsprite_fadedistance = vlen(mi_scale) where mi_scale = mi_max - mi_min
+            // (the BSP worldspawn model extent). Drives the distance-fade ramp distancefadedistance.
+            System.Numerics.Vector3 mn = _bsp.Models[0].Mins, mx = _bsp.Models[0].Maxs;
+            _waypointLayer.MapSize = new System.Numerics.Vector3(mx.X - mn.X, mx.Y - mn.Y, mx.Z - mn.Z).Length();
+        }
         if (_client is not null)
             _waypointLayer.Source = () => _client.Waypoints;
         waypointLayer.AddChild(_waypointLayer);
+
+        // Warpzone PORTAL render (the C# stand-in for DP's engine r_water portal pass): turn the warpzone "window"
+        // meshes MapLoader extracted into live SubViewport renders of the linked exit. Listen-host only (reads the
+        // shared WarpzoneTrace.AmbientManager zone transforms); a pure remote client / a map with no warpzones / a
+        // surface that matches no zone all fall back to the dark-mirror placeholder. Gated by cl_portal_render.
+        if (_mapRoot is not null)
+        {
+            _portalRenderer = new XonoticGodot.Game.Client.PortalRenderer { Name = "PortalRenderer" };
+            AddChild(_portalRenderer);
+            _portalRenderer.Setup(_mapRoot, _camera);
+
+            // Warpzone portal DISC (the cosmetic skinned-model ring DP draws on a warpzone face, separate from the
+            // see-through SubViewport portal above). Client-only — it reads the SAME un-networked
+            // WarpzoneTrace.AmbientManager zone transforms PortalRenderer/WarpzoneFixView use, so it is LIVE on a
+            // listen host. The node self-drives via its own _Process once in the tree (same as _portalRenderer);
+            // we only construct + wire its skinned-model factory here. AssetLoader.LoadModel already supports the
+            // `_N.skin` variant via its (vpath, skinIndex=0) overload; tolerate a null _assets the same way the
+            // ProjectileRenderer.ModelFactory wiring (above) does.
+            _portalDiscRenderer = new XonoticGodot.Game.Client.PortalDiscRenderer { Name = "PortalDiscRenderer" };
+            AddChild(_portalDiscRenderer);
+            _portalDiscRenderer.Setup(_camera, (path, skin) => _assets?.LoadModel(path, skin));
+        }
 
         // [T68] Floating player name + health/armor tags (QC client/shownames.qc Draw_ShowNames_All): a 3D
         // in-world overlay projected through the first-person camera, on the SAME low layer as the waypoint
@@ -1287,7 +1806,14 @@ public sealed partial class NetGame : Node3D
         // NetHud has no scoreboard — so the per-player columns + team totals that ClientNet decodes
         // (LatestScoreboard) had nowhere to go. Add the panel here, sized to a centered slab, hidden until the
         // scoreboard key is held; _Process feeds it from LatestScoreboard each frame the data changes.
-        _scoreboard = new XonoticGodot.Game.Hud.ScoreboardPanel { Name = "Scoreboard", Visible = false };
+        // MouseFilter.Ignore: this panel is added straight to hudLayer, bypassing HudManager.RegisterPanel (which
+        // sets Ignore) — without it the Control defaults to Stop and its (centered, screen-sized) rect EATS the
+        // captured mouse-look motion before it reaches _UnhandledInput, so the scoreboard "steals the mouse" while
+        // it's up (QC hud_cursormode off — the HUD never eats input).
+        _scoreboard = new XonoticGodot.Game.Hud.ScoreboardPanel
+        {
+            Name = "Scoreboard", Visible = false, MouseFilter = Control.MouseFilterEnum.Ignore,
+        };
         hudLayer.AddChild(_scoreboard);
         LayoutScoreboard();
 
@@ -1307,6 +1833,20 @@ public sealed partial class NetGame : Node3D
         // own CanvasLayer (below the HUD), fed each frame in _Process from the networked stats + predicted eye.
         _viewEffects = new ViewEffects { Name = "ViewEffects" };
         AddChild(_viewEffects);
+
+        // Nade orb effect models (heal/ammo/entrap/veil/darkness orbs — the static field entities a nade spawns).
+        // Built next to the ProjectileRenderer and fed off the SAME entity stream: ClientEntityView routes a
+        // NetEntityKind.NadeOrb spawn/update/remove to _render.NadeOrbs, so the renderer NetGame creates here is
+        // also the one ClientWorld exposes — one shared instance. Its ModelFactory mirrors
+        // ProjectileRenderer.ModelFactory (AssetLoader.LoadModel, null-tolerant). Held in _orbRenderer so the
+        // per-frame view-effects feed can read ActiveOrbs() for the in-orb color flash. The node self-advances
+        // via its own _Process once in the tree (same as the ProjectileRenderer).
+        _orbRenderer = new XonoticGodot.Game.Client.NadeOrbRenderer { Name = "NadeOrbRenderer" };
+        AddChild(_orbRenderer);
+        if (_assets is not null)
+            _orbRenderer.ModelFactory = m => _assets.LoadModel(m);
+        if (_render is not null)
+            _render.NadeOrbs = _orbRenderer;
 
         // Screen-space vignette (cl_vignette_*): a soft darkened gradient framing the view edges, on its own
         // CanvasLayer above the world/ViewEffects tint but below the HUD. Self-contained — it registers its own
@@ -1362,6 +1902,10 @@ public sealed partial class NetGame : Node3D
         Api.Cvars.Register("cl_eventchase_death", "2");
         Api.Cvars.Register("cl_eventchase_distance", "140");
         Api.Cvars.Register("cl_eventchase_speed", "1.3");
+        // QC Scoreboard_WouldDraw death-scoreboard gate (_cl_main.qc / scoreboard.qc:1793): force the scoreboard up
+        // a short delay after the local player dies, even without holding +showscores.
+        Api.Cvars.Register("cl_deathscoreboard", "1");
+        Api.Cvars.Register("cl_deathscoreboard_delay", "1");
     }
 
     /// <summary>
@@ -1376,17 +1920,54 @@ public sealed partial class NetGame : Node3D
             return;
 
         int id = _client.ActiveWeaponId;
-        // Hide the gun when holstered (id<0), dead (Health<=0), OR the event/death chase camera is active — QC
+        // Hide the gun when holstered (id<0), dead (Health<=0), the event/death chase camera is active — QC
         // view.qc viewmodel_draw masks the viewmodel when STAT(HEALTH)<=0 || chase_active (the shared view tracks
         // ChaseActive after UpdateCamera ran this frame), so the third-person death-cam doesn't show a floating gun.
-        bool hidden = id < 0 || id >= XonoticGodot.Common.Gameplay.Weapons.Count || _client.Health <= 0 || _view.ChaseActive;
+        // ALSO hidden at intermission: QC FixIntermissionClient sets each weapon entity's effects = EF_NODRAW so the
+        // viewmodel disappears once the match ends and the scoreboard takes over.
+        bool hidden = id < 0 || id >= XonoticGodot.Common.Gameplay.Weapons.Count
+            || _client.Health <= 0 || _view.ChaseActive || _client.MatchIntermission;
 
-        if (id == _equippedWeaponId)
+        // [#43] Push the local profile color (_cl_color) to the server: listen host applies it directly
+        // (QC SV_ChangeTeam — FFA-only recolor), a pure client sends the `color` command. Change-gated.
+        PushLocalPlayerColor();
+
+        // Player colormap + per-weapon glowmod (Base viewmodel_draw 302-321): tint the held gun to the local
+        // player's packed shirt/pants colors — the FFA profile color, or the team color in teamplay (the server
+        // forces clientcolors there) — and glow with the pants palette / wr_glow. Applied every frame (cheap —
+        // SetPlayerColors early-returns when the color is unchanged) so a mid-match team swap / recolor / charge
+        // change repaints.
+        UpdateViewModelColors();
+
+        // Reload animation (Base wframe WFRAME_RELOAD → anim_reload). The port does not network the wframe temp
+        // entity, but the reload state IS observable from the already-networked clip counter: clip_load == -1 is the
+        // QC "scheduled for reload" sentinel (set for the duration of the reload think). Play the viewmodel reload
+        // clip once on the rising edge so the gun visibly cycles through a reload, dropping back to idle when done.
+        UpdateViewModelReloadAnim();
+
+        // Networked viewmodel anim-frame (Base wframe NET_HANDLE selector): on a listen host the reload anim above is
+        // already host-derived, but a pure client / a spectatee has no LocalServerPlayer slot — so drive the local
+        // viewmodel's fire/raise/drop/reload clip from the networked WepentView.ViewmodelFrame selector instead.
+        UpdateViewModelAnimFromNet();
+
+        // (#41) Lightgrid model light: DP lights every model from the BSP lightgrid at the entity origin
+        // (Mod_Q3BSP_LightPoint) — the port lit everything with one global sun + flat ambient, so guns read
+        // dull/gray indoors. Sample the grid at the camera and modulate the viewmodel's skin-shader tint.
+        UpdateViewModelLightgrid();
+
+        // Per-weapon wr_viewmodel override (Base viewmodel_draw 324-327: newname = wep.wr_viewmodel(wep, this)).
+        // Only Tuba overrides it, swapping its v_ model by the currently played instrument (tuba/akordeon/
+        // kleinbottle). Resolved live so a reload that cycles the instrument rebuilds the gun model. Empty = no
+        // override (every other weapon uses its static WorldModel).
+        string vmOverride = WeaponViewModelOverride(id);
+
+        if (id == _equippedWeaponId && vmOverride == _equippedVmOverride)
         {
-            _viewModel.Visible = !hidden; // no weapon change; just track the dead/holstered visibility edge
+            _viewModel.Visible = !hidden; // no weapon/model change; just track the dead/holstered visibility edge
             return;
         }
         _equippedWeaponId = id;
+        _equippedVmOverride = vmOverride;
 
         if (hidden)
         {
@@ -1400,13 +1981,265 @@ public sealed partial class NetGame : Node3D
         // ok_*) render the h_ HAND RIG itself; invisible-hand IQM rigs render the v_ model attached to the rig's
         // "weapon" bone. ViewModelEquip.Build is the single source of truth for first-person weapon construction.
         XonoticGodot.Common.Gameplay.Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(id);
-        string vModel = WeaponVModelPath(w);
+        // wr_viewmodel override replaces the model file (vmOverride = "v_<instrument>.md3"); else the static WorldModel.
+        string vModel = string.IsNullOrEmpty(vmOverride) ? WeaponVModelPath(w) : "models/weapons/" + vmOverride;
         ViewModelEquip eq = ViewModelEquip.Build(_assets, vModel);
-        _viewModel.SetWeaponModel(eq.Model, MuzzleEffectFor(w), "tag_shot", eq.Attach);
+        _viewModel.SetWeaponModel(eq.Model, MuzzleEffectFor(w), "tag_shot", eq.Attach, MuzzleModelFor(w));
         _viewModel.Visible = true;
         // Raise the new gun into view instead of popping the model in (Xonotic viewmodel_draw raise; pairs with
         // the keypress holster in RunBoundCommand). Confirmed switch → cancels any pending holster auto-recovery.
         _viewModel.PlayRaise();
+    }
+
+    /// <summary>
+    /// Resolve + push the held view-model's team colormap tint + glowmod (Base <c>viewmodel_draw</c> 302-321 →
+    /// <c>weaponentity_glowmod</c>, all.qh:402). The glow is the per-weapon <c>wr_glow</c> override (Vortex /
+    /// Overkill-Nex charge glow) when the weapon supplies one, else the pants palette color
+    /// (<c>colormapPaletteColor(c &amp; 0x0F, true)</c>). [#43] The colors are the watched player's packed
+    /// <c>clientcolors</c> — Base <c>entcs_GetClientColors(current_player)</c>: the FFA profile color, or the
+    /// team color in teamplay (the server forces clientcolors to <c>17*teamcode</c> there, so team display falls
+    /// out with no special case). Colorless (never networked / no player) leaves the gun untinted with its
+    /// native glow. Cheap to call every frame — <see cref="ViewModel.SetPlayerColors"/> early-returns when
+    /// nothing changed.
+    /// </summary>
+    private void UpdateViewModelColors()
+    {
+        if (_viewModel is null || !GodotObject.IsInstanceValid(_viewModel))
+            return;
+
+        int colors = LocalViewedClientColors();
+        if (colors == 0)
+        {
+            _viewModel.SetPlayerColors(XonoticGodot.Game.Client.ModelTint.White,
+                XonoticGodot.Game.Client.ModelTint.Black, XonoticGodot.Game.Client.ModelTint.Black, false);
+            return;
+        }
+
+        float paletteTime = XonoticGodot.Common.Services.Api.Services?.Clock?.Time ?? 0f;
+        (float sr, float sg, float sb) = XonoticGodot.Engine.Simulation.CsqcModelAppearance.ColormapPaletteColor(
+            (colors >> 4) & 0x0F, isPants: false, paletteTime);
+        (float pr, float pg, float pb) = XonoticGodot.Engine.Simulation.CsqcModelAppearance.ColormapPaletteColor(
+            colors & 0x0F, isPants: true, paletteTime);
+        var shirt = new Color(sr, sg, sb);
+        var pants = new Color(pr, pg, pb);
+
+        // Per-weapon wr_glow override: Vortex (and Overkill-Nex) glow with the charge level, fading from the
+        // player's colors (vortex_glowcolor: f*colors*0.3 below animlimit, +f*colors*0.7 above). Default weapons
+        // return '0 0 0' → fall back to the pants palette color (weaponentity_glowmod's `if (!g) g = palette`).
+        Color glow = pants;
+        int wid = _client?.ActiveWeaponId ?? -1;
+        if (wid >= 0 && wid < XonoticGodot.Common.Gameplay.Weapons.Count)
+        {
+            XonoticGodot.Common.Gameplay.Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(wid);
+            string net = w?.NetName ?? "";
+            if (net is "vortex" or "vaporizer" || net.Contains("nex"))
+            {
+                // Charge source: a listen host with a live local slot reads it directly; a pure client (no
+                // LocalServerPlayer) or a followed spectatee instead reads the watched player's networked
+                // WepentView.VortexCharge off the entity stream, so the first-person glow also lights on a remote
+                // client / for a spectated charge. Same vortex_glowcolor ramp either way.
+                int specNet = _client?.SpectatingNetId ?? 0;
+                float? charge = null;
+                if (LocalServerPlayer is { } p && specNet == 0)
+                {
+                    if (!p.IsDead && !p.IsObserver)
+                        charge = p.WeaponState(new WeaponSlot(0)).VortexCharge;
+                }
+                else
+                {
+                    int watched = specNet != 0 ? specNet : (_client?.LocalNetId ?? 0);
+                    if (watched != 0 && _client != null && _client.TryGetRemoteState(watched, out var rs)
+                        && rs.WepentView.VortexCharge > 0f)
+                        charge = rs.WepentView.VortexCharge;
+                }
+
+                if (charge is { } c)
+                {
+                    glow = VortexGlowColor(pants, Mathf.Max(0.25f, c));
+                    if (glow.R + glow.G + glow.B <= 0.001f)
+                        glow = pants; // charge disabled → fall back to the pants palette color
+                }
+            }
+        }
+
+        _viewModel.SetPlayerColors(glow, shirt, pants, true);
+    }
+
+    /// <summary>
+    /// [#43] The packed <c>clientcolors</c> of the player this client is LOOKING THROUGH (Base
+    /// <c>entcs_GetClientColors(current_player)</c>): the listen host reads its live slot, a pure client /
+    /// a followed spectatee reads the watched player's networked <see cref="XonoticGodot.Net.NetEntityState.Colors"/>.
+    /// 0 = no colors resolved.
+    /// </summary>
+    private int LocalViewedClientColors()
+    {
+        int specNet = _client?.SpectatingNetId ?? 0;
+        if (LocalServerPlayer is { } p && specNet == 0)
+            return p.ClientColors & 0xFF;
+        int watched = specNet != 0 ? specNet : (_client?.LocalNetId ?? 0);
+        if (watched != 0 && _client != null && _client.TryGetRemoteState(watched, out var rs))
+            return rs.Colors & 0xFF;
+        return 0;
+    }
+
+    /// <summary>
+    /// [#43] Push the local profile color (<c>_cl_color</c>, packed <c>16*shirt+pants</c> — what the
+    /// multiplayer-profile palette grids edit) to the server, Base's engine-side color userinfo: the listen
+    /// host applies it directly through <c>SV_ChangeTeam</c> (<see cref="XonoticGodot.Server.Teamplay.ChangeTeam"/>
+    /// — a NO-OP in teamplay, where the team owns the colors), a pure client sends the <c>color</c> client
+    /// command (same server sink). Change-gated so it costs one cvar read per frame; an unset/0 cvar pushes
+    /// nothing (keeps the colorless default look rather than forcing white/white).
+    /// </summary>
+    private void PushLocalPlayerColor()
+    {
+        string s = MenuState.Cvars.GetString("_cl_color");
+        int want = string.IsNullOrWhiteSpace(s) ? 0 : (int)MenuState.Cvars.GetFloat("_cl_color") & 0xFF;
+        if (want == _lastPushedClColor)
+            return;
+        if (want == 0 && _lastPushedClColor == int.MinValue)
+        {
+            _lastPushedClColor = 0; // never chosen — leave the server default alone
+            return;
+        }
+
+        if (_serverWorld is { } w && LocalServerPlayer is { } p)
+        {
+            w.Teamplay.ChangeTeam(p, want); // QC SV_ChangeTeam: recolors in FFA, ignored in teamplay
+            _lastPushedClColor = want;
+        }
+        else if (_client is { Accepted: true } c)
+        {
+            c.SendStringCommand($"color {want}");
+            _lastPushedClColor = want;
+        }
+        // Neither ready yet (connecting) → try again next frame.
+    }
+
+    private int _lastPushedClColor = int.MinValue;
+
+    /// <summary>
+    /// Drive the first-person reload animation from the networked clip state — the port's stand-in for Base's
+    /// networked <c>WFRAME_RELOAD</c> (all.qc <c>NET_HANDLE(wframe)</c> plays <c>anim_reload</c> when the server
+    /// reports a reload). The port doesn't network the <c>wframe</c> temp entity, but a reload is fully observable
+    /// from the already-networked magazine counter: <c>ClipLoad == -1</c> is the QC "scheduled for reload" sentinel
+    /// (<see cref="WeaponSlotState.ClipLoad"/>), held for the duration of the reload think. Play the viewmodel
+    /// reload clip ONCE on the rising edge (so it doesn't restart every frame); the viewmodel returns to its idle
+    /// clip when the one-shot reload clip finishes. Listen-server only reads the local <see cref="LocalServerPlayer"/>
+    /// slot state, same source the crosshair reload ring uses.
+    /// </summary>
+    private void UpdateViewModelReloadAnim()
+    {
+        if (_viewModel is null || !GodotObject.IsInstanceValid(_viewModel))
+            return;
+        bool reloading = false;
+        if (LocalServerPlayer is { } p && !p.IsDead && !p.IsObserver)
+        {
+            WeaponSlotState st = p.WeaponState(new WeaponSlot(0));
+            // clip_load == -1 = QC reload-in-progress sentinel; clip_size>0 guards non-reloadable weapons (clip 0).
+            reloading = st.ClipSize > 0 && st.ClipLoad < 0;
+
+            // (playtest r8 #3) FIRE clip, listen-host path: the networked ViewmodelFrame selector is deliberately
+            // NOT consumed on a listen host (UpdateViewModelAnimFromNet returns early — "the host path owns it"),
+            // but this host path only ever derived RELOAD, so the local player's fire animation NEVER triggered
+            // (the muzzle flash is the separate predicted path). Base restarts the clip per shot
+            // (weapon_thinkf(WFRAME_FIRE1) on every attack) — the faithful per-shot edge on the live slot is the
+            // ATTACK_FINISHED bump: every shot pushes it forward. An int-frame rising edge can't re-trigger
+            // during sustained fire; the AttackFinished VALUE change can.
+            float af = st.AttackFinished;
+            if (!reloading && af > _viewmodelLastAttackFinished && _serverWorld is { } sw && af > (float)sw.Time)
+                _viewModel.PlayFireClip();
+            else if (_serverWorld is { } sw2 && af <= (float)sw2.Time)
+                // Attack window closed (refire expired, no new shot): re-assert idle like Base's weapon state
+                // machine does explicitly (w_ready → weapon_thinkf(WFRAME_IDLE)). Needed because SOME fire
+                // clips are authored LOOPING (h_hagar fire loop=1) — the end-of-clip idle recovery never
+                // triggers on those and the gun pumped forever after the last rocket (playtest r12).
+                _viewModel.StopLoopingFire();
+            _viewmodelLastAttackFinished = af;
+        }
+        if (reloading && !_viewmodelReloading)
+            _viewModel.PlayReload();
+        _viewmodelReloading = reloading;
+    }
+
+    /// <summary>Last seen slot-0 ATTACK_FINISHED — the per-shot fire-anim edge for the listen host (see
+    /// <see cref="UpdateViewModelReloadAnim"/>). Reset on equip is unnecessary: a stale higher value only
+    /// suppresses until the first shot pushes past it.</summary>
+    private float _viewmodelLastAttackFinished;
+
+    /// <summary>
+    /// (#41, upgraded r14 B/C) Sample the map's baked lightgrid at the camera and drive the viewmodel's
+    /// DP-style grid shading — Mod_Q3BSP_LightPoint samples per entity; the viewmodel is what the player
+    /// stares at, so it goes first (players/items are the documented follow-up). The full sample is pushed
+    /// (ambient RGB + directed RGB + the baked light DIRECTION) and the skin shader reproduces DP's
+    /// MODE_LIGHTDIRECTION formula per pixel — position-varying colored shading structure instead of the
+    /// r13 flat modulate. Scale is DP's ABSOLUTE 1/128 (Mod_Q3BSP_LightPoint <c>stylescale</c>: grid byte
+    /// 128 = 1.0, above overbrightens — with the r_model_light_gamma response this reads like DP, where
+    /// the r13 self-calibrating normalization was a crutch for the linear pipeline compressing it), tunable
+    /// via <c>r_model_light_scale</c>. No grid on the map → the PBR + fill-light fallback.
+    /// </summary>
+    private void UpdateViewModelLightgrid()
+    {
+        if (_viewModel is null || !GodotObject.IsInstanceValid(_viewModel))
+            return;
+        XonoticGodot.Formats.Bsp.LightGridData? grid = _bsp?.LightGrid;
+        if (grid is null || _camera is null || !GodotObject.IsInstanceValid(_camera))
+        {
+            _viewModel.SetGridLight(false, Vector3.One, Vector3.Zero, Vector3.Up);
+            return;
+        }
+        System.Numerics.Vector3 eye = Coords.ToQuake(_camera.GlobalPosition);
+        grid.Sample(eye, out System.Numerics.Vector3 amb, out System.Numerics.Vector3 dir, out System.Numerics.Vector3 dirn);
+        string scaleCvar = MenuState.Cvars.GetString("r_model_light_scale");
+        float userScale = string.IsNullOrWhiteSpace(scaleCvar) ? 1f : MenuState.Cvars.GetFloat("r_model_light_scale");
+        float scale = (userScale <= 0f ? 1f : userScale) / 128f;
+        var ambient = new Vector3(amb.X, amb.Y, amb.Z) * scale;
+        var diffuse = new Vector3(dir.X, dir.Y, dir.Z) * scale;
+        // The sample direction is QUAKE axes; the shader wants GODOT world axes (it view-transforms per pixel).
+        Vector3 dirG = dirn.LengthSquared() > 1e-6f ? Coords.ToGodot(dirn).Normalized() : Vector3.Up;
+        _viewModel.SetGridLight(true, ambient, diffuse, dirG);
+    }
+
+    /// <summary>
+    /// Drive the local view-model's anim frame from the networked <see cref="XonoticGodot.Net.WepentViewState.ViewmodelFrame"/>
+    /// selector (Base <c>wframe</c> NET_HANDLE: 0 idle, 1 fire, 2 reload, 3 raise, 4 drop). This is the pure-client /
+    /// spectatee path: a listen host derives the reload anim from <see cref="LocalServerPlayer"/> (see
+    /// <see cref="UpdateViewModelReloadAnim"/>) and needs nothing here, but a remote client / a followed spectatee has
+    /// no local slot — so resolve the WATCHED player's per-player WepentView slice off the entity stream and let
+    /// <see cref="ViewModel.SetNetAnimFrame"/> play the matching clip once on a rising edge (idempotent per frame).
+    /// When following a player use <see cref="ClientNet.SpectatingNetId"/>; otherwise (no spectatee) only feed it when
+    /// there is no <see cref="LocalServerPlayer"/> (pure client) — on a listen host the host path already owns it.
+    /// </summary>
+    private void UpdateViewModelAnimFromNet()
+    {
+        if (_viewModel is null || !GodotObject.IsInstanceValid(_viewModel) || _client is null)
+            return;
+
+        int watched;
+        if (_client.SpectatingNetId != 0)
+            watched = _client.SpectatingNetId;            // following another player → their networked anim frame
+        else if (LocalServerPlayer is null)
+            watched = _client.LocalNetId;                 // pure client (no local slot) → our own networked anim frame
+        else
+            return;                                        // listen host: the host-derived reload anim owns the frame
+
+        if (watched != 0 && _client.TryGetRemoteState(watched, out var rs))
+            _viewModel.SetNetAnimFrame(rs.WepentView.ViewmodelFrame);
+    }
+
+    /// <summary>Port of <c>vortex_glowcolor</c> (weapon/vortex.qc:7): a charge-scaled blend of the player's team
+    /// color, ramping 0→0.3× up to the anim limit then 0.3→1.0× above it. Uses the stock balance defaults
+    /// (charge_animlimit 0.5); <paramref name="charge"/> is the [0,1] charge fraction.</summary>
+    private static Color VortexGlowColor(Color teamColor, float charge)
+    {
+        const float animlimit = 0.5f; // g_balance_vortex_charge_animlimit default
+        float f = Mathf.Min(1f, charge / animlimit);
+        Color g = teamColor * (f * 0.3f);
+        if (charge > animlimit)
+        {
+            f = (charge - animlimit) / (1f - animlimit);
+            g += teamColor * (f * 0.7f);
+        }
+        return g;
     }
 
     /// <summary>
@@ -1417,6 +2250,30 @@ public sealed partial class NetGame : Node3D
     /// </summary>
     private static string WeaponVModelPath(XonoticGodot.Common.Gameplay.Weapon w)
         => string.IsNullOrEmpty(w.WorldModel) ? "" : "models/weapons/" + w.WorldModel;
+
+    /// <summary>
+    /// Port of the per-weapon <c>wr_viewmodel</c> override (Base weapon.qh:160 default = string_null; only Tuba
+    /// overrides — tuba.qc:423). Returns the <c>v_*.md3</c> filename to substitute for the active weapon's static
+    /// view-model, or <c>""</c> for no override. Tuba swaps its model by the currently played instrument
+    /// (<c>tuba_instrument</c>): 0 → <c>v_tuba.md3</c>, 1 → <c>v_akordeon.md3</c>, 2 → <c>v_kleinbottle.md3</c>.
+    /// The instrument is read from the local server player's slot-0 weapon state (host path); a pure remote client
+    /// has no slot state here so it keeps the default Tuba model — the networked exterior model still updates.
+    /// </summary>
+    private string WeaponViewModelOverride(int weaponId)
+    {
+        if (weaponId < 0 || weaponId >= XonoticGodot.Common.Gameplay.Weapons.Count)
+            return "";
+        XonoticGodot.Common.Gameplay.Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(weaponId);
+        if (w?.NetName != "tuba" || LocalServerPlayer is not { } p)
+            return "";
+        int instrument = p.WeaponState(new WeaponSlot(0)).TubaInstrument;
+        return instrument switch
+        {
+            1 => "v_akordeon.md3",
+            2 => "v_kleinbottle.md3",
+            _ => "v_tuba.md3",
+        };
+    }
 
     /// <summary>
     /// Warm every registered weapon's view model (and its sibling <c>h_*</c> hand rig) into the asset caches
@@ -1460,6 +2317,12 @@ public sealed partial class NetGame : Node3D
 
         int warmed = 0, skipped = 0, muzzles = 0;
         int i = 0;
+        // (hitch-fix 2026-06-15) Collect the built v_ models to RENDER them once at the end (see below) instead of
+        // freeing them unrendered — building+freeing warmed only the caches, leaving each weapon's material
+        // pipeline UNcompiled, so the first time a weapon was drawn (1st-person view model on switch, or another
+        // player's 3rd-person carried weapon) it paid a mid-match PIPELINE-COMPILE hitch. Same warm-by-render fix
+        // as the player-model roster (PrecacheCombatSoundsAndModelsAsync) and the idle warmer (§12.6-2).
+        var weaponWarmRoots = new System.Collections.Generic.List<Node3D>();
         foreach (XonoticGodot.Common.Gameplay.Weapon w in XonoticGodot.Common.Gameplay.Weapons.All)
         {
             string vModel = WeaponVModelPath(w);
@@ -1488,9 +2351,10 @@ public sealed partial class NetGame : Node3D
             // An unanticipated pickup under the smart path just lazy-loads (one-frame hitch, then cached).
             if (warmAll || expected.Contains(w.NetName))
             {
-                // Build once to fill the parse + material/texture caches, then discard the orphan node
-                // (never added to the tree → free it so it doesn't leak). A miss just caches the failure.
-                _assets.LoadModel(vModel)?.QueueFree();
+                // Build once to fill the parse + material/texture caches; keep the node to render it for pipeline
+                // warm below (instead of freeing it unrendered). A miss just caches the failure.
+                if (_assets.LoadModel(vModel) is { } vRoot)
+                    weaponWarmRoots.Add(vRoot);
                 // The hand rig is loaded by WeaponAttachTransform on each switch; warm it too (it builds +
                 // frees its own throwaway node internally and caches the attach transform's model).
                 ViewModelEquip.WeaponAttachTransform(_assets, vModel);
@@ -1507,6 +2371,16 @@ public sealed partial class NetGame : Node3D
                 if (!IsInsideTree()) return;
             }
         }
+        // Render the warmed v_ models offscreen for a few frames so their material pipelines COMPILE now (under
+        // the loading screen) — Godot compiles a pipeline on first DRAW, so an un-drawn warm model left it
+        // uncompiled. Then free them; the texture/material caches persist. Mirrors the player-roster warm.
+        if (weaponWarmRoots.Count > 0)
+            XonoticGodot.Game.Client.GpuWarmPass.WarmNodes(this, weaponWarmRoots, () =>
+            {
+                foreach (Node3D r in weaponWarmRoots)
+                    if (GodotObject.IsInstanceValid(r))
+                        r.QueueFree();
+            });
         GD.Print($"[NetGame] precached {warmed} weapon models, skipped {skipped} (lazy), {muzzles} muzzle tags.");
     }
 
@@ -1551,17 +2425,53 @@ public sealed partial class NetGame : Node3D
         string local = _sharedCvars?.GetString("_cl_playermodel") ?? string.Empty;
         if (!string.IsNullOrEmpty(local))
             models.Add(local);
+
+        // (perf §9.4) Hosting → warm the PLAYER-MODEL roster NOW, under the loading screen, instead of letting it
+        // stream in during play. The set isn't bot-specific: a bot added at RUNTIME (bot_number raised mid-match —
+        // the 2026-06-14 release profile started bots=0 and added them later, so every model cold-loaded and the
+        // `iqm.anims`/`iqm.mesh` + texture-decode storm hit while playing) OR a human joining picks from this same
+        // stock roster, so warm it regardless of the start bot count. Each cold IQM otherwise decodes + GPU-uploads
+        // its textures one-per-frame on first render; warming fills the parse/texture/material caches so the in-play
+        // skeletal build (StreamSkeletalInto) is a cache hit. erebus/local are already in `models` (HashSet dedups).
+        // NOTE: a human bringing a NON-roster custom model still cold-loads on first sight — a warm-on-first-seen
+        // hook would close that, but the stock roster covers bots and the overwhelming majority of player picks.
+        if (_isListenServer && _serverWorld is not null)
+            foreach (string bm in _serverWorld.Bots.CandidateModelPaths())
+                models.Add(bm);
+
         int modelsWarmed = 0;
+        var warmRoots = new System.Collections.Generic.List<Node3D>();
         foreach (string m in models)
         {
             AssetLoader.SkeletalModelParts? parts = _assets.LoadSkeletalModel(m, 0);
             if (parts is not null)
             {
-                parts.Root.QueueFree(); // warm the texture/material caches; discard the throwaway build node
+                // (hitch-fix §3, 2026-06-15) Keep the built node to RENDER it below instead of freeing it
+                // unrendered. Building-then-freeing warmed only the texture/material CACHES — Godot compiles a
+                // material's pipeline on first DRAW, so an un-drawn warm model left its player-shader pipeline
+                // UNcompiled, and the first bot wearing it paid a mid-match PIPELINE-COMPILE hitch at join
+                // (measured t=23-27s, rest-dominated, "1 ubershader"). This is the exact bug §12.6-2 fixed for the
+                // idle warmer (which renders via WarmNodes); the load-time roster warm had been missed.
+                warmRoots.Add(parts.Root);
                 modelsWarmed++;
             }
+            // Yield per model so the loading bar animates and one cold IQM's decode+upload doesn't monopolize the
+            // frame — the load-screen analogue of the streamer's per-frame budget on the live path.
+            await YieldForLoadingFrame();
+            if (!IsInsideTree()) return;
         }
-        GD.Print($"[NetGame] precached {sounds} combat sounds, {modelsWarmed} player models.");
+        // Render the roster offscreen for a few frames so every player-shader pipeline variant compiles NOW (under
+        // the loading screen), then free them — the textures/materials stay cached. Mirrors StartIdleWarmup's
+        // WarmNodes use. Textures are shared-cached, so holding the roster's scene nodes briefly is a small,
+        // bounded peak. No-op/immediate-free headless.
+        if (warmRoots.Count > 0)
+            XonoticGodot.Game.Client.GpuWarmPass.WarmNodes(this, warmRoots, () =>
+            {
+                foreach (Node3D r in warmRoots)
+                    if (GodotObject.IsInstanceValid(r))
+                        r.QueueFree();
+            });
+        GD.Print($"[NetGame] precached {sounds} combat sounds, {modelsWarmed} player models (rendered for pipeline warm).");
     }
 
     /// <summary>The stock player models the idle warmer warms after load (the local + erebus default are already
@@ -1753,6 +2663,23 @@ public sealed partial class NetGame : Node3D
     };
 
     /// <summary>
+    /// The muzzle-flash MODEL vpath for a weapon — the QC <c>m_muzzlemodel</c> attrib (each weapon's
+    /// <c>*.qh</c> ATTRIB). Only the weapons that set a non-null <c>m_muzzlemodel</c> attach a model flash:
+    /// Devastator + MineLayer + Overkill RPC (<c>flash.md3</c>) and Machinegun + Shotgun + Overkill HMG/MachineGun
+    /// (<c>uziflash.md3</c>). NOTE: Vortex/Vaporizer DEFINE a <c>VORTEX_MUZZLEFLASH</c>/<c>VAPORIZER_MUZZLEFLASH</c>
+    /// model (nexflash.md3) but their <c>m_muzzlemodel</c> attrib is <c>MDL_Null</c> — they attach NO model flash,
+    /// so they (and the Arc, also <c>MDL_Null</c>) are correctly absent here. Every other weapon is <c>MDL_Null</c>
+    /// and attaches NO model flash (only the particle effect), so this returns <c>""</c> for them (the ViewModel
+    /// skips the model spawn).
+    /// </summary>
+    private static string MuzzleModelFor(XonoticGodot.Common.Gameplay.Weapon w) => w.NetName switch
+    {
+        "devastator" or "minelayer" or "okrpc" => "models/flash.md3",
+        "machinegun" or "shotgun" or "okhmg" or "okmachinegun" => "models/uziflash.md3",
+        _ => "",
+    };
+
+    /// <summary>
     /// Build the third-person world model for a carried weapon id (RC6 — wired into
     /// <see cref="ClientEntityView.WeaponModelFactory"/>). Uses the same <c>v_*</c> model + asset pipeline as
     /// the first-person viewmodel so other players' weapons render textured instead of a placeholder box.
@@ -1794,9 +2721,66 @@ public sealed partial class NetGame : Node3D
         return _assets.LoadModel(e.Model);
     }
 
+    /// <summary>
+    /// (engine-perf 2026-06-16) Build one hidden instance per DISTINCT map-item / pickup model for the offscreen
+    /// GPU pipeline warm pass. Item world-models render through the entity feed and are PVS-culled until first
+    /// seen, so their (mesh,material) pipeline first-compiles mid-match the moment the player rounds a corner onto
+    /// a pickup — a synchronous SURFACE compile (the residual a RenderDoc capture pinned to the MD3-entity class).
+    /// Loads each distinct model the SAME way <see cref="BuildEntityModel"/> does (<c>_assets.LoadModel</c> of the
+    /// registry def's <see cref="StartItem.ResolveModelPath"/>), so the warmed pipeline is byte-identical to the
+    /// live draw. The returned nodes are unparented (the warm pass owns + frees them); the cached parses/materials
+    /// live on for the real spawns. Missing / unsupported (Quake1 .mdl) models simply aren't warmed.
+    /// </summary>
+    private List<Node3D> BuildItemWarmupInstances()
+    {
+        var list = new List<Node3D>();
+        if (_assets is null || DisplayServer.GetName() == "headless")
+            return list;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (Pickup def in Registry<Pickup>.All)
+        {
+            string? path = StartItem.ResolveModelPath(def);
+            if (string.IsNullOrEmpty(path) || !seen.Add(path))
+                continue;
+            try
+            {
+                if (_assets.LoadModel(path) is { } node)
+                    list.Add(node);
+            }
+            catch { /* a missing / unsupported item model simply isn't warmed */ }
+        }
+        return list;
+    }
+
     public override void _ExitTree() => Shutdown();
 
     private bool _shutDown;
+
+    // #19 auto-pause: the `slowmo` value captured while the solo-local pause holds slowmo at 0. Null = not held.
+    private string? _localPauseSlowmo;
+
+    /// <summary>#19 auto-pause realized the Xonotic way — via the <c>slowmo</c> cvar (DP host_timescale; the exact
+    /// lever the timeout pause uses, GameWorld.cs:1274). <see cref="Shell"/>'s SyncAutoPause owns
+    /// <c>GetTree().Paused</c> for a solo-local game; mirror it onto the server's slowmo so
+    /// <c>ServerNet.ResolveSlowmo</c> time-scales the WHOLE sim to 0 (bots/projectiles/timers freeze) AND the
+    /// client — which scales its input cadence by the REPLICATED slowmo — freezes prediction in lockstep (so
+    /// there's no unpause input-burst). Capture/restore the prior value so a server-set slowmo survives; also
+    /// restored in <see cref="Shutdown"/> so a paused teardown can't leave the next map stuck frozen.</summary>
+    private void SyncLocalPauseSlowmo()
+    {
+        if (_serverWorld is null) return; // pure client: no authoritative sim to scale
+        bool pause = GetTree().Paused;
+        if (pause && _localPauseSlowmo is null)
+        {
+            _localPauseSlowmo = _serverWorld.Services.Cvars.GetString("slowmo");
+            _serverWorld.Services.Cvars.Set("slowmo", "0");
+        }
+        else if (!pause && _localPauseSlowmo is not null)
+        {
+            _serverWorld.Services.Cvars.Set("slowmo", _localPauseSlowmo);
+            _localPauseSlowmo = null;
+        }
+    }
 
     /// <summary>
     /// Dispose the client + (listen) server transports and free the prediction carrier — idempotent. Call this
@@ -1810,6 +2794,17 @@ public sealed partial class NetGame : Node3D
         if (_shutDown)
             return;
         _shutDown = true;
+
+        // #19: if we tore down while the solo-local auto-pause was holding slowmo at 0, restore it so the engine
+        // doesn't stay frozen for the next map (mirrors TimeoutController.ResetSlowmoOnShutdown).
+        if (_localPauseSlowmo is not null && _serverWorld is not null)
+        {
+            _serverWorld.Services.Cvars.Set("slowmo", _localPauseSlowmo);
+            _localPauseSlowmo = null;
+        }
+        // #30: same guard for the published client render-time scale — a teardown mid-pause/slowmo must not
+        // leave the menu / the next match's visuals frozen at the old factor.
+        XonoticGodot.Game.Client.ClientRenderTime.Scale = 1f;
 
         if (_client is not null)
         {
@@ -1843,7 +2838,13 @@ public sealed partial class NetGame : Node3D
         if (_musicPlayer is not null && Godot.GodotObject.IsInstanceValid(_musicPlayer))
             _musicPlayer.SimGate = null;   // gate released; music scan reverts to lock-free
         if (_serverWorld is not null)
+        {
+            // Detach the world's cvar hook BEFORE dropping the world. Critical on the unified path, where that hook
+            // lives on the SHARED store which OUTLIVES this match (the next map builds a fresh world on it): leave
+            // it attached and every retired world would keep re-deriving weapon balance on every future cvar change.
+            _serverWorld.Shutdown();
             _serverWorld.Services.TraceImpl.ConcurrencyGate = null;   // traces revert to lock-free
+        }
         _simGate = null;
         _server?.Dispose();
         // Free the carrier so a torn-down session doesn't leave a stray player edict in its facade. Use the
@@ -1863,6 +2864,17 @@ public sealed partial class NetGame : Node3D
     private float _bgmVolumeCv = 0.7f;
     private bool _predictFireCv = true;
     private bool _perFrameInputCv;
+    // Path A send model. cl_netfps (DP-faithful, default 72) = datagram send rate; cl_movement_send_all (default 0):
+    // 0 = BASE-FAITHFUL — transmit gated at 1/cl_netfps with bounded redundancy (intermediate frames coalesce above
+    // ~cl_netfps×redundancy fps, exactly like DP), 1 = EXACT — transmit every predicted frame so the server replays
+    // the identical command sequence and reconcile stays ~0 (more bandwidth; great on a listen server).
+    private float _netFpsCv = 72f;
+    private bool _sendAllCv;
+    private bool _netClockSmoothCv = true; // cl_netclock_smooth: gradual render-clock creep vs hard rebase (#2)
+    private bool _netInputTraceCv;         // net_input_trace: dormant net input→movement pipeline diagnostic (see _Process)
+    private int _netTraceTick;             // throttle counter for the net_input_trace log
+    private bool _hitchHoldCv = true;      // cl_movement_hitch_hold: Fix B post-hitch stall-aware reconcile (see TROUBLESHOOTING.md)
+    private bool _immediateButtonsCv = true; // cl_netimmediatebuttons: send fire/jump/impulse immediately past the rate gate (DP)
 
     private void EnsureProcessCvarCache()
     {
@@ -1878,7 +2890,13 @@ public sealed partial class NetGame : Node3D
     {
         if (name.Equals("bgmvolume", StringComparison.OrdinalIgnoreCase)
             || name.Equals("cl_predictfire", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("cl_movement_perframe", StringComparison.OrdinalIgnoreCase))
+            || name.Equals("cl_movement_perframe", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("cl_netfps", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("cl_movement_send_all", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("cl_netclock_smooth", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("net_input_trace", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("cl_movement_hitch_hold", StringComparison.OrdinalIgnoreCase)
+            || name.Equals("cl_netimmediatebuttons", StringComparison.OrdinalIgnoreCase))
             RefreshProcessCvars();
     }
 
@@ -1888,6 +2906,15 @@ public sealed partial class NetGame : Node3D
         // cl_predictfire defaults ON: unset GetString reads "" → treat anything but "0" as on.
         _predictFireCv = (_sharedCvars?.GetString("cl_predictfire") ?? "") != "0";
         _perFrameInputCv = _sharedCvars?.GetFloat("cl_movement_perframe") is float pf && pf != 0f;
+        _netFpsCv = _sharedCvars?.GetFloat("cl_netfps") is float nf && nf > 0f ? nf : 72f;
+        _sendAllCv = _sharedCvars?.GetFloat("cl_movement_send_all") is float sa && sa != 0f;
+        // cl_netclock_smooth defaults ON (unset → on): treat anything but "0" as enabled.
+        _netClockSmoothCv = (_sharedCvars?.GetString("cl_netclock_smooth") ?? "") != "0";
+        _netInputTraceCv = (_sharedCvars?.GetString("net_input_trace") ?? "") == "1";
+        // cl_movement_hitch_hold defaults ON (unset → on): treat anything but "0" as enabled.
+        _hitchHoldCv = (_sharedCvars?.GetString("cl_movement_hitch_hold") ?? "") != "0";
+        // cl_netimmediatebuttons defaults ON (unset → on): treat anything but "0" as enabled.
+        _immediateButtonsCv = (_sharedCvars?.GetString("cl_netimmediatebuttons") ?? "") != "0";
     }
 
     public override void _Process(double delta)
@@ -1904,6 +2931,24 @@ public sealed partial class NetGame : Node3D
 
         float dt = (float)delta;
 
+        // slowmo / host_timescale: the CLIENT-side time accumulators (input cadence + render clock) scale by the
+        // SAME factor the server applies to its sim (ServerNet.StepWorld → SimulationLoop.TimeScale), so the player's
+        // command rate and the server's tick rate slow/speed together and prediction stays in lockstep. On a listen
+        // server both ends read the same shared cvar; a remote client reads the replicated value. 1 = real time.
+        // NOTE: the server is still driven by the RAW dt below (it scales internally via TimeScale) — only the
+        // client accumulators are pre-scaled here.
+        float slowmo = ResolveTimeScale();
+        // #30: publish the factor for every client-side visual animation driver (viewmodel sway/clips, casings,
+        // gibs, entity/player animators, ambient emitters, faithful particles) — the port of DP scaling cl.time
+        // (which ALL CSQC animation reads) by movevars_timescale, so a slowmo/paused sim slows/freezes the
+        // client visuals in lockstep instead of leaving them running on wall clock.
+        XonoticGodot.Game.Client.ClientRenderTime.Scale = slowmo;
+
+        // Arm the predicted-warpzone budget: ONE predicted crossing per render frame, across every reconcile
+        // replay chain this frame runs (see TriggerTouch.PredictedWarpBudget — kills the replay round-trip
+        // through both paired zones that stamped a bogus entry-facing view snap).
+        XonoticGodot.Engine.Simulation.TriggerTouch.PredictedWarpBudget = 1;
+
         // [T63·P2] Replay: advance the demo playhead by realDelta × speed BEFORE the server tick, so this frame's
         // BuildEntitySet samples the updated playhead. The sim/snapshot clock still runs at real time (the world
         // advances by dt below), so a paused playhead (speed 0) keeps snapshots flowing with frozen content — the
@@ -1916,6 +2961,12 @@ public sealed partial class NetGame : Node3D
         // call it (that would double-drive the world AND race the worker). The "server.tick" main-thread scope
         // then measures ~0, which is exactly the A/B metric this item targets. When NOT threaded, drive it here
         // exactly as today.
+        // #19 auto-pause: mirror Shell's solo-local pause onto the SIM the Xonotic way — the `slowmo` cvar (see
+        // SyncLocalPauseSlowmo). ResolveSlowmo reads it into Simulation.TimeScale each StepWorld, so a plain
+        // Tick(dt) below then advances ZERO sim time while paused; the transport still pumps (keepalive + a
+        // joining remote still surfaces → Shell auto-releases). Runs BEFORE the tick so the value is live this frame.
+        SyncLocalPauseSlowmo();
+
         if (_serverThread is null)
             using (XonoticGodot.Game.Client.FrameProfiler.Scope("server.tick"))
                 _server?.Tick(dt);
@@ -1941,6 +2992,24 @@ public sealed partial class NetGame : Node3D
             using (XonoticGodot.Game.Client.FrameProfiler.Scope("server.tick"))
                 _server?.PumpTransportThreaded(dt);
 
+        // QC target_music_kill() at NextLevel: stop the map music at intermission (works on both the listen-server
+        // and pure-client paths — the flag is networked via ClientNet.MatchIntermission). QC FixIntermissionClient
+        // additionally loops a random sv_intermission_cdtrack word over the scoreboard; feed that value from the
+        // server cvar (listen-server only — the cvar isn't networked, so it stays empty/kill for a pure client,
+        // matching the stock empty default where no switch occurs anyway).
+        if (_musicPlayer is not null && _client is not null)
+        {
+            _musicPlayer.Intermission = _client.MatchIntermission;
+            if (_serverWorld is not null)
+                _musicPlayer.IntermissionCdTrack = _serverWorld.Services.Cvars.GetString("sv_intermission_cdtrack") ?? "";
+        }
+
+        // QC IntermissionThink autoscreenshot dance: the server forces clients with cl_autoscreenshot to capture the
+        // end-of-match scoreboard (and cl_autoscreenshot 2 always captures). Driven here off the networked
+        // intermission flag — armed with a short delay (QC `autoscreenshot = time + 0.1`) so the frame grabbed is the
+        // settled scoreboard, fired exactly once per match.
+        UpdateIntermissionAutoscreenshot();
+
         // Feed the music player the current server time so trigger_music touch freshness works.
         if (_musicPlayer is not null && _serverWorld is not null)
         {
@@ -1962,11 +3031,15 @@ public sealed partial class NetGame : Node3D
             {
                 _damageText.Camera = _camera;
                 Player? localPlayer = LocalServerPlayer;
+                // QC spectatee_status != -1 (playing or following a player → a meaningful view origin, so the
+                // close-range / out-of-view 2D heuristics may apply); a free-fly observer (IsObserving) always
+                // gets a world number.
+                bool canUse2d = _client is not null && !_client.IsObserving;
                 foreach (DamageTextEvent ev in dtm.DrainPending())
                 {
                     string wn = XonoticGodot.Common.Gameplay.Damage.DeathTypes.WeaponNetNameOf(ev.DeathType);
                     int colorKey = Weapons.ByName(wn) is { } w ? w.RegistryId : -1;
-                    _damageText.Add(ev, Coords.ToGodot(ev.Target.Origin), colorKey);
+                    _damageText.Add(ev, Coords.ToGodot(ev.Target.Origin), colorKey, canUse2d);
 
                     // Hit confirmation when the LOCAL player dealt the damage (not self-damage): the hitsound
                     // beep AND the crosshair hitmarker flash (QC HitSound + the crosshair hit indication). The
@@ -1980,16 +3053,70 @@ public sealed partial class NetGame : Node3D
             }
             if (Mutators.ByName("itemstime") is ItemstimeMutator itm && itm.IsEnabled)
             {
-                _fullHud.ItemsTime.Visible = true;
-                _fullHud.ItemsTime.SetItemTimes(itm.CurrentTimes);
+                // QC HUD_ItemsTime enable gate (itemstime.qc:293-296): with stock cvars (hud_panel_itemstime=2,
+                // sv_itemstime=1) an ALIVE player in a normal round sees NOTHING — only spectators (mode 1/2) and,
+                // in mode 2, also everyone during warmup or when sv_itemstime==2. STAT(ITEMSTIME) is modeled on
+                // the host as the live sv_itemstime tier (itm.Tier); spectatee_status / warmup_stage come off the
+                // local client. (Previously the panel was force-shown whenever the mutator was enabled.)
+                int panelMode = Mathf.RoundToInt(
+                    XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat("hud_panel_itemstime"));
+                int spectatee = _client?.SpectateeStatus ?? 0;
+                bool warmup = _client?.MatchWarmup ?? false;
+                bool show = ItemsTimePanel.ShouldDraw(panelMode, spectatee, warmup, itm.Tier);
+                _fullHud.ItemsTime.Visible = show;
+                if (show)
+                    _fullHud.ItemsTime.SetItemTimes(itm.CurrentTimes);
             }
 
-            // [T41] objective rings (QC view.qc HUD_Draw NADE_TIMER > CAPTURE_PROGRESS > REVIVE_PROGRESS): feed
-            // the crosshair panel the local player's held-nade charge each frame (host path; the local Player
-            // carries STAT(NADE_TIMER) live). CAPTURE/REVIVE producers aren't wired yet (no capture/freeze stat on
-            // the local Player), so they stay 0 here — the panel hides those rings until a gametype feeds them.
-            _fullHud.Crosshair.NadeTimer = LocalServerPlayer?.NadeTimer ?? 0f;
+            // [T41] objective-ring + hit-indication feed moved to UpdateCrosshairFeedback() (called
+            // unconditionally below, like UpdateCrosshairWeaponRings) so it also runs on a pure remote client
+            // off the networked LocalState slice. The host damagetext hit path below still owns the host
+            // crosshair flash + hitsound; UpdateCrosshairFeedback only fires the hit cue on the remote path.
+
+            // (weapon-ring + vehicle-HUD feeders hoisted out of the host-only block — see the unconditional calls
+            // before ProcessAnnouncerQueue below — so they also run for a pure remote client; each now picks its
+            // source: LocalServerPlayer on a host, the networked ClientNet slice on a client.)
         }
+        else if (_client is not null && _client.HasItemsTime)
+        {
+            // REMOTE-CLIENT items-time feed (no local server): the server pushed the per-peer item respawn-time
+            // table + the STAT(ITEMSTIME) tier over NetControl.ItemsTime (QC the CSQC itemstime net message). The
+            // server already applied the SetTimesForAllPlayers send gate (a gated-out live player received the
+            // reset/cleared table), so here we only run the same client-side HUD_ItemsTime enable gate the host
+            // path uses (spectatee / warmup / STAT(ITEMSTIME)==2). The tier comes off the network, not a local
+            // mutator. This is what makes the panel work for a pure remote/dedicated-server client.
+            int panelMode = Mathf.RoundToInt(
+                XonoticGodot.Game.Menu.MenuState.Cvars.GetFloat("hud_panel_itemstime"));
+            bool show = ItemsTimePanel.ShouldDraw(
+                panelMode, _client.SpectateeStatus, _client.MatchWarmup, _client.ItemsTimeTier);
+            _fullHud.ItemsTime.Visible = show;
+            if (show)
+                _fullHud.ItemsTime.SetItemTimes(_client.ItemTimes);
+        }
+
+        // Weapon-stat crosshair rings (QC client/hud/crosshair.qc 476-557): runs on EVERY path now (the feeder was
+        // hoisted out of the host-only block). On a listen host it reads the live slot state off LocalServerPlayer;
+        // a pure remote / dedicated-server client mirrors the networked owner-block rings; and when FOLLOWING another
+        // player (spectator) it now reads that player's per-player WepentView slice off the entity stream — the
+        // cross-client wepent-prop networking that was the prior follow-up is wired (smoke consumer in
+        // UpdateCrosshairWeaponRings; the full viewmodel/beam consumers land in Phase 2).
+        UpdateCrosshairWeaponRings();
+
+        // [Wave5 + vehicleview] in-vehicle HUD + aux lock crosshair (QC cl_vehicles.qc Vehicles_drawHUD /
+        // drawCrosshair + the TE_CSQC_VEHICLESETUP dispatch). Runs on EVERY path now (hoisted out of the host-only
+        // block, like the weapon rings): a listen host reads the live local Player's vehicle link + 0..100 stat
+        // mirror; a pure remote pilot reads the networked VehicleViewState off ClientNet.LocalState; a spectator
+        // reads the followed entity's VehicleView slice. The camera's cockpit/chase pull-back keys off the panel's
+        // resolved InVehicle (see UpdateCamera). Skipped only when there is no full HUD yet.
+        if (_fullHud is not null)
+            UpdateVehicleHud();
+
+        // [T41] objective rings (NADE_TIMER > CAPTURE_PROGRESS > REVIVE_PROGRESS) + the remote-client hit-
+        // indication flash. Runs on EVERY path (hoisted out of the host-only block): a listen host reads the
+        // live LocalServerPlayer stats; a pure remote client reads the networked LocalState slice the server
+        // already ships (ClientNet.LocalState), so the nade/thaw/capture rings and the hit flash now show for a
+        // remote client too (QC view.qc UpdateDamage + the HUD_Draw objective rings, both client-side).
+        UpdateCrosshairFeedback();
 
         // Advance the announcer queue (play the next queued voice if the current one finished).
         _notifications?.ProcessAnnouncerQueue();
@@ -1997,20 +3124,38 @@ public sealed partial class NetGame : Node3D
         // Pump the client transport (handshake + snapshots + event bundles) before reading predicted state.
         if (_client is null)
             return;
+        // Fix B (cl_movement_hitch_hold, default on): flag a frame HITCH (the shared listen-server thread stalled —
+        // GC / heavy map streaming) so the reconciler HOLDS a moderate post-stall correction instead of snapping the
+        // camera back (see ClientNet.HandleSnapshot). Gated by a cvar because it's defensive, not the cause of any
+        // observed bug (the spawn-stutter was the ENet throttle) — `set cl_movement_hitch_hold 0` disables it.
+        // Rationale + risks: TROUBLESHOOTING.md.
+        _client.RecentHitch = _hitchHoldCv && dt > HitchFrameSeconds;
         _client.Poll();
 
-        // Advance the render clock: accumulate this frame, then rebase to the server time on a fresh snapshot so
-        // it stays aligned with the clock the reconciler armed the stair/error decays with (see _renderClock).
-        _renderClock += dt;
+        // Advance the render clock: free-run by this frame's elapsed time, then gently CREEP it toward server time
+        // on a fresh snapshot (see _renderClock).
+        _renderClock += dt * slowmo; // slowmo: keep the render clock aligned with the (time-scaled) server clock
         if (_client.LatestServerTime != _lastSeenServerTime)
         {
-            // A fresh snapshot landed: rebase the clock, and (on the very first one) seed the carrier from the
-            // server's authoritative owner state so the predictor's first replay starts at the real spawn.
             bool firstSnapshot = _lastSeenServerTime < 0f;
             _lastSeenServerTime = _client.LatestServerTime;
-            _renderClock = _client.LatestServerTime;
+            // PATH A (#2 divergence vs Base): do NOT hard-rebase the render clock to server time on every snapshot.
+            // The in-process server runs 0-4 ticks/frame and only broadcasts when the world advanced, so snapshots
+            // arrive in lumps; a hard `= LatestServerTime` jolts the clock — and the camera / error+stair decay
+            // timeline it drives — at irregular instants (a contributor to the bhop judder). Instead let the clock
+            // free-run (+= dt above) and gently creep toward server time, matching Base's cl_nettimesyncboundmode
+            // (bound + small per-frame creep, cl_parse.c). Snap only on the FIRST snapshot or a large discontinuity
+            // (respawn / teleport / level change / a hitch beyond MaxClockResync). cl_netclock_smooth 0 = old hard
+            // rebase, for A/B.
+            float err = _client.LatestServerTime - _renderClock;
+            if (firstSnapshot || !_netClockSmoothCv || MathF.Abs(err) > MaxClockResync)
+                _renderClock = _client.LatestServerTime;
+            else
+                _renderClock += err * ClockSyncFactor; // DP-style gradual catch-up (cl_nettimesyncfactor)
             if (firstSnapshot)
             {
+                // Seed the carrier from the server's authoritative owner state so the predictor's first replay
+                // starts at the real spawn.
                 SeedCarrierFromServer();
                 // C5: the camera now has an authoritative owner state to sit at — start placing it (the per-frame
                 // UpdateCamera below is gated on _cameraReady until this runs).
@@ -2049,7 +3194,43 @@ public sealed partial class NetGame : Node3D
             {
                 bool localDead = LocalServerPlayer is { } self ? self.IsDead : (_everAlive && _client.Health <= 0);
                 _carrier.DeadState = localDead ? DeadFlag.Dead : DeadFlag.No;
+
+                // Mirror the server-resolved per-player speed multiplier (Speed powerup / speed·disability buffs /
+                // entrap nade) onto the prediction carrier so PlayerPhysics' predicted leg scales the top speed like
+                // authority (the carrier has none of those status effects to recompute it). 1 while none active.
+                _carrier.SpeedMultiplierPredicted = _client.LocalSpeedMultiplier;
+
+                // PRE-MATCH FREEZE mirror (the real spawn-rubberband fix): the server pins the player at spawn while
+                // `time < game_starttime` (GameWorld.preMatchFreeze, canMove=false). Mirror that onto the PREDICTOR so
+                // it runs no movement during the countdown — otherwise it predicts gravity/creep the frozen server
+                // never applies, and the per-snapshot sub-32u error gets smoothed+re-armed every frame (the vibrate,
+                // which then takes a freeze-length to bleed off → looked like movement freed ~5s into live). Gate on
+                // HasMatchState (not MatchStartTime>0) so it engages from the very first post-spawn frame, on the
+                // server clock (LatestServerTime) so it releases exactly at go-live. Warmup is freely playable.
+                if (_movementStep is not null)
+                    _movementStep.Frozen = _client.HasMatchState && !_client.MatchWarmup
+                        && _client.LatestServerTime < _client.MatchStartTime;
             }
+
+            // NET-INPUT DIAGNOSTIC (dormant; `set net_input_trace 1`). Logs the full input→movement pipeline every
+            // ~0.25 s so a future movement/networking regression can be SEEN end-to-end instead of guessed at (this
+            // is exactly what found the ENet packet-throttle spawn-stutter). Columns: push/send = client commands
+            // generated / transmitted; recv/enq/batch = server commands received off the wire / past the seq-dedup /
+            // drained into a movement batch; enet throttle (0..32 — gates UNRELIABLE sends, a low value silently
+            // drops input) / loss / rtt; pred vs srvOrg = predicted vs authoritative origin (a widening gap = the
+            // predictor running ahead of a starved/lagging server); recon = reconcile error (a steady nonzero is a
+            // rubberband). Reading guide + failure signatures: NET-DEBUGGING.md. Fully off when the cvar is 0
+            // (the counters it reads are single increments on the hot path — negligible — so they stay always-on).
+            if (_netInputTraceCv && (_netTraceTick++ & 15) == 0)
+            {
+                var st = _client.DbgEnet;
+                var sp = LocalServerPlayer;
+                GD.Print($"[nettrace] dt={dt * 1000f:F0}ms push={_client.DbgPush} send={_client.DbgSend} " +
+                         $"recv={_server?.DbgRecv} enq={_server?.DbgEnqueued} batch={_server?.DbgBatch} " +
+                         $"| enet throttle={st.Throttle:F0}/{st.ThrottleLimit:F0} loss={st.Loss:F0} rtt={st.Rtt:F0}ms " +
+                         $"| pred={_client.PredictedOrigin} srvOrg={(sp is null ? "-" : sp.Origin.ToString())} recon={_client.LastReconcileError:F2}");
+            }
+
 
             // F03 (re)spawn view snap (QC PutPlayerInServer: self.fixangle = true; self.angles = spot.angles). The
             // server latches the spawn-spot facing in the host Player's FixAngle/FixAngleAngles channel (the same
@@ -2059,9 +3240,36 @@ public sealed partial class NetGame : Node3D
             // snaps the view out of any server-side (multi-destination) teleport that set the host Player's flag.
             if (LocalServerPlayer is { FixAngle: true } fixSelf)
             {
-                _viewAngles.X = Mathf.Clamp(fixSelf.FixAngleAngles.X, -89f, 89f);
-                _viewAngles.Y = fixSelf.FixAngleAngles.Y;
-                _viewAngles.Z = 0f;
+                // Warpzone/teleporter crossings are usually snapped FIRST by the predictor
+                // (ConsumePredictedFixAngle) — the server's stamp for the SAME crossing lands here 1-3 frames
+                // later (its tick runs behind the replay). Re-applying it would throw away every mouse delta
+                // in between (a "view fights me" snap-back on each crossing), so recognise it — same facing,
+                // recent — and only clear the flag. Spawn snaps and unpredicted (multi-dest) teleports, which
+                // the predictor never saw, still apply. Base sidesteps this by NOT using fixangle for player
+                // warpzone crossings at all (server.qc:150-170 networks the transform; the client rotates its
+                // own view ONCE) — this is the listen-host equivalent of that single-apply.
+                NVec3 fa = fixSelf.FixAngleAngles;
+                // The AUTHORITATIVE stamp drives warpzone view snaps (the predicted apply is disabled on the
+                // listen host — see the wz_predict_apply block above). Skip only when a predicted path (the
+                // teleporter snap) already applied this same facing recently — the round-3 known-good rule.
+                float yawDiff = Mathf.Abs(Mathf.RadToDeg(Mathf.AngleDifference(
+                    Mathf.DegToRad(fa.Y), Mathf.DegToRad(_lastPredictedFixAngles.Y))));
+                bool predictedSame = Time.GetTicksMsec() * 0.001f - _lastPredictedFixTime < 1f
+                    && yawDiff < 2f
+                    && Mathf.Abs(Mathf.Clamp(fa.X, -89f, 89f) - _lastPredictedFixAngles.X) < 2f;
+                if (!predictedSame)
+                {
+                    _viewAngles.X = Mathf.Clamp(fa.X, -89f, 89f);
+                    _viewAngles.Y = fa.Y;
+                    _viewAngles.Z = 0f;
+                    _lastFixApplyTime = Time.GetTicksMsec() * 0.001f; // arm the predicted replay-echo discard window
+                    // Re-seed the view-model sway to the new facing (warpzone crossings now snap ONLY through
+                    // this authoritative path — the predicted warp no longer stamps a view snap).
+                    if (_viewModel is not null && GodotObject.IsInstanceValid(_viewModel))
+                        _viewModel.NotifyTeleported();
+                }
+                if (MenuState.Cvars.GetFloat("sv_warpzone_trace") != 0f)
+                    GD.Print($"[wzview] authoritative {(predictedSame ? "skip (predicted already applied)" : "snap")} -> {fa}");
                 fixSelf.FixAngle = false;
             }
 
@@ -2084,17 +3292,40 @@ public sealed partial class NetGame : Node3D
             // in-session (the Changed hook refreshes it the frame the cvar is set).
             _perFrameInput = _perFrameInputCv;
             _client.PerFrameInput = _perFrameInput;
+            // Send model (Path A): EXACT = transmit every predicted frame (InputSendInterval 0 → server replays the
+            // identical sequence → reconcile ~0); BASE-FAITHFUL (default) = gate transmits to cl_netfps/s, the
+            // bounded redundancy then coalescing intermediate frames above ~cl_netfps×redundancy fps exactly as DP
+            // does. Only meaningful in per-frame (Path A) mode; the legacy fixed-tick path already sends one/tick.
+            _client.InputSendInterval = _perFrameInput && !_sendAllCv ? 1f / MathF.Max(10f, _netFpsCv) : 0f;
+            // cl_netimmediatebuttons (DP): fire/jump/weapon-switch bypass the rate gate above so they reach the
+            // server immediately at high fps, while steady movement stays gated to cl_netfps.
+            _client.ImmediateButtons = _immediateButtonsCv;
             if (_perFrameInput)
             {
-                // PER-FRAME (DP-style variable-dt): emit ONE command per rendered frame stamped with the real
-                // clamped frame dt; the server drains all pending commands that tick, running movement per command
-                // with each dt. Removes the up-to-one-tick input quantization → snappier fire + aim. The player
-                // still advances at wall-clock speed because each command carries the dt it represents.
-                _inputDeltaTime = Mathf.Clamp(dt, MinInputDt, MaxInputDt);
-                _renderClock += _inputDeltaTime;
-                _client.SendInput(_renderClock);
-                ConsumePredictedFixAngle();
-                _inputAccum = 0f; // keep the legacy accumulator drained so a mid-session switch back can't burst
+                // PATH A — BASE-FAITHFUL variable-dt local prediction (Xonotic Base's default, Movetype_Physics_
+                // NoMatchTicrate): step the LOCAL player ONCE per RENDER frame at the real (clamped) frame dt, so the
+                // predicted origin lands at the EXACT render time. It then advances smoothly at ANY fps with no fixed
+                // 1/72 tick boundary to alias against the display rate — that aliasing was the bhop "lurch" the
+                // earlier fixed-tick attempt introduced (Base never had it; cf. cl_input.c CL_ClientMovement /
+                // cl.cmd.frametime, and the bhop-candidates-vs-base analysis). The physics is frametime-independent
+                // (half-step Verlet gravity → dt-invariant apex; verified by MovementTimingTests Phase1), so variable
+                // dt does not distort the arc; only the landing tick carries the tiny ±dt quantization Base accepts.
+                // A long frame is hard-capped (spiral guard) and split into <= MaxSubStepDt chunks so one huge step
+                // can't tunnel collisions (DP splits moves > 0.05 s). Transmit is rate-gated in ClientNet
+                // (InputSendInterval ~ 1/72 = DP cl_netfps) so a high-fps client predicts every frame WITHOUT
+                // flooding the server. _inputAccum is unused here (no tick draining) — zeroed so the legacy sub-tic
+                // extrapolation term is inert (the eye is already at exact render time, nothing to extrapolate).
+                _inputAccum = 0f;
+                float frameDt = dt * slowmo;
+                if (frameDt > MaxInputFrameDt) frameDt = MaxInputFrameDt; // spiral guard: cap a multi-100ms hitch
+                while (frameDt > 1e-5f)
+                {
+                    float sub = frameDt > MaxSubStepDt ? MaxSubStepDt : frameDt; // collision-stable sub-step split
+                    _inputDeltaTime = sub;
+                    _client.SendInput(_renderClock);
+                    ConsumePredictedFixAngle();
+                    frameDt -= sub;
+                }
             }
             else
             {
@@ -2104,19 +3335,20 @@ public sealed partial class NetGame : Node3D
                 // trigger a spiral-of-death.
                 const float tic = XonoticGodot.Engine.Simulation.SimulationLoop.TicRate;
                 _inputDeltaTime = tic;
-                _inputAccum += dt;
+                _inputAccum += dt * slowmo; // slowmo scales the client's command cadence to match the server's tick rate
                 if (_inputAccum > MaxInputBacklog) _inputAccum = MaxInputBacklog;
-                float clock = _renderClock;
-                while (_inputAccum >= tic)
+                int drained = 0;
+                while (_inputAccum >= tic && drained < MaxClientCatchupTicksPerFrame) // cap: graceful hitch recovery
                 {
                     _inputAccum -= tic;
-                    clock += tic;
+                    drained++;
                     // Sample WASD/mouse → InputCommand → push to the ring, predict forward, send the redundant tail.
-                    _client.SendInput(clock);
+                    // Send at the current render clock (already advanced by real dt once at the top of _Process); the
+                    // drained tics share that timestamp, which the redundant-send + cvar-pump pacing tolerate. Do NOT
+                    // advance _renderClock per drained tic here — that was the ~2x double-advance (see _renderClock).
+                    _client.SendInput(_renderClock);
                     ConsumePredictedFixAngle(); // teleporter view-snap, inside the loop so a 2nd tick samples it
                 }
-                // Read the camera at the clock the last prediction ran with, so eye and predicted origin agree.
-                _renderClock = clock;
             }
         }
 
@@ -2194,6 +3426,14 @@ public sealed partial class NetGame : Node3D
         bool weaponZoom = activeWep is not null && activeWep.ZoomOnSecondary && BindTable.Attack2Held;
         _view.ZoomHeld = zoomActive && (BindTable.ZoomHeld || weaponZoom);
 
+        // QC cl_player.qc CalcRefdef: `if(autocvar_chase_active) vieworg = CSQCPlayer_ApplyChase(...)` — the classic
+        // user third-person camera (the menu Perspective radio binds chase_active 0/1, DialogSettingsGame:457,487).
+        // Engage the shared view's classic chase mode when chase_active != 0; the death/frozen event-chase still
+        // takes precedence inside FirstPersonView. (Negative chase_active is a DP debug split-screen; treat !=0 as on.)
+        _view.CameraMode = CvarOr(Api.Cvars, "chase_active", 0f) != 0f
+            ? Client.FirstPersonView.ChaseMode.Chase
+            : Client.FirstPersonView.ChaseMode.None;
+
         // Place the first-person camera at the predicted eye each frame (smooth even between snapshots, since
         // SendInput re-predicts every tick). C5: held until the first snapshot seeds the carrier — before that
         // the predicted origin is (0,0,0) and the camera would render a from-world-origin frame during the
@@ -2202,6 +3442,22 @@ public sealed partial class NetGame : Node3D
         // (which reads SampleEyeContents = _view.EyeContents).
         if (_cameraReady)
             UpdateCamera(dt);
+
+        // Camera-trace capture (apparatus A2): once spawned, record the rendered camera origin + predicted state
+        // per frame; finish + quit when the scripted input is exhausted. Inert unless --camera-trace was passed.
+        if (CameraTrace.Active && _cameraReady && _carrier is not null && _client is not null)
+        {
+            CameraTrace.RecordFrame(
+                time: _renderClock, dt: dt,
+                physicsOrigin: _client.PredictedOrigin,
+                viewOriginGodot: _camera.GlobalPosition,
+                velocity: _client.PredictedVelocity,
+                onGround: _carrier.OnGround,
+                viewOfsZ: _carrier.ViewOfs.Z,
+                reconcileError: _client.LastReconcileError);
+            if (CameraTrace.Done)
+                CameraTrace.Finish(GetTree());
+        }
 
         // Dev capture (--fx-demo): burst the configured effect from the predicted eye along the aim. Inert (a
         // single null check) unless --fx-demo was passed; only runs once the eye is seeded (_cameraReady).
@@ -2215,12 +3471,14 @@ public sealed partial class NetGame : Node3D
         // Vortex's gfx/reticle_nex) while zooming with it. Fed after UpdateCamera so ZoomFraction is this frame's
         // value; reuses the active weapon resolved for the zoom above. Suppressed while dead / spectating / chase.
         _reticle?.UpdateReticle(activeWep, BindTable.ZoomHeld, BindTable.Attack2Held,
-            _view.ZoomFraction, LocalDeadNow(), _client.SpectatingNetId != 0, _view.ChaseActive);
+            _view.ZoomFraction, LocalDeadNow(), _client.SpectatingNetId != 0, _view.ChaseActive,
+            _view.ZoomScriptCaught);
 
         // Feed the full HUD's player-bound panels (health/ammo/weapons/crosshair) the local server Player on a
         // listen server, so they reflect live local state as the spawn lands (QC the view player). A pure client
         // has no local Player actor — the NetHud crosshair/health covers it. Cheap: SetPlayer no-ops when same.
         UpdateFullHudPlayer();
+        UpdateCrosshairGate();
         UpdateInfoMessages();
 
         // Install / swap the first-person weapon model when the networked active weapon changes (CSQC view.qc:305
@@ -2245,11 +3503,51 @@ public sealed partial class NetGame : Node3D
             // fade onto the screen. _everAlive flips true on the first spawn (line ~1212), so a genuine in-match
             // death (health<=0 after spawning) still shows the death fade. Matches the IsDead gate used below.
             _viewEffects.UpdateEffects(dt, health, SampleEyeContents(), observing);
+
+            // Freeze-Tag icy full-screen overlay (QC cl_freezetag.qc HUD_Draw_overlay): tint the screen blue while
+            // the local player is frozen, fading out as the thaw ring fills. Driven off the host-side local Player's
+            // Frozen status effect + the mirrored revive progress (the same source as the crosshair thaw ring); a
+            // pure remote client (no LocalServerPlayer) shows no overlay (frozen reads false).
+            Player? localFrozen = LocalServerPlayer;
+            bool isFrozen = localFrozen is { } lf && StatusEffectsCatalog.Frozen is { } frozenDef
+                && StatusEffectsCatalog.Has(lf, frozenDef);
+            _viewEffects.UpdateFrozenOverlay(isFrozen, localFrozen?.ReviveProgress ?? 0f);
+
+            // Darkness-nade blind overlay (QC nade/darkness.qc → STAT(NADE_DARKNESS_TIME) → the CSQC full-screen
+            // fade). The stat is the ABSOLUTE server time the blind expires; the client renders the remaining
+            // window = NadeDarknessTime − now. The host reads the live local Player; a pure remote client reads
+            // the networked own-entity slice (the Feedback block ships NadeDarknessTime). _renderClock is the
+            // server-synced clock the stat is stamped against.
+            float clientNow = _renderClock;
+            float darknessRemaining = (LocalServerPlayer is { } lp
+                ? lp.NadeDarknessTime
+                : _client?.LocalState?.NadeDarknessTime ?? 0f) - clientNow;
+            darknessRemaining = Mathf.Max(0f, darknessRemaining);
+            _viewEffects.UpdateDarknessOverlay(darknessRemaining);
+            // SND_BLIND ("misc/blind"): a one-shot 2D cue on the 0→positive onset edge (QC plays it as the blind
+            // lands, not every frame). Edge-tracked so it fires once per darkness field, not while it lingers.
+            bool darknessNow = darknessRemaining > 0f;
+            if (darknessNow && !_nadeDarknessActive)
+                PlayLocal2DSound("misc/blind");
+            _nadeDarknessActive = darknessNow;
+
+            // In-orb color flash (QC hud_colorflash): tint the screen toward an orb's color while the predicted eye
+            // is inside that orb's radius. The orb set + their flash colors/alphas come from the NadeOrbRenderer
+            // (fed off the entity stream); the eye is the SAME final render origin the contents sample uses.
+            if (_orbRenderer is not null)
+                _viewEffects.UpdateOrbColorFlash(_view.RenderedEyeQuake, _orbRenderer.ActiveOrbs());
         }
 
-        // Keep the radar oriented to the player's facing.
+        // Keep the radar oriented to the player's facing, and feed the live +zoom fraction so the radar's
+        // zoommode 0/1 follow the player's zoom the way QC's current_zoomfraction does.
         if (_radar is not null)
+        {
             _radar.LocalYawDegrees = _viewAngles.Y;
+            _radar.ZoomFraction = _view.ZoomFraction;
+            // Keep the Onslaught gate live so the maximized radar's click-to-spawn only arms in Onslaught — the same
+            // networked gametype string the HUD/scoreboard read (ScoreInfo block → GameScores.Gametype, "ons" = ONS).
+            _radar.IsOnslaught = XonoticGodot.Common.Gameplay.Scoring.GameScores.Gametype == "ons";
+        }
 
         // [T68] Shownames overlay (QC Draw_ShowNames_All): feed the per-frame view context — the local client's
         // team (the sameteam gate), whether we're in chase (the own-name gate), and our net id. The team is the
@@ -2258,6 +3556,15 @@ public sealed partial class NetGame : Node3D
         if (_shownamesLayer is not null)
         {
             _shownamesLayer.LocalNetId = _client.LocalNetId;
+            // QC current_player + 1: the entnum of the player we are VIEWING — the followed spectatee when
+            // spectating (a remote in RemoteIds, so its self/spectatee tag branch runs live), else the local player.
+            _shownamesLayer.CurrentViewedNetId = _client.SpectatingNetId != 0 ? _client.SpectatingNetId : _client.LocalNetId;
+            _shownamesLayer.SpectateeStatus = _client.SpectateeStatus;
+            _shownamesLayer.SpectateeStatusChangedTime = _client.SpectateeStatusChangedTime;
+            // QC `_entcs_send`'s `!(IS_PLAYER(to) || INGAME(to))` arm: an observing/spectating recipient gets every
+            // player's PRIVATE entcs slice, so the shownames m_entcs_private flag is forced true for all of them.
+            // spectatee_status != 0 ⇔ the local client is not a live in-game player (free-fly observe OR follow).
+            _shownamesLayer.LocalIsSpectating = _client.SpectateeStatus != 0;
             _shownamesLayer.ChaseActive = _view.ChaseActive;
             _shownamesLayer.LocalTeam = LocalShownamesTeam();
         }
@@ -2271,19 +3578,26 @@ public sealed partial class NetGame : Node3D
         UpdatePickupFeed();
         UpdateModIcons();
         UpdateAccuracy();
+        UpdateVotePanel();
+        UpdateMapVotePanel();
+        UpdateRacePanels();
+        UpdateHudDynamicFollow();
 
-        // Minigame cursor (QC hud_cursormode): while a minigame board/menu owns input, show the cursor so the
-        // player can click TTT/C4 tiles + the menu; recapture for play on the edge back out. Skip while the
-        // pause menu/console own the cursor (the Shell drives those).
-        if (!GetTree().Paused && !ConsoleState.IsOpen)
-        {
-            bool ui = UiOwnsCursor;
-            if (ui != _minigameUiOwnedCursor)
-            {
-                _minigameUiOwnedCursor = ui;
-                Input.MouseMode = ui ? Input.MouseModeEnum.Visible : Input.MouseModeEnum.Captured;
-            }
-        }
+        // Minigame cursor (QC hud_cursormode): while a minigame board/menu (or quickmenu / maximized radar) owns
+        // input, show the cursor so the player can click TTT/C4 tiles + the menu; recapture for play once it's
+        // dismissed. Skip while the pause menu/console own the cursor (the Shell drives those). We RE-ASSERT the
+        // desired state every frame — SetWantCapture is idempotent (it only touches Input.MouseMode on a real
+        // change) — rather than edge-latching on a remembered flag. The old latch desynced after a pause-menu
+        // round-trip OVER an open minigame board: the block is skipped while paused, resume force-captured while the
+        // board was still up, and no edge re-fired, so the cursor stayed stuck captured until the board was re-toggled.
+        //
+        // ...and NOT while the loading screen is still up: through map load + the connect/join handshake the cursor
+        // stays FREE (DP behaviour — you can alt-tab / mouse out of a windowed game while it loads). LoadingScreen
+        // goes null the frame the local player spawns (the handshake block above), and this reassert runs later in
+        // the same _Process, so the pointer is grabbed on that exact frame; after the first spawn it stays null and
+        // this behaves as before.
+        if (LoadingScreen is null && !GetTree().Paused && !ConsoleState.IsOpen)
+            MouseCapture.SetWantCapture(!UiOwnsCursor);
 
         // A changelevel was requested this frame (map / gotomap / nextmap / rotation / vote / samelevel): emit it
         // DEFERRED so the actual teardown+reboot (Shell) runs at idle, never inside this server tick. Capture the
@@ -2325,6 +3639,77 @@ public sealed partial class NetGame : Node3D
         return string.IsNullOrWhiteSpace(gt) ? _gametype : gt;
     }
 
+    // ---- crosshair objective rings + remote-client hit indication ----
+    // Remote-client hit-indication diff (QC view.qc UpdateDamage: STAT(HITSOUND_DAMAGE_DEALT_TOTAL) advances
+    // → unaccounted_damage → the crosshair hit flash + hitsound). On a pure remote client there is no local
+    // damagetext mutator, so we diff the networked cumulative-damage stat off ClientNet.LocalState instead.
+    private float _remoteHitDealtTotal;
+    private bool _remoteHitInit;
+
+    /// <summary>
+    /// Feed the crosshair panel the local player's objective-ring stats (QC view.qc HUD_Draw 1006-1022:
+    /// NADE_TIMER &gt; CAPTURE_PROGRESS &gt; REVIVE_PROGRESS) and, on the remote-client path, the hit-indication
+    /// flash (QC view.qc UpdateDamage). Runs on every path: a listen host reads the live
+    /// <see cref="LocalServerPlayer"/> (which carries STAT(NADE_TIMER)/STAT(REVIVE_PROGRESS) live); a pure
+    /// remote client reads the networked <see cref="ClientNet.LocalState"/> slice the server ships (the
+    /// EntityField.Feedback block — NadeTimer/CaptureProgress/ReviveProgress/HitDamageDealtTotal). CAPTURE has
+    /// no server producer yet, so it stays 0 and the panel hides that ring either way.
+    /// </summary>
+    private void UpdateCrosshairFeedback()
+    {
+        if (_fullHud is null)
+            return;
+        CrosshairPanel x = _fullHud.Crosshair;
+
+        if (LocalServerPlayer is { } host)
+        {
+            // Host / listen-server: the live local Player carries the stats. The host hit flash is driven by the
+            // damagetext drain above (so we don't diff HitDamageDealtTotal here — that would double-fire).
+            x.NadeTimer = host.NadeTimer;
+            x.ReviveProgress = host.ReviveProgress;
+            x.CaptureProgress = 0f; // no host producer yet (QC STAT(CAPTURE_PROGRESS) is gametype-set)
+
+            // Bonus-nade readout for the ammo panel (QC STAT(NADE_BONUS)/NADE_BONUS_TYPE/NADE_BONUS_SCORE): banked
+            // count, the Nades registry id selecting the icon, and the 0..1 fraction toward the next bonus. Live off
+            // the local Player on the host.
+            _fullHud.Ammo.NadeBonusCount = host.NadeBonus;
+            _fullHud.Ammo.NadeBonusTypeId = host.NadeBonusType;
+            _fullHud.Ammo.NadeBonusScoreFrac = host.NadeBonusScore;
+
+            _remoteHitInit = false; // re-baseline the remote diff if we ever fall back to the client path
+            return;
+        }
+
+        // Pure remote client: read the networked own-entity slice. No slice yet (pre-spawn) → hide the rings.
+        if (_client is null || _client.LocalState is not { } ls)
+        {
+            x.NadeTimer = 0f; x.CaptureProgress = 0f; x.ReviveProgress = 0f;
+            _fullHud.Ammo.NadeBonusCount = 0; _fullHud.Ammo.NadeBonusTypeId = 0; _fullHud.Ammo.NadeBonusScoreFrac = 0f;
+            _remoteHitInit = false;
+            return;
+        }
+
+        x.NadeTimer = ls.NadeTimer;
+        x.CaptureProgress = ls.CaptureProgress;
+        x.ReviveProgress = ls.ReviveProgress;
+
+        // Bonus-nade readout from the networked own-entity slice (the Feedback block ships NadeBonus/Type/Score).
+        _fullHud.Ammo.NadeBonusCount = ls.NadeBonus;
+        _fullHud.Ammo.NadeBonusTypeId = ls.NadeBonusType;
+        _fullHud.Ammo.NadeBonusScoreFrac = ls.NadeBonusScore;
+
+        // QC UpdateDamage: when the cumulative dealt-damage stat advances, the crosshair flashes (and the
+        // hitsound beeps). Diff it against the last frame; skip the first sample so a non-zero baseline (joining
+        // mid-match) doesn't flash on the first snapshot.
+        if (_remoteHitInit && ls.HitDamageDealtTotal > _remoteHitDealtTotal)
+        {
+            x.HitFlash = 1f;
+            _hitSound?.OnHit(ls.HitDamageDealtTotal - _remoteHitDealtTotal);
+        }
+        _remoteHitDealtTotal = ls.HitDamageDealtTotal;
+        _remoteHitInit = true;
+    }
+
     // ---- pickup feed (QC HUD_Pickup / STAT(LAST_PICKUP)) ----
     // The port has no networked LAST_PICKUP stat, so on the listen server we detect pickups client-side off the
     // local Player: a NEW weapon in the owned set is an unambiguous pickup, and a per-frame resource JUMP above a
@@ -2357,29 +3742,554 @@ public sealed partial class NetGame : Node3D
         if (_pickupInit)
         {
             XonoticGodot.Game.Hud.PickupPanel? feed = _fullHud.GetPanel<XonoticGodot.Game.Hud.PickupPanel>();
-            if (feed is not null)
+            // (QC STAT(LAST_PICKUP) advance → pickup_crosshair_size = 1, crosshair.qc:362-379): a pickup this
+            // frame also bumps the crosshair. We derive the same trigger from the client-side pickup detection
+            // below (any new weapon or resource jump) and pulse the crosshair once.
+            bool pickedUp = false;
             {
                 // New weapons — always a genuine pickup (never regen/spawn here, since spawn re-baselines).
                 foreach (XonoticGodot.Common.Gameplay.Weapon w in XonoticGodot.Common.Gameplay.Weapons.All)
                     if (owned.Has(w) && !_pickupLastOwned.Has(w))
-                        feed.Push(string.IsNullOrEmpty(w.DisplayName) ? w.NetName : w.DisplayName,
-                                  XonoticGodot.Game.Hud.WeaponHud.IconName(w.NetName));
+                    {
+                        feed?.Push(string.IsNullOrEmpty(w.DisplayName) ? w.NetName : w.DisplayName,
+                                   XonoticGodot.Game.Hud.WeaponHud.IconName(w.NetName));
+                        pickedUp = true;
+                    }
 
                 // Resource pickups — a per-frame jump above a threshold regen never reaches in one frame
                 // (health/armor regen is gradual; the 4 main ammo pools never regen).
-                if (health - _pickupHealth >= 3f) feed.Push("Health", "health");
-                if (armor - _pickupArmor >= 3f) feed.Push("Armor", "armor");
-                if (shells - _pickupShells >= 1f) feed.Push("Shells", "ammo_shells");
-                if (bullets - _pickupBullets >= 1f) feed.Push("Bullets", "ammo_bullets");
-                if (rockets - _pickupRockets >= 1f) feed.Push("Rockets", "ammo_rockets");
-                if (cells - _pickupCells >= 1f) feed.Push("Cells", "ammo_cells");
+                if (health - _pickupHealth >= 3f) { feed?.Push("Health", "health"); pickedUp = true; }
+                if (armor - _pickupArmor >= 3f) { feed?.Push("Armor", "armor"); pickedUp = true; }
+                if (shells - _pickupShells >= 1f) { feed?.Push("Shells", "ammo_shells"); pickedUp = true; }
+                if (bullets - _pickupBullets >= 1f) { feed?.Push("Bullets", "ammo_bullets"); pickedUp = true; }
+                if (rockets - _pickupRockets >= 1f) { feed?.Push("Rockets", "ammo_rockets"); pickedUp = true; }
+                if (cells - _pickupCells >= 1f) { feed?.Push("Cells", "ammo_cells"); pickedUp = true; }
             }
+            if (pickedUp)
+                _fullHud.Crosshair.PulsePickup(); // QC crosshair_pickup bump
         }
 
         _pickupInit = true;
         _pickupLastOwned = owned;
         _pickupHealth = health; _pickupArmor = armor;
         _pickupShells = shells; _pickupBullets = bullets; _pickupRockets = rockets; _pickupCells = cells;
+    }
+
+    /// <summary>
+    /// Feed the crosshair panel the active weapon slot's live ring stats (QC client/hud/crosshair.qc 471-557).
+    /// Reads the host-side <see cref="LocalServerPlayer"/>'s active weapon-slot scratch state — the C# home of
+    /// QC's networked <c>wepent.*</c> fields — and maps it onto the panel's ring setters: Vortex charge
+    /// (<c>vortex_charge</c> → <see cref="CrosshairPanel.ChargeFraction"/>) + chargepool (<c>vortex_chargepool_ammo</c>
+    /// → <see cref="CrosshairPanel.ChargePool"/>); the reload/ammo ring (<c>clip_load</c>/<c>clip_size</c>); the
+    /// Hagar load (<c>hagar_load</c>) and Mine Layer count (<c>minelayer_mines</c>) rings; and the Arc overheat
+    /// ring (<c>arc_heat_percent</c>). Each stat is reset to its "no data" sentinel when the active weapon isn't
+    /// the one that owns it, so the panel only draws the ring for the weapon currently held — exactly like the QC
+    /// per-weapon if/else chain. Called unconditionally each frame (the feeder was hoisted out of the host-only
+    /// block): on a listen host it reads the live slot state off <see cref="LocalServerPlayer"/>; on a pure remote
+    /// / dedicated-server client there is no LocalServerPlayer, so it mirrors the networked owner-block ring
+    /// scalars instead (<see cref="ClientNet.LocalWeaponRings"/>, resolved server-side by
+    /// <c>ServerNet.ResolveOwnerWeaponRings</c>) — so a remote client draws the same rings the host does.
+    /// </summary>
+    private void UpdateCrosshairWeaponRings()
+    {
+        CrosshairPanel x = _fullHud.Crosshair;
+        Player? p = LocalServerPlayer;
+
+        // [W-wepent-view smoke consumer] when following another player, read the watched player's networked wepent
+        // view-state (charge/clip/heat) off the entity stream and drive the same crosshair rings — previously a
+        // spectator saw no rings because the owner-block rings only resolve off the local owner. The owner block
+        // (OwnerWeaponRings) is delta-excluded from the entity feed, so for a SPECTATEE we instead pull the
+        // per-player WepentView slice that ServerNet networks on every entity; each field maps to the panel's
+        // -1/0 'no data' sentinel exactly like the pure-remote owner branch below.
+        int specNet = _client?.SpectatingNetId ?? 0;
+        if (specNet != 0 && _client != null && _client.TryGetRemoteState(specNet, out var rs))
+        {
+            var v = rs.WepentView;
+            x.ChargeFraction = v.VortexCharge > 0 ? v.VortexCharge : -1f;
+            x.ChargePool = v.VortexChargePool > 0 ? v.VortexChargePool : -1f;
+            x.ClipLoad = v.ClipSize > 0 ? v.ClipLoad : -1f;
+            x.ClipSize = v.ClipSize;
+            x.HagarLoad = v.HagarLoad > 0 ? v.HagarLoad : -1f;
+            x.HagarLoadMax = 4f;
+            x.MineCount = v.MinelayerMines > 0 ? v.MinelayerMines : -1f;
+            x.MineLimit = 3f;
+            x.ArcHeat = v.ArcHeat > 0 ? v.ArcHeat : -1f;
+            return;
+        }
+
+        // Pure remote / dedicated-server client: no LocalServerPlayer, so feed the rings from the networked
+        // owner-block scalars (ServerNet.ResolveOwnerWeaponRings → OwnerWeaponRings, read by ClientNet). The
+        // server already resolved each ring's -1/0 'no data' sentinel for the held weapon, so just mirror them —
+        // the same crosshair charge/clip/load/heat rings the listen host shows, now on a remote client too.
+        if (p is null)
+        {
+            XonoticGodot.Net.OwnerWeaponRings rings = _client?.LocalWeaponRings ?? XonoticGodot.Net.OwnerWeaponRings.None;
+            x.ChargeFraction = rings.VortexCharge; x.ChargePool = rings.VortexChargePool;
+            x.ClipLoad = rings.ClipLoad; x.ClipSize = rings.ClipSize;
+            x.HagarLoad = rings.HagarLoad; x.HagarLoadMax = rings.HagarLoadMax;
+            x.MineCount = rings.MineCount; x.MineLimit = rings.MineLimit;
+            x.ArcHeat = rings.ArcHeat;
+            return;
+        }
+
+        Weapon? active = Inventory.CurrentWeapon(p);
+        if (active is null || p.IsDead || p.IsObserver)
+        {
+            // Live host owner but no live weapon (dead / observing) → hide every ring (sentinels match the
+            // panel's "no data" defaults).
+            x.ChargeFraction = -1f; x.ChargePool = -1f;
+            x.ClipLoad = -1f; x.ClipSize = 0f;
+            x.HagarLoad = -1f; x.MineCount = -1f; x.ArcHeat = -1f;
+            return;
+        }
+
+        WeaponSlotState st = p.WeaponState(new WeaponSlot(0));
+        string net = active.NetName ?? string.Empty;
+
+        // Vortex / Overkill-Nex charge ring (QC 482-496). vortex_charge is already a [0,1] fraction; the inner
+        // chargepool ring uses vortex_chargepool_ammo (also [0,1]). Fed only while the charge weapon is active.
+        if (net is "vortex" or "vaporizer" || net.Contains("nex"))
+        {
+            x.ChargeFraction = st.VortexCharge;
+            x.ChargePool = st.VortexChargePoolAmmo;
+        }
+        else
+        {
+            x.ChargeFraction = -1f;
+            x.ChargePool = -1f;
+        }
+
+        // Reload / ammo ring (QC 536-548): clip_load / clip_size, drawn for any weapon with a clip.
+        if (st.ClipSize > 0)
+        {
+            x.ClipLoad = st.ClipLoad;
+            x.ClipSize = st.ClipSize;
+        }
+        else
+        {
+            x.ClipLoad = -1f;
+            x.ClipSize = 0f;
+        }
+
+        // Hagar burst-load ring (QC 529-535): hagar_load / load_max.
+        if (net == "hagar" && active is Hagar hg)
+        {
+            x.HagarLoad = st.HagarLoad;
+            x.HagarLoadMax = hg.Secondary.LoadMax > 0f ? hg.Secondary.LoadMax : x.HagarLoadMax;
+        }
+        else
+        {
+            x.HagarLoad = -1f;
+        }
+
+        // Mine Layer count ring (QC 522-528): minelayer_mines / limit. Count this player's live mines (the same
+        // g_mines scan QC's W_MineLayer_Count does), since the count isn't cached on the slot.
+        if (net == "minelayer" && active is Minelayer ml)
+        {
+            int mines = 0;
+            foreach (Entity e in Api.Entities.FindByClass("mine"))
+                if (ReferenceEquals(e.Owner, p) && !e.IsFreed) ++mines;
+            x.MineCount = mines;
+            x.MineLimit = ml.Cvars.Limit > 0 ? ml.Cvars.Limit : x.MineLimit;
+        }
+        else
+        {
+            x.MineCount = -1f;
+        }
+
+        // Arc overheat ring (QC 474, 550-556 + Arc_GetHeat_Percent arc.qc:55-68). While firing the heat fraction
+        // is beam_heat / overheat_max; after release the overheat-jam latch holds the ring until it cools.
+        if (net == "arc" && active is Arc arc && arc.Beam.OverheatMax > 0f)
+        {
+            float now = Api.Clock.Time;
+            // QC Arc_GetHeat_Percent (arc.qc:62-68): while a beam is live the ring is beam_heat/overheat_max; after
+            // it ends the latched arc_overheat timestamp decays the ring, SCALED by arc_cooldown (the cooldown_speed
+            // captured when the beam stopped) so a hot release fades the ring proportionally to its bleed rate.
+            float pct = st.BeamHeat > 0f
+                ? st.BeamHeat / arc.Beam.OverheatMax
+                : (st.ArcOverheat > now ? (st.ArcOverheat - now) / arc.Beam.OverheatMax * st.ArcCooldown : 0f);
+            x.ArcHeat = Godot.Mathf.Clamp(pct, 0f, 1f);
+        }
+        else
+        {
+            x.ArcHeat = -1f;
+        }
+    }
+
+    /// <summary>
+    /// Feed the in-vehicle HUD (QC <c>Vehicles_drawHUD</c> / <c>Vehicles_drawCrosshair</c> + the
+    /// <c>TE_CSQC_VEHICLESETUP</c> dispatch, common/vehicles/cl_vehicles.qc). On the host path the local
+    /// <see cref="Player"/> carries the live <c>.vehicle</c> link and the 0..100 stat mirror each descriptor
+    /// Think writes onto the pilot (<c>vehicle_health/shield/energy</c>), so this is the client-side feeder
+    /// the panel needs: pick the vehicle art set (ConfigureForVehicle), mirror the percentages (scaled to
+    /// 0..1, the QC <c>0.01 * STAT(...)</c>), and project the homing-lock target into an auxiliary lock
+    /// crosshair (SetAuxiliaryXhairLock). The cross-client VEHICLESTAT_* networking that would feed a pure
+    /// remote client is the follow-up; here the host-authoritative pilot state drives the panel directly.
+    /// </summary>
+    private void UpdateVehicleHud()
+    {
+        XonoticGodot.Game.Hud.VehicleHud hud = _fullHud.Vehicle;
+        Player? p = LocalServerPlayer;
+        Entity? veh = p?.Vehicle;
+
+        // No host-side local Player (a pure remote / dedicated-server client, OR a spectator following a pilot):
+        // source the panel from the networked VehicleViewState instead — the remote pilot's own-entity slice, or
+        // the followed spectatee's entity slice. UpdateVehicleHudRemote drives + returns; only fall through to the
+        // host path below when LocalServerPlayer is live.
+        if (p is null)
+        {
+            UpdateVehicleHudRemote(hud);
+            return;
+        }
+
+        // Not piloting (on foot / observing / dead) → the hud_id == HUD_NORMAL exit case (hides + clears aux).
+        if (veh is null || p.IsDead || p.IsObserver)
+        {
+            if (hud.InVehicle)
+                hud.Exit();
+            return;
+        }
+
+        // A bumblebee GUNNER seats in a gun SLOT entity (ClassName "vehicle_playerslot", VehSlotIndex 1/2), whose
+        // owner is the body. QC CSQCVehicleSetup hands the gunner the HUD_BUMBLEBEE_GUN art (CSQC_BUMBLE_GUN_HUD),
+        // and bumblebee_gunner_frame mirrors the body health/shield + the gun's cannon ammo onto the gunner.
+        bool isGunner = veh.VehSlotIndex != 0 && veh.VehSlotOwner is not null;
+
+        // TE_CSQC_VEHICLESETUP: select the art set from the descriptor NetName (re-shows the panel each time).
+        hud.ConfigureForVehicle(isGunner
+            ? XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.BumblebeeGun
+            : (veh.VehicleDef?.NetName) switch
+            {
+                "raptor"    => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Raptor,
+                "spiderbot" => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Spiderbot,
+                "bumblebee" => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Bumblebee,
+                _           => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Racer,
+            });
+
+        // Mirror the pilot/gunner-side 0..100 percentages to the panel's [0,1] (QC 0.01 * STAT(VEHICLESTAT_*)).
+        hud.Health = Godot.Mathf.Clamp(p.VehicleHealth * 0.01f, 0f, 1f);
+        hud.Shield = Godot.Mathf.Clamp(p.VehicleShield * 0.01f, 0f, 1f);
+        hud.Energy = Godot.Mathf.Clamp(p.VehicleEnergy * 0.01f, 0f, 1f);
+        hud.Ammo1  = Godot.Mathf.Clamp(p.VehicleAmmo1 * 0.01f, 0f, 1f);
+        hud.Ammo2  = Godot.Mathf.Clamp(p.VehicleAmmo2 * 0.01f, 0f, 1f);
+        // Mirror BOTH reload bars (QC 0.01 * STAT(VEHICLESTAT_RELOAD1/2)) — the NE bar falls back to Reload1 when
+        // Ammo1 is empty (DrawClippedBar: Ammo1 > 0 ? Ammo1 : Reload1), so leaving Reload1 stale on the host path
+        // made the host pilot's empty-reload bar diverge from the remote pilot's (which mirrors both). Keep them in
+        // lockstep with the resolver / UpdateVehicleHudRemote so host and pure-remote pilots draw identically.
+        hud.Reload1 = Godot.Mathf.Clamp(p.VehicleReload1 * 0.01f, 0f, 1f);
+        hud.Reload2 = Godot.Mathf.Clamp(p.VehicleReload2 * 0.01f, 0f, 1f);
+
+        if (isGunner)
+        {
+            // GUNNER aux crosshairs (QC bumblebee_gunner_frame UpdateAuxiliaryXhair): the magenta '1 0 1' LEAD
+            // marker (aux slot 1) at the predicted impact, and the reload-colored READY marker (aux slot 0) at
+            // the cannon's straight hit. The gun slot carries the live world points the per-frame controller wrote.
+            // QC bumblebee vr_setup: aux slot 1 = vCROSS_BURST (gunner), slot 0 = vCROSS_LOCK (raygun-locked, reused
+            // here for the gunner's own straight-fire READY marker). Magenta '1 0 1' lead + reload-colored ready.
+            if (veh.VehGunnerLeadValid)
+                hud.SetAuxiliaryXhair(1, Coords.ToGodot(veh.VehGunnerLeadPoint), new Godot.Color(1f, 0f, 1f),
+                    "gfx/vehicles/crosshair_burst");
+            else
+                hud.ClearAuxiliaryXhair(1);
+            if (veh.VehGunnerHitValid)
+                hud.SetAuxiliaryXhair(0, Coords.ToGodot(veh.VehGunnerHitPoint), ReloadColor(p.VehicleReload1),
+                    "gfx/vehicles/crosshair_lock");
+            else
+                hud.ClearAuxiliaryXhair(0);
+            return;
+        }
+
+        // Auxiliary lock-on crosshair (AuxiliaryXhair): the homing-lock target the vehicle is building/holding,
+        // projected from its Quake-space origin into Godot and tinted red→yellow→green by VehLockStrength.
+        if (veh.VehLockTarget is { } target && !target.IsFreed)
+            // QC bumblebee vr_setup: aux slot 0 = vCROSS_LOCK for the raygun heal-lock marker.
+            hud.SetAuxiliaryXhairLock(0, Coords.ToGodot(target.Origin), veh.VehLockStrength,
+                veh.VehicleDef is Bumblebee ? "gfx/vehicles/crosshair_lock" : "gfx/vehicles/axh-target");
+        else
+            hud.ClearAuxiliaryXhair(0);
+
+        // PILOT mirror of the two gunners' READY aux crosshairs (QC bumblebee_gunner_frame line 186:
+        // UpdateAuxiliaryXhair(vehic.owner, ..., slot 1 for gunner1 / slot 2 for gunner2)). When a side-gun is
+        // crewed the pilot sees that gunner's straight-fire marker too.
+        FeedPilotGunnerAux(hud, veh.VehGun1, 1);
+        FeedPilotGunnerAux(hud, veh.VehGun2, 2);
+
+        // QC bumblebee vr_hud (bumblebee.qc:977-987): the pilot's blinking "No right/left gunner!" prompts, shown
+        // while a side-gun seat is unmanned (the QC test is `!AuxiliaryXhair[1/2].draw2d` — no gunner aux crosshair
+        // this frame, i.e. the gun has no seated player). Only the bumblebee draws these.
+        bool bumble = veh.VehicleDef is Bumblebee;
+        hud.ShowNoRightGunner = bumble && veh.VehGun1?.VehSlotPlayer is null;
+        hud.ShowNoLeftGunner  = bumble && veh.VehGun2?.VehSlotPlayer is null;
+
+        // Centered main reticle + bomb dropmark (QC vr_crosshair). The raptor draws a per-secondary-mode reticle
+        // (RSM_BOMB → vCROSS_BURST, RSM_FLARE → vCROSS_RAIN) plus, in bomb mode, a tracetoss-predicted bomb-impact
+        // dropmark; the spiderbot draws a per-rocket-mode reticle (SBRM_VOLLY → vCROSS_BURST, SBRM_GUIDE →
+        // vCROSS_GUIDE, SBRM_ARTILLERY → vCROSS_RAIN, spiderbot.qc vr_crosshair). Pure presentation; the mode is
+        // server-authoritative (veh.VehW2Mode). FeedRaptorReticle clears the centered reticle for non-raptors, so
+        // FeedSpiderbotReticle runs after it and sets the spiderbot's (and is a no-op for the other vehicles).
+        FeedRaptorReticle(hud, veh, p);
+        FeedSpiderbotReticle(hud, veh);
+    }
+
+    /// <summary>
+    /// Remote/spectator twin of <see cref="UpdateVehicleHud"/>: drives the vehicle HUD from the networked
+    /// <see cref="VehicleViewState"/> rather than a host-side <see cref="Player"/>. Source: the followed
+    /// spectatee's entity slice (<c>SpectatingNetId</c> → <c>TryGetRemoteState(...).VehicleView</c>, mirroring the
+    /// wepent spectatee branch in <see cref="UpdateCrosshairWeaponRings"/>) when spectating, else the local
+    /// client's own-entity slice (<c>ClientNet.LocalState.VehicleView</c>) for a pure remote pilot. When the block
+    /// is inactive (VehKind 0 = on foot / observing) the panel exits. The lock-target world position is NOT
+    /// networked, so the aux lock crosshair is cleared (host-only nicety); the reticle + bars + strength still draw.
+    /// </summary>
+    private void UpdateVehicleHudRemote(XonoticGodot.Game.Hud.VehicleHud hud)
+    {
+        // Pick the source VehicleViewState: the followed spectatee's (entity slice) while spectating, else the
+        // local client's own-entity slice (the remote pilot). Default to None when neither is available.
+        XonoticGodot.Net.VehicleViewState v = XonoticGodot.Net.VehicleViewState.None;
+        int specNet = _client?.SpectatingNetId ?? 0;
+        if (specNet != 0 && _client != null && _client.TryGetRemoteState(specNet, out var rs))
+            v = rs.VehicleView;
+        else if (_client?.LocalState is { } ls)
+            v = ls.VehicleView;
+
+        // Inactive (on foot / observing) → the HUD_NORMAL exit case.
+        if (!v.IsActive)
+        {
+            if (hud.InVehicle)
+                hud.Exit();
+            return;
+        }
+
+        // TE_CSQC_VEHICLESETUP: select the art set from the networked vehicle id (re-shows the panel). VehKind
+        // mirrors the QC hud id: 2 raptor, 3 spiderbot, 4 bumblebee, 5 bumblebee-gun (gunner); 1/other = racer.
+        hud.ConfigureForVehicle(v.VehKind switch
+        {
+            2 => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Raptor,
+            3 => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Spiderbot,
+            4 => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Bumblebee,
+            5 => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.BumblebeeGun,
+            _ => XonoticGodot.Game.Hud.VehicleHud.VehicleHudKind.Racer,
+        });
+
+        // The wire block already carries the [0,1] bars (VehicleViewState fields are pre-scaled), so mirror them
+        // straight onto the panel — no 0.01 * STAT(...) scaling like the host path.
+        hud.Health  = Godot.Mathf.Clamp(v.Health, 0f, 1f);
+        hud.Shield  = Godot.Mathf.Clamp(v.Shield, 0f, 1f);
+        hud.Energy  = Godot.Mathf.Clamp(v.Energy, 0f, 1f);
+        hud.Ammo1   = Godot.Mathf.Clamp(v.Ammo1, 0f, 1f);
+        hud.Ammo2   = Godot.Mathf.Clamp(v.Ammo2, 0f, 1f);
+        hud.Reload1 = Godot.Mathf.Clamp(v.Reload1, 0f, 1f);
+        hud.Reload2 = Godot.Mathf.Clamp(v.Reload2, 0f, 1f);
+
+        // The lock-target identity/world position is not on the wire (only LockTargetValid + LockStrength), so the
+        // precise aux lock crosshair can't be projected on the remote path — clear it (host-only nicety). The
+        // gunner side-aux markers are likewise host-only; the remote view keeps the reticle, bars and strength.
+        hud.ClearAuxiliaryXhair(0);
+        hud.ClearAuxiliaryXhair(1);
+        hud.ClearAuxiliaryXhair(2);
+        hud.ShowNoRightGunner = false;
+        hud.ShowNoLeftGunner = false;
+
+        // Centered per-mode reticle from the networked vehicle id + weapon-2 sub-mode (no host Entity, so the live
+        // tracetoss bomb dropmark is suppressed — the remote path draws the reticle only, never the green live mark).
+        FeedRemoteReticle(hud, v);
+    }
+
+    /// <summary>Drive the centered vehicle reticle on the REMOTE/spectator path from the networked
+    /// <see cref="VehicleViewState"/> (no host Entity available). Mirrors the per-mode reticle selection of
+    /// <see cref="FeedRaptorReticle"/>/<see cref="FeedSpiderbotReticle"/> off <c>VehKind</c> + <c>W2Mode</c>, but
+    /// the live bomb-dropmark prediction (which needs the vehicle entity for tracetoss) is suppressed — only the
+    /// reticle draws. <c>DropmarkPredictReady</c> is the networked "bombs ready" flag, kept for parity of intent.</summary>
+    private static void FeedRemoteReticle(XonoticGodot.Game.Hud.VehicleHud hud, in XonoticGodot.Net.VehicleViewState v)
+    {
+        // The remote path never draws the live green dropmark (tracetoss needs the server-side vehicle entity).
+        hud.DropmarkActive = false;
+        hud.DropmarkLive = false;
+
+        switch (v.VehKind)
+        {
+            case 2: // raptor — QC vr_crosshair: RSM_FLARE (2) → vCROSS_RAIN; RSM_BOMB (1)/default → vCROSS_BURST.
+                hud.MainReticle = v.W2Mode == (int)RaptorMode.Flare
+                    ? "gfx/vehicles/crosshair_rain"
+                    : "gfx/vehicles/crosshair_burst";
+                break;
+            case 3: // spiderbot — SBRM_VOLLY → vCROSS_BURST; SBRM_ARTILLERY → vCROSS_RAIN; SBRM_GUIDE (default) → vCROSS_GUIDE.
+                hud.MainReticle = v.W2Mode switch
+                {
+                    (int)SpiderbotRocketMode.Volley    => "gfx/vehicles/crosshair_burst",
+                    (int)SpiderbotRocketMode.Artillery => "gfx/vehicles/crosshair_rain",
+                    _                                  => "gfx/vehicles/crosshair_guide",
+                };
+                break;
+            case 4: // bumblebee pilot — the centered vCROSS_HEAL heal-gun pointer (QC bumblebee vr_crosshair).
+                hud.MainReticle = "gfx/vehicles/crosshair_heal";
+                break;
+            default: // racer / bumblebee-gun gunner — no centered per-mode reticle.
+                hud.MainReticle = "";
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Port of the spiderbot <c>vr_crosshair</c> client crosshair (common/vehicles/vehicle/spiderbot.qc): pick the
+    /// centered reticle by the active rocket mode — SBRM_VOLLY → vCROSS_BURST, SBRM_GUIDE → vCROSS_GUIDE,
+    /// SBRM_ARTILLERY → vCROSS_RAIN. No-op for the other vehicles (their reticle is left as the raptor/empty
+    /// feeder set it). The spiderbot has no bomb dropmark, so this only drives the centered reticle.
+    /// </summary>
+    private void FeedSpiderbotReticle(XonoticGodot.Game.Hud.VehicleHud hud, Entity veh)
+    {
+        if (veh.VehicleDef is not Spiderbot)
+            return;
+
+        // QC vr_crosshair: SBRM_VOLLY (1) → vCROSS_BURST; SBRM_GUIDE (2) → vCROSS_GUIDE; SBRM_ARTILLERY (3) →
+        // vCROSS_RAIN. veh.VehW2Mode is the server-authoritative SpiderbotRocketMode (default SBRM_GUIDE on enter).
+        hud.MainReticle = veh.VehW2Mode switch
+        {
+            (int)SpiderbotRocketMode.Volley    => "gfx/vehicles/crosshair_burst",
+            (int)SpiderbotRocketMode.Artillery => "gfx/vehicles/crosshair_rain",
+            _                                  => "gfx/vehicles/crosshair_guide", // SBRM_GUIDE (default)
+        };
+        hud.DropmarkActive = false; // the spiderbot has no bomb dropmark
+    }
+
+    /// <summary>
+    /// Port of the raptor <c>vr_crosshair</c> client crosshair (raptor.qc): pick the centered reticle by the
+    /// secondary fire mode and, in bomb mode, project the tracetoss bomb-impact dropmark. For other vehicles it
+    /// sets the bumblebee pilot's vCROSS_HEAL pointer and clears the reticle for the rest (the spiderbot's
+    /// per-mode reticle is set by the FeedSpiderbotReticle pass the caller runs afterward).
+    /// </summary>
+    private void FeedRaptorReticle(XonoticGodot.Game.Hud.VehicleHud hud, Entity veh, Player p)
+    {
+        if (veh.VehicleDef is not Raptor)
+        {
+            // QC bumblebee vr_crosshair (bumblebee.qc:989): the PILOT draws a centered vCROSS_HEAL pointer
+            // (gfx/vehicles/crosshair_heal) — the heal-gun aiming reticle. It is shown for the bumblebee body
+            // pilot only (a seated gunner uses its own slot HUD, handled by the isGunner branch above and never
+            // reaches here). Damage-mode (g_vehicle_bumblebee_raygun 1, non-default) keeps the same reticle in
+            // Base — only the BEAM colour changes — so the pointer is unconditional. The shared
+            // Vehicles_drawCrosshair colorize path (cl_vehicles_crosshair_colorize) tints it like every vehicle
+            // reticle, matching QC. No bomb dropmark for the bumblebee. (The spiderbot's per-mode reticle is set
+            // by FeedSpiderbotReticle, which the caller runs after this clears it.)
+            hud.MainReticle = veh.VehicleDef is Bumblebee ? "gfx/vehicles/crosshair_heal" : "";
+            hud.DropmarkActive = false;
+            return;
+        }
+
+        // QC vr_crosshair: RSM_FLARE (2) → vCROSS_RAIN; RSM_BOMB (1)/default → vCROSS_BURST.
+        bool flareMode = veh.VehW2Mode == (int)RaptorMode.Flare;
+        hud.MainReticle = flareMode ? "gfx/vehicles/crosshair_rain" : "gfx/vehicles/crosshair_burst";
+
+        // QC: the dropmark predictor runs only in bomb mode (weapon2mode != RSM_FLARE) and not while spectating.
+        bool spectating = (_client?.SpectateeStatus ?? 0) != 0;
+        if (flareMode || spectating)
+        {
+            hud.DropmarkActive = false;
+            return;
+        }
+
+        // QC dropmark: when reload2 == 1 (bombs ready) run the live tracetoss prediction (green); otherwise hold
+        // the last predicted impact (red, larger) while dropmark.cnt > time (the 5s linger window after a drop).
+        float reload2 = Godot.Mathf.Clamp(p.VehicleReload2 * 0.01f, 0f, 1f);
+        if (reload2 >= 1f)
+        {
+            _raptorDropmarkLast = VehiclePhysics.BombDropPredict(veh); // Quake space
+            hud.DropmarkWorld = Coords.ToGodot(_raptorDropmarkLast);
+            hud.DropmarkLive = true;
+            hud.DropmarkActive = true;
+            _raptorDropmarkLinger = _renderClock + 5f; // QC dropmark.cnt = time + 5
+        }
+        else if (_renderClock < _raptorDropmarkLinger)
+        {
+            // The last live prediction lingers as the red "where the dropped bombs are headed" marker.
+            hud.DropmarkWorld = Coords.ToGodot(_raptorDropmarkLast);
+            hud.DropmarkLive = false;
+            hud.DropmarkActive = true;
+        }
+        else
+        {
+            hud.DropmarkActive = false;
+        }
+    }
+
+    // Raptor bomb dropmark linger (QC dropmark.cnt = time + 5): the render-clock time the red post-drop marker
+    // expires, and the last live impact point it freezes on.
+    private float _raptorDropmarkLinger;
+    private System.Numerics.Vector3 _raptorDropmarkLast;
+
+    /// <summary>Project a crewed side-gun's READY aux crosshair onto the PILOT's HUD (QC bumblebee.qc:186); clears
+    /// the slot when the gun is empty/idle.</summary>
+    private void FeedPilotGunnerAux(XonoticGodot.Game.Hud.VehicleHud hud, Entity? gun, int slot)
+    {
+        // QC bumblebee vr_setup: the pilot's aux slots 1/2 are vCROSS_BURST (gunner1/gunner2).
+        if (gun is { VehGunnerHitValid: true, VehSlotPlayer: not null })
+            hud.SetAuxiliaryXhair(slot, Coords.ToGodot(gun.VehGunnerHitPoint),
+                ReloadColor(gun.VehSlotPlayer.VehicleReload1), "gfx/vehicles/crosshair_burst");
+        else
+            hud.ClearAuxiliaryXhair(slot);
+    }
+
+    /// <summary>QC bumblebee_gunner_frame reload tint: <c>'1 0 0' * reload1 + '0 1 0' * (1 - reload1)</c> — red while
+    /// reloading, green when ready to fire.</summary>
+    private static Godot.Color ReloadColor(float reload1)
+    {
+        float r = Godot.Mathf.Clamp(reload1, 0f, 1f);
+        return new Godot.Color(r, 1f - r, 0f);
+    }
+
+    // QC IntermissionThink autoscreenshot state: the +0.1s arm timer and the once-per-match latch (QC's
+    // `this.autoscreenshot` field, set to -1 after firing). Reset when intermission ends so the next match re-arms.
+    private float _autoscreenshotAt = -1f;
+    private bool _autoscreenshotTaken;
+
+    /// <summary>
+    /// QC IntermissionThink autoscreenshot: when the match enters intermission and the player opted in
+    /// (<c>cl_autoscreenshot</c> with the server's <c>sv_autoscreenshot</c>, or <c>cl_autoscreenshot 2</c>
+    /// unconditionally), capture the end-of-match scoreboard once. Base arms a +0.1s timer in FixIntermissionClient
+    /// and fires the <c>screenshot</c> in IntermissionThink; reproduced here off the networked intermission flag,
+    /// routed through the same <c>screenshot</c> command the F12 bind uses (<see cref="RunCommand"/>).
+    /// </summary>
+    private void UpdateIntermissionAutoscreenshot()
+    {
+        if (_client is null)
+            return;
+
+        if (!_client.MatchIntermission)
+        {
+            // Match is live (or returned to play): disarm so the NEXT intermission re-rolls the one-shot.
+            _autoscreenshotAt = -1f;
+            _autoscreenshotTaken = false;
+            return;
+        }
+
+        if (_autoscreenshotTaken)
+            return;
+
+        // Arm on the first intermission frame (QC autoscreenshot = time + 0.1) using the render clock.
+        if (_autoscreenshotAt < 0f)
+        {
+            _autoscreenshotAt = _renderClock + 0.1f;
+            return;
+        }
+        if (_renderClock < _autoscreenshotAt)
+            return;
+
+        _autoscreenshotTaken = true; // QC sets this.autoscreenshot = -1 (fire once)
+
+        // Opt-in gate (QC server_screenshot || client_screenshot). cl_autoscreenshot is the local client cvar;
+        // sv_autoscreenshot is the server cvar (readable directly on a listen server — it isn't networked, so a
+        // pure remote client only honours the cl_autoscreenshot==2 unconditional branch, matching the stock 0 default).
+        XonoticGodot.Common.Services.ICvarService cv = Api.Cvars;
+        float cl = CvarOr(cv, "cl_autoscreenshot", 0f);
+        float sv = _serverWorld is not null ? _serverWorld.Services.Cvars.GetFloat("sv_autoscreenshot") : 0f;
+        bool serverShot = sv != 0f && cl != 0f;
+        bool clientShot = cl == 2f;
+        if (!serverShot && !clientShot)
+            return;
+
+        // QC stuffcmd("screenshot screenshots/autoscreenshot/<map>-<matchid>.jpg"). matchid isn't networked here,
+        // so disambiguate with a timestamp instead; routes through the shared `screenshot` command (RunCommand).
+        string stamp = System.DateTime.Now.ToString("yyyyMMddHHmmss", System.Globalization.CultureInfo.InvariantCulture);
+        string map = string.IsNullOrEmpty(_map) ? "map" : _map;
+        RunCommand?.Invoke($"screenshot screenshots/autoscreenshot/{map}-{stamp}.jpg");
     }
 
     /// <summary>Drain the networked match clock (NetControl.MatchState → ClientNet) into the TIMER panel each
@@ -2395,13 +4305,429 @@ public sealed partial class NetGame : Node3D
         t.TimeLimitSeconds = _client.MatchTimeLimit;
         t.WarmupStage = _client.MatchWarmup;
         t.WarmupTimeLimitSeconds = _client.MatchWarmupLimit;
+        // QC STAT(OVERTIMES): the persistent "Overtime #N" / "Sudden Death" subtext + count-up past the limit.
+        // Networked via the MatchState packet (ClientNet.MatchOvertimes); the one-shot center notifications are
+        // delivered separately by the overtime cascade.
+        t.Overtimes = _client.MatchOvertimes;
         // [T69] feed the dynamic HUD shake's intermission gate: Base suppresses the low-health screen shake on the
         // end-of-match (intermission) screen. Mirror the live flag each frame (clears back to false when the next
         // match leaves intermission). Without this the shake still works in normal play but keeps shaking on the
         // scoreboard screen.
         _fullHud.Intermission = _client.MatchIntermission;
+        // Free-fly observer gate for the physics/strafehud "even observing" show-modes (hud_panel_<id> 1/3 hide
+        // while observing, 2/4 keep showing). QC spectatee_status == -1 → IsObserving (not following anyone).
+        _fullHud.Observing = _client.IsObserving;
         if (_client.MatchIntermission)
             t.IntermissionTime = _client.LatestServerTime;
+    }
+
+    /// <summary>Feed the HUD's <c>hud_dynamic_follow</c> effect (QC <c>Hud_Dynamic_Frame</c> follow block) the
+    /// live viewmodel follow offset (QC <c>cl_followmodel_ofs</c>). The HUD self-gates on the cvar (off by
+    /// default), so this is safe to call every frame; when the viewmodel is gone we feed zero (no sway).</summary>
+    private void UpdateHudDynamicFollow()
+    {
+        if (_fullHud is null)
+            return;
+        Vector3 ofs = _viewModel is not null && GodotObject.IsInstanceValid(_viewModel)
+            ? _viewModel.LastFollowOffset
+            : Vector3.Zero;
+        _fullHud.FollowModelOffset = new System.Numerics.Vector3(ofs.X, ofs.Y, ofs.Z);
+    }
+
+    /// <summary>
+    /// Feed the VOTE panel (QC HUD_Vote) the live call-vote state each frame. On a listen server the in-process
+    /// <see cref="VoteController"/> (GameWorld.Voting) carries it directly — Active / Display / yes-no tallies /
+    /// the threshold / the local player's own ballot (the already-voted dim + side highlight) / the timeout. The
+    /// panel self-blanks when no vote is active, so this is safe to call every frame. On a pure remote client
+    /// there is no in-process world (no vote net channel yet) → the panel stays blank (an honest gap).
+    /// </summary>
+    private void UpdateVotePanel()
+    {
+        if (_fullHud is null)
+            return;
+        XonoticGodot.Game.Hud.VotePanel v = _fullHud.Vote;
+        VoteController? vote = _serverWorld?.Voting;
+        if (vote is null || !vote.Active)
+        {
+            if (v.Active) v.Active = false;        // arm the fade-out when the vote just ended
+            // Hold the panel Visible for one fade window (0.5s) after the vote clears so the 0.5s fade-out plays,
+            // then hide it (the panel self-blanks at alpha 0 in the meantime).
+            if (v.Visible)
+            {
+                _voteHideAt = _voteHideAt < 0.0 ? _client?.LatestServerTime + 0.6 ?? -1.0 : _voteHideAt;
+                if (_voteHideAt >= 0.0 && (_client?.LatestServerTime ?? 0.0) >= _voteHideAt)
+                { v.Visible = false; _voteHideAt = -1.0; }
+            }
+            return;
+        }
+        _voteHideAt = -1.0; // a live vote cancels any pending hide
+
+        v.CalledVote = vote.Display;
+        v.YesCount = vote.YesCount;
+        v.NoCount = vote.NoCount;
+        v.Needed = vote.NeededOverall;
+        v.EndTime = vote.EndTime;
+        // QC vote_highlighted: the local player's ballot (+1 yes / -1 no / 0 not-voted; abstain reads as not-voted
+        // for the yes/no highlight). Drives the already-voted dim + the chosen-side highlight.
+        Player? me = LocalServerPlayer;
+        int sel = me is not null ? vote.SelectionOf(me) : VoteController.SelectNull;
+        v.Highlighted = sel == VoteController.SelectAccept ? 1 : sel == VoteController.SelectReject ? -1 : 0;
+        v.Active = true; // set last so the fade-in only arms on the true→false→true transition
+        if (!v.Visible) v.Visible = true;
+    }
+
+    /// <summary>
+    /// Feed the MAP-VOTE panel (QC mapvoting.qc MapVote_Draw) the end-of-match map ballot each frame. On a listen
+    /// server the in-process <see cref="MapVoting"/> (GameWorld.MapVote) drives it: the candidate maps + live
+    /// vote counts + the local player's own vote + the running countdown, and the winner reveal once decided. The
+    /// panel is in <c>StartHiddenIds</c>, so its Visible is owned here (shown while the vote runs/reveals).
+    /// </summary>
+    private void UpdateMapVotePanel()
+    {
+        if (_fullHud is null)
+            return;
+        XonoticGodot.Game.Hud.MapVotePanel mv = _fullHud.MapVote;
+        // Normalize the ballot source so the SAME render runs for a listen host and a remote client. Listen host:
+        // the in-process MapVoting. Remote client (no server world): the networked ballot decoded by
+        // ClientNet.HandleMapVote — without this a --connect client saw no ballot at all (the panel was fed only
+        // from _serverWorld.MapVote, which is null remotely).
+        MapVoting? vote = _serverWorld?.MapVote;
+        NetMapVote? net = vote is null ? _client?.MapVote : null;
+
+        var cands = new System.Collections.Generic.List<MvCand>();
+        bool showing, isGametypeVote, detail, abstainPresent;
+        float timeout;
+        int ownVote, winnerSlot;                    // winnerSlot: 1-based winning cell (abstain-stripped), 0 = none
+
+        if (vote is not null)
+        {
+            showing = vote.Running || (vote.Finished && !string.IsNullOrEmpty(vote.WinningMap));
+            isGametypeVote = vote.IsGametypeVote;
+            detail = Cvars.Bool("sv_vote_gametype_detail");
+            timeout = vote.Timeout;
+            abstainPresent = false;
+            foreach (MapVoteCandidate c in vote.Candidates)
+            {
+                if (c.IsAbstain) abstainPresent = true;
+                cands.Add(new MvCand(c.MapName, c.IsAbstain, c.Votes, c.Available, c.Suggester));
+            }
+            int own = vote.SelectionOf(LocalServerPlayer);
+            ownVote = (own >= 0 && own < vote.Candidates.Count && !vote.Candidates[own].IsAbstain) ? own : -1;
+            winnerSlot = 0;
+            if (vote.Finished && !string.IsNullOrEmpty(vote.WinningMap))
+            {
+                int slot = 0;
+                foreach (MapVoteCandidate c in vote.Candidates)
+                {
+                    if (c.IsAbstain) continue;
+                    slot++;
+                    if (string.Equals(c.MapName, vote.WinningMap, System.StringComparison.OrdinalIgnoreCase)) { winnerSlot = slot; break; }
+                }
+            }
+        }
+        else if (net is not null)
+        {
+            showing = net.Showing;
+            isGametypeVote = net.IsGametypeVote;
+            detail = net.Detail;
+            timeout = net.Remaining;
+            abstainPresent = net.AbstainPresent;
+            foreach (NetMapVote.Cand c in net.Candidates)
+                cands.Add(new MvCand(c.MapName, false, c.Votes, c.Available, c.Suggester));
+            ownVote = net.Own;                       // already an abstain-stripped cell index (-1 = none/abstain)
+            winnerSlot = net.Finished ? net.Winner1Based : 0;
+        }
+        else
+        {
+            if (mv.Visible) { mv.Visible = false; mv.Active = false; }
+            return;
+        }
+
+        if (!showing)
+        {
+            if (mv.Visible) { mv.Visible = false; mv.Active = false; }
+            return;
+        }
+
+        // (Re)build the candidate list only when the ballot identity changes (count / first map / running flag),
+        // then update the live counts in place each frame so SetVote's per-cell fade state isn't reset every frame.
+        string sig = $"{cands.Count}|{(cands.Count > 0 ? cands[0].MapName : "")}|{timeout:0.0}|{isGametypeVote}";
+        if (sig != _mapVoteSig)
+        {
+            _mapVoteSig = sig;
+            var list = new System.Collections.Generic.List<XonoticGodot.Game.Hud.MapVotePanel.Candidate>(cands.Count);
+            for (int i = 0; i < cands.Count; i++)
+            {
+                MvCand c = cands[i];
+                if (c.IsAbstain) continue; // abstain is rendered as its own row, not a cell
+                string pic;
+                if (isGametypeVote)
+                    // QC GameTypeVote_DrawGameTypeItem: the icon is gfx/menu/<menu_skin>/gametype_<name>. There is
+                    // no "default" skin dir in the shipped assets (skins are luma/luminos/wickedx/xaw) — using it
+                    // would always miss and fall back to the nopreview placeholder. Track the live skin (luma by
+                    // default, which carries the icons), mirroring Base's per-skin path.
+                    pic = $"gfx/menu/{XonoticGodot.Game.Hud.HudSkin.SkinName}/gametype_{c.MapName}";
+                else
+                    pic = string.IsNullOrEmpty(c.MapName) ? "" : $"maps/{c.MapName}";
+                // QC ReadGameTypeVote (client/mapvoting.qc:762-780): the gametype-vote title + description split
+                // on the GTV_CUSTOM flag. A REAL (built-in) gametype shows MapInfo_Type_ToText (the gametype's
+                // pretty .message, e.g. "Deathmatch") + MapInfo_Type_Description (its built-in description); only a
+                // CUSTOM gametype (an alias that doesn't resolve to a built-in type) reads the per-name
+                // sv_vote_gametype_<name>_name / _description cvars (falling back to the ballot entry name when the
+                // name cvar is empty, exactly like Base). The previous port read the _name/_description cvars for
+                // EVERY option, so stock ballots (dm/tdm/ca/ctf — which set neither cvar) showed the raw "dm"
+                // entry name and an empty description instead of "Deathmatch" + its blurb.
+                string data;
+                string desc;
+                if (isGametypeVote)
+                {
+                    XonoticGodot.Common.Gameplay.GameType? gt =
+                        XonoticGodot.Common.Gameplay.GameTypes.ByName(c.MapName);
+                    if (gt is not null)
+                    {
+                        // QC MapInfo_Type_Description (client/mapvoting.qc:767): for a real built-in gametype the
+                        // picker shows its MenuDescription prose (e.g. Deathmatch's 3-paragraph guide text from
+                        // deathmatch.qc:describe). A gametype that has not yet ported its describe() returns null,
+                        // which falls back to an empty string matching the pre-port behavior.
+                        data = string.IsNullOrEmpty(gt.DisplayName) ? c.MapName : gt.DisplayName;
+                        desc = gt.MenuDescription ?? "";
+                    }
+                    else
+                    {
+                        // Custom alias: per-name cvars, name falling back to the ballot entry (QC custom branch).
+                        string gtName = Cvars.String($"sv_vote_gametype_{c.MapName}_name");
+                        data = string.IsNullOrEmpty(gtName) ? c.MapName : gtName;
+                        desc = Cvars.String($"sv_vote_gametype_{c.MapName}_description");
+                    }
+                }
+                else
+                {
+                    data = c.MapName;
+                    desc = "";
+                }
+                list.Add(new XonoticGodot.Game.Hud.MapVotePanel.Candidate(
+                    c.MapName, c.Votes, pic, data, desc, c.Available, c.Suggester));
+            }
+            mv.SetVote(list, timeout, gametypeVote: isGametypeVote, abstain: abstainPresent);
+            // QC sv_vote_gametype_detail: honour the gametype-vote detail flag (from the wire on a remote client).
+            if (isGametypeVote)
+                mv.Detail = detail;
+        }
+
+        // Live counts + availability each frame (QC MapVote_UpdateVotes), excluding the abstain slot.
+        // Build the availability list FIRST then call SetAvailability before SetVotes, so the panel's
+        // _top2Time reduce-fade clock is stamped when an option first becomes unavailable (QC mv_top2_alpha).
+        var avail = new System.Collections.Generic.List<bool>(cands.Count);
+        var counts = new System.Collections.Generic.List<int>(cands.Count);
+        foreach (MvCand c in cands)
+        {
+            if (!c.IsAbstain)
+            {
+                avail.Add(c.Available);
+                counts.Add(c.Available ? c.Votes : -1);
+            }
+        }
+        mv.SetAvailability(avail); // stamps _top2Time on first reduce (before SetVotes overwrites availability)
+        mv.SetVotes(counts);
+
+        // The local player's own vote (QC mv_ownvote) + the decided winner slot — both normalized above from the
+        // listen host's MapVoting or the networked ballot (abstain-stripped cell indices, so they line up 1:1 with
+        // the panel cells; -1 / 0 = none).
+        mv.OwnVote = ownVote;
+        if (winnerSlot > 0 && mv.Winner != winnerSlot) mv.SetWinner(winnerSlot);
+
+        mv.Active = true;
+        if (!mv.Visible) mv.Visible = true;
+    }
+    /// <summary>A normalized map/gametype-vote ballot cell — the shared shape the map-vote panel renders, built
+    /// from either the listen host's <see cref="MapVoteCandidate"/> or a remote client's <see cref="NetMapVote.Cand"/>.
+    /// Member names match <see cref="MapVoteCandidate"/> so the render body reads identically for both sources.</summary>
+    private readonly record struct MvCand(string MapName, bool IsAbstain, int Votes, bool Available, string Suggester);
+    private string _mapVoteSig = "";
+    private double _voteHideAt = -1.0;
+
+    /// <summary>
+    /// Feed the RACE-TIMER panel (QC racetimer.qc HUD_RaceTimer) + the Checkpoints panel (checkpoints.qc) the
+    /// live race state each frame in Race/CTS. On a listen server the active <see cref="Race"/> gametype carries
+    /// the local racer's <c>RaceState</c> and the per-checkpoint record store (QC race_checkpoint_records[]): the
+    /// lap count-up clock, the next checkpoint + its record (the anticipation delta), the most-recent checkpoint
+    /// split + speed (the frozen "Checkpoint N (+/-delta)" line + the split list), and the penalty accumulator.
+    /// This is the host analogue of the TE_CSQC_RACE net feed (QC race_SendTime) — the records are now kept
+    /// server-side (Race.RecordCheckpointSplit), so the panels render live instead of staying blank. The panel
+    /// self-blanks outside a lap.
+    /// </summary>
+    private void UpdateRacePanels()
+    {
+        if (_fullHud is null)
+            return;
+        XonoticGodot.Game.Hud.RaceTimerPanel rt = _fullHud.RaceTimer;
+        XonoticGodot.Game.Hud.CheckpointsPanel cps = _fullHud.Checkpoints;
+        Player? me = LocalServerPlayer;
+        XonoticGodot.Common.Gameplay.GameType? gt = _serverWorld?.GameType;
+        var race = gt as XonoticGodot.Common.Gameplay.Race;
+        var cts = gt as XonoticGodot.Common.Gameplay.Cts;
+        bool active = (race is not null || cts is not null) && me is not null && !_client!.IsObserving;
+        if (!active)
+        {
+            if (rt.Visible) rt.Visible = false;
+            if (cps.Visible) cps.Visible = false;
+            _lastFedCheckpoint = -2;
+            return;
+        }
+
+        rt.Now = _client!.LatestServerTime;
+        rt.Observing = false;
+        if (race is not null)
+        {
+            XonoticGodot.Common.Gameplay.Race.RaceState st = race.GetState(me!);
+            rt.RaceLapTime = st.LapStartTime;              // QC race_laptime: the lap-start baseline (count-up clock)
+            rt.RaceNextCheckpoint = st.NextCheckpoint < 0 ? 0 : st.NextCheckpoint;
+            rt.RacePenaltyAccumulator = st.PenaltyAccumulator * 10f; // panel reads tenths; RaceState keeps seconds
+
+            // QC RACE_NET_PENALTY_RACE / _QUALIFYING → racetimer.qc penalty line: show "PENALTY: Ns (reason)" for the
+            // ~2 s fade window after a penalty was imposed (panel reads tenths). Fades out on its own past the window.
+            if (st.LastPenaltyEventTime > 0f && (rt.Now - st.LastPenaltyEventTime) < 2.0)
+            {
+                rt.RacePenaltyTime = st.LastPenaltySeconds * 10f; // panel reads tenths; RaceState keeps seconds
+                rt.RacePenaltyEventTime = st.LastPenaltyEventTime;
+                rt.RacePenaltyReason = st.LastPenaltyReason;
+            }
+            else
+            {
+                rt.RacePenaltyTime = 0f;
+            }
+            // RaceCheckpoint (the frozen-split index) is set below from the last CROSSED checkpoint.
+
+            // QC race_SendTime → the racetimer split feed: the most-recent checkpoint crossing (race_checkpoint /
+            // race_time / race_checkpointtime) drives the frozen "Checkpoint N (+/-delta)" line. The delta is vs
+            // the per-checkpoint record (race_previousbesttime) + personal best (race_mypreviousbesttime). Times
+            // are kept in plain seconds (the port's RaceTimerPanel works in seconds, not TIME_ENCODE'd ints).
+            int lastCp = st.LastCrossedCheckpoint;
+            // The panel selects FROZEN-split vs ANTICIPATION/clock on RaceCheckpointTime > 0; feed the crossing
+            // stamp only within the 2s freeze window (QC racetimer.qc: a = bound(0, 2-(time-race_checkpointtime)))
+            // so after the split fades the panel reverts to the running clock + next-checkpoint anticipation.
+            double nowT = rt.Now;
+            bool frozen = st.LastCheckpointTime > 0f && (nowT - st.LastCheckpointTime) < 2.0;
+            rt.RaceCheckpointTime = frozen ? st.LastCheckpointTime : 0.0;
+            rt.RaceCheckpoint = lastCp < 0 ? 254 : lastCp;
+            rt.RaceTime = st.LastSplit;
+            rt.RaceCheckpointSpeed = st.LastCheckpointSpeed;
+            rt.RacePreviousBestTime = lastCp >= 0 ? race.CheckpointRecord(lastCp) : 0f;
+            rt.RacePreviousBestName = lastCp >= 0 ? race.CheckpointRecordHolder(lastCp) : "";
+            rt.RaceCheckpointBestSpeed = lastCp >= 0 ? race.CheckpointRecordSpeed(lastCp) : 0f;
+            rt.RaceMyPreviousBestTime = lastCp >= 0 && st.PersonalCheckpointRecords.TryGetValue(lastCp, out float mb) ? mb : 0f;
+
+            // QC the anticipation feed: the record split at the NEXT checkpoint (race_nextbesttime) + your own PB
+            // (race_mybesttime), so the panel can show the live delta while heading toward it.
+            int nextCp = st.NextCheckpoint < 0 ? 0 : st.NextCheckpoint;
+            rt.RaceNextBestTime = race.CheckpointRecord(nextCp);
+            rt.RaceNextBestName = race.CheckpointRecordHolder(nextCp);
+            rt.RaceMyBestTime = st.PersonalCheckpointRecords.TryGetValue(nextCp, out float nmb) ? nmb : 0f;
+
+            // QC StoreCheckpointSplits (racetimer.qc:276): on a NEW crossing, stash the split line for the
+            // Checkpoints panel (the persistent list). Fire once per crossing (track the last fed checkpoint +
+            // its stamp so a still-frozen split isn't re-stored every frame). A lap restart (cp back to start)
+            // clears the list (QC ClearCheckpointSplits on race_time == 0).
+            if (lastCp >= 0 && st.LastCheckpointTime > 0f
+                && (lastCp != _lastFedCheckpoint || st.LastCheckpointTime != _lastFedCheckpointTime))
+            {
+                _lastFedCheckpoint = lastCp;
+                _lastFedCheckpointTime = st.LastCheckpointTime;
+                float rec = race.CheckpointRecord(lastCp);
+                string label = lastCp == 0 ? "Finish line" : $"Checkpoint {lastCp}";
+                // delta vs the match record at this checkpoint (negative = ahead). With no record yet, show the
+                // bare label (StoreSplit with a 0 delta renders "+0.0").
+                float delta = rec > 0f ? st.LastSplit - rec : 0f;
+                cps.StoreSplit(lastCp, label, delta);
+            }
+            else if (st.LapStartTime > 0f && lastCp < 0)
+            {
+                cps.ClearSplits();   // QC ClearCheckpointSplits on a fresh lap (no crossing yet)
+                _lastFedCheckpoint = -2;
+            }
+            if (!cps.Visible) cps.Visible = true;
+
+            // QC race_SendStatus → cl_race.qc HUD_Mod_Race medal flash: when the LOCAL racer files a new record
+            // (Race.RecordFinishTime stamps LastRecordTime), raise the medal once. The status maps QC's
+            // race_SendStatus argument: 0 fail, 1 new time (PB, improved own rank), 2 new rank, 3 server record.
+            if (ReferenceEquals(race.LastRecordPlayer, me) && race.LastRecordTime > 0f
+                && race.LastRecordTime != _lastFedRecordTime)
+            {
+                _lastFedRecordTime = race.LastRecordTime;
+                XonoticGodot.Common.Gameplay.RaceRecordResult r = race.LastRecord;
+                int status = r.Kind switch
+                {
+                    XonoticGodot.Common.Gameplay.RaceRecordKind.Fail => 0,
+                    _ when r.IsServerRecord => 3,                                            // newpos == 1
+                    XonoticGodot.Common.Gameplay.RaceRecordKind.NewImproved => 1,            // improved own rank → new time
+                    _ => 2,                                                                  // NewSet / NewBroken → new rank
+                };
+                rt.RaceStatus = status;
+                rt.RaceStatusName = me!.NetName;
+                rt.RaceStatusRank = status > 0 && r.NewPos > 0 ? CountOrdinal(r.NewPos) : "";
+                rt.RaceStatusRankIsMine = true;                                              // the local racer set it
+                rt.RaceStatusTime = race.LastRecordTime + 5.0;                              // QC race_status_time = time + 5
+            }
+            else if (rt.RaceStatus >= 0 && rt.RaceStatusTime <= rt.Now)
+            {
+                rt.RaceStatus = -1; // QC: the flash expires after its 5s window
+            }
+        }
+        else
+        {
+            // CTS: a single timed run (RunStartTime is the count-up baseline); no per-checkpoint laps.
+            XonoticGodot.Common.Gameplay.Cts.CtsState st = cts!.GetState(me!);
+            rt.RaceLapTime = st.RunStartTime;
+            rt.RaceCheckpoint = 254;
+            rt.RaceNextCheckpoint = 254;                   // 254 = none (CTS has no next-checkpoint anticipation)
+            rt.RacePenaltyAccumulator = 0f;
+            rt.RaceCheckpointTime = 0.0;
+            if (cps.Visible) cps.Visible = false;          // CTS has no per-checkpoint split list
+
+            // QC race_SendStatus → cl_race.qc HUD_Mod_Race medal flash: when the LOCAL runner files a new record
+            // (Cts.FinishStage stamps LastRecordTime), raise the medal once — identical mapping to the Race branch
+            // (CTS forces g_race_qualifying=1, so its finish runs the same QC race_setTime → race_SendStatus path).
+            if (ReferenceEquals(cts.LastRecordPlayer, me) && cts.LastRecordTime > 0f
+                && cts.LastRecordTime != _lastFedRecordTime)
+            {
+                _lastFedRecordTime = cts.LastRecordTime;
+                XonoticGodot.Common.Gameplay.RaceRecordResult r = cts.LastRecord;
+                int status = r.Kind switch
+                {
+                    XonoticGodot.Common.Gameplay.RaceRecordKind.Fail => 0,
+                    _ when r.IsServerRecord => 3,                                            // newpos == 1
+                    XonoticGodot.Common.Gameplay.RaceRecordKind.NewImproved => 1,            // improved own rank → new time
+                    _ => 2,                                                                  // NewSet / NewBroken → new rank
+                };
+                rt.RaceStatus = status;
+                rt.RaceStatusName = me!.NetName;
+                rt.RaceStatusRank = status > 0 && r.NewPos > 0 ? CountOrdinal(r.NewPos) : "";
+                rt.RaceStatusRankIsMine = true;                                              // the local runner set it
+                rt.RaceStatusTime = cts.LastRecordTime + 5.0;                               // QC race_status_time = time + 5
+            }
+            else if (rt.RaceStatus >= 0 && rt.RaceStatusTime <= rt.Now)
+            {
+                rt.RaceStatus = -1; // QC: the flash expires after its 5s window
+            }
+        }
+        if (!rt.Visible) rt.Visible = true;
+    }
+
+    // Per-frame StoreSplit de-dup: the last checkpoint index + its crossing stamp we already fed to the
+    // Checkpoints panel, so a still-frozen split (held for ~2s) isn't re-stored every render frame.
+    private int _lastFedCheckpoint = -2;
+    private float _lastFedCheckpointTime = -1f;
+    // The last record-attempt stamp we raised the medal flash for (so a frozen flash isn't re-triggered).
+    private float _lastFedRecordTime = -1f;
+    // Same de-dup for the mod-icon medal flash (separate from the split-timer flash so each panel fires once).
+    private float _lastFedModIconRecordTime = -1f;
+
+    /// <summary>QC <c>count_ordinal</c> (common/util.qc): 1 → "1st", 2 → "2nd", 3 → "3rd", 11..13 → "Nth".</summary>
+    private static string CountOrdinal(int n)
+    {
+        int tens = n % 100;
+        if (tens >= 11 && tens <= 13) return n + "th";
+        return (n % 10) switch { 1 => n + "st", 2 => n + "nd", 3 => n + "rd", _ => n + "th" };
     }
 
     /// <summary>
@@ -2431,6 +4757,8 @@ public sealed partial class NetGame : Node3D
         // CrosshairPanel, however, draws its reticle even without a Player (it doesn't gate on Player) — so on a
         // pure client it would DOUBLE NetHud's crosshair. Show the skinned crosshair only when a local Player is
         // present; otherwise NetHud (un-suppressed above) owns the reticle. No double crosshair in either case.
+        // The live per-frame suppression (dead/intermission/scoreboard/observing) is applied in UpdateCrosshairGate
+        // below — this only sets the player-presence base state on a player change.
         if (_fullHud.Crosshair.Visible != havePlayer)
             _fullHud.Crosshair.Visible = havePlayer;
 
@@ -2440,8 +4768,87 @@ public sealed partial class NetGame : Node3D
         // it useful without exposing the carrier's per-tick move-values to the client HUD layer.
         if (_fullHud.GetPanel<XonoticGodot.Game.Hud.StrafeHudPanel>() is { } strafe)
             strafe.Player = p;
+
+        // QC HUD_PressedKeys spectatee gate: a free-fly observer never shows the cluster, and while merely
+        // playing it shows only at enable 2. Feed the live spectatee_status (translated into the QC convention:
+        // ClientNet encodes free-fly as SpectateeStatus==LocalNetId, QC uses -1; following a player is >0).
+        if (_fullHud.GetPanel<XonoticGodot.Game.Hud.PressedKeysPanel>() is { } pressed)
+        {
+            int qcSpectatee = 0;
+            if (_client is not null)
+            {
+                if (_client.IsObserving) qcSpectatee = -1;            // free-fly observer
+                else if (_client.SpectatingNetId > 0) qcSpectatee = _client.SpectatingNetId; // following a player
+            }
+            pressed.SpectateeStatus = qcSpectatee;
+            // When FOLLOWING another player, show THEIR keys (the networked STAT(PRESSED_KEYS), which the server
+            // copies from the spectatee); when playing/observing yourself, leave the override null so the panel
+            // reads your own live input (lower latency, and on a listen host LocalServerPlayer carries it anyway).
+            pressed.PressedKeysOverride = (_client is not null && _client.SpectatingNetId > 0)
+                ? _client.OwnerPressedKeys
+                : null;
+        }
     }
     private Player? _lastHudPlayer;
+
+    /// <summary>
+    /// Per-frame crosshair master-gating (QC client/hud/crosshair.qc HUD_Crosshair 226-241). Base skips drawing the
+    /// crosshair entirely — and resets its smoothing state — whenever the player is not in a live first-person
+    /// playing view: scoreboard active, intermission==2, GAME_STOPPED, lockview, <c>spectatee_status == -1</c>
+    /// (free-fly observer), <c>STAT(HEALTH) &lt;= 0</c> (dead), the dead-spectator CAMERA_SPECTATOR==2 mode, or a
+    /// non-FREEAIM viewloc. The previous port only gated on player-presence (havePlayer), so the skinned crosshair
+    /// kept drawing dead-centre while dead / at intermission / over the scoreboard. Reproduce the reachable subset
+    /// of the suppress set from state the port already tracks client-side (works on the host path where the skinned
+    /// panel draws; a pure remote client's reticle is owned by NetHud, gated separately). The crosshair only shows
+    /// when a local Player is present AND none of the suppress conditions hold.
+    /// </summary>
+    private void UpdateCrosshairGate()
+    {
+        if (_fullHud is null || _client is null)
+            return;
+
+        // Base: the crosshair draws only with a local first-person player (havePlayer mirrors QC's view player).
+        bool havePlayer = _lastHudPlayer is not null;
+
+        // QC HUD_Crosshair early-skips (the subset the port tracks client-side):
+        //   STAT(HEALTH) <= 0           → dead (LocalDeadNow covers host + remote)
+        //   intermission == 2 / GAME_STOPPED → MatchIntermission (the match-over scoreboard takes the screen)
+        //   scoreboard_active           → the scoreboard panel is up (+showscores / death / intermission)
+        //   spectatee_status == -1      → free-fly observer (IsObserving) — no own first-person aim to draw on
+        bool suppressed =
+            LocalDeadNow()
+            || _client.MatchIntermission
+            || (_scoreboard is not null && _scoreboard.Active)
+            || _client.IsObserving;
+
+        bool show = havePlayer && !suppressed;
+        if (_fullHud.Crosshair.Visible != show)
+            _fullHud.Crosshair.Visible = show;
+
+        // [viewprim] Feed the authoritative rendered aim ray + chase state into the crosshair so the shared
+        // CrosshairTrace primitive traces from the real render eye (closing the dead AimForward/AimOrigin feed).
+        // UpdateCamera → FirstPersonView.UpdateView has already run this frame, so RenderedEyeQuake/
+        // RenderedForwardQuake carry the final rendered eye/forward (derived from the already-predicted local pose —
+        // no new networking). This replaces CrosshairPanel's dead reconstruction fallback (TryGetAimRay was never
+        // fed) with the real eye/forward, and lights up the crosshair_chase origin trace whenever chase is active
+        // (own-player + spectate both set CameraMode=Chase, surfaced as _view.ChaseActive).
+        CrosshairPanel xh = _fullHud.Crosshair;
+        xh.AimOrigin = _view.RenderedEyeQuake;
+        xh.AimForward = _view.RenderedForwardQuake;
+        xh.ChaseActive = _view.ChaseActive;
+        xh.ChaseCamera3D = _camera;
+
+        // [viewconsumers] crosshair-chase body fade (QC crosshair_chase: when the third-person crosshair-chase camera
+        // is up, the player's OWN model is drawn at crosshair_chase_playeralpha so it doesn't block the chased aim).
+        // Only the local player's own third-person counts — when spectating someone else (SpectatingNetId != 0) the
+        // chased body is theirs, not the local model, so leave the local model alone. Drives ClientWorld's per-model
+        // alpha ease by local net id; 0 restores full opacity. Read both cvars live (CrosshairPanel registers them).
+        bool ownChase = _view.ChaseActive && (_client?.SpectatingNetId ?? 0) == 0
+            && CvarOr(Api.Cvars, "crosshair_chase", 0f) != 0f;
+        int localNet = _client?.LocalNetId ?? 0;
+        _render?.SetLocalBodyAlpha(localNet,
+            ownChase ? 1f - CvarOr(Api.Cvars, "crosshair_chase_playeralpha", 0.25f) : 0f);
+    }
 
     /// <summary>
     /// Feed the InfoMessages panel the networked dead/respawn + observing/spectating state each frame (QC the
@@ -2466,6 +4873,38 @@ public sealed partial class NetGame : Node3D
             im.SpectatingName = sid != 0 && _server is not null
                 ? (_server.PlayerByNetId(sid)?.NetName ?? "")
                 : "";
+        }
+
+        // QC MUTATOR_HOOKFUNCTION(cl_ca, DrawInfoMessages) (cl_clanarena.qc): in CA, keep the info-message panel
+        // drawing for a SPECTATOR who has the scoreboard open (ENTCS_SPEC_IN_SCOREBOARD) — otherwise the panel
+        // self-blanks behind the scoreboard. The port knows the scoreboard-open state locally (+showscores) and the
+        // spectating state from the net client, so model the CA branch directly: force the panel visible while a CA
+        // spectator views the scoreboard. (In this port the manager already keeps infomessages always-on, so this
+        // mainly documents intent; it stays a faithful, harmless assertion of the QC behaviour.)
+        if (XonoticGodot.Common.Gameplay.Scoring.GameScores.Gametype == "ca"
+            && _client.Accepted && _client.SpectateeStatus != 0
+            && XonoticGodot.Engine.Console.BindTable.ShowScores)
+            im.Visible = true;
+
+        // QC cl_lms DrawInfoMessages: in LMS, the local player is "out" once they hold an LMS rank (LMS_RANK > 0,
+        // set on elimination). Read it from the local scoreboard row's networked LMS_RANK column.
+        im.LmsNoLives = false;
+        if (XonoticGodot.Common.Gameplay.Scoring.GameScores.Gametype == "lms")
+        {
+            XonoticGodot.Net.ScoreboardWire? sb = _client.LatestScoreboard;
+            var rankField = XonoticGodot.Common.Gameplay.Scoring.GameScores.Field("LMS_RANK");
+            if (sb is not null && rankField is not null)
+            {
+                int localId = _client.LocalNetId;
+                foreach (XonoticGodot.Net.ScoreRowWire row in sb.Rows)
+                {
+                    if (row.NetId != localId) continue;
+                    int rid = rankField.RegistryId;
+                    if (rid >= 0 && rid < row.Columns.Length && row.Columns[rid] > 0)
+                        im.LmsNoLives = true;
+                    break;
+                }
+            }
         }
     }
 
@@ -2492,9 +4931,78 @@ public sealed partial class NetGame : Node3D
         if (_scoreboard is null || _client is null)
             return;
 
-        bool show = XonoticGodot.Engine.Console.BindTable.ShowScores;
-        if (_scoreboard.Visible != show)
-            _scoreboard.Visible = show;
+        // QC Scoreboard_WouldDraw (scoreboard.qc): at intermission==1 the scoreboard force-draws (no +showscores
+        // key needed); at intermission==2 — when the MapVote panel owns the screen — it hides. We model
+        // intermission==2 as "the MapVote panel is currently showing" (UpdateMapVotePanel owns mv.Visible).
+        bool mapVoteShowing = _fullHud is not null && _fullHud.MapVote.Visible;
+        bool intermissionShow = _client.MatchIntermission && !mapVoteShowing;
+        // QC Scoreboard_WouldDraw death scoreboard (scoreboard.qc:1793): once the local player is dead AND a short
+        // delay has elapsed since death, the scoreboard forces up even without +showscores. The port has no
+        // networked death_time, so reproduce it client-side: STAT(RESPAWN_TIME) != 0 means dead (set at death,
+        // negated while respawning, 0 while alive), and we stamp the server time at which death was first observed
+        // to gate the cl_deathscoreboard_delay window. Suppressed at intermission==2 (mapvote) below.
+        bool deadNow = _client.RespawnTimeStat != 0f;
+        if (deadNow)
+        {
+            if (_localDeathStamp < 0f) _localDeathStamp = _client.LatestServerTime;
+        }
+        else _localDeathStamp = -1f;
+        var cv = Api.Services?.Cvars;
+        // QC cl_cts.qc MUTATOR_HOOKFUNCTION(cl_cts, DrawDeathScoreboard) returns ISGAMETYPE(CTS): CTS never shows the
+        // scoreboard automatically while dead (a CTS death is an instant respawn at the start line — there's nothing
+        // to read). The manual +showscores hold and the intermission scoreboard are unaffected.
+        bool ctsGame = _serverWorld?.GameType is XonoticGodot.Common.Gameplay.Cts
+            || XonoticGodot.Common.Gameplay.Scoring.GameScores.Gametype == "cts";
+        bool deathScoreboard = deadNow && _localDeathStamp >= 0f && !ctsGame
+            && (cv is null || cv.GetFloat("cl_deathscoreboard") != 0f)
+            && _client.LatestServerTime - _localDeathStamp >= (cv is null ? 1f : cv.GetFloat("cl_deathscoreboard_delay"));
+        bool show = (XonoticGodot.Engine.Console.BindTable.ShowScores || intermissionShow || deathScoreboard)
+            && !mapVoteShowing; // QC intermission==2 / clickable-radar suppression: mapvote owns the screen
+        // QC scoreboard.qc:2411: drive the cross-fade via scoreboard_active (the Active setter ramps _fadeAlpha
+        // in/out in _Process and hides the panel once fully faded out) rather than popping Visible — this is what
+        // makes hud_panel_scoreboard_fadeinspeed/fadeoutspeed actually animate on the live path.
+        if (_scoreboard.Active != show)
+            _scoreboard.Active = show;
+        // Drive the manager's non-scoreboard panel cross-fade (QC panel_fade_alpha) from the scoreboard's live fade
+        // level. Without this ScoreboardFade sat at 0 forever, so the always-on HUD panels never faded when the
+        // scoreboard came up — most visibly the top-left radar, whose bottom-right corner pokes into the centered
+        // scoreboard's rect, so its minimap showed THROUGH the scoreboard's Red/Blue + column headers (the "jumble
+        // over the radar" on the death scoreboard). FadeAlpha is the read-only ramp ScoreboardPanel exposes exactly
+        // for this. Set every frame BEFORE the early returns below so it also ramps back down when the board hides.
+        // (_scoreboard is standalone — not _fullHud's discovered panel — so the owner has to bridge the two.)
+        if (_fullHud is not null)
+            _fullHud.ScoreboardFade = _scoreboard.FadeAlpha;
+        // The radar is a STANDALONE panel (NetGame-managed pos/size, never LoadConfig'd), so the manager cross-fade
+        // above never reaches it — its LiveFgAlpha is pinned. Fade it directly by the scoreboard level via Modulate
+        // so the top-left minimap doesn't bleed through the scoreboard (QC: teamradar is MAINGAME-only). EXCEPT while
+        // it's Maximized: the clickable spawn-select radar is itself shown while dead — exactly when the death
+        // scoreboard is also up — and must stay fully visible to pick a spawn (force full alpha so a fade that began
+        // before it was maximized is undone).
+        if (_radar is not null)
+        {
+            float radarA = _radar.Maximized ? 1f : 1f - _scoreboard.FadeAlpha;
+            if (_radar.Modulate.A != radarA)
+                _radar.Modulate = new Color(1f, 1f, 1f, radarA);
+        }
+        // QC GET_NEXTMAP: feed the "Next map:" line from the server-broadcast _nextmap (ClientNet.NextMap).
+        if (show && _scoreboard.NextMap != _client.NextMap)
+            _scoreboard.NextMap = _client.NextMap;
+        // Feed the networked respawn line every frame while shown (QC STAT(RESPAWN_TIME), scoreboard.qc:2764) so
+        // the countdown ticks even between score-version changes; this is the live caller for the respawn block.
+        if (show)
+        {
+            _scoreboard.RespawnStat = _client.RespawnTimeStat;
+            _scoreboard.RespawnServerTime = _client.LatestServerTime;
+            // QC scoreboard.qc:2792 getcommandkey(_("jump"), "+jump"): show the actual key bound to +jump in the
+            // "press X to respawn" line, falling back to the literal "jump" when nothing is bound.
+            _scoreboard.RespawnJumpKey = XonoticGodot.Engine.Console.BindTable.CommandKey("jump", "+jump");
+            // QC Scoreboard_AccuracyStats_WouldDraw (scoreboard.qc:1864): suppress the accuracy block during warmup.
+            _scoreboard.MatchWarmup = _client.MatchWarmup;
+            // QC Scoreboard_MapStats_Draw reads STAT(MONSTERS_*)/STAT(SECRETS_*) every draw — they tick
+            // independently of the score version, so feed the live map-stats counts every frame while shown
+            // (not only inside the change-gated row feed below, which made monsters lag and never fed secrets).
+            FeedMapStats();
+        }
         if (!show)
             return;
 
@@ -2509,6 +5017,13 @@ public sealed partial class NetGame : Node3D
             _lastFedModeStatus = ms;
             _scoreboard.Title = ScoreboardTitle();
             _scoreboard.SetWireRows(sb, _client.LocalNetId, ms?.EliminatedNetIds); // grey-out (QC eliminatedPlayers)
+            // QC Scoreboard_Rankings_Draw: feed the networked race/CTS rankings (best-first (time, holder)) so the
+            // scoreboard's rankings block is live in race modes (empty otherwise → DrawRankings hides it). The local
+            // name (QC entcs_GetName(player_localnum)) drives the self-row highlight.
+            _scoreboard.SetRankings(sb.Rankings);
+            _scoreboard.RankingsSelfName = ResolveScoreboardName(_client.LocalNetId);
+            // QC the race/CTS speed award (scoreboard.qc:2731): the round-best + all-time best planar speed + holders.
+            _scoreboard.SetSpeedAward(sb.SpeedAward, sb.SpeedAwardHolder, sb.SpeedAwardBest, sb.SpeedAwardBestHolder);
             FeedScoreboardHeader();
         }
         else if (sb is null)
@@ -2519,6 +5034,9 @@ public sealed partial class NetGame : Node3D
     }
     private XonoticGodot.Net.ScoreboardWire? _lastFedScoreboard;
     private XonoticGodot.Net.GametypeStatusBlock.Decoded? _lastFedModeStatus;
+    /// <summary>QC death_time stand-in: the server time at which the local player's death was first observed
+    /// (STAT(RESPAWN_TIME) first non-zero), or -1 while alive; gates the cl_deathscoreboard_delay window.</summary>
+    private float _localDeathStamp = -1f;
 
     /// <summary>[T68] Resolve a player net id to its display name — the port's faithful <c>entcs_GetName</c>
     /// stand-in for the shownames overlay. The port has no separate entcs name stream, so the name comes from the
@@ -2685,10 +5203,110 @@ public sealed partial class NetGame : Node3D
                 panel.Mode = ModIconsPanel.ModIconsMode.Survival;
                 panel.SurvivalStatus = ms.MyStatus;
                 break;
+            // [W1-mod-icons] the Wave-1 objective feeds net-server added to GametypeStatusBlock — establish the
+            // client dispatch so Wave-3's per-mode render (already present for CTF/Domination, Keepaway below)
+            // is fed live. CTF: the bitpacked OBJECTIVE_STATUS flag pack drives HUD_Mod_CTF.
+            case XonoticGodot.Net.GametypeStatusBlock.Kind.Ctf:
+                panel.Mode = ModIconsPanel.ModIconsMode.Ctf;
+                panel.ObjectiveStatus = unchecked((int)ms.ObjectiveStatus);
+                break;
+            // Domination: STAT(DOM_TOTAL_PPS / DOM_PPS_*). The wire packs [0]=total, [1..4]=red,blue,yellow,pink.
+            case XonoticGodot.Net.GametypeStatusBlock.Kind.Domination:
+                panel.Mode = ModIconsPanel.ModIconsMode.Domination;
+                panel.SetDominationPps(ms.DominationPps[1], ms.DominationPps[2], ms.DominationPps[3],
+                    ms.DominationPps[4], ms.DominationPps[0]);
+                break;
+            // Keepaway: the KA_CARRYING mod icon. The wire carries the carrier's net id (0 = nobody); the QC stat
+            // bit means "the LOCAL player carries it", so resolve it against the local net id here.
+            case XonoticGodot.Net.GametypeStatusBlock.Kind.Keepaway:
+                panel.Mode = ModIconsPanel.ModIconsMode.Keepaway;
+                panel.KeepawayCarrying = ms.CarrierNetId != 0 && ms.CarrierNetId == _client.LocalNetId;
+                break;
+            // NexBall: the QC nexball_carrying mod-icon. Same shape as Keepaway — the wire carries the carrier's net
+            // id (0 = nobody); resolve it against the local net id so the icon shows only while WE hold the ball.
+            case XonoticGodot.Net.GametypeStatusBlock.Kind.NexBall:
+                panel.Mode = ModIconsPanel.ModIconsMode.NexBall;
+                panel.NexBallCarrying = ms.CarrierNetId != 0 && ms.CarrierNetId == _client.LocalNetId;
+                // QC HUD_Mod_NexBall keys the power-meter bar off the LOCAL NB_METERSTART — show the triangle-wave
+                // charge bar only while the local player is the carrier; otherwise feed -1 (inactive, no bar). The
+                // networked meter phase rides the NexBall block (GametypeStatusBlock.Decoded.NexBallMeterPhase).
+                panel.NexBallMeterPhase =
+                    (ms.CarrierNetId != 0 && ms.CarrierNetId == _client.LocalNetId) ? ms.NexBallMeterPhase : -1;
+                break;
+            // Team Keepaway: STAT(TKA_BALLSTATUS) — the carrying / per-team-taken / dropped bit pack is already
+            // computed per-recipient on the server, so feed it straight to HUD_Mod_TeamKeepaway.
+            case XonoticGodot.Net.GametypeStatusBlock.Kind.TeamKeepaway:
+                panel.Mode = ModIconsPanel.ModIconsMode.TeamKeepaway;
+                panel.TkaBallStatus = ms.TkaBallStatus;
+                break;
+            // LMS: the recycled REDALIVE/BLUEALIVE/OBJECTIVE_STATUS leader stats drive HUD_Mod_LMS_Draw (the
+            // leader-count icon + the colored +N lives lead). The panel hides itself when the leader count is 0.
+            case XonoticGodot.Net.GametypeStatusBlock.Kind.Lms:
+                panel.Mode = ModIconsPanel.ModIconsMode.Lms;
+                panel.LmsLeaderCount = ms.LmsLeaderCount;
+                panel.LmsLivesDiff = ms.LmsLivesDiff;
+                panel.LmsLeadersVisible = ms.LmsLeadersVisible;
+                break;
             default:
                 panel.Mode = ModIconsPanel.ModIconsMode.None;
                 break;
         }
+
+        // Race/CTS mod-icon (QC HUD_Mod_Race, cl_race.qc:59-164): not sent via GametypeStatusBlock (Race/CTS have
+        // no team-objective pack), so fall back to reading the live server gametype directly when on a listen server.
+        // Feeds the personal-best (local racer's rank-1 record from RaceRecords), server record, and the latest
+        // medal-flash status derived from the same Race.LastRecord that UpdateRacePanels already uses.
+        // QC guard: only show when the primary score column is SFL_TIME and it is NOT a team race
+        // (QC "if(!(scores_flags(ps_primary) & SFL_TIME) || teamplay)").
+        if (panel.Mode == ModIconsPanel.ModIconsMode.None)
+        {
+            XonoticGodot.Common.Gameplay.GameType? sgt = _serverWorld?.GameType;
+            Player? me = LocalServerPlayer;
+            var raceGt = sgt as XonoticGodot.Common.Gameplay.Race;
+            var ctsGt  = sgt as XonoticGodot.Common.Gameplay.Cts;
+            if ((raceGt is not null || ctsGt is not null) && me is not null && !_client!.IsObserving)
+            {
+                // QC: only show for non-team qualifying/CTS (SFL_TIME primary and !teamplay).
+                bool teamRace = raceGt is not null && raceGt.RaceTeams >= 2;
+                bool qualifying = raceGt is not null && raceGt.Qualifying;
+                bool show2 = qualifying || ctsGt is not null || (raceGt is not null && !teamRace);
+                if (show2)
+                {
+                    panel.Mode = ModIconsPanel.ModIconsMode.Race;
+
+                    // QC crecordtime (ClientProgsDB): the local racer's personal best = their own rank in the
+                    // server's per-map top-99, identified by PersistentId (UID). 0 = no personal best yet.
+                    string mapName  = raceGt?.MapName ?? ctsGt!.MapName;
+                    string recType  = raceGt?.RecordType ?? ctsGt!.RecordType;
+                    panel.RaceModIconPb = XonoticGodot.Common.Gameplay.RaceRecords.ReadPersonalBest(mapName, recType, me.PersistentId);
+
+                    // QC race_server_record (RACE_NET_SERVER_RECORD): rank-1 time for this map.
+                    panel.RaceModIconServerRecord = raceGt?.ServerRecord ?? ctsGt!.ServerRecord;
+
+                    // QC race_SendStatus → race_status / race_status_name / race_status_time: the medal flash.
+                    // Reuse the same stamp+player reference that UpdateRacePanels uses for the split-timer panel so
+                    // both panels flash on the same event without double-counting.
+                    float lastRecT = raceGt?.LastRecordTime ?? ctsGt!.LastRecordTime;
+                    XonoticGodot.Common.Gameplay.Player? lastRecP = raceGt?.LastRecordPlayer ?? ctsGt!.LastRecordPlayer;
+                    if (ReferenceEquals(lastRecP, me) && lastRecT > 0f && lastRecT != _lastFedModIconRecordTime)
+                    {
+                        _lastFedModIconRecordTime = lastRecT;
+                        XonoticGodot.Common.Gameplay.RaceRecordResult r = raceGt?.LastRecord ?? ctsGt!.LastRecord;
+                        int statusMi = r.Kind switch
+                        {
+                            XonoticGodot.Common.Gameplay.RaceRecordKind.Fail => 0,
+                            _ when r.IsServerRecord => 3,
+                            XonoticGodot.Common.Gameplay.RaceRecordKind.NewImproved => 1,
+                            _ => 2,
+                        };
+                        panel.RaceModIconStatus = statusMi;
+                        panel.RaceModIconStatusName = me.NetName;
+                        panel.RaceModIconStatusRankIsMine = true;
+                    }
+                }
+            }
+        }
+
         panel.MyTeam = ms.MyTeamIndex;
         if (ms.TeamCount > 0) panel.TeamCount = ms.TeamCount;
         bool show = panel.Mode != ModIconsPanel.ModIconsMode.None;
@@ -2751,10 +5369,47 @@ public sealed partial class NetGame : Node3D
         if (cvars is null) return;
         _scoreboard.FragLimit = (int)cvars.GetFloat("fraglimit");
         _scoreboard.TimeLimitMinutes = (int)cvars.GetFloat("timelimit");
+        // QC scoreboard.qc:2546-2547 STAT(LEADLIMIT)/STAT(LEADLIMIT_AND_FRAGLIMIT): the "^2+N" lead-limit header
+        // term and the "& "-vs-"/ " delimiter (both-limits-required). Only DM-family modes set a leadlimit; for
+        // the rest the cvar is 0 and BuildLimitsHeader's (ll < fl || fl <= 0) guard drops the term.
+        _scoreboard.LeadLimit = (int)cvars.GetFloat("leadlimit");
+        _scoreboard.LeadAndFragLimit = cvars.GetFloat("leadlimit_and_fraglimit") != 0f;
+        // QC gametype.m_hidelimits (mapinfo.qh:128, GAMETYPE_FLAG_HIDELIMITS; scoreboard.qc:2551): only LMS sets
+        // it (lms.qh:11), suppressing the frag/lead limit terms — only the timelimit shows on that line.
+        _scoreboard.HideLimits = XonoticGodot.Common.Gameplay.Scoring.GameScores.Gametype == "lms";
+        // QC global `campaign` (scoreboard.qc:2574): a single-player campaign suppresses the "N/M players" line.
+        _scoreboard.Campaign = !string.IsNullOrEmpty(_campaignName);
+        FeedMapStats();
+    }
+
+    /// <summary>QC <c>Scoreboard_MapStats_Draw</c> feed (STAT(MONSTERS_*) / STAT(SECRETS_*)): the live map-stats
+    /// counts. These tick independently of the score version, so the live caller (UpdateScoreboard) feeds them
+    /// every frame while the scoreboard is shown — not only when the row data changes.</summary>
+    private void FeedMapStats()
+    {
         // [T43] Feed the scoreboard map-stats row (QC monsters_setstatus → STAT(MONSTERS_TOTAL/KILLED)).
         // -1 hides the row when there are no monsters (DrawMapStats gates on MonstersTotal > 0).
-        _scoreboard.MonstersTotal  = XonoticGodot.Common.Gameplay.MonsterAI.MonstersTotal > 0 ? XonoticGodot.Common.Gameplay.MonsterAI.MonstersTotal : -1;
-        _scoreboard.MonstersKilled = XonoticGodot.Common.Gameplay.MonsterAI.MonstersKilled;
+        // QC sv_invasion.qc MUTATOR_HOOKFUNCTION(inv, SV_StartFrame): for INV_TYPE_ROUND the wave progress is
+        // monsters_total=inv_maxspawned / monsters_killed=inv_numkilled — the per-round SPAWNED wave counters, NOT
+        // the NATURAL map-placed totals (which MonsterAI tracks and which exclude the spawned wave monsters). So in
+        // ROUND Invasion publish the live wave counts; every other mode keeps the natural map-monster totals.
+        if (_serverWorld?.GameType is XonoticGodot.Common.Gameplay.Invasion inv
+            && inv.Type == XonoticGodot.Common.Gameplay.Invasion.InvasionType.Round)
+        {
+            _scoreboard.MonstersTotal  = inv.Wave.MaxSpawned > 0 ? inv.Wave.MaxSpawned : -1;
+            _scoreboard.MonstersKilled = inv.Wave.Killed;
+        }
+        else
+        {
+            _scoreboard.MonstersTotal  = XonoticGodot.Common.Gameplay.MonsterAI.MonstersTotal > 0 ? XonoticGodot.Common.Gameplay.MonsterAI.MonstersTotal : -1;
+            _scoreboard.MonstersKilled = XonoticGodot.Common.Gameplay.MonsterAI.MonstersKilled;
+        }
+
+        // QC trigger_secret: STAT(SECRETS_TOTAL)/STAT(SECRETS_FOUND), accumulated by trigger_secret spawn/touch
+        // (Triggers.SecretSetup/SecretTouch → MapObjectsState). -1 hides the row when the map has no secrets.
+        int secretsTotal = XonoticGodot.Common.Gameplay.MapObjectsState.SecretsTotal;
+        _scoreboard.SecretsTotal = secretsTotal > 0 ? secretsTotal : -1;
+        _scoreboard.SecretsFound = XonoticGodot.Common.Gameplay.MapObjectsState.SecretsFound;
     }
 
     /// <summary>
@@ -2801,6 +5456,62 @@ public sealed partial class NetGame : Node3D
             return;
         }
 
+        // Maximized radar mouse input (QC HUD_Radar_Mouse / hud_panel_radar_maximized): while the radar is maximized
+        // it owns the mouse — cursor motion tracks the panel, a left click on a control point in Onslaught issues
+        // `cmd ons_spawn <x> <y> <z>` (the server's spawn-point pick), and right-click / Esc closes it. Mirrors the
+        // minigame/quickmenu pattern: active only while maximized and the console is closed, and it swallows the
+        // events so they never fall through to mouse-look / weapon binds. The cursor is freed in _Process.
+        if (_radar is { Maximized: true } && !ConsoleState.IsOpen)
+        {
+            switch (@event)
+            {
+                case InputEventMouseMotion:
+                    _radar.SetMousePosition(_radar.GetLocalMousePosition());
+                    GetViewport().SetInputAsHandled();
+                    return;
+                case InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left }:
+                    if (_radar.Clickable
+                        && _radar.HandleClick(_radar.GetLocalMousePosition(), out System.Numerics.Vector3 wp))
+                        _client?.SendStringCommand($"cmd ons_spawn {wp.X} {wp.Y} {wp.Z}");
+                    GetViewport().SetInputAsHandled();
+                    return;
+                case InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Right }:
+                    _radar.SetMaximized(false);
+                    GetViewport().SetInputAsHandled();
+                    return;
+                case InputEventKey { Pressed: true, Echo: false, Keycode: Key.Escape }:
+                    _radar.SetMaximized(false);
+                    GetViewport().SetInputAsHandled();
+                    return;
+            }
+        }
+
+        // Map-vote panel input (QC client/mapvoting.qc MapVote_InputEvent): while the end-of-match ballot is
+        // showing, arrows move the selection and enter/space/digits/click cast it as `impulse N` (routed through
+        // the server's impulse path, the port's MapVote_SendChoice). Runs before the gameplay binds so a digit/
+        // arrow during the vote casts instead of switching weapons. Console-open still wins (handled above).
+        if (!ConsoleState.IsOpen && _fullHud is { } voteHud && voteHud.MapVote.Visible
+            && HandleMapVoteInput(voteHud.MapVote, @event))
+        {
+            GetViewport().SetInputAsHandled();
+            return;
+        }
+
+        // Zoom-scroll (QC client/view.qc View_InputEvent / ZoomScroll): while +zoom is held and cl_zoomscroll is on,
+        // the mousewheel adjusts the zoom factor instead of switching weapons. View_InputEvent consumes the wheel
+        // event in that case (returns true), so feed it to the shared view BEFORE the gameplay binds and swallow the
+        // event when it applies. Inert otherwise (returns control to the weapon-next/prev binds below).
+        if (!ConsoleState.IsOpen && !GetTree().Paused && !MinigameMenuOpen
+            && @event is InputEventMouseButton { Pressed: true } wheel
+            && (wheel.ButtonIndex == MouseButton.WheelUp || wheel.ButtonIndex == MouseButton.WheelDown)
+            && _view.ZoomHeld
+            && CvarOr(Api.Cvars, "cl_zoomscroll", 1f) != 0f && CvarOr(Api.Cvars, "cl_zoomscroll_scale", 0.2f) != 0f)
+        {
+            _view.NotifyZoomScroll(wheel.ButtonIndex == MouseButton.WheelUp);
+            GetViewport().SetInputAsHandled();
+            return;
+        }
+
         // Bind-driven gameplay input (DP key bindings): a keyboard/mouse-button press/release drives the +/-
         // held-button state and runs one-shot bound commands. Routed through RunBoundCommand, which converts the
         // WEAPON-SWITCH / RELOAD binds into a C2S impulse (the QC usercmd.impulse channel — the real way a human
@@ -2816,13 +5527,68 @@ public sealed partial class NetGame : Node3D
         // Sensitivity is the live `sensitivity` cvar (the value the input-settings dialog binds), not a hardcoded
         // constant; the `m_pitch` SIGN gives invert-Y (the dialog's "Invert aiming" flips m_pitch < 0). The shared
         // view's SensitivityScale folds in (QC setsensitivityscale) so zoomed aim is finer on the net path too.
-        if (@event is InputEventMouseMotion motion && Input.MouseMode == Input.MouseModeEnum.Captured)
+        // QC FixIntermissionClient / SVC_INTERMISSION: at intermission the engine freezes the player view at the
+        // intermission camera and mouse-look is locked. Mirror it by ignoring look input while the match is over
+        // (the angles latched at intermission entry are held), so the scoreboard view doesn't swing with the mouse.
+        if (@event is InputEventMouseMotion motion && Input.MouseMode == Input.MouseModeEnum.Captured
+            && !(_client?.MatchIntermission ?? false))
         {
             float sens = LookSensitivity() * _view.SensitivityScale;
             _viewAngles.Y -= motion.Relative.X * sens;
             _viewAngles.X += motion.Relative.Y * sens * PitchSign();
             _viewAngles.X = Mathf.Clamp(_viewAngles.X, -89f, 89f);
         }
+    }
+
+    /// <summary>
+    /// QC client/mapvoting.qc <c>MapVote_InputEvent</c>: feed a keyboard/mouse event to the showing map-vote
+    /// panel. Arrows move the selection; enter/space/digits/left-click cast a vote, which the panel forwards
+    /// (via <see cref="MapVotePanel.CastChoice"/>) to <see cref="CastMapVote"/>. Returns true when the panel
+    /// consumed the event. The <see cref="MapVotePanel.CastChoice"/> hook is wired lazily here so it always
+    /// targets the current local server player.
+    /// </summary>
+    private bool HandleMapVoteInput(XonoticGodot.Game.Hud.MapVotePanel panel, InputEvent @event)
+    {
+        panel.CastChoice = CastMapVote; // QC MapVote_SendChoice → localcmd("impulse N")
+
+        switch (@event)
+        {
+            case InputEventKey { Pressed: true, Echo: false } keyEv:
+                return panel.HandleVoteKey(keyEv.Keycode, keyEv.CtrlPressed);
+            case InputEventMouseButton { Pressed: true, ButtonIndex: MouseButton.Left } mb:
+                return panel.HandleVoteClick(mb.Position - panel.PanelRect.Position);
+            case InputEventMouseMotion mm:
+                // Hovering moves the selection but doesn't consume the event or cast (QC mv_mouse_selection).
+                panel.HandleVoteHover(mm.Position - panel.PanelRect.Position);
+                return false;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// QC client <c>MapVote_SendChoice(index)</c> → <c>localcmd("impulse ", index+1)</c>: cast the local player's
+    /// vote for the 0-based ballot option. On a listen server this routes through the in-process server's impulse
+    /// command (the same path a console <c>impulse N</c> takes — <see cref="Commands.DispatchImpulse"/> →
+    /// <see cref="MapVoting.CastVote"/>). On a pure remote client there is no server-side MapVoting object, so the
+    /// cast rides the existing C2S impulse byte instead — <see cref="_pendingImpulse"/> is stamped and the next
+    /// <see cref="InputCommand"/> carries impulse <c>N</c> to the server's gated impulse path, which forwards it to
+    /// <see cref="MapVoting.CastVote"/> while the vote runs (the same call the listen path makes directly).
+    /// </summary>
+    private void CastMapVote(int index)
+    {
+        // On a pure remote (--connect) client there is no in-process server: cast the vote by stamping the C2S
+        // impulse byte (QC MapVote_SendChoice → localcmd("impulse N")). The next InputCommand carries it to the
+        // server, whose gated impulse path (Commands.DispatchImpulse) routes impulse 1..N to MapVoting.CastVote
+        // while the vote runs — the same in-process call the listen path makes directly.
+        if (_serverWorld is null)
+        {
+            _pendingImpulse = index + 1; // edge-triggered: SampleInput stamps it onto the next command, then clears it
+            return;
+        }
+        Player? me = LocalServerPlayer;
+        if (me is null)
+            return;
+        _serverWorld.Commands.Execute($"impulse {index + 1}", isServerConsole: false, caller: me);
     }
 
     /// <summary>
@@ -2849,6 +5615,20 @@ public sealed partial class NetGame : Node3D
             return;
         }
 
+        // Maximized radar (QC the `m` bind → +hud_panel_radar_maximized → cl_cmd hud radar 1): a toggle, like the
+        // quickmenu. BindInput emits the press form `+hud_panel_radar_maximized` (and `hud radar 1` if bound directly);
+        // both flip the maximized state. The release form (`-hud_panel_radar_maximized`) is a no-op — this is a press-
+        // toggle, not a held button, so we swallow it without un-maximizing. The cursor is freed/recaptured in _Process
+        // off _radar.Maximized (see the UiOwnsCursor block); _UnhandledInput drives the mouse-move / click-to-spawn.
+        if (command.Equals("+hud_panel_radar_maximized", StringComparison.OrdinalIgnoreCase)
+            || command.Equals("hud radar 1", StringComparison.OrdinalIgnoreCase))
+        {
+            _radar?.SetMaximized(!(_radar?.Maximized ?? false));
+            return;
+        }
+        if (command.Equals("-hud_panel_radar_maximized", StringComparison.OrdinalIgnoreCase))
+            return; // release of a press-toggle bind — ignored (matches the quickmenu toggle semantics)
+
         int imp = WeaponCommandToImpulse(command);
         if (imp != 0)
         {
@@ -2856,8 +5636,11 @@ public sealed partial class NetGame : Node3D
             // Instant local feedback: begin lowering the gun the moment a weapon-SELECT key is pressed, so the
             // switch starts visibly the same frame instead of waiting for the server round-trip (EquipNetworkedWeapon
             // then raises the new gun when the change confirms). Only weapon-select impulses (group/next/prev/last/
-            // best/by-id) — NOT drop (17) or reload (20). Auto-recovers if the server denies the switch.
-            if (IsWeaponSwitchImpulse(imp) && _viewModel is not null && GodotObject.IsInstanceValid(_viewModel))
+            // best/by-id) — NOT drop (17) or reload (20) — and only when the switch could actually succeed
+            // (SwitchCouldSucceedNow, playtest #31): Base plays NO animation on a denied switch, just the
+            // "weapons/unavailable" sound. Auto-recovers if the server still denies (pure-client fallback).
+            if (IsWeaponSwitchImpulse(imp) && SwitchCouldSucceedNow(imp)
+                && _viewModel is not null && GodotObject.IsInstanceValid(_viewModel))
                 _viewModel.PlayHolster();
             return;
         }
@@ -2908,6 +5691,64 @@ public sealed partial class NetGame : Node3D
     private static bool IsWeaponSwitchImpulse(int imp)
         => (imp >= 1 && imp <= 14) || (imp >= 230 && imp <= 253);
 
+    /// <summary>
+    /// Whether a weapon-select impulse could actually change the weapon — the gate for the keypress-predicted
+    /// holster (playtest #31). Base plays NO switch animation on a denied switch: <c>W_SwitchWeapon</c> leaves
+    /// <c>m_switchweapon</c> untouched when <c>client_hasweapon(…, andammo, complain)</c> fails (selection.qc:274),
+    /// so the weaponsystem state machine never raises/drops — you only hear the "weapons/unavailable" denial
+    /// (which the port's server path already plays). The old predict-always holster lowered the gun on EVERY
+    /// select press and recovered on the grace timer — a phantom switch animation when nothing could switch.
+    /// Mirrors the server check with the same shared logic (<see cref="Inventory.ClientHasWeapon"/>,
+    /// complain: false = silent): group keys test their impulse group, by-id tests the exact weapon (plus its
+    /// group when <c>cl_weapon_switch_fallback_to_impulse</c> is on, matching <c>ByIdHandle</c>), next/prev/last/
+    /// best test for any other usable weapon ("last"/"best" can rarely still deny with this true — e.g. best ==
+    /// current — a small over-predict the holster grace recovers). Pure remote client (no
+    /// <see cref="LocalServerPlayer"/>): keep the old predict-always behavior — the same graceful-degradation
+    /// policy as the fire-prediction ammo gate (<see cref="HasAmmoNow"/>).
+    /// </summary>
+    private bool SwitchCouldSucceedNow(int imp)
+    {
+        if (LocalServerPlayer is not { } p || _client is null)
+            return true;
+        int currentId = _client.ActiveWeaponId;
+
+        if (imp >= 230) // weapon_byid_N — exact target known
+        {
+            Weapon? w = WeaponOrder.WeaponByIdIndex(imp - 230);
+            if (w is null)
+                return false; // out of range → QC WEP_Null no-op, nothing to animate
+            if (w.RegistryId != currentId && Inventory.ClientHasWeapon(p, w, andAmmo: true, complain: false))
+                return true;
+            bool fallback = Api.Services is not null
+                && Api.Cvars.GetFloat("cl_weapon_switch_fallback_to_impulse") != 0f;
+            return fallback && AnyOtherUsableWeapon(p, currentId, w.Impulse);
+        }
+
+        if (imp >= 1 && imp <= 9)
+            return AnyOtherUsableWeapon(p, currentId, imp);   // weapon_group_1..9
+        if (imp == 14)
+            return AnyOtherUsableWeapon(p, currentId, 0);     // weapon_group_0
+        return AnyOtherUsableWeapon(p, currentId, group: -1); // next/prev/last/best (10..13)
+    }
+
+    /// <summary>A usable (owned + ammo, QC <c>client_hasweapon</c>) weapon other than the current one exists —
+    /// optionally restricted to one impulse group (<paramref name="group"/> &lt; 0 = any).</summary>
+    private static bool AnyOtherUsableWeapon(Player p, int currentId, int group)
+    {
+        System.Collections.Generic.IReadOnlyList<Weapon> all = Weapons.All;
+        for (int i = 0; i < all.Count; i++)
+        {
+            Weapon w = all[i];
+            if (w.RegistryId == currentId)
+                continue;
+            if (group >= 0 && w.Impulse != group)
+                continue;
+            if (Inventory.ClientHasWeapon(p, w, andAmmo: true, complain: false))
+                return true;
+        }
+        return false;
+    }
+
     /// <summary>The live look sensitivity (DP `sensitivity` cvar) folded with the base feel — the value the
     /// input-settings dialog writes. Falls back to the previous hardcoded feel when the cvar is unset.</summary>
     private float LookSensitivity()
@@ -2946,9 +5787,10 @@ public sealed partial class NetGame : Node3D
     private bool QuickMenuOpen
         => _fullHud?.GetPanel<XonoticGodot.Game.Hud.QuickMenuPanel>() is { IsOpen: true };
 
-    /// <summary>Any in-world HUD UI that should free the mouse cursor + suspend look/fire (minigame board/menu or
-    /// the quick-chat menu). The bind channel stays live so the toggling bind can still close the panel.</summary>
-    private bool UiOwnsCursor => MinigameMenuOpen || QuickMenuOpen;
+    /// <summary>Any in-world HUD UI that should free the mouse cursor + suspend look/fire (minigame board/menu, the
+    /// quick-chat menu, or the maximized radar). The bind channel stays live so the toggling bind can still close the
+    /// panel — the maximized radar's `m` toggle + Esc/right-click close all route through it.</summary>
+    private bool UiOwnsCursor => MinigameMenuOpen || QuickMenuOpen || (_radar?.Maximized ?? false);
 
     /// <summary>
     /// Teleporter view-snap (QC player.fixangle): after a prediction tick re-derives the carrier's .fixangle —
@@ -2959,13 +5801,91 @@ public sealed partial class NetGame : Node3D
     /// </summary>
     private void ConsumePredictedFixAngle()
     {
+        // PREDICTED WARPZONE CROSSING (the seq-keyed one-shot pulse — see TriggerTouch.LastPredictedWarpSeq):
+        // apply the view rotation IMMEDIATELY and RELATIVELY — `view = T(view)`, Base's
+        // `setproperty(VF_CL_VIEWANGLES, WarpZone_TransformVAngles(this, getpropertyvec(VF_CL_VIEWANGLES)))`
+        // (lib/warpzone/client.qc:141) — and rotate the pending input ring (DP CL_RotateMoves, builtin #638)
+        // so post-warp reconcile replays use post-warp view angles.
+        //
+        // DISABLED BY DEFAULT (wz_predict_apply 0): on the LISTEN HOST this proved counterproductive — the
+        // server's sim runs a tick behind the predictor, so the crossing tick's input reaches it carrying the
+        // ALREADY-ROTATED view (session-11 trace: every server crossing's entry angles == the post-apply view),
+        // double-rotating the server state and fighting the reconcile — worse than the 1-2 frame authoritative
+        // latency it was meant to hide. The infrastructure stays for the REMOTE-client path (where Base's
+        // CL_RotateMoves actually lives) behind the cvar for future work.
+        if (_carrier is not null
+            && MenuState.Cvars.GetFloat("wz_predict_apply") != 0f
+            && XonoticGodot.Engine.Simulation.TriggerTouch.LastPredictedWarpSeq > _consumedWarpSeq)
+        {
+            _consumedWarpSeq = XonoticGodot.Engine.Simulation.TriggerTouch.LastPredictedWarpSeq;
+            Common.Gameplay.WarpzoneTransform wt = XonoticGodot.Engine.Simulation.TriggerTouch.LastPredictedWarpTransform;
+            _viewAngles = wt.TransformAngles(_viewAngles);
+            _viewAngles.X = Mathf.Clamp(_viewAngles.X, -89f, 89f);
+            _client.RotatePendingMoves(a => wt.TransformAngles(a));
+            float nowW = Time.GetTicksMsec() * 0.001f;
+            // Arm the same guards the (now mostly redundant) fixangle paths use: the server's authoritative
+            // stamp for this crossing recognises the applied facing and skips; late replay echoes discard.
+            _lastPredictedFixAngles = _viewAngles;
+            _lastPredictedFixTime = nowW;
+            _lastFixApplyTime = nowW;
+            if (MenuState.Cvars.GetFloat("sv_warpzone_trace") != 0f)
+                GD.Print($"[wzview] predicted warp apply -> {_viewAngles} (ring rotated)");
+            if (_viewModel is not null && GodotObject.IsInstanceValid(_viewModel))
+                _viewModel.NotifyTeleported();
+        }
+
         if (_carrier is not null && _carrier.FixAngle)
         {
+            float now = Time.GetTicksMsec() * 0.001f;
+            // REPLAY-ECHO GUARD: the reconcile replay re-simulates the unacked ticks every frame, and near a
+            // warpzone seam a replay from a post-warp base can spuriously re-cross a zone the server never did —
+            // stamping a BACK-ROTATED facing (observed live: predicted 172 re-stamped right after the correct
+            // authoritative 82, leaving the view at the entry yaw — the "angles still wrong" report). Any stamp
+            // arriving within the window after a fixangle APPLY (predicted or authoritative) is such an echo of
+            // the same crossing — discard it. A genuine rapid re-crossing inside the window still gets its
+            // correct snap from the AUTHORITATIVE stamp, which is empirically always the transformed exit facing
+            // and always applies (below in _Process) when it disagrees with the last predicted value.
+            if (now - _lastFixApplyTime < 0.4f)
+            {
+                _carrier.FixAngle = false;
+                if (MenuState.Cvars.GetFloat("sv_warpzone_trace") != 0f)
+                    GD.Print($"[wzview] predicted echo discarded -> {_carrier.FixAngleAngles}");
+                return;
+            }
             _viewAngles = _carrier.FixAngleAngles;
             _viewAngles.X = Mathf.Clamp(_viewAngles.X, -89f, 89f);
             _carrier.FixAngle = false;
+            // Remember what the PREDICTED snap applied: the server's AUTHORITATIVE stamp for the SAME crossing
+            // arrives 1-3 frames later (its tick runs behind the replay), and re-applying it would discard every
+            // mouse delta in between — a visible "view fights me" snap-back on each crossing at low fps. The
+            // authoritative consume skips itself when it matches this (see the FixAngle block in _Process).
+            _lastPredictedFixAngles = _viewAngles;
+            _lastPredictedFixTime = now;
+            _lastFixApplyTime = now;
+            if (MenuState.Cvars.GetFloat("sv_warpzone_trace") != 0f)
+                GD.Print($"[wzview] predicted snap -> {_viewAngles}");
+            // Tell the view-model we teleported so its lean sway re-seeds to the destination facing instead of
+            // snapping the gun across the screen (Base csqcmodel_teleported guard in viewmodel_animate). The
+            // fixangle edge is exactly the predicted single-dest teleporter / warpzone view-snap.
+            if (_viewModel is not null && GodotObject.IsInstanceValid(_viewModel))
+                _viewModel.NotifyTeleported();
         }
     }
+
+    // The last PREDICTED fixangle apply (angles + wall-clock seconds), so the authoritative consume can
+    // recognise the same crossing's server stamp and skip the double-apply. -1 = none yet.
+    private NVec3 _lastPredictedFixAngles;
+    private float _lastPredictedFixTime = -1f;
+
+    // The last APPLIED fixangle of either kind (wall-clock seconds) — the replay-echo discard window's anchor.
+    private float _lastFixApplyTime = -1f;
+
+    // One-shot consumption cursor for the carrier's LastTeleportTime pulse (the predicted-warpzone teleport
+    // signal the view smoothing snaps on — see the faithfulSmoothing block).
+    private float _lastSmoothedTeleportTime = -1f;
+
+    // One-shot consumption cursor for the predicted-warp view pulse (TriggerTouch.LastPredictedWarpSeq).
+    private uint _consumedWarpSeq;
 
     /// <summary>
     /// Per-render-frame local fire prediction + feedback, decoupled from the 1/72 s input cadence. With
@@ -2973,9 +5893,12 @@ public sealed partial class NetGame : Node3D
     /// SOUND on every shot the instant the player fires (first on the press edge, then every <c>refire</c> s while
     /// held), gated on the active weapon / alive / ammo — so sustained fire feels instant; the local player's own
     /// NETWORKED fire-sound + muzzle-flash are suppressed elsewhere so they aren't doubled. With cl_predictfire 0
-    /// it falls back to a single muzzle flash on the press edge (the networked sustained FX play). Either way each
-    /// press edge sets a sub-tick latch (<see cref="_attackLatch"/>) so a tap shorter than one input tick still
-    /// reaches the server. Inert while the in-game menu / console / minigame menu owns input.
+    /// it falls back to a single muzzle flash on the press edge (the networked sustained FX play). Both modes gate
+    /// every predicted shot on a PERSISTENT per-weapon ready clock (<see cref="_weaponReadyTime"/>, a client mirror
+    /// of the server's ATTACK_FINISHED) so spamming / wheel-firing the button can't out-run the weapon's real
+    /// refire rate — the FX only replay as fast as the weapon actually fires. Either way each press edge sets a
+    /// sub-tick latch (<see cref="_attackLatch"/>) so a tap shorter than one input tick still reaches the server.
+    /// Inert while the in-game menu / console / minigame menu owns input.
     /// </summary>
     private void UpdateLocalFireFeedback(float dt)
     {
@@ -2984,11 +5907,11 @@ public sealed partial class NetGame : Node3D
         bool active = !GetTree().Paused && !ConsoleState.IsOpen && !UiOwnsCursor;
         if (!active)
         {
-            // Input is owned elsewhere (in-game menu / console / minigame / quickmenu): drop the edge state, the tap
-            // latch and the refire clock so nothing fires on resume (matches SampleInput's in_releaseall edge).
+            // Input is owned elsewhere (in-game menu / console / minigame / quickmenu): drop the edge state and the
+            // tap latch so nothing fires on resume (matches SampleInput's in_releaseall edge). The per-weapon ready
+            // clock is left intact so a weapon mid-cooldown stays on cooldown across a menu blip.
             _attackHeld = _attack2Held = false;
             _attackLatch = _attack2Latch = false;
-            _firePredictActive = false;
             return;
         }
 
@@ -2996,41 +5919,94 @@ public sealed partial class NetGame : Node3D
         if (a1 && !_attackHeld)
             _attackLatch = true; // sub-tick latch for the server (independent of FX prediction)
 
-        if (_predictFire && a1 && TryActivePrimaryFire(out string fireSound, out float refire)
-            && !LocalDeadNow() && HasAmmoNow())
+        if (_predictFire)
         {
-            // Refire clock: first shot the frame the button goes down (or whenever the clock catches up), then one
-            // shot per `refire` s while held. Bound the catch-up so a frame hitch can't burst a pile of shots.
-            if (!_firePredictActive)
-            {
-                _firePredictActive = true;
-                _nextFireTime = _fireClock; // fire immediately this frame
-            }
-            if (_fireClock >= _nextFireTime)
+            // cl_predictfire on: predict the view-model flash + local fire sound on every shot (first on the press
+            // edge, then one per `refire` s while held) — but ONLY once the weapon's persistent ready clock has
+            // elapsed, so a burst of taps / wheel-fire can't out-run the refire rate. FirePredictReady + the
+            // MarkFirePredicted cadence are the client mirror of the server's ATTACK_FINISHED gate.
+            if (a1 && !LocalDeadNow() && HasAmmoNow()
+                && TryActivePrimaryFire(out int wid, out string fireSound, out float refire) && FirePredictReady(wid)
+                && (!_attackHeld || !PrimaryRefireRequiresRelease(wid))) // #24: release-gated weapons only fire on a fresh press
             {
                 PredictFireShot(fireSound);
-                float step = Mathf.Max(refire, 0.02f);
-                _nextFireTime += step;
-                if (_nextFireTime < _fireClock - step) _nextFireTime = _fireClock; // don't accumulate a backlog
+                MarkFirePredicted(wid, refire, dt);
             }
         }
-        else
+        else if (a1 && !_attackHeld && !LocalDeadNow()
+                 && TryActiveRefire(XonoticGodot.Common.Gameplay.FireMode.Primary, out int widOff, out float refireOff)
+                 && FirePredictReady(widOff))
         {
-            _firePredictActive = false;
-            // cl_predictfire off (or this weapon isn't predicted): a single muzzle flash on the press edge (Phase 1).
-            if (!_predictFire && a1 && !_attackHeld)
-            {
-                _hud?.PulseFire();
-                _viewModel?.Fire();
-            }
+            // cl_predictfire off: a single muzzle flash on the press edge (Phase 1; the networked sustained FX play),
+            // still gated by the ready clock so tap-spam can't repeat it faster than the refire rate.
+            _hud?.PulseFire();
+            _viewModel?.Fire();
+            MarkFirePredicted(widOff, refireOff, dt);
         }
         _attackHeld = a1;
 
-        // Secondary fire: latch the press so its tap reaches the server (secondary FX stay networked for now).
+        // Secondary fire: latch the press so its tap reaches the server, and pop a local muzzle flash on the press
+        // edge for weapons whose secondary actually fires a shot (Base W_MuzzleFlash is called per shot for either
+        // fire mode). Zoom-style secondaries (Vortex/Vaporizer/Rifle secondary = zoom, not a shot) must NOT flash,
+        // so we gate on the weapon having a real secondary attack. Shares the SAME per-weapon ready clock as primary
+        // (Base ATTACK_FINISHED is per-slot, not per-mode), so a secondary tap inside the refire window is dropped.
         bool a2 = BindTable.Attack2Held;
         if (a2 && !_attack2Held)
+        {
             _attack2Latch = true;
+            if (SecondaryFiresShot() && !LocalDeadNow()
+                && TryActiveRefire(XonoticGodot.Common.Gameplay.FireMode.Secondary, out int wid2, out float refire2)
+                && FirePredictReady(wid2))
+            {
+                _hud?.PulseFire();
+                _viewModel?.Fire(); // local muzzle flash for the secondary shot (remote copy stays networked)
+                MarkFirePredicted(wid2, refire2, dt);
+            }
+        }
         _attack2Held = a2;
+    }
+
+    /// <summary>
+    /// Whether the given weapon's PRIMARY refire requires the fire button to be RELEASED between shots (so a
+    /// sustained hold does NOT refire). The Devastator is the stock case: Base <c>W_Devastator</c> <c>wr_think</c>
+    /// only fires when <c>rl_release</c> is set (button released since the last shot); holding fire GUIDES the
+    /// rocket instead of refiring (devastator.qc:461-472). The simple client refire clock can't model that, so it
+    /// predicted phantom muzzle-flash/fire-sound every refire while held (playtest #24) — for these weapons we
+    /// predict only on the press edge. <c>guidestop 1</c> disables guiding → continuous fire like a normal weapon,
+    /// so honour it (then this returns false and the normal held-fire prediction applies).
+    /// </summary>
+    private bool PrimaryRefireRequiresRelease(int wid)
+    {
+        // Netname-only, deliberately NO cvar read: the server-side balance cvar g_balance_devastator_guidestop is
+        // NOT reliably reachable from the client here — _sharedCvars (client/menu store) returned a stale non-zero
+        // (v1: phantom persisted), and Api.Cvars threw / broke the whole prediction path (v2: no flash at all). The
+        // guidestop-1 config (continuous fire, no guiding) is rare and non-default; treating the Devastator as
+        // always release-gated only costs a slightly under-predicted FX cadence in that rare case (cosmetic).
+        return wid >= 0 && wid < XonoticGodot.Common.Gameplay.Weapons.Count
+            && (XonoticGodot.Common.Gameplay.Weapons.ById(wid)?.NetName ?? "") == "devastator";
+    }
+
+    /// <summary>
+    /// Whether the active weapon's SECONDARY fire emits a projectile/hitscan shot (so it should pop a local
+    /// muzzle flash, Base <c>W_MuzzleFlash</c> per shot) rather than a non-shot action (zoom / melee / mode
+    /// toggle) that has no flash. Conservative: excludes the stock weapons whose secondary is a zoom (Vortex /
+    /// Vaporizer / Rifle) or a melee (Shotgun), and the Blaster/Hook whose secondary isn't a barrel shot; every
+    /// other weapon's secondary is a real shot. Listen-server resolves nothing special — pure name gate.
+    /// </summary>
+    private bool SecondaryFiresShot()
+    {
+        int wid = _client?.ActiveWeaponId ?? -1;
+        if (wid < 0 || wid >= XonoticGodot.Common.Gameplay.Weapons.Count)
+            return false;
+        string net = XonoticGodot.Common.Gameplay.Weapons.ById(wid)?.NetName ?? "";
+        return net switch
+        {
+            "vortex" or "vaporizer" or "rifle" => false, // secondary = zoom
+            "shotgun" => false,                           // secondary = melee (no muzzle)
+            "blaster" or "hook" => false,                 // secondary isn't a barrel shot
+            "" => false,
+            _ => true,
+        };
     }
 
     /// <summary>Play one predicted local shot: the view-model muzzle flash + recoil, the HUD crosshair pulse, and
@@ -3045,16 +6021,18 @@ public sealed partial class NetGame : Node3D
                 (int)XonoticGodot.Common.Services.SoundChannel.WeaponAuto, _client.LocalNetId, 1f);
     }
 
-    /// <summary>The active weapon's primary fire sound + refire interval, or false when it can't be predicted (no
-    /// active weapon, or a loop/grapple weapon absent from <see cref="WeaponFireSounds"/> → its networked sound
+    /// <summary>The active weapon's id + primary fire sound + refire interval, or false when it can't be predicted
+    /// (no active weapon, or a loop/grapple weapon absent from <see cref="WeaponFireSounds"/> → its networked sound
     /// plays normally and is NOT suppressed).</summary>
-    private bool TryActivePrimaryFire(out string fireSound, out float refire)
+    private bool TryActivePrimaryFire(out int weaponId, out string fireSound, out float refire)
     {
+        weaponId = -1;
         fireSound = "";
         refire = 0.1f;
         if (_client is null || _client.ActiveWeaponId < 0)
             return false;
-        XonoticGodot.Common.Gameplay.Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(_client.ActiveWeaponId);
+        weaponId = _client.ActiveWeaponId;
+        XonoticGodot.Common.Gameplay.Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(weaponId);
         if (w is null)
             return false;
         fireSound = WeaponFireSounds.PrimaryFor(w.NetName);
@@ -3063,6 +6041,46 @@ public sealed partial class NetGame : Node3D
         refire = w.RefireFor(XonoticGodot.Common.Gameplay.FireMode.Primary);
         if (refire <= 0f) refire = 0.1f;
         return true;
+    }
+
+    /// <summary>The active weapon's id + refire interval for <paramref name="mode"/>, or false when there's no
+    /// active weapon. Unlike <see cref="TryActivePrimaryFire"/> this needs no fire-sound entry, so it also serves
+    /// weapons that aren't sound-predicted (the cl_predictfire-off press-edge flash + the secondary flash) — the
+    /// refire only feeds the ready clock. Both modes key the SAME ready slot (Base ATTACK_FINISHED is per-slot).</summary>
+    private bool TryActiveRefire(XonoticGodot.Common.Gameplay.FireMode mode, out int weaponId, out float refire)
+    {
+        weaponId = -1;
+        refire = 0.1f;
+        if (_client is null || _client.ActiveWeaponId < 0)
+            return false;
+        weaponId = _client.ActiveWeaponId;
+        XonoticGodot.Common.Gameplay.Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(weaponId);
+        if (w is null)
+            return false;
+        refire = w.RefireFor(mode);
+        if (refire <= 0f) refire = 0.1f;
+        return true;
+    }
+
+    /// <summary>Whether the persistent predicted-fire clock has elapsed for <paramref name="weaponId"/> (an unseen
+    /// weapon is ready). Client mirror of the server's <c>ATTACK_FINISHED &lt;= time</c> gate
+    /// (<see cref="XonoticGodot.Common.Gameplay.Weapons.WeaponFireGate"/>) — see <see cref="_weaponReadyTime"/>.</summary>
+    private bool FirePredictReady(int weaponId)
+        => !_weaponReadyTime.TryGetValue(weaponId, out float ready) || _fireClock >= ready;
+
+    /// <summary>Advance the per-weapon predicted-fire clock after a predicted shot, mirroring the server's
+    /// ATTACK_FINISHED cadence (WeaponFireGate): if the weapon wasn't firing continuously (its last scheduled shot
+    /// was &gt; ~1.5 frames ago — a fresh tap/burst or a frame hitch) start from now so the opening shot isn't
+    /// penalised and no catch-up backlog can bank up; otherwise accumulate so sustained fire holds an exact refire
+    /// cadence with no per-frame drift. <paramref name="refire"/> is the base per-mode interval (client prediction
+    /// does not apply g_weaponratefactor / haste — a rare, pre-existing approximation, same as before).</summary>
+    private void MarkFirePredicted(int weaponId, float refire, float dt)
+    {
+        float step = Mathf.Max(refire, 0.02f);
+        float ready = _weaponReadyTime.TryGetValue(weaponId, out float r) ? r : float.NegativeInfinity;
+        if (ready < _fireClock - dt * 1.5f)
+            ready = _fireClock;
+        _weaponReadyTime[weaponId] = ready + step;
     }
 
     /// <summary>Whether the local player is dead (stop predicting fire). Listen server reads the host Player; a
@@ -3080,16 +6098,39 @@ public sealed partial class NetGame : Node3D
         XonoticGodot.Common.Gameplay.Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(_client.ActiveWeaponId);
         if (w is null || w.AmmoType == XonoticGodot.Common.Gameplay.ResourceType.None)
             return true; // infinite-ammo weapon (e.g. blaster)
+        // Unlimited ammo (QC IT_UNLIMITED_AMMO — g_weaponarena / give unlimited_ammo): the numeric count can be 0
+        // yet firing is allowed, so gate on the flag first (same check as Inventory.cs HasWeapon's ammo arm).
+        // Without this the weapon-arena Devastator had ammo=False, which silently killed ALL fire prediction —
+        // including the legitimate press-edge flash (#24 diagnostic: `ammo=False` was the only failing input).
+        if (p.UnlimitedAmmo || (p.Items & 1) != 0) // bit 0 = QC IT_UNLIMITED_AMMO (common/items/item.qh)
+            return true;
         return XonoticGodot.Common.Gameplay.Resources.GetResource(p, w.AmmoType) > 0f;
     }
 
     private InputCommand SampleInput()
     {
-        // Re-capture on click if the user released the mouse (e.g. after alt-tab); never while the tree is
-        // paused (the in-game menu), the console is open, or the minigame menu is up — those own the cursor.
+        // Camera-trace (apparatus A2): once spawned, feed the deterministic scripted input instead of the live
+        // keyboard/mouse, and slave the view angles to it so the captured camera is reproducible. Inert unless
+        // --camera-trace was passed; falls through to real input once the script is exhausted.
+        if (CameraTrace.Active && _carrier is not null && CameraTrace.TryNextInput(out CameraTrace.InputSpec spec))
+        {
+            _viewAngles = spec.ViewAngles;
+            return new InputCommand
+            {
+                ViewAngles = spec.ViewAngles,
+                Forward = spec.Forward, Side = spec.Side, Up = spec.Up,
+                Buttons = spec.Buttons, Impulse = 0,
+                DeltaTime = _inputDeltaTime,
+            };
+        }
+
+        // Re-capture on click if the cursor came free (e.g. after alt-tab); never while the tree is paused (the
+        // in-game menu), the console is open, or the minigame menu is up — those own the cursor. Focus handling
+        // (MouseCapture) normally recaptures on alt-tab back on its own; this is the same-frame fallback for a
+        // click that lands before the focus-in edge, and it still can't grab an unfocused window.
         if (!GetTree().Paused && !ConsoleState.IsOpen && !UiOwnsCursor
             && Input.MouseMode != Input.MouseModeEnum.Captured && Input.IsMouseButtonPressed(MouseButton.Left))
-            Input.MouseMode = Input.MouseModeEnum.Captured;
+            MouseCapture.SetWantCapture(true);
 
         // Gameplay input is inert while the in-game menu is up (paused), the console is open, OR a cursor-owning
         // HUD UI (minigame menu/board or the quick-chat menu) is open. On the edge into inactive, drop all held
@@ -3118,6 +6159,8 @@ public sealed partial class NetGame : Node3D
             if (BindTable.CrouchHeld) buttons |= InputButtons.Crouch;
             if (BindTable.ZoomHeld) buttons |= InputButtons.Zoom;
             if (BindTable.UseHeld) buttons |= InputButtons.Use;
+            // PHYS_INPUT_BUTTON_HOOK (+hook): the offhand-fire button — grapple hook / offhand blaster / nade.
+            if (BindTable.HookHeld) buttons |= InputButtons.Hook;
 
             // Sub-tick fire latch (set per render frame in UpdateLocalFireFeedback): OR a press that landed since
             // the last sampled command into THIS command — so a tap shorter than one input tick still fires —
@@ -3133,6 +6176,30 @@ public sealed partial class NetGame : Node3D
         // free-fly observer, spectatee_status == own id, still moves — server + client agree, no drift.)
         if (_client is not null && _client.SpectatingNetId != 0)
             forward = side = up = 0f;
+
+        // PRE-MATCH COUNTDOWN FREEZE (QC PM_Main `time < game_starttime`; server GameWorld.preMatchFreeze). The
+        // server pins the player AT SPAWN (canMove=false) during the ~5s start countdown but still ACKs our input
+        // each tick (to avoid an un-acked pile-up, GameWorld.cs:1006-1014). If the client PREDICTED movement here,
+        // its forward prediction would diverge from the server's frozen-at-spawn authoritative origin, and a
+        // map-load hitch's sudden batch-ack collapses the unacked window past the 32u reconcile snap threshold →
+        // the camera teleports back to spawn (the "first ~5s rubberbands me to spawn ~5x" report, mode-agnostic so
+        // no movement cvar helped). Match the server (and Base, whose CSQC prediction freezes the same way): predict
+        // NO movement while frozen — zero the move axes + clear jump/crouch. WARMUP is freely playable, so it is NOT
+        // frozen (MatchWarmup). View angles + fire are kept (look around; the weapon think is server-owned).
+        if (_client is not null && _client.HasMatchState && !_client.MatchWarmup
+            && _client.LatestServerTime < _client.MatchStartTime)
+        {
+            forward = side = up = 0f;
+            buttons &= ~(InputButtons.Jump | InputButtons.Crouch);
+        }
+
+        // PHYS_INPUT_BUTTON_CHAT: tag the command as "typing" whenever the player has a text prompt open (the
+        // in-game console, where say / messagemode chat is entered). Set OUTSIDE the `active` gate above: opening
+        // the console makes input inactive (movement keys are released + zeroed), but the typing FLAG itself must
+        // still ride the command so the server can exempt the typist (camp-check g_campcheck_typecheck gate,
+        // type-frag classification, etc.). Mirrors QC PHYS_INPUT_BUTTON_CHAT being live while the chat box is up.
+        if (ConsoleState.IsOpen)
+            buttons |= InputButtons.Chat;
 
         // C2S impulse (QC usercmd.impulse): consume the one-shot weapon-switch/reload number a bind set this
         // frame (RunBoundCommand stamped it into _pendingImpulse, edge-triggered). Stamp it onto THIS command and
@@ -3183,6 +6250,16 @@ public sealed partial class NetGame : Node3D
         if (_client.SpectatingNetId != 0
             && _client.SampleRemote(_client.SpectatingNetId, _client.LatestServerTime, out NVec3 specOrg, out NVec3 specAng))
         {
+            // QC View_SpectatorCamera (view.qc:655): while following a player (spectatee_status > 0), the user
+            // chase_active cvar drives a THIRD-PERSON spectator camera that pulls back from the spectated player
+            // (chase_back/up + the chase_front frontal selfie). Tell the shared view it is spectating so the
+            // chase_front branch is reachable (Base guards it on spectatee_status), and engage the classic chase
+            // mode from chase_active just like the own-player path below — but anchored to the spectatee's pose.
+            // chase_active == 0 keeps the faithful first-person follow (see what the spectated player sees).
+            _view.Spectating = true;
+            _view.CameraMode = CvarOr(Api.Cvars, "chase_active", 0f) != 0f
+                ? Client.FirstPersonView.ChaseMode.Chase
+                : Client.FirstPersonView.ChaseMode.None;
             var sst = new Client.FirstPersonView.ViewState
             {
                 OriginQuake = specOrg,
@@ -3194,6 +6271,7 @@ public sealed partial class NetGame : Node3D
             _view.UpdateView(_camera, sst, dt);
             return;
         }
+        _view.Spectating = false;
 
         float now = _renderClock; // the clock the reconciler armed the prediction-error decay with (see _Process)
         NVec3 predicted = _client.PredictedOrigin + _client.PredictionErrorOffset(now);
@@ -3205,8 +6283,16 @@ public sealed partial class NetGame : Node3D
         // for all render purposes: no sub-tic eye extrapolation and no velocity-driven view effects while dead.
         // (net path has no MaxHealth, so dead = Health<=0 — but ONLY after the first spawn, so the pre-spawn
         // observer 0 doesn't engage the death-cam at the world origin.)
-        bool localDead = _everAlive && _client.Health <= 0;
-        NVec3 viewVelocity = localDead ? NVec3.Zero : _client.PredictedVelocity;
+        // At intermission the server stamps RES_HEALTH = -2342 (QC FixIntermissionClient's first-phase sentinel),
+        // which also reads as Health<=0; but SVC_INTERMISSION freezes the view at the player's spot rather than
+        // engaging the death-cam, so suppress the dead/death-cam path while MatchIntermission is set.
+        bool localDead = _everAlive && _client.Health <= 0 && !_client.MatchIntermission;
+        // Live: the rendered velocity is the predicted velocity PLUS the decaying velocity-error offset (QC
+        // `this.velocity += CSQCPlayer_GetPredictionErrorV()`). It is normally ~0; after a smoothed correction —
+        // above all a damage-knockback shove (Reconciler force smoothing) — it ramps the rendered velocity from the
+        // old value up to the new over the smoothing window, so the view bob/sway and the sub-tic eye extrapolation
+        // below ease into the shove instead of the velocity snapping. Zeroed while dead (frozen corpse has no bob).
+        NVec3 viewVelocity = localDead ? NVec3.Zero : _client.PredictedVelocity + _client.PredictionVelocityErrorOffset(now);
 
         // Sub-tic view smoothing (DP's partial final movement frame): the predicted origin only advances when an
         // input tic is drained, so it moves in discrete 1/72 s (~13.9 ms) steps while the camera renders at the
@@ -3219,20 +6305,73 @@ public sealed partial class NetGame : Node3D
         // few units of the extrapolated eye — so the error smoother never engages. Render-only: it does not touch
         // the authoritative predicted state, the input ring, or anything the server/reconciler sees. Suppressed
         // while dead (viewVelocity is zeroed above) so the frozen corpse's death-fall speed can't bob the eye.
-        predicted += viewVelocity * _inputAccum;
+        //
+        // DIAGNOSTIC / quality toggle cl_movement_subtic_extrapolate (default 1 = current behaviour). This LINEAR
+        // extrapolation ignores the sub-tic gravity/accel curve, and `_inputAccum` (the leftover < one tic) varies
+        // frame-to-frame at any fps that isn't a multiple of 72 — so the eye gets shoved by velocity*_inputAccum in a
+        // pattern that BEATS with the framerate (up to ~5u horizontally at bhop speed), which can read as inconsistent
+        // hop rhythm. It is NOT gated by the cl_movement_smoothing_* cvars (those tune POST-extrapolation smoothing).
+        // Set 0 to render the eye at the last simulated tic (no extrapolation) — an A/B isolation switch for the
+        // bhop-timing jitter; the proper fix (a gravity-correct partial-tic sub-step, like DP) supersedes it.
+        if (CvarOr(Api.Cvars, "cl_movement_subtic_extrapolate", 1f) != 0f)
+            predicted += viewVelocity * _inputAccum;
 
-        // Subtract the stair-smooth Z so the camera glides over steps (cl_movement stairsmooth). Driven by the
-        // REAL frame delta (dt), NOT the server-synced render clock — the rebasing clock's 1/72-quantized jumps
-        // made the catch-up jitter up/down (the reference advances stair smoothing by real frametime). Refresh the
-        // tunables from the live cvars first so cl_stairsmoothspeed / the port anti-jitter knobs apply immediately
-        // and the lag clamp tracks the live sv_stepheight (a non-stock physics preset can change it).
+        // cl_movement_smoothing_faithful (default 1): route the view smoothing through the FAITHFUL Base algorithm
+        // (CSQCPlayer_ApplySmoothing — bound()-based stairsmoothz glide + viewheightavg eye-height blend, error
+        // compensation OFF so corrections SNAP), so the rendered eye matches stock Xonotic exactly and the only
+        // intentional divergence from Base is the stepheight processing. 0 = the port path (adaptive stair catch-up
+        // + error-comp/knockback glide), with the accumulation bug-fix in Reconciler.SetPredictionError.
         XonoticGodot.Common.Services.ICvarService cv = Api.Cvars;
-        _client.ConfigureStairSmoothing(
-            smoothSpeed: CvarOr(cv, "cl_stairsmoothspeed", 200f),
-            stepHeight:  CvarOr(cv, "sv_stepheight", 31f),
-            snapSpeed:   CvarOr(cv, "cl_stairsmooth_snapspeed", 30f),
-            catchupTime: CvarOr(cv, "cl_stairsmooth_catchuptime", 0.1f));
-        predicted.Z -= _client.PredictedStairOffset(dt);
+        bool faithfulSmoothing = CvarOr(cv, "cl_movement_smoothing_faithful", 1f) != 0f;
+
+        // Prediction-error view smoothing, read live so the cvars (and the settings-menu checkbox) tune in-session:
+        //   cl_movement_errorcompensation       — strength; 0 = snap to truth (smoothing off), the stock toggle.
+        //   cl_movement_errorcompensation_force_time — how long an explosion/blaster shove glides (port extension;
+        //                                              0 falls back to the one-tick residual window, knockback pops).
+        // FAITHFUL forces the Base default (0 = snap): a correction the smoother would smear into a drifting camera
+        // lag instead lands as a clean snap to truth, exactly as stock Xonotic renders it.
+        _client.ConfigureErrorSmoothing(
+            errorComp:   faithfulSmoothing ? 0f : CvarOr(cv, "cl_movement_errorcompensation", 0f),
+            forceWindow: faithfulSmoothing ? 0f : CvarOr(cv, "cl_movement_errorcompensation_force_time", 0.12f));
+
+        float eyeOfsZ = _carrier?.ViewOfs.Z ?? EyeHeight;
+        if (faithfulSmoothing)
+        {
+            // Faithful stair + eye-height smoothing on the predicted origin (driven by the real frame dt). The
+            // smoothed origin Z feeds OriginQuake.Z and the blended view height feeds EyeHeightZ — the same shape
+            // FirstPersonView consumes. The PredictionErrorOffset above is 0 here (errorcomp forced off).
+            _faithfulSmoothing.StairSmoothSpeed = CvarOr(cv, "cl_stairsmoothspeed", 200f);
+            _faithfulSmoothing.SmoothViewHeight = CvarOr(cv, "cl_smoothviewheight", 0.05f);
+            _faithfulSmoothing.StepHeight = CvarOr(cv, "sv_stepheight", 31f);
+            bool onground = _carrier?.OnGround ?? true;
+            // A teleport this tick snaps the glide instead of smoothing the cross-map jump — QC csqcmodel_teleported
+            // does the same. Two signals: the carrier .fixangle (predicted trigger_teleport pass) and the
+            // LastTeleportTime pulse (the predicted WARPZONE crossing, which deliberately does not stamp fixangle
+            // — see PredictWarpzonesAmbient; without this pulse the stair smoother glides the height difference
+            // between the paired windows and every crossing reads as a dip/step).
+            bool teleported = _carrier?.FixAngle ?? false;
+            if (_carrier is not null && _carrier.LastTeleportTime != _lastSmoothedTeleportTime)
+            {
+                _lastSmoothedTeleportTime = _carrier.LastTeleportTime;
+                if (_carrier.LastTeleportTime > 0f)
+                    teleported = true;
+            }
+            XonoticGodot.Net.FaithfulViewSmoothing.Result r =
+                _faithfulSmoothing.Apply(predicted.Z, dt, onground, eyeOfsZ, teleported);
+            predicted.Z = r.StairZ;
+            eyeOfsZ = r.ViewHeightZ;
+        }
+        else
+        {
+            // Port path: the render-only adaptive stair offset (driven by the REAL frame delta, not the server-
+            // synced render clock whose 1/72-quantized jumps jittered the catch-up). Refresh tunables live.
+            _client.ConfigureStairSmoothing(
+                smoothSpeed: CvarOr(cv, "cl_stairsmoothspeed", 200f),
+                stepHeight:  CvarOr(cv, "sv_stepheight", 31f),
+                snapSpeed:   CvarOr(cv, "cl_stairsmooth_snapspeed", 30f),
+                catchupTime: CvarOr(cv, "cl_stairsmooth_catchuptime", 0.1f));
+            predicted.Z -= _client.PredictedStairOffset(dt);
+        }
 
         var st = new Client.FirstPersonView.ViewState
         {
@@ -3241,11 +6380,34 @@ public sealed partial class NetGame : Node3D
             // QC `view_angles += view_punchangle` (cl_player.qc): the recoil kick is added to the rendered VIEW
             // only — _viewAngles (the aim sent to the server) stays unpunched so shots still land on the crosshair.
             ViewAnglesQuake = _viewAngles + _client.PunchAngle,
+            // QC `vieworg += view_punchvector` (cl_player.qc:570): the origin recoil kick added to the rendered eye
+            // (first-person only — FirstPersonView suppresses it while chase/death-cam is active).
+            PunchOriginQuake = _client.PunchVector,
             IsDead = localDead,
+            // QC STAT(FROZEN) → cl_ft WantEventchase: engage the third-person cam while Freeze-Tag frozen (host
+            // path; the local Player carries the Frozen status effect). A pure remote client reads false here.
+            IsFrozen = LocalServerPlayer is { } frozenSelf && StatusEffectsCatalog.Frozen is { } frozenDef2
+                && StatusEffectsCatalog.Has(frozenSelf, frozenDef2),
+            // QC cl_nexball.qc WantEventchase: cl_eventchase_nexball=1 pulls the cam to third person whenever the
+            // local player is a nexball participant but is NOT the ball carrier. The NexBall status block (decoded
+            // above in UpdateModIcons) already holds the resolved carrying flag; we need the INVERSE of it, gated
+            // on the mode being NexBall so non-nexball matches are unaffected.
+            IsNexBallNonCarrier = _fullHud.ModIcons.Mode == ModIconsPanel.ModIconsMode.NexBall
+                && !_fullHud.ModIcons.NexBallCarrying,
             // Eye drops while crouched: the predicted carrier carries the live view offset (PlayerPhysics.UpdateCrouch
             // sets ViewOfs to the crouch/standing value each predicted tick, QC STAT(PL_CROUCH_VIEW_OFS)/PL_VIEW_OFS).
-            EyeHeightZ = _carrier?.ViewOfs.Z ?? EyeHeight,
+            // In faithful mode this is the viewheightavg-blended height (smooth crouch); else the raw live offset.
+            EyeHeightZ = eyeOfsZ,
+            // QC IS_ONGROUND / (input_buttons & BIT(1)): drive the horizontal view-bob smooth ramp (cl_bob2) and
+            // the fall-bob swing trigger (cl_bobfall). Both off by default, so no observable effect in a stock match.
+            OnGround = _carrier?.OnGround ?? false,
+            JumpHeld = BindTable.JumpHeld,
         };
+        // QC cl_eventchase_vehicle: while seated in a vehicle the shared view engages the cockpit/chase pull-back
+        // (FirstPersonView.ApplyVehicle). The HUD already resolved seated-ness this frame (VehicleHud.InVehicle,
+        // host or remote), so reuse it as the camera's gate. The chase pivot is the seated origin — st.OriginQuake
+        // is already glued to the vehicle origin + '0 0 32' for the seated carrier, so no extra origin plumbing.
+        _view.InVehicle = _fullHud.Vehicle.InVehicle;
         _view.UpdateView(_camera, st, dt);
     }
 
@@ -3256,6 +6418,11 @@ public sealed partial class NetGame : Node3D
         string s = c.GetString(name);
         return s.Length == 0 ? fallback : c.GetFloat(name);
     }
+
+    /// <summary>The active slowmo / host_timescale the client scales its time accumulators (input cadence + render
+    /// clock) by, so it stays in lockstep with the server's <c>SimulationLoop.TimeScale</c>. Listen server: the
+    /// shared <c>slowmo</c> cvar. (Remote-client replication of slowmo is a follow-up.) 1 = real time, clamped &gt;= 0.</summary>
+    private static float ResolveTimeScale() => ServerNet.ResolveSlowmo(Api.Cvars);
 
     /// <summary>SUPERCONTENTS at the FINAL render origin this frame — read back from the shared view after
     /// <see cref="UpdateCamera"/> ran (QC pointcontents(view_origin) at the pulled-back cam during a chase). A
@@ -3271,7 +6438,9 @@ public sealed partial class NetGame : Node3D
     {
         if (_render is null || !GodotObject.IsInstanceValid(_render))
             return;
-        string name = e.Effect?.Name ?? "";
+        // Prefer the registered name; fall back to the effectinfo name carried on the by-name engine-fallback path
+        // (QC Send_Effect_ → __pointparticles), which the renderer resolves through the effectinfo.txt catalog.
+        string name = e.Effect?.Name ?? e.EffectName ?? "";
         if (string.IsNullOrEmpty(name))
             return;
         Color? tint = (e.ColorMin != default || e.ColorMax != default)
@@ -3313,6 +6482,23 @@ public sealed partial class NetGame : Node3D
             return;
         }
         _render.OnSound(e.Sample, e.Origin, e.Volume, e.Attenuation, e.Channel, e.SourceNetId, e.Pitch);
+    }
+
+    /// <summary>Play a one-shot NON-spatial 2D cue (DP <c>sound(world, …, ATTN_NONE)</c> / a CSQC local play) —
+    /// e.g. SND_BLIND on a darkness-nade onset. Loads through the same VFS <see cref="AssetLoader.LoadSound"/> the
+    /// HUD/announcer use, plays on the SFX bus, and self-frees when finished (no pooled emitter — these fire
+    /// rarely). No-op if the asset loader or the sample is missing.</summary>
+    private void PlayLocal2DSound(string sample)
+    {
+        if (_assets is null || string.IsNullOrEmpty(sample))
+            return;
+        AudioStream? stream = _assets.LoadSound(sample);
+        if (stream is null)
+            return;
+        var player = new AudioStreamPlayer { Name = "Local2DSound", Bus = "SFX", Stream = stream };
+        player.Finished += player.QueueFree; // one-shot: drop the node once the cue ends
+        AddChild(player);
+        player.Play();
     }
 
     /// <summary>
@@ -3620,6 +6806,16 @@ public sealed partial class NetGame : Node3D
             return null;
 
         var ctx = new ClientWorld.AppearanceContext { LocalNetId = _client.LocalNetId };
+
+        // QC cl_survival.qc colormap override (ForcePlayercolors_Skip): in Survival, once a status block has been
+        // received (the local player has a role → MyStatus != 0, OR the round resolved and disclosed hunters), feed
+        // the disclosed hunter set so ResolveForcedColormap repaints every known player green-prey / red-hunter.
+        if (_client.LatestModeStatus is { Mode: XonoticGodot.Net.GametypeStatusBlock.Kind.Survival } surv
+            && (surv.MyStatus != 0 || surv.HunterNetIds.Count > 0))
+        {
+            ctx.SurvivalActive = true;
+            ctx.SurvivalHunterIds = surv.HunterNetIds;
+        }
 
         // Listen server: authoritative gametype/teamplay/team-count + the local player's team.
         if (_serverWorld is not null)

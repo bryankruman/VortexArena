@@ -325,6 +325,22 @@ public sealed class AntiCheat
             echo($":anticheat:{d.Name}:{Display(d.Value(st), elapsed, d.Tmin, d.Mi, d.Ma)}");
     }
 
+    /// <summary>QC <c>PLAYERSTATS_ANTICHEAT</c> (playerstats.qh): the event-id prefix for the anticheat feed.</summary>
+    public const string PlayerStatsPrefix = "anticheat-";
+
+    /// <summary>
+    /// QC <c>anticheat_register_to_playerstats</c> (anticheat.qc:229): pre-register every anticheat event id —
+    /// <c>anticheat-_time</c> plus one per detector — with the game-report event table at init, BEFORE any value
+    /// is emitted. Mirrors the exact id construction <see cref="ReportToPlayerStats"/> uses, so the register/emit
+    /// contract stays in lockstep (QC's <c>PlayerStats_GameReport_Event</c> drops unregistered events).
+    /// </summary>
+    public static void RegisterPlayerStats(Action<string> addEvent)
+    {
+        addEvent(PlayerStatsPrefix + "_time");
+        foreach (AnticheatDetector d in Detectors)
+            addEvent(PlayerStatsPrefix + d.Name);
+    }
+
     /// <summary>
     /// QC <c>anticheat_report_to_playerstats</c>: feed the raw detector values into a player-stats sink
     /// (event id, value). No-op without state.
@@ -332,8 +348,8 @@ public sealed class AntiCheat
     public void ReportToPlayerStats(Player p, float serverTime, Action<string, double> add)
     {
         if (!_states.TryGetValue(p, out var st)) return;
-        add("anticheat-_time", serverTime - st.JoinTime);
+        add(PlayerStatsPrefix + "_time", serverTime - st.JoinTime);
         foreach (AnticheatDetector d in Detectors)
-            add("anticheat-" + d.Name, d.Value(st));
+            add(PlayerStatsPrefix + d.Name, d.Value(st));
     }
 }

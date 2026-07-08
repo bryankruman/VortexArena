@@ -18,8 +18,8 @@ namespace XonoticGodot.Game.Menu;
 /// </summary>
 public sealed class MenuSettings
 {
-    /// <summary>Where the config is persisted (Godot's per-user writable dir).</summary>
-    public const string ConfigPath = "user://settings.cfg";
+    /// <summary>Where the config is persisted (under <see cref="UserPaths.BaseDir"/>, i.e. <c>~/XonData/settings.cfg</c>).</summary>
+    public static string ConfigPath => UserPaths.Resolve("settings.cfg");
 
     // ----- the four setting groups (mirrors the QC settings tabs) -----
     public VideoSettings Video { get; } = new();

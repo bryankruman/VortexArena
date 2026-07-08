@@ -1,0 +1,442 @@
+unit: turret-phaser
+category: turret
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 14
+  worst_gaps:
+    - "Presentation only (DEGRADED, not absent): the MDL_TUR_PHASER_BEAM beam model is now spawned + per-frame rescaled to the wall-hit distance (beam.scale = vlen/256) and EF_LOWPRECISION set — visible+faithful on the LISTEN-SERVER/host path (EntityNode reads Entity.ScaleFactor), but remote clients render it at scale 1 (no EntityField.Scale wire bump — T48 deferred) and the QC setattachment(beam,tur_head,tag_fire) tag-socket is approximated by origin/angles (no tag sub-entity). Head charge/discharge FRAME animation rides Entity.Frame faithfully but phaser.md3 is not attached as a separate head bone. None of the visuals are runtime-verified. All authority/shared logic (penetrating multi-hit beam, audio, fireflag firecheck, bot_dodge, biases, track tuning, 90s respawn) re-verified faithful+live against current code."
+features:
+  - id: turret-phaser.spawn.map_entity
+    name: "Map placement + per-frame think wiring (spawnfunc turret_phaser)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/phaser.qc:spawnfunc(turret_phaser)"
+      - "common/turrets/sv_turrets.qc:turret_initialize"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawnFuncs.cs:Phaser"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:RegisterAll"
+      - "src/XonoticGodot.Server/GameWorld.cs:SpawnMapEntities"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "MapObjectsRegistry SpawnFuncs.Register(turret_phaser) -> GameWorld SpawnMapEntities -> RunThink", result: pass }
+    confidence: high
+    notes: "Gated by g_turrets master switch (default on). Whether stock maps actually place turret_phaser is unverified (rare in rotation). Unchanged."
+
+  - id: turret-phaser.identity.model_hitbox
+    name: "Identity, hitbox, health, body/head models"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/turrets/turret/phaser.qh:PhaserTurret"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:ctor"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init"
+    constants:
+      - { name: "health", base: "500", port: "500", match: true }
+      - { name: "m_mins", base: "'-32 -32 0'", port: "(-32,-32,0)", match: true }
+      - { name: "m_maxs", base: "'32 32 64'", port: "(32,32,64)", match: true }
+      - { name: "body model", base: "models/turrets/base.md3", port: "models/turrets/base.md3", match: true }
+      - { name: "head model", base: "models/turrets/phaser.md3", port: "(not separately attached)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Head model (phaser.md3) is not attached as a separate tracking head bone; head frame animation is also absent (see tr_think feature)."
+    verification:
+      - { kind: value, ref: "phaser.qh vs PhaserTurret.cs ctor / TurretSpawn.Init", result: pass }
+    confidence: high
+    notes: "Hitbox/health/body model match; head-bone attachment is a client-render concern deferred in TurretAI. Unchanged."
+
+  - id: turret-phaser.setup.flags
+    name: "tr_setup ammo + aim flags (energy/recharge/recieve, lead-only)"
+    layer: [shared]
+    base_refs:
+      - "common/turrets/turret/phaser.qc:tr_setup"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Think"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Spawn"
+    constants:
+      - { name: "ammo_flags", base: "ENERGY|RECHARGE|RECIEVE", port: "ammo pool (max/recharge modeled)", match: true }
+      - { name: "aim_flags", base: "TFL_AIM_LEAD only", port: "lead only (shotTimeCompensate/zPredict at false defaults)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value, ref: "phaser.qc tr_setup aim_flags=TFL_AIM_LEAD vs PhaserTurret.Think TurretParams(lead:true) — shotTimeCompensate/zPredict not passed, default false (TurretAI.cs:1068)", result: pass }
+    confidence: high
+    notes: >-
+      FIXED since baseline. The earlier audit recorded the port passing shotTimeCompensate:true + zPredict:true,
+      which diverged from Base (TFL_AIM_LEAD only). The current PhaserTurret.Think (PhaserTurret.cs:69-73) passes
+      only lead:true; shotTimeCompensate and zPredict are left at their false struct defaults, matching Base exactly.
+      Hitscan shotSpeed (35000) is a port aim-lead convenience and is moot for a hitscan beam."
+
+  - id: turret-phaser.firecheck.fireflag_guard
+    name: "Custom firecheck: block fire while beam active/discharging (fireflag)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/phaser.qc:turret_phaser_firecheck"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:BeamThink"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "phaser.qc turret_phaser_firecheck (if fireflag != 0 return false) vs TurretAI.RunCombat:719 `if (st.FireFlag != 0) return enemy;` — the fire gate now consults FireFlag directly (the port analogue of .turret_firecheckfunc), blocking fire across BOTH the beam-active (FireFlag==1) and discharge (FireFlag==2) windows, exactly as Base", result: pass }
+    confidence: high
+    notes: >-
+      FIXED since baseline. The earlier audit recorded the fireflag state being tracked but NOT consulted by the
+      firecheck gate (fire-block was purely the shot_refire AttackFinished hold), missing Base's fireflag==2
+      discharge-window block (~5 tr_think frames after the beam ends). RunCombat now reads st.FireFlag in its fire
+      gate (TurretAI.cs:719): fire is blocked for the entire FireFlag != 0 window — beam active AND discharge —
+      matching turret_phaser_firecheck. No other turret sets FireFlag, so this guard is inert for them.
+
+  - id: turret-phaser.fire.beam_spawn
+    name: "wr_think: spawn the sustained PhaserTurret_beam"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/phaser_weapon.qc:wr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Attack"
+    constants:
+      - { name: "shot_speed (beam DURATION)", base: "4", port: "4 (ShotSpeed)", match: true }
+      - { name: "shot_dmg (total over burn)", base: "100", port: "100 (ShotDamage)", match: true }
+      - { name: "per-tick dmg", base: "shot_dmg/(shot_speed/frametime)", port: "ShotDamage/(ShotSpeed/FrameTime)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "phaser_weapon.qc wr_think vs PhaserTurret.Attack", result: pass }
+    confidence: high
+    notes: "Beam owns the refire: Attack sets endTime; BeamThink re-parks AttackFinished each frame, matching QC beam.cnt + attack_finished overwrite. Unchanged."
+
+  - id: turret-phaser.fire.beam_think_trace
+    name: "beam_think: per-frame trace, damage + slow, refire reset on end"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/phaser_weapon.qc:beam_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:BeamThink"
+    constants:
+      - { name: "shot_radius (beam half-thickness)", base: "8", port: "8 (ShotRadius)", match: true }
+      - { name: "shot_force", base: "5", port: "5 (ShotForce)", match: true }
+      - { name: "target_range (beam length)", base: "3000", port: "3000 (TargetRange)", match: true }
+      - { name: "shot_refire (after end)", base: "4", port: "4 (ShotRefire)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "phaser_weapon.qc beam_think vs PhaserTurret.BeamThink", result: pass }
+    confidence: high
+    notes: "Re-trace along the head aim every frame, tear down at time>cnt or actor dead, then arm now+shot_refire — faithful. Unchanged."
+
+  - id: turret-phaser.fire.imobeam_multihit
+    name: "FireImoBeam penetrating multi-target hit + slow"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/util.qc:FireImoBeam"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:BeamThink"
+    constants:
+      - { name: "f_velfactor (slow)", base: "0.75", port: "0.75 (VelFactor)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "util.qc FireImoBeam (g_railgunhit penetration loop: make-unsolid, re-trace, restore, damage+slow ALL hit) vs PhaserTurret.BeamThink:155-186 pierced-list loop (Solid.Not each hit, re-trace, restore solidity, Combat.Damage + velocity*=0.75 each)", result: pass }
+    confidence: high
+    notes: >-
+      FIXED since baseline. The earlier audit recorded a single Api.Trace.Trace hitting only tr.Ent (the front
+      target). The current BeamThink implements the full FireImoBeam penetration: it loops up to 64 times, making
+      each hit entity Solid.Not and re-tracing until it hits a world brush (Solid.Bsp) or empty trace, restores
+      solidity, then damages + slows every entity collected (Combat.Damage DEATH_TURRET_PHASER + velocity*=VelFactor).
+      Players lined up behind one another are now all hit, matching Base. One minor nuance vs Base: the port uses the
+      per-hit tr.EndPos as the damage location, whereas Base records railgunhitloc = end (wall endpoint) for all hits —
+      a cosmetic damage-origin difference only, not a logic/values defect."
+
+  - id: turret-phaser.fire.bot_dodge
+    name: "Beam registers as a dodgeable threat (bot_dodge / g_bot_dodge)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/turret/phaser_weapon.qc:wr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Attack"
+      - "src/XonoticGodot.Server/Bot/BotBrain.cs:HavocbotDodge"
+    constants:
+      - { name: "bot_dodge", base: "true", port: "true (beam.BotDodge = true)", match: true }
+      - { name: "bot_dodgerating", base: "shot_dmg (per-tick = shot_dmg/(shot_speed/frametime))", port: "perTickDamage (== ShotDamage/(ShotSpeed/FrameTime))", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "phaser_weapon.qc wr_think (beam.bot_dodge=true; beam.bot_dodgerating=beam.shot_dmg; IL_PUSH(g_bot_dodge,beam)) vs PhaserTurret.Attack:148-149 (beam.BotDodge=true; beam.BotDodgeRating=perTickDamage)", result: pass }
+      - { kind: code, ref: "BotBrain.HavocbotDodge (BotBrain.cs:683, SUPERBOT-gated Skill <= BotAim.SuperbotSkill returns zero — faithful to QC `if(!SUPERBOT) return '0 0 0'`) scans Api.Entities.All for head.BotDodge and steers away; called live at BotBrain.cs:503 (worldDodge folded into the move) and Waypoint.UpdateDangerousObjects:898 folds BotDodge edicts into A* cost (BotPopulation.cs:218). The stationary phaser beam (MoveType.None, vel~0) falls in the slow/stationary back-away branch", result: pass }
+    confidence: high
+    notes: >-
+      FIXED since baseline. The earlier audit recorded this as a two-part gap: (1) the phaser beam didn't set the
+      then-newly-existing Entity.BotDodge/BotDodgeRating producer fields, and (2) the g_bot_dodge danger-list
+      CONSUMER was unported. Both are now closed. PhaserTurret.Attack sets beam.BotDodge=true and
+      beam.BotDodgeRating=perTickDamage (==Base beam.shot_dmg per-tick). BotBrain.HavocbotDodge is the ported
+      consumer (SUPERBOT-gated like Base's `if(!SUPERBOT) return`), scanning every BotDodge-flagged edict and
+      returning a dodge vector folded into bot movement — so SUPERBOT-skill bots actively back away from the
+      phaser beam. Live on the real bot path.
+
+  - id: turret-phaser.fire.target_select_bias
+    name: "Per-unit target-selection scoring biases (range/angle/same/missile/player)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_select_target"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Think"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:RunCombat"
+    constants:
+      - { name: "target_select_rangebias", base: "0.85", port: "0.85 (rangeBias passed)", match: true }
+      - { name: "target_select_anglebias", base: "0.25", port: "0.25 (angleBias passed)", match: true }
+      - { name: "target_select_samebias", base: "0", port: "0 (sameBias passed)", match: true }
+      - { name: "target_select_missilebias", base: "0", port: "0 (missileBias passed)", match: true }
+      - { name: "target_select_playerbias", base: "1", port: "1.0 (playerBias passed)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value, ref: "turrets.cfg:302-306 g_turrets_unit_phaser_target_select_*bias vs PhaserTurret.Think TurretParams(rangeBias:0.85, sameBias:0, angleBias:0.25, missileBias:0, playerBias:1) (PhaserTurret.cs:88) — consumed live in ScoreTarget/select (TurretAI.cs:435-443,468)", result: pass }
+    confidence: high
+    notes: "FIXED since baseline. The earlier audit recorded the bias args omitted (defaulting to 1.0); PhaserTurret.Think now passes all five phaser-specific biases, matching turrets.cfg exactly, and they are consumed live by the faithful scoring machinery."
+
+  - id: turret-phaser.fire.extra_slow_status
+    name: "Port-only layered slow/disability status effect"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/util.qc:FireImoBeam"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:ApplySlow"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base's phaser slow is purely the velocity *= 0.75 scale per tick; the port additionally layers a brief StatusEffectsCatalog disability (0.2s) on top to make the slow feel more pronounced. Deliberate port augmentation, not a Base behavior."
+    gaps: []
+    verification:
+      - { kind: code, ref: "PhaserTurret.ApplySlow (no Base counterpart)", result: pass }
+    confidence: medium
+    notes: "Only applies if the catalog offers a buff_disability effect; otherwise a no-op. Cosmetic/feel-only on top of the faithful velocity slow. Unchanged."
+
+  - id: turret-phaser.audio.beam_sound
+    name: "Phaser beam sound (start + 2s re-trigger + silence-on-end) and impact cue"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/turrets/turret/phaser_weapon.qc:wr_think"
+      - "common/turrets/turret/phaser_weapon.qc:beam_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:BeamThink"
+    constants:
+      - { name: "beam sound", base: "SND_TUR_PHASER (turrets/phaser)", port: "turrets/phaser (SndPhaser)", match: true }
+      - { name: "beam sound channel", base: "CH_SHOTS_SINGLE (4)", port: "SoundChannel.Body (4)", match: true }
+      - { name: "re-trigger period", base: "2s (shot_spread = time + 2)", port: "2s (HumPeriod, nextHum carried via delegate)", match: true }
+      - { name: "impact sound", base: "neximpact (SND_PhaserTurretAttack_IMPACT)", port: "weapons/neximpact (SndImpact)", match: true }
+      - { name: "impact channel", base: "CH_SHOTS (-4)", port: "SoundChannel.ShotsAuto (-4)", match: true }
+      - { name: "volume/atten", base: "VOL_BASE / ATTEN_NORM", port: "VolBase / AttenNorm", match: true }
+      - { name: "silence on end", base: "SND_Null on CH_SHOTS_SINGLE at beam end", port: "Sound.Stop(beam, Body)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Attack:107 Sound.Play(beam, Body, turrets/phaser) on spawn + Attack:113 PlayAt(impact.EndPos, ShotsAuto, neximpact)", result: pass }
+      - { kind: code, ref: "BeamThink:141-145 2s re-trigger (now-nextHum>0 -> Play + re-arm), nextHum carried via re-parked delegate", result: pass }
+      - { kind: code, ref: "BeamThink:134 Sound.Stop(beam, Body) on end == QC sound(this, CH_SHOTS_SINGLE, SND_Null)", result: pass }
+    confidence: high
+    notes: >-
+      Faithful. The SND_TUR_PHASER hum starts on the BEAM edict on CH_SHOTS_SINGLE so it follows the beam and is
+      silenced on end; it re-triggers every 2s while burning; the neximpact impact cue plays once at the spawn-time
+      trace endpoint; the hum is stopped on beam termination. One faithful simplification vs QC: Base's turret-edict
+      branch does NOT play electro_fire (player-manned branch only) — the port correctly drops it. Unchanged."
+
+  - id: turret-phaser.presentation.beam_visual_and_head_anim
+    name: "Beam model visual (MDL_TUR_PHASER_BEAM) + head charge/discharge animation (tr_think)"
+    layer: [presentation]
+    base_refs:
+      - "common/turrets/turret/phaser_weapon.qc:wr_think"
+      - "common/turrets/turret/phaser.qc:tr_think"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:TrThinkHeadAnim"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:FireFlag"
+    constants:
+      - { name: "beam scale", base: "vlen(shotorg-trace_endpos)/256", port: "vlen(start-beamEnd)/256 (ScaleFactor, per-frame)", match: true }
+      - { name: "beam model", base: "MDL_TUR_PHASER_BEAM (models/turrets/phaser_beam.md3)", port: "models/turrets/phaser_beam.md3 (asset present)", match: true }
+      - { name: "effects", base: "EF_LOWPRECISION", port: "EfLowPrecision (4194304)", match: true }
+      - { name: "head frames fireflag==1", base: "cycle 1..10", port: "cycle 1..10 (Entity.Frame)", match: true }
+      - { name: "head frames fireflag==2", base: "advance to 15 then reset to 0", port: "advance to 15 then reset to 0 (Entity.Frame)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Beam model is visible+correctly-scaled only on the LISTEN-SERVER/host path: EntityNode reads Entity.ScaleFactor (EntityNode.cs:116, gated to s>0 && s!=1) but remote clients have no EntityField.Scale wire (T48 deferred), so a remote spectator sees the beam at scale 1 (wrong length). Whether server-spawned Solid.Not beam edicts are even included in the remote entity snapshot is unverified."
+      - "QC setattachment(beam, tur_head, \"tag_fire\") tag-socket attachment is not ported — the port approximates it by setting beam.Origin = muzzle shotOrg and beam.Angles = HeadWorldAngles each frame (no tag sub-entity in the port)."
+      - "phaser.md3 head model is not attached as a separate tracking head bone — the head-frame animation drives the turret edict's own networked Entity.Frame, so the frame VALUE animates faithfully but there is no visible phaser.md3 head to show it (presentation gap shared with identity.model_hitbox)."
+      - "No runtime/visual verification: all beam-visual + head-frame claims are code-read only."
+    verification:
+      - { kind: code, ref: "PhaserTurret.Attack:181-187 setmodel(phaser_beam.md3)+EfLowPrecision+ScaleFactor=TargetRange/256+Origin/Angles; BeamThink:268-270 per-frame ScaleFactor=vlen(start-beamEnd)/256 (beamEnd tracked to the wall/empty trace endpoint) + re-Origin/Angles == phaser_weapon.qc wr_think setmodel + beam_think beam.scale=vlen/256", result: pass }
+      - { kind: code, ref: "asset models/turrets/phaser_beam.md3 present under xonotic-data.pk3dir/models/turrets/; Api.Entities.SetModel routes the model onto the edict (ServerEntities.SetModel)", result: pass }
+      - { kind: code, ref: "PhaserTurret.TrThinkHeadAnim (fireflag==1 cycle 1..10; fireflag==2 advance to 15 then reset to 0, fireflag=0) == phaser.qc tr_think; FireFlag set in Attack (=1) and BeamThink end (=2) — head FRAME state machine ported and live (PhaserTurret.cs:100-118,171,210)", result: pass }
+      - { kind: code, ref: "EntityNode.cs:116 reads Entity.ScaleFactor only on listen-server/demo (s>0 && |s-1|>0.001) — remote clients miss it until an EntityField.Scale protocol bump (T48 deferred). Presentation is therefore host-only, not full-fidelity", result: partial }
+      - { kind: visual, ref: "in-match observation of the beam model/scale/head anim — NOT performed", result: fail }
+    confidence: medium
+    notes: >-
+      DRIFT (FIX) since baseline (Wave edit 2026-06-28, working tree). The earlier audit recorded the
+      MDL_TUR_PHASER_BEAM beam model as fully MISSING (presentation: missing) with the head-frame animation as the
+      only ported half. This wave added the beam-model visual: Attack now setmodel(phaser_beam.md3) (asset present),
+      sets EF_LOWPRECISION, and ScaleFactor=TargetRange/256; BeamThink re-scales it every frame to vlen(start-beamEnd)/256
+      where beamEnd is the wall/empty-trace endpoint of the FireImoBeam penetration loop (a beamEnd tracker was added
+      for exactly this), and re-positions/re-orients it to follow the slewing muzzle. So the beam-visual logic/values/
+      timing now match Base (beam.scale = vlen(tur_shotorg-trace_endpos)/256) and join the already-faithful head-frame
+      half — logic/values/timing promoted partial->faithful. PRESENTATION STAYS PARTIAL (NOT faithful): the model +
+      correct scale render only on the listen-server/host path (EntityNode reads Entity.ScaleFactor); remote clients
+      have no EntityField.Scale wire so they see the beam at scale 1 (T48 deferred), the QC tag_fire setattachment is
+      approximated by origin/angles, phaser.md3 is not a separate head bone, and none of it is runtime/visually verified.
+      Build green (Common project). Confidence medium pending an in-match visual check."
+
+  - id: turret-phaser.aim.head_track_tuning
+    name: "Per-unit head-tracking motor tuning (track_type / accel_pitch / accel_rot / blendrate)"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_track"
+      - "turrets.cfg:317-320"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Think"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:RunCombat"
+    constants:
+      - { name: "track_type", base: "3 (fluid inertia)", port: "3 (TrackFluidInertia, passed)", match: true }
+      - { name: "track_accel_pitch", base: "0.5", port: "0.5 (trackAccelPitch passed)", match: true }
+      - { name: "track_accel_rot", base: "0.65", port: "0.65 (trackAccelRot passed)", match: true }
+      - { name: "track_blendrate", base: "0.2", port: "0.2 (trackBlendRate passed)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value, ref: "turrets.cfg:317-320 (track_type 3, accel_pitch 0.5, accel_rot 0.65, blendrate 0.2) vs PhaserTurret.Think TurretParams(trackType:TrackFluidInertia, trackAccelPitch:0.5, trackAccelRot:0.65, trackBlendRate:0.2) (PhaserTurret.cs:89-90) — consumed live in the TrackFluidInertia motor (TurretAI.cs:614-615)", result: pass }
+    confidence: high
+    notes: "FIXED since baseline. The earlier audit recorded only trackType:3 being passed (accel_rot/blendrate falling back to defaults 0.5/0.35). PhaserTurret.Think now passes all four track-tuning args matching turrets.cfg exactly, and TrackAccelRot/TrackBlendRate are consumed live by the head motor."
+
+  - id: turret-phaser.lifecycle.respawn_time
+    name: "Death + respawn timer"
+    layer: [authority]
+    base_refs:
+      - "common/turrets/sv_turrets.qc:turret_die"
+      - "common/turrets/sv_turrets.qc:turret_respawn"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Turrets/PhaserTurret.cs:Spawn"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretSpawn.cs:Init"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Die"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:Respawn"
+    constants:
+      - { name: "respawntime", base: "90 (turrets.cfg:287)", port: "90 (RespawnTime const passed to TurretSpawn.Init)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: value, ref: "turrets.cfg:287 (90) vs PhaserTurret.cs:31 RespawnTime=90f passed via Spawn:62 respawnTime: RespawnTime -> TurretSpawn.Init:76 st.RespawnTime", result: pass }
+    confidence: high
+    notes: >-
+      FIXED since baseline. The earlier audit recorded PhaserTurret.Spawn omitting the respawnTime argument and
+      inheriting the shared 60s default. The current Spawn passes respawnTime: RespawnTime (=90f), matching
+      turrets.cfg g_turrets_unit_phaser_respawntime 90 exactly. Death/respawn lifecycle itself remains shared and
+      faithful (TurretAI.Die/Respawn)."

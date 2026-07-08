@@ -1,0 +1,557 @@
+unit: sv-cheats
+category: server
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-27"  # Wave 16/17 re-audit (OPUS): speedrun gaps closed, make NOIMPACT guard closed
+summary:
+  feature_count: 19
+  worst_gaps:
+    - "No CopyBody / corpse-clone mechanic (CLONE_MOVING 140 / CLONE_STANDING 142); sv_clones is an unread stub (Cvars.cs:397) and the clone-allowance gating branch IS present (Cheats.cs:80) but moot without the impulses — the only fully-missing cheat impulses now."
+    - "No CheatFrame per-frame hook and no Drag subsystem: cannot pick up/carry/throw entities (cheat or normal-range g_grab_range), no te_lightning1 drag beam, no dragbox/dragpoint race map editor; g_grab_range cvar exists (Cvars.cs:395) but is never read."
+    - "SPEEDRUN_INIT (30) / SPEEDRUN (141) are IMPLEMENTED + LIVE + now FAITHFUL (Speedrun.cs snapshot/restore, wired in DispatchImpulse): the start-solid tracebox 'cannot move there' guard (Speedrun.cs:118-129) AND the AbortSpeedrun mutator hook (Commands.cs:2145-2150 -> Race/Cts.AbortSpeedrun) are now both modeled — both prior gaps CLOSED in the Wave 16/17 re-audit."
+    - "info_autoscreenshot map spawnfunc is now IMPLEMENTED + LIVE (InfoAutoScreenshot.cs, registered + per-map reset + deferred findtarget); minor residual: the g_observepoints observer-camera membership is unwired (no port consumer) and the entity is not dropped on a start-solid spot."
+    - "TELEPORT impulse (143) is implemented + live but PARTIAL: uses a spawnpoint-sampling fallback rather than the true MoveToRandomMapLocation world-bounds sampler, and the 100 / 100000 attempt-count constants are not honored. The noclip-preferred autoscreenshot path is NOW reachable (info_autoscreenshot finally spawns)."
+features:
+  - id: sv-cheats.gating.cheats_allowed
+    name: "CheatsAllowed — sv_cheats snapshot + dead/observer/maycheat gating + refusal logging"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatsAllowed"
+      - "server/cheats.qc:CheatInit"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:Allowed"
+      - "src/XonoticGodot.Server/Cheats.cs:Refuse"
+      - "src/XonoticGodot.Server/Cheats.cs:Init"
+    constants:
+      - { name: "sv_cheats (default)", base: "0", port: "0", match: true }
+      - { name: "gamestart_sv_cheats snapshot at init", base: "yes", port: "yes (GameStartCheats)", match: true }
+      - { name: "observer gate threshold", base: "sv_cheats>=2", port: "GameStartCheats>=2", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "tests/XonoticGodot.Tests/ServerInfraTests.cs:Cheats_GatedBySvCheats", result: pass }
+      - { kind: code, ref: "Cheats.cs:68-98 (Allowed+Refuse) vs server/cheats.qc:59-90 — gate order matches; dead/observer guards refuse SILENTLY (return false) and only the final sv_cheats==0 fall-through logs, matching Base. The sv_clones clone-allowance branch is NOW present (Cheats.cs:79: cloneImpulse && p.Lip < sv_clones -> return true). Re-verified 2026-06-25.", result: pass }
+    confidence: high
+    notes: "Core gate (snapshot AND live cvar, dead block, observer<2 block, maycheat override) is faithful and live. Init/Log wired live in GameWorld.cs:818-820 (Cheats instance GameWorld.cs:173, Log->ChatBroadcast). Refusal-attempt logging fires ONLY on the final sv_cheats==0 fall-through (dead/observer guards refuse silently as in Base). Base passes playername(netname, team, false) with team_colorize=false (bare netname), so the port's p.NetName is faithful. The clone-allowance branch (cloneImpulse param threaded through Allowed) is NOW present — moot until the CLONE impulses exist but the gate logic is complete, so logic upgraded partial->faithful and the gap cleared."
+
+  - id: sv-cheats.accounting.cheatcount
+    name: "Cheat counting (per-player + global) gating campaign progress"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:ADD_CHEATS"
+      - "server/campaign.qc:CampaignPreIntermission"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:AddCheats"
+      - "src/XonoticGodot.Server/Cheats.cs:CheatCountTotal"
+      - "src/XonoticGodot.Server/Campaign.cs:PreIntermission"
+      - "src/XonoticGodot.Server/GameWorld.cs:2509"
+    constants:
+      - { name: "campaign save gate", base: "campaign_won && cheatcount_total==0", port: "Won!=0 && cheatCount==0", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Campaign.cs:357-400 PreIntermission vs server/campaign.qc:219", result: pass }
+      - { kind: code, ref: "GameWorld.cs:2509 feeds Cheats.CheatCountTotal into PreIntermission(cheatCount: ...)", result: pass }
+    confidence: high
+    notes: "Per-cheat increment + intermission cheatCount==0 gate are faithful and live; both reps (per-player keyed by Player + total) maintained. Live producers of counts are god/notarget/noclip/fly/give, the GIVE_ALL impulse 99, AND now usetarget/killtarget (wired live by Wave-5). GameWorld.cs:2509 feeds Cheats.CheatCountTotal into PreIntermission; the save gate (Won!=0 && cheatCount==0, Campaign.cs:400, plus a _campaign_testrun bypass faithful to Base) is intact."
+
+  - id: sv-cheats.cmd.god
+    name: "cmd god — toggle FL_GODMODE"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatCommand (case god)"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:Command (case god)"
+      - "src/XonoticGodot.Server/Commands.cs:649 (Register god -> CmdCheat)"
+      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:99 (allowlist)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DamageSystem.cs:426"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "ServerInfraTests.cs:Cheats_GatedBySvCheats (god ON path + count)", result: pass }
+      - { kind: code, ref: "Registered (Commands.cs:649) AND client-allowed (ClientCommandRegistry.cs:99); CmdCheat (Commands.cs:1751) routes to Cheats.Command; DamageSystem honors GodMode on the live damage path", result: pass }
+    confidence: high
+    notes: "BITXOR toggle, ON/OFF echo, DID_CHEAT only on the ON edge — matches Base; godmode honored by DamageSystem. logAttempt: true on the gate (cosmetic, only fires on refusal). Unchanged by Wave-5."
+
+  - id: sv-cheats.cmd.notarget
+    name: "cmd notarget — toggle FL_NOTARGET"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatCommand (case notarget)"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:Command (case notarget)"
+      - "src/XonoticGodot.Server/Commands.cs:650 (Register notarget)"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:552"
+      - "src/XonoticGodot.Common/Gameplay/Turrets/TurretAI.cs:204"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Cheats.cs:111-116 toggle/echo/count matches Base; registered (Commands.cs:650) + allowlisted (ClientCommandRegistry.cs:99)", result: pass }
+      - { kind: code, ref: "MonsterAI.cs:552 / TurretAI.cs:204 filter out EntFlags.NoTarget targets", result: pass }
+    confidence: high
+    notes: "NoTarget honored by monster + turret AI target acquisition; player-vs-player has no AI so the flag's only live consumers are AI entities (as in Base). Unchanged by Wave-5."
+
+  - id: sv-cheats.cmd.noclip
+    name: "cmd noclip — toggle MOVETYPE_NOCLIP"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatCommand (case noclip)"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:Command (case noclip)"
+      - "src/XonoticGodot.Server/Commands.cs:651 (Register noclip)"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "ServerInfraTests.cs:Cheats_NoclipAndFlyToggle", result: pass }
+    confidence: high
+    notes: "Toggle NOCLIP<->WALK, DID_CHEAT only on entering noclip; registered (Commands.cs:651) + allowlisted; movetype consumed by movement/damage. Unchanged by Wave-5."
+
+  - id: sv-cheats.cmd.fly
+    name: "cmd fly — toggle MOVETYPE_FLY"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatCommand (case fly)"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:Command (case fly)"
+      - "src/XonoticGodot.Server/Commands.cs:652 (Register fly)"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "ServerInfraTests.cs:Cheats_NoclipAndFlyToggle", result: pass }
+    confidence: high
+    notes: "Toggle FLY<->WALK, DID_CHEAT only on entering fly — matches Base; registered (Commands.cs:652) + allowlisted. Unchanged by Wave-5."
+
+  - id: sv-cheats.cmd.give
+    name: "cmd give — grant items/weapons/resources"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatCommand (case give)"
+      - "server/items/items.qc:GiveItems"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:Command (case give)"
+      - "src/XonoticGodot.Server/Commands.cs:653 (Register give)"
+      - "src/XonoticGodot.Common/Gameplay/Items/GiveItems.cs:Apply"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: test, ref: "ServerInfraTests.cs:Cheats_GiveAll_GrantsWeaponsAndResources (exercises GiveItems.Apply)", result: pass }
+    confidence: high
+    notes: "Routes to the shared GiveItems.Apply; DID_CHEAT iff anything changed. Registered (Commands.cs:653) + allowlisted. Give grammar fidelity audited separately as the give unit. Unchanged by Wave-5."
+
+  - id: sv-cheats.cmd.usetarget
+    name: "cmd usetarget — fire a named target (SUB_UseTargets)"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatCommand (case usetarget)"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:Command (case usetarget)"
+      - "src/XonoticGodot.Server/Cheats.cs:FireNamedTarget"
+      - "src/XonoticGodot.Server/Commands.cs:654 (Register usetarget -> CmdCheat)"
+      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:99 (allowlist)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:MapMover.UseTargets"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Minor logic caveat: the port AddCheats(1) runs even when no target name is given (FireNamedTarget early-returns on empty argv[1]). Base ALSO DID_CHEATs unconditionally and calls SUB_UseTargets with an empty .target (which no-ops), so the cheat-count effect is identical; the only divergence is the port skips the transient-entity spawn on empty input (an unobservable optimization)."
+    verification:
+      - { kind: code, ref: "NOW WIRED: Register('usetarget', ..., CmdCheat) at Commands.cs:654; allowlisted at ClientCommandRegistry.cs:99; CmdCheat (Commands.cs:1755) routes ctx.Argv to _world.Cheats.Command -> case 'usetarget'. FireNamedTarget spawns a transient ent, sets .Target, fires MapMover.UseTargets (a real, widely-used primitive: doors/buttons/triggers all consume it), removes it. Re-verified 2026-06-25 (post-Wave-5).", result: pass }
+      - { kind: code, ref: "FireNamedTarget (Cheats.cs:183-192) vs server/cheats.qc:671-677 — spawn/set target/SUB_UseTargets/delete/DID_CHEAT flow matches", result: pass }
+    confidence: high
+    notes: "CLOSED by Wave-5: usetarget is now Register()ed AND allowlisted, so a client `usetarget <name>` routes through CmdCheat -> Cheats.Command -> the usetarget case on the live match path. The baseline (2026-06-22) recorded this as STILL DEAD, but the current code (commit 023ba70, Wave-5 finish) wired it. Flow + gate (sv_cheats, AddCheats) faithful."
+
+  - id: sv-cheats.cmd.killtarget
+    name: "cmd killtarget — remove a named target (SUB_UseTargets killtarget)"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatCommand (case killtarget)"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:Command (case killtarget)"
+      - "src/XonoticGodot.Server/Cheats.cs:FireNamedTarget"
+      - "src/XonoticGodot.Server/Commands.cs:655 (Register killtarget -> CmdCheat)"
+      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:99 (allowlist)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsCommon.cs:MapMover.UseTargets"
+    constants: []
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Same minor empty-arg caveat as usetarget: AddCheats(1) fires on an empty target name (FireNamedTarget early-returns before spawning), but Base also DID_CHEATs unconditionally, so the cheat-count effect is identical."
+    verification:
+      - { kind: code, ref: "NOW WIRED: Register('killtarget', ..., CmdCheat) at Commands.cs:655; allowlisted at ClientCommandRegistry.cs:99; CmdCheat -> Cheats.Command -> case 'killtarget'. FireNamedTarget sets .KillTarget then MapMover.UseTargets (removes matched entities). Re-verified 2026-06-25 (post-Wave-5).", result: pass }
+      - { kind: code, ref: "FireNamedTarget (Cheats.cs:183-192) vs server/cheats.qc:679-686 — spawn/set killtarget/SUB_UseTargets/delete/DID_CHEAT flow matches", result: pass }
+    confidence: high
+    notes: "CLOSED by Wave-5: killtarget is now Register()ed AND allowlisted; live on the match path via CmdCheat. Baseline recorded STILL DEAD; current code (commit 023ba70) wired it. Flow + gate faithful."
+
+  - id: sv-cheats.impulse.give_all
+    name: "Cheat impulse GIVE_ALL (99) — give all"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatImpulse (case CHIMPULSE_GIVE_ALL)"
+      - "common/impulses/all.qh:156"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:GiveAll"
+      - "src/XonoticGodot.Server/Commands.cs:2054 (DispatchImpulse: if (imp == 99) Cheats.GiveAll)"
+      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:70 (impulse allowlisted)"
+    constants:
+      - { name: "impulse number", base: "99", port: "99 (DispatchImpulse routes imp==99)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "DispatchImpulse (Commands.cs:1613) routes imp==99 -> _world.Cheats.GiveAll(caller). Live path: client `impulse 99` -> ClientCommandRegistry allows 'impulse' (line 69) -> DispatchImpulse -> GiveAll (runs sv_cheats gate + counts). _world.Cheats is a live instance (GameWorld.cs:173) with Log wired to ChatBroadcast (GameWorld.cs:820).", result: pass }
+      - { kind: test, ref: "ServerInfraTests.cs:Cheats_GiveAll_GrantsWeaponsAndResources", result: pass }
+    confidence: high
+    notes: "Faithful and genuinely live (closed by Wave-2, unchanged by Wave-5). Matches Base CheatImpulse GIVE_ALL = CheatCommand(tokenize('give all')); the GIVE_ALL case is 'already counted as cheat' in Base — port's GiveAll counts once via AddCheats(1) iff give succeeded."
+
+  - id: sv-cheats.impulse.clone
+    name: "Cheat impulses CLONE_MOVING (140) / CLONE_STANDING (142) — CopyBody clones"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatImpulse (CHIMPULSE_CLONE_MOVING / CLONE_STANDING)"
+      - "common/impulses/all.qh:157,159"
+    port_refs: []
+    constants:
+      - { name: "impulse numbers", base: "140 / 142", port: "none", match: false }
+      - { name: "moving clone push", base: "v_forward*300", port: "none", match: false }
+      - { name: "sv_clones (clone cap)", base: "0", port: "0 (stub, Cvars.cs:397; READ by the gate's clone branch but no CLONE impulse consumes it)", match: true }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No CopyBody / corpse-clone mechanic; the clone impulses do nothing and sv_clones is unread. Unchanged by Wave-5."
+    verification:
+      - { kind: code, ref: "grep CopyBody/CHIMPULSE/sv_clones in src/** -> SpawnSystem.cs mentions CopyBody only in a comment; no clone impulse handler (DispatchImpulse has no 140/142 case); cvar stub at Cvars.cs:397. The gate's clone-allowance branch EXISTS (Cheats.cs:80) but is never reached (no caller passes cloneImpulse:true). Re-verified 2026-06-27.", result: fail }
+    confidence: high
+    notes: "Requires a CopyBody corpse-spawn primitive that the port lacks. SpawnSystem.cs:518 references CopyBody only in a comment about respawn reusing the live edict."
+
+  - id: sv-cheats.impulse.speedrun
+    name: "Cheat impulses SPEEDRUN_INIT (30) / SPEEDRUN (141) — personal waypoint snapshot + restore"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatImpulse (CHIMPULSE_SPEEDRUN_INIT / SPEEDRUN)"
+      - "common/impulses/all.qh:155,158"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:SpeedrunInit"
+      - "src/XonoticGodot.Server/Cheats.cs:Speedrun"
+      - "src/XonoticGodot.Common/Gameplay/Player/Speedrun.cs:SnapshotPersonal / RestorePersonal"
+      - "src/XonoticGodot.Server/Commands.cs:2118 (DispatchImpulse imp==141 -> Cheats.Speedrun)"
+      - "src/XonoticGodot.Server/Commands.cs:2138 (DispatchImpulse case 30 -> Cheats.SpeedrunInit, then deploy personal waypoint)"
+    constants:
+      - { name: "impulse numbers", base: "30 / 141", port: "30 / 141 (DispatchImpulse case 30 + imp==141)", match: true }
+      - { name: "g_allow_checkpoints gates cheat", base: "yes (default 0)", port: "yes (Cvars.cs:398 default 0; Cheats.Speedrun gates IS_CHEAT + DID_CHEAT on !g_allow_checkpoints)", match: true }
+      - { name: "snapshot health floor", base: "max(1, RES_HEALTH)", port: "MathF.Max(1, p.Health)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "NOW WIRED + IMPLEMENTED: SpeedrunInit (Cheats.cs:347) snapshots origin/v_angle/velocity/resources(health floor 1)/weapons/items/statuseffects/pause-timers+teleport_time into PersonalCheckpoint (Speedrun.cs:56-85), not counted as a cheat (no gate) — matching Base SPEEDRUN_INIT. Speedrun (Cheats.cs:357) restores + re-bases pause timers/status-effect expiries by elapsed time, gates IS_CHEAT/DID_CHEAT only when !g_allow_checkpoints. DispatchImpulse routes case 30 (snapshot then waypoint deploy, Commands.cs:2163) and imp==141 (restore, Commands.cs:2139). Re-verified 2026-06-27 (Wave 16/17 re-audit).", result: pass }
+      - { kind: code, ref: "Speedrun.cs:99-174 RestorePersonal vs server/cheats.qc:188-234 — setorigin/oldvelocity=velocity/angles/fixangle, resource+weapon+item restore, pause-timer + StatusEffects_copy re-base (time + finished - teleport_time) all match. The start-solid tracebox guard IS NOW MODELED (Speedrun.cs:118-129: tracebox MOVE_WORLDONLY at cp.Origin; on start-solid skip teleport + sprint 'Cannot move there, cheater' but still restore resources, exactly as Base). The AbortSpeedrun mutator hook IS NOW MODELED in the dispatcher (Commands.cs:2145-2150: on a successful restore call Race.AbortSpeedrun / Cts.AbortSpeedrun — both real, Race.cs:1022 / Cts.cs:448).", result: pass }
+    confidence: high
+    notes: "CLOSED in the Wave 16/17 re-audit (2026-06-27): the two previously-recorded gaps are now both resolved. (1) The QC start-solid tracebox guard is implemented (Speedrun.cs:118-129) — on a blocked destination the port skips the teleport, prints 'Cannot move there, cheater', and still restores resources/weapons/items/timers, matching Base. (2) The AbortSpeedrun race-timing hook is wired in the impulse-141 dispatcher (Commands.cs:2145-2150 -> Race.AbortSpeedrun/Cts.AbortSpeedrun, both real implementations that reset the lap clock/checkpoint progress). Snapshot (impulse 30, NOT counted as a cheat — shares the waypoint_personal_here key) + restore (impulse 141, a cheat only when !g_allow_checkpoints) both live via DispatchImpulse. values/timing (pause-timer + status-effect re-basing, health floor 1) faithful."
+
+  - id: sv-cheats.impulse.teleport
+    name: "Cheat impulse TELEPORT (143) — emergency teleport to autoscreenshot or random location"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatImpulse (CHIMPULSE_TELEPORT)"
+      - "common/impulses/all.qh:160"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:Teleport"
+      - "src/XonoticGodot.Server/Commands.cs:2069 (DispatchImpulse: if (imp == 143) Cheats.Teleport)"
+      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:70 (impulse allowlisted)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/BallEntity.cs:RandomMapLocation"
+    constants:
+      - { name: "impulse number", base: "143", port: "143 (DispatchImpulse routes imp==143)", match: true }
+      - { name: "MoveToRandomMapLocation attempts", base: "100 (sv_cheats<2) / 100000", port: "none (uses a spawnpoint-sampling fallback, no attempt-count tuning)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Random-location path uses BallEntity.RandomMapLocation (a spawnpoint-sampling fallback), NOT the true MoveToRandomMapLocation world-bounds sampler; the 100 / 100000 attempt-count constants (the sv_cheats<2 vs >=2 wider search) and the DPCONTENTS/Q3SURFACEFLAG_SKY content masks are not honored."
+      - "The noclip-preferred info_autoscreenshot path (Cheats.cs:300-318) is now REACHABLE: as of the info_autoscreenshot spawnfunc fix (sv-cheats.mapent.info_autoscreenshot) the entity spawns from the BSP lump, so on a map with autoscreenshot points a noclipping cheater is teleported to (and consumes) one — matching Base. On maps without them it still falls through to the random path, as in Base."
+    verification:
+      - { kind: code, ref: "NOW WIRED + IMPLEMENTED: Cheats.Teleport (Cheats.cs:294-339) — if noclip, find/consume an info_autoscreenshot then setorigin+fixangle; else BallEntity.RandomMapLocation, snap origin, flip pitch (angles_x = -angles.x), zero velocity, DID_CHEAT on success. DispatchImpulse (Commands.cs:2069) routes imp==143; 'impulse' allowlisted (ClientCommandRegistry.cs:70). Re-verified 2026-06-27.", result: pass }
+      - { kind: code, ref: "Teleport (Cheats.cs:294-339) vs server/cheats.qc:235-263 — noclip autoscreenshot branch / random fallback / fixangle / zero-velocity / DID_CHEAT-on-success flow matches; diverges on the random sampler (spawnpoint-based) and the attempt-count constants.", result: pass }
+    confidence: high
+    notes: "FIXED since the 2026-06-25 baseline (which recorded this fully missing with empty port_refs). The TELEPORT impulse is now implemented AND live on the match path via DispatchImpulse(imp==143). logic/values are PARTIAL: the noclip-preferred autoscreenshot path is now REACHABLE (info_autoscreenshot spawns as of 2026-06-27), but the random fallback substitutes a spawnpoint sampler for the true world-bounds MoveToRandomMapLocation, dropping the 100/100000 attempt-count tuning. (Note: BallEntity.RandomMapLocation is shared with the Keepaway/Nexball/Invasion ball respawn — here reused for the player teleport.)"
+
+  - id: sv-cheats.impulse.r00t
+    name: "Cheat impulse R00T (148) — nuke a random enemy"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatImpulse (CHIMPULSE_R00T)"
+      - "common/impulses/all.qh:161"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:R00t"
+      - "src/XonoticGodot.Server/Commands.cs:2062 (DispatchImpulse: if (imp == 148) Cheats.R00t)"
+      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:70 (impulse allowlisted)"
+      - "src/XonoticGodot.Common/Gameplay/Damage/DeathTypes.cs:110 (Cheat = 'cheat')"
+    constants:
+      - { name: "impulse number", base: "148", port: "148 (DispatchImpulse routes imp==148)", match: true }
+      - { name: "RadiusDamage dmg/edge/radius/force", base: "1000 / 0 / 128 / 500", port: "1000 / 0 / 128 / 500", match: true }
+      - { name: "deathtype", base: "DEATH_CHEAT", port: "DeathTypes.Cheat ('cheat')", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "NOW WIRED + IMPLEMENTED: Cheats.R00t (Cheats.cs:186-216) reservoir-samples a uniform live enemy (IS_PLAYER && !IS_DEAD && DIFF_TEAM, fallback self), emits EFFECT_ROCKET_EXPLODE + rocket_impact sound at the victim, then RadiusDamage(1000,0,128,500,DeathTypes.Cheat). DispatchImpulse (Commands.cs:1799) routes imp==148; 'impulse' is allowlisted (ClientCommandRegistry.cs:69). Re-verified 2026-06-25.", result: pass }
+      - { kind: code, ref: "R00t (Cheats.cs:186-216) vs server/cheats.qc:264-283 — RandomSelection over enemies, Send_Effect/sound at victim, RadiusDamage at a spawned ent, '404 Sportsmanship' log, DID_CHEAT — flow + constants match", result: pass }
+    confidence: high
+    notes: "FIXED since the 2026-06-22 baseline (which recorded this fully missing). The R00t impulse is now faithfully implemented AND live on the match path via DispatchImpulse(imp==148). Presentation (EFFECT_ROCKET_EXPLODE) and audio (rocket_impact) both present; deathtype now backed by DeathTypes.Cheat ('cheat'), the standalone DEATH_CHEAT (distinct from the turret DEATH_MURDER_CHEAT). RadiusDamage constants (1000/0/128/500) match Base exactly."
+
+  - id: sv-cheats.cmd.teleporttotarget
+    name: "cmd teleporttotarget — teleport player to a named teleport target"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatCommand (case teleporttotarget)"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:Command (case teleporttotarget)"
+      - "src/XonoticGodot.Server/Cheats.cs:TeleportToTarget"
+      - "src/XonoticGodot.Server/Commands.cs:701 (Register teleporttotarget -> CmdCheat)"
+      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:99 (allowlist)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Teleporters.cs:TeleportToTarget"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "NOW WIRED + IMPLEMENTED: case 'teleporttotarget' (Cheats.cs:154-158) -> TeleportToTarget -> Teleporters.TeleportToTarget (Teleporters.cs:120): spawns a transient cheattriggerteleport, resolves the target like teleport_findtarget, runs SimpleTeleportPlayer; DID_CHEAT only when a destination was found. Register('teleporttotarget', ..., CmdCheat) at Commands.cs:701; allowlisted at ClientCommandRegistry.cs:99. Re-verified 2026-06-25.", result: pass }
+      - { kind: code, ref: "Teleporters.TeleportToTarget (Teleporters.cs:120-140) vs server/cheats.qc:687-699 — spawn cheattriggerteleport / set target / teleport_findtarget / Simple_TeleportPlayer / delete / DID_CHEAT-on-success flow matches", result: pass }
+    confidence: high
+    notes: "FIXED since the 2026-06-22 baseline (which recorded this fully missing — no case, no Register, no allowlist). Now a client `teleporttotarget <name>` routes CmdCheat -> Cheats.Command -> the teleporttotarget case on the live match path, backed by the real Teleporters machinery (Teleporters.cs). Distinct from usetarget/killtarget."
+
+  - id: sv-cheats.cmd.particles_make
+    name: "cmd pointparticles / trailparticles / make / penalty — debug/effect spawners"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatCommand (cases pointparticles, trailparticles, make, penalty)"
+    port_refs:
+      - "src/XonoticGodot.Server/Cheats.cs:Command (cases pointparticles/trailparticles/make/penalty)"
+      - "src/XonoticGodot.Server/Cheats.cs:Make"
+      - "src/XonoticGodot.Server/Cheats.cs:AimTrace"
+      - "src/XonoticGodot.Server/Commands.cs:715-718 (Register pointparticles/trailparticles/make/penalty -> CmdCheat)"
+      - "src/XonoticGodot.Server/ClientCommandRegistry.cs:101 (allowlist)"
+      - "src/XonoticGodot.Common/Gameplay/Effects/EffectEmitter.cs:EmitByEffectInfoName / EmitTrail"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/Breakable.cs:BreakableSetup"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Race.cs:SetPenalty"
+    constants:
+      - { name: "make func_breakable health", base: "1000", port: "1000 (Cheats.cs Make: e.Health = 1000f)", match: true }
+      - { name: "make traceline distance", base: "2048", port: "2048 (Cheats.cs Make: AimTrace(p, 2048f, ...))", match: true }
+      - { name: "pointparticles argc", base: "5 (effectname pos vel countmul)", port: "5 (argv.Length == 5)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "make: mode-1 surface-align is an APPROXIMATION — Base does fixedvectoangles2(normal, v_forward) then AnglesTransform_ApplyToAngles(angles,'-90 0 0'); the port (Cheats.cs:463-472) does FixedVecToAngles2 + a flat pitch -=90 (comment-acknowledged). The e.mdl='rocket_explode' wreck/explosion model is presentation-only and intentionally skipped."
+      - "penalty: only acts when the live gametype is Race (Cheats.cs:212); in non-race modes Base's race_ImposePenaltyTime is also effectively inert, so faithful, but the <reason> string's CSQC HUD notification is dropped (presentation-only)."
+    verification:
+      - { kind: code, ref: "NOW WIRED + IMPLEMENTED: all four cases live in Cheats.cs:Command (pointparticles 162, trailparticles 183, make 198, penalty 205); Register()ed at Commands.cs:853-856 -> CmdCheat; allowlisted at ClientCommandRegistry.cs:100-101. pointparticles->EmitByEffectInfoName, trailparticles->EmitTrail, make->Breakable.BreakableSetup, penalty->Race.SetPenalty. Re-verified 2026-06-27 (Wave 16/17 re-audit).", result: pass }
+      - { kind: code, ref: "Cheats.cs:Make (443-487) vs server/cheats.qc:331-377 — traceline 2048 / spawn func_breakable / health 1000 / EF_NOMODELFLAGS / mode-1 align / mode-0 tracebox-startsolid validate / DID_CHEAT flow matches. The bad-surface NOIMPACT guard IS NOW MODELED (Cheats.cs:450-455: reject when (surfaceFlags & Q3SURFACEFLAG_NOIMPACT) != 0 OR fraction >= 1 — AimTrace now reports trace fraction + DpHitQ3SurfaceFlags); only the mode-1 angle-transform remains an approximation.", result: pass }
+    confidence: high
+    notes: "FIXED since the 2026-06-25 baseline (which recorded all four FULLY MISSING with empty port_refs). All four cheat commands are now implemented, Register()ed, allowlisted, and live on the match path via CmdCheat -> Cheats.Command, backed by real machinery (EffectEmitter, Breakable, Race.SetPenalty). values/presentation faithful. The NOIMPACT/sky bad-surface guard gap recorded in the prior baseline is now CLOSED (Cheats.cs:450-455 honors the Q3SURFACEFLAG_NOIMPACT||fraction>=1 reject). logic stays PARTIAL only for `make`'s approximated mode-1 surface-align angle transform. (The map-entity func_pointparticles in PointParticles.cs is a separate, unrelated feature.)"
+
+  - id: sv-cheats.frame.drag
+    name: "CheatFrame + Drag — per-frame object dragging + dragbox/dragpoint map editor"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:CheatFrame"
+      - "server/cheats.qc:Drag"
+      - "server/cheats.qc:CheatCommand (drag* cases)"
+      - "server/cheats.qc:DragBox_Think"
+    port_refs: []
+    constants:
+      - { name: "g_grab_range (non-cheat drag range)", base: "200", port: "200 (dead cvar stub, Cvars.cs:395)", match: true }
+      - { name: "initial dragspeed", base: "64", port: "none", match: false }
+      - { name: "draggee gravity while held", base: "0.00001", port: "none", match: false }
+    status:
+      logic: missing
+      values: missing
+      timing: missing
+      presentation: missing
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "No CheatFrame per-frame hook and no Drag subsystem: cannot pick up/carry/throw entities (cheat or normal-range), no te_lightning1 drag beam. Unchanged by Wave-5."
+      - "No dragbox_spawn/dragpoint_spawn/drag_remove/drag_setcnt/drag_save/drag_saveraceent/drag_clear race-checkpoint map-editor commands."
+      - "g_grab_range cvar exists (Cvars.cs:395) but is never read (no consumer)."
+    verification:
+      - { kind: code, ref: "grep Drag(/CheatFrame/dragbox in src/** -> none (g_grab_range cvar stub only at Cvars.cs:395). Re-verified 2026-06-27.", result: fail }
+    confidence: high
+    notes: "Large subsystem (object carry + race map editor). CheatFrame is the only cheat entry point invoked every frame in Base; the port has no equivalent per-frame cheat hook."
+
+  - id: sv-cheats.mapent.info_autoscreenshot
+    name: "info_autoscreenshot map entity (observe/screenshot point, teleport target)"
+    layer: [authority]
+    base_refs:
+      - "server/cheats.qc:spawnfunc(info_autoscreenshot)"
+      - "server/cheats.qc:info_autoscreenshot_findtarget"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/InfoAutoScreenshot.cs:Setup / RunDeferredInit / ResetForMap"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:94 (SpawnFuncs.Register info_autoscreenshot)"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:343 (RunDeferredInit in the post-spawn pass)"
+      - "src/XonoticGodot.Server/GameWorld.cs:712 (ResetForMap per map load)"
+    constants:
+      - { name: "g_max_info_autoscreenshot", base: "3 (xonotic-server.cfg:643)", port: "3 (Cvars.cs:396; READ by InfoAutoScreenshot.Setup as the spawn cap)", match: true }
+      - { name: "PL_CROUCH_MIN/MAX startsolid test box", base: "PL_CROUCH_MIN_CONST / PL_CROUCH_MAX_CONST", port: "(-16,-16,-24)/(16,16,25) (InfoAutoScreenshot.cs:30-31)", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "g_observepoints membership is unwired: Base does tracebox(MOVE_WORLDONLY) and IL_PUSH(g_observepoints) only when NOT start-solid (the observer camera cycles these); the port has no observer-camera g_observepoints consumer (client concern) and skips the start-solid test entirely, keeping every point findable. For the TELEPORT cheat path (the only port consumer) this is faithful — it only needs the entity to exist with the right origin/angles."
+    verification:
+      - { kind: code, ref: "NOW IMPLEMENTED + LIVE: spawnfunc registered (MapObjectsRegistry.cs:94 -> InfoAutoScreenshot.Setup); per-map counter reset (GameWorld.cs:712 ResetForMap); deferred findtarget aim drained post-spawn (MapObjectsRegistry.cs:343 RunDeferredInit). Setup honors the g_max_info_autoscreenshot cap (drops over-cap entities); findtarget aims angles at the target with the QC a.x=-a.x pitch flip. Re-verified 2026-06-27.", result: pass }
+      - { kind: code, ref: "InfoAutoScreenshot.cs:47-92 vs server/cheats.qc:106-135 — cap check, deferred-target aim (vectoangles + pitch flip), match. Cvars.cs:396 default 3 matches Base xonotic-server.cfg:643.", result: pass }
+    confidence: high
+    notes: "FIXED since the 2026-06-25 baseline (which recorded the spawnfunc fully missing, port_refs empty). The entity now spawns from the BSP entity lump, is capped by g_max_info_autoscreenshot, and aims at its .target — so the TELEPORT cheat's noclip-preferred autoscreenshot destination finally exists and is reachable. logic is PARTIAL only for the unwired g_observepoints observer-camera membership + the skipped start-solid drop (both observer-camera concerns, irrelevant to the cheat consumer)."
+
+  - id: sv-cheats.campaign.start_block
+    name: "Campaign behavior when sv_cheats is enabled (load-time bailout)"
+    layer: [authority]
+    base_refs:
+      - "server/campaign.qc:CampaignPreInit"
+    port_refs:
+      - "src/XonoticGodot.Server/Campaign.cs:239 (PreInit sv_cheats bailout)"
+    constants:
+      - { name: "behavior when sv_cheats!=0 at campaign PreInit", base: "Unload + CampaignBailout ('JOLLY CHEATS...')", port: "Unload + Bailout ('cheats are enabled')", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Campaign.cs:239 PreInit vs server/campaign.qc:49-69 CampaignPreInit — both: load, unknown-map bailout, then if(sv_cheats) unload+bailout", result: pass }
+    confidence: high
+    notes: "Base ALSO refuses to start a campaign level when sv_cheats is set (CampaignPreInit, unload + bailout). The port's load-time block is FAITHFUL. The intermission cheatcount_total==0 save-gate is a separate, additional gate that is also present and faithful (covered by sv-cheats.accounting.cheatcount). Unchanged by Wave-5."

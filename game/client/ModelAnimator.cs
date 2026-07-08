@@ -122,6 +122,13 @@ public partial class ModelAnimator : Node3D
     /// <summary>The currently playing clip name, or "" when idle / frame-driven.</summary>
     public string CurrentClip => _hasClip ? _current.Name : "";
 
+    /// <summary>
+    /// True while a clip is actively advancing. A non-looping clip clears this when its playhead reaches the end
+    /// (<see cref="Advance"/> sets <c>_playing = false</c>), so callers can detect when a one-shot fire/reload clip
+    /// has finished and re-assert the idle clip (Base <c>viewmodel_draw</c> 335-337).
+    /// </summary>
+    public bool IsPlaying => _playing && _hasClip;
+
     // =================================================================================================
     //  Construction
     // =================================================================================================

@@ -9,9 +9,10 @@
 // GameWorld.CheckRulesAndIntermission drives it each tick (the CheckRules_World body), and the gametypes
 // supply the per-mode equality (tie) report via GameType.ReportsTie (QC WinningConditionHelper_equality).
 //
-// STAT(OVERTIMES) networking (the client HUD "OVERTIME" banner) is deferred — see the recon T42 note. The
-// `overtimes` value is tracked here so the cascade behaves identically; only the wire-up to clients is out
-// of scope.
+// STAT(OVERTIMES) (the client HUD "Overtime #N" / "Sudden Death" subtext) is networked via the MatchState
+// packet (ServerNet.SendMatchState reads Overtimes → ClientNet.MatchOvertimes → TimerPanel.Overtimes); the
+// `overtimes` value tracked here is the source. The one-shot overtime/sudden-death CENTER notifications are
+// sent separately (OnOvertimeStarted / OnSuddenDeathStarted → NotificationSystem).
 
 using XonoticGodot.Common.Services;
 
@@ -68,7 +69,8 @@ public sealed class OverTimeManager
     public bool SuddenDeathWarning { get; private set; }
 
     /// <summary>QC <c>overtimes</c> (common/stats.qh:86): overtimes added, or the special
-    /// <see cref="OvertimeSuddenDeath"/> while in sudden death. Tracked for parity; networking deferred.</summary>
+    /// <see cref="OvertimeSuddenDeath"/> while in sudden death. Networked as STAT(OVERTIMES) via the MatchState
+    /// packet (ServerNet.SendMatchState → ClientNet.MatchOvertimes → TimerPanel) for the HUD overtime subtext.</summary>
     public int Overtimes { get; private set; }
 
     /// <summary>True while sudden death is armed (QC <c>checkrules_suddendeathend</c> nonzero).</summary>

@@ -1,0 +1,680 @@
+unit: menu-dialogs
+category: menu
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-07-02"
+# Scope: the settings dialog tree (menu/xonotic/dialog_settings*.qc) and the multiplayer dialog tree
+# (dialog_multiplayer*.qc) — the dialog SURFACES and whether each bound cvar actually takes effect.
+# Boundaries: menu-core owns the VM/toolkit/widget files, the one-off dialogs (quit/welcome/teamselect/
+# uid2name/firstrun/ToS/winner/gamemenu/hudpanel_*/hudsetup_exit/sandbox/monster), the serverlist/maplist/
+# keybinder/skinlist/languagelist/statslist WIDGETS, and the media dialogs. cl-crosshair owns the crosshair
+# render wiring; cl-hud owns panel rendering; fx-sounds owns sound emission; physics-player owns movement
+# cvar consumption. This unit audits: dialog exists? settings present? does changing them do anything?
+# Wiring ground truth: planning/graphics-settings-audit-2026-06-14.md, re-spot-checked 2026-07-02 (several
+# cvars have been wired since: hud_shownames*, waypointsprites, cl_bob/v_idlescale, chase_active/chase_back,
+# cl_gunalign/cl_followmodel/cl_bobmodel/cl_viewmodel_alpha, cl_ghost_items, cl_forceplayer*, cl_deathglow).
+summary:
+  feature_count: 21
+  worst_gaps:
+    - "Effects tab is a facade: the 5 quality-preset buttons are DEAD ('exec effects-*.cfg' has no MenuCommand handler) and nearly every graphics cvar the tab binds (picmip, texture compression, lightmaps, offset mapping, reflections, decals master/fade/distance, damage effects, all r_shadow_* lights/shadows, coronas, bloom, motion blur, sky) has no reader — MSAA 4x/aniso 8x/glow/ambient 0.6 are hardcoded in project.godot/NetGame.AddLight."
+    - "Misc tab's two escalation buttons are broken: 'Advanced settings...' issues menu_showcvarsdialog which no handler/registry entry resolves (DialogCvarList is reachable ONLY via the dev --menu-screen flag), and 'Factory reset' skips the QC confirm dialog + backup ('saveconfig backup.cfg; exec default.cfg') and instead resets EVERY store cvar in memory with no backup."
+    - "QC makeMulti sibling cvars are silently dropped by nearly every port checkbox — and several dropped siblings ARE read live, so the toggle half-works: 'View bobbing' writes cl_bob but not cl_bob2 (FirstPersonView reads both), 'Gun model swaying' writes cl_followmodel but not cl_leanmodel (ViewModel reads both, default ON — unchecking leaves the lean), waypoint edge-offset writes 1 of the 4 edges WaypointSpriteLayer reads, 'Powerup notifications' writes 1 of 14 notification_* cvars, 'Just the gore' drops cl_gentle_damage; the 17-cvar start-weapon override is the one faithful multi."
+    - "Audio output half is dead: snd_speed/snd_channels/snd_swapstereo/snd_spatialization_control are cosmetic (Godot mixer unconfigured), the Items (snd_channel3volume) and Pain (snd_channel6volume) sliders route to NO audio bus, snd_staticvolume is registered but never applied, and the volume sliders silently swap the QC decibel scale for linear percent."
+    - "Profile 'Apply immediately' is inert: its verbatim QC command ('color -1 -1; name \"$_cl_name\"; playermodel ...; playerskin ...') hits MenuCommand's unknown-command log, so name/model/color edits only take effect through cvar replication on the NEXT connect instead of live mid-match."
+features:
+  - id: menu-dialogs.settings.container
+    name: "Settings dialog: 7-tab container (Video/Effects/Audio over Game/Input/User/Misc)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_settings.qc:XonoticSettingsDialog_fill"
+    port_refs:
+      - "game/menu/dialogs/DialogSettings.cs:BuildUi (40-50)"
+      - "game/menu/framework/XonoticTabs.cs"
+    constants:
+      - { name: "tab layout", base: "row1 Video/Effects/Audio (2 cols each), row2 Game/Input/User/Misc (1.5 each)", port: "same two-row grid, same order", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "DialogSettings.BuildUi builds both rows in QC order; reachable from the nexposee Settings tile, the pause menu, and the settings/inputsettings/videosettings nav verbs (MenuDialogRegistry)", result: pass }
+    confidence: high
+    notes: "Settings persist on dialog close via MenuState.SaveUserConfig (_ExitTree) — the DP config.cfg archive analogue."
+
+  - id: menu-dialogs.settings.video
+    name: "Video tab: mode/resolution/vsync/fps + AA/aniso + color control"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_settings_video.qc:XonoticVideoSettingsTab_fill"
+    port_refs:
+      - "game/menu/dialogs/DialogSettingsVideo.cs:Fill"
+      - "game/menu/framework/ClientSettings.cs:ApplyVideo (239)"
+    constants:
+      - { name: "apply command", base: "vid_width $_menu_vid_width; ... vid_restart; menu_cmd sync", port: "verbatim string; vid_restart -> ClientSettings.ApplyVideo; update_conwidths/sync inert", match: true }
+      - { name: "vid_vsync domain", base: "0/1 checkbox", port: "0 off / 1 on / 2 mailbox (default) / 3 adaptive", match: false }
+      - { name: "cl_maxfps auto override", base: "value honored as-is (DP default 256)", port: "0 or 256 -> max(144, refresh); explicit menu values honored", match: false }
+      - { name: "brightness/contrast/gamma slider ranges", base: "0-0.5/1-3/0.5-2 same steps", port: "same ranges", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Resolution control is a hardcoded 6-entry 16:9 list staging _menu_vid_width/_menu_vid_height (QC enumerates real display modes via getresolution()/slider_resolution.qc); vid_pixelheight/vid_desktopfullscreen staging cvars are written but dead."
+      - "The 'Resolution scaling' slider (r_viewscale 0.5-2, dialog_settings_video.qc:79) is MISSING from the port dialog entirely (not even a dead binding; no r_viewscale reader anywhere)."
+      - "DEAD rows (bound, no reader as of 2026-07-02): vid_samples (MSAA hardcoded 4x project.godot), gl_texture_anisotropy (8x hardcoded), r_stereo_redcyan, r_viewfbo, r_depthfirst, gl_finish, vid_gl20, v_brightness, v_contrast, v_gamma, v_contrastboost, r_glsl_saturation, r_ambient (hardcoded 0.6 NetGame.AddLight), r_hdr_scenebrightness, cl_minfps, cl_maxidlefps, menu_vid_scale (font/UI size does nothing)."
+      - "LIVE rows: vid_fullscreen (extended: 2=exclusive), vid_borderless, vid_vsync (extended domain), cl_maxfps (with the auto-override), showfps; port ADDS showping/showposition rows QC does not have."
+      - "cl_maxfps auto behavior diverges: 'Unlimited' (0) silently becomes max(144, refresh) — the menu label lies."
+    verification:
+      - { kind: code, ref: "ClientSettings.ApplyVideo applies window mode/size/borderless/vsync/MaxFps/priority only; grep for vid_samples/v_brightness/r_ambient readers -> menu bindings only", result: pass }
+      - { kind: doc, ref: "planning/graphics-settings-audit-2026-06-14.md Tables 1a-1d (re-spot-checked)", result: pass }
+    confidence: high
+    notes: "The GL20-present QC branch is the one reproduced. The vsync/maxfps extensions are deliberate perf work (PERFORMANCE_REPORT B1) but not flagged intended_divergence at row level because the dead color/AA rows dominate the status."
+
+  - id: menu-dialogs.settings.effects
+    name: "Effects tab: quality presets + geometry/texture/decals/lights/particles"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_settings_effects.qc:XonoticEffectsSettingsTab_fill"
+      - "menu/xonotic/dialog_settings_effects.qc:someShadowCvarIsEnabled"
+    port_refs:
+      - "game/menu/dialogs/DialogSettingsEffects.cs:Fill"
+    constants:
+      - { name: "preset commands", base: "exec effects-low|med|normal|high|ultra.cfg", port: "same strings — but MenuCommand has NO 'exec' handler (falls to the inert default)", match: false }
+      - { name: "picmip cvar", base: "gl_picmip via slider_picmip (VRAM auto-clamp)", port: "gl_picmip plain TextSlider, no reader", match: false }
+      - { name: "particle quality range", base: "0..3 step 0.25", port: "same, live (faithful backend)", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The 5 quality-preset buttons are DEAD: 'exec effects-*.cfg' reaches MenuCommand.Run's default case and only logs — no preset ever applies (and most of what the cfgs would set has no reader anyway)."
+      - "DEAD rows: r_subdivisions_tolerance (patches fixed at 8 subdivisions), cl_playerdetailreduction (LOD computed then discarded), gl_picmip, gl_texturecompression, r_sky, mod_q3bsp_nolightmaps, r_glsl_deluxemapping, r_shadow_gloss, r_glsl_offsetmapping(+relief), r_water(+resolutionmultiplier), cl_decals master + cl_decals_models + r_drawdecals_drawdistance + cl_decals_fadetime (fade hardcoded 2s), cl_damageeffect, all r_shadow_realtime_* + r_shadow_usenormalmap + r_shadow_shadowmapping, r_coronas(+occlusionquery), r_bloom (glow hardcoded ON 0.8), hud_postprocessing_maxbluralpha, r_motionblur."
+      - "LIVE rows: cl_particles, cl_particles_quality, r_drawparticles_drawdistance, cl_spawn_point_particles (+cl_spawn_event_particles registered); port ADDS the dual-particle rows cl_particles_modern + cl_particles_sdf_generate (port-only feature, honest addition)."
+      - "QC setDependentWeird(someShadowCvarIsEnabled) on Soft shadows and the makeMulti '!gl_flashblend' inverse write are not reproduced (cosmetic given the rows are dead); the hud_powerup makeMulti sibling (dialog_settings_effects.qc:216) is likewise dropped and has no reader."
+    verification:
+      - { kind: code, ref: "MenuCommand.Dispatch has no 'exec' case (MenuCommand.cs:112-283); ParticleCvars.Decals ('cl_decals') has zero readers; ParticleSim reads only the blood-stain/smear sub-cvars", result: fail }
+      - { kind: doc, ref: "planning/graphics-settings-audit-2026-06-14.md Tables 2-4 + Table 7 items 1-3", result: pass }
+    confidence: high
+    notes: "This is the port's weakest settings surface: the dialog is a faithful facade over an almost entirely unwired renderer. Table 7 of the audit is the wiring plan."
+
+  - id: menu-dialogs.settings.audio
+    name: "Audio tab: channel volumes, output format, hitsound, menu sounds, announcer"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_settings_audio.qc:XonoticAudioSettingsTab_fill"
+    port_refs:
+      - "game/menu/dialogs/DialogSettingsAudio.cs:Fill"
+      - "game/menu/framework/ClientSettings.cs:ApplyAudio (379)"
+    constants:
+      - { name: "volume slider scale", base: "decibels -40..0 (slider_decibels.qc)", port: "linear 0..1 with % readout (same cvars)", match: false }
+      - { name: "channel->label map", base: "0 Info/3 Items/6 Pain/7 Player/4 Shots/2 Voice/1+5 Weapons", port: "same labels+cvars bound (Weapons drops the ch5 tuba makeMulti)", match: true }
+      - { name: "cl_hitsound modes", base: "0 off / 1 fixed / 2 decreasing / 3 increasing", port: "same radios; HitSound.cs:58 reads the mode", match: true }
+      - { name: "cl_autotaunt values", base: "0/0.35/0.65/1", port: "same", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: partial
+      audio: partial
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Bus routing is partial: mastervolume/bgmvolume/ch0(SFX+Ambient)/ch1 Weapon/ch2 Voice/ch7 Player apply to real buses, but the Items (snd_channel3volume) and Pain (snd_channel6volume) sliders and snd_staticvolume have NO bus — moving them does nothing (ClientSettings.ApplyAudio maps only 6 buses)."
+      - "Output section is cosmetic: snd_speed, snd_channels, snd_swapstereo, snd_spatialization_control are registered but never configure Godot's mixer; snd_mutewhenidle unread."
+      - "menu_snd_attenuation_method checkbox writes the cvar but the QC apply command's alias 'snd_attenuation_method_${...}' (which sets snd_soundradius/exponent/decibel) is not expanded — the port instead ships the method-1 values as defaults, so TOGGLING the checkbox has no effect."
+      - "menu_sounds / focus-sounds checkboxes bound but no menu click/hover sound exists at all (menu-core.vm.menu_music_sounds)."
+      - "cl_hitsound is mode-read but the sample is broken + damagetext-coupled (fx-sounds.presentation.hitsound_sample owns that defect)."
+      - "con_chatsound ('Chat message sound') is DEAD: ChatPanel.ChatSoundEnabled (ChatPanel.cs:76) wraps the cvar but has ZERO callers — no chat beep is ever gated (or played) through it."
+      - "Decibel display (QC '-xx dB') replaced by linear percent — a real UX divergence for fine low-volume control."
+    verification:
+      - { kind: code, ref: "ClientSettings.ApplyAudio: SetBusVolume for Master/Music/SFX/Weapon/Voice/Player/Ambient only; snd_channel3volume/6volume/staticvolume registered (RegisterEngineAudioDefaults) but never applied", result: fail }
+      - { kind: code, ref: "cl_announcer_maptime LIVE: GameWorld.cs:1002 Announcer.AnnouncerMapTime reads it", result: pass }
+      - { kind: code, ref: "con_chatsound DEAD: ChatPanel.cs:76 ChatSoundEnabled defined but grep over game/+src/ finds no caller", result: fail }
+    confidence: high
+    notes: "Announcer group (maptime + autotaunt) is the healthiest part; the sound-emission fidelity itself is fx-sounds' unit."
+
+  - id: menu-dialogs.settings.game_host
+    name: "Game tab host: topic list + swappable panel (crosshair/HUD/messages/model/view/weapons + registered extras)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_settings_game.qc:XonoticGameSettingsTab_fill"
+      - "menu/xonotic/dialog_settings_game.qc:SettingSource (Settings registry)"
+      - "menu/gamesettings.qh:REGISTER_SETTINGS"
+    port_refs:
+      - "game/menu/dialogs/DialogSettingsGame.cs:_Ready (29-45)"
+    constants:
+      - { name: "sub-tab set", base: "crosshair hud messages model view weapons + registry extras (damagetext via REGISTER_SETTINGS)", port: "Crosshair/HUD/Models/View/Weapons/Messages/Damage Text", match: true }
+    status:
+      logic: faithful
+      values: na
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "QC's topic LIST + swappable ScrollPanel (SettingSource over the Settings registry) is replaced by a nested Godot TabContainer with a fixed page set. The one dynamic registrant in Base (damagetext's REGISTER_SETTINGS from common/mutators/mutator/damagetext/ui_damagetext.qc) is hand-included as the seventh tab, so the visible result matches; a future QC-side registry addition would need manual porting."
+    gaps:
+      - "Tab order differs slightly (QC: Crosshair, HUD, Messages, Model, View, Weapons, Damage Text; port puts Messages after Weapons) — cosmetic."
+    verification:
+      - { kind: code, ref: "DialogSettingsGame builds 7 inner tabs incl. DialogSettingsGameDamageText (the REGISTER_SETTINGS analogue)", result: pass }
+    confidence: high
+    notes: "The Damage Text tab's cvars are read live by DamageTextConfig (mutator-damagetext unit)."
+
+  - id: menu-dialogs.settings.game_crosshair
+    name: "Game>Crosshair tab: enable/per-weapon/custom, picker+preview, size/alpha/color, ring, dot, hittest/animations"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_settings_game_crosshair.qc:XonoticGameCrosshairSettingsTab_fill"
+    port_refs:
+      - "game/menu/dialogs/DialogSettingsGame.cs:DialogSettingsGameCrosshair.Fill (69-218)"
+      - "game/menu/framework/CrosshairPicker.cs"
+      - "game/menu/framework/CrosshairPreview.cs"
+    constants:
+      - { name: "crosshair_enabled radios", base: "0 none / per_weapon / 2 custom", port: "same trio (per_weapon writes crosshair_per_weapon=1, not the makeMulti crosshair_enabled poke)", match: false }
+      - { name: "slider ranges", base: "size 0.1-1/0.01, alpha 0.1-1/0.1, ring 1.5-4/0.25, dot 0.2-2/0.1", port: "identical", match: true }
+      - { name: "color special modes", base: "crosshair_color_special 0 custom/1 per weapon/2 by health", port: "same values", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC multi-condition dependencies (setDependentAND chains, e.g. picker enabled only when alpha!=0 AND per_weapon==0 AND enabled in [1,2]) are reduced to the single primary condition per widget — widgets can appear enabled when Base would grey them."
+      - "'Per weapon' radio omits the makeMulti('crosshair_enabled') side-write, so selecting it leaves crosshair_enabled untouched (Base forces it on)."
+    verification:
+      - { kind: code, ref: "all bound cvars are consumed live by the crosshair renderer (cl-crosshair unit: CrosshairPanel + rows for hittest/hitindication/pickup/ring/dot)", result: pass }
+    confidence: high
+    notes: "Effect wiring is cl-crosshair's audit (its unit reports the ring/hittest/anim fidelity); this row covers the dialog surface, which is the most faithful settings tab in the port."
+
+  - id: menu-dialogs.settings.game_hud
+    name: "Game>HUD tab: scoreboard opts, waypoints, player names, speed unit/damage overlay/dynamic HUD, HUD-editor entry (+hudconfirm)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_settings_game_hud.qc:XonoticGameHUDSettingsTab_fill"
+      - "menu/xonotic/dialog_settings_game_hud.qc:HUDSetup_Check_Gamestatus"
+      - "menu/xonotic/dialog_settings_game_hudconfirm.qc:HUDSetup_Start"
+    port_refs:
+      - "game/menu/dialogs/DialogSettingsGame.cs:DialogSettingsGameHud.Fill (234-361)"
+      - "game/client/ShowNamesLayer.cs (hud_shownames_* live)"
+      - "game/client/WaypointSpriteLayer.cs:61-66 (cl_hidewaypoints/g_waypointsprite_alpha live)"
+      - "game/menu/dialogs/DialogHudConfirm.cs (DEAD — no caller)"
+    constants:
+      - { name: "hud_speed_unit values", base: "1 qu/s .. 5 knots", port: "same; read live by PhysicsPanel/ScoreboardPanel/RaceTimerPanel", match: true }
+      - { name: "shownames sliders", base: "alpha 0.1-1, fontsize 5-16, maxdistance 2000-10000/500", port: "identical ranges; ShowNamesLayer consumes all", match: true }
+      - { name: "scoreboard fade slider", base: "slider_sbfadetime.qc (fadeinspeed with tuned readout)", port: "plain 0-10 slider on hud_panel_scoreboard_fadeinspeed", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "'Enter HUD editor' diverges: QC starts 'map _hudsetup' when out of a match (after the hudconfirm Yes/No dialog) and runs '_hud_configure 1'; the port button issues menu_showhudoptions which just opens the DialogHudPanels list — no _hudsetup map, no drag/resize editor entry, and DialogHudConfirm.cs is dead code (zero callers)."
+      - "Waypoint edge-offset slider writes only g_waypointsprite_edgeoffset_bottom (QC makeMulti also writes top/left/right — and WaypointSpriteLayer.cs:74-77 reads all FOUR edges live, so three edges stay at the default while the slider moves one)."
+      - "hud_shownames_status/_decolorize and hud_panel_scoreboard sub-opts consumption: shownames status/decolorize ARE read live (ShowNamesLayer.cs:378/390); scoreboard sub-cvars are cl-hud.panel.scoreboard's audit."
+    verification:
+      - { kind: code, ref: "ShowNamesLayer reads every hud_shownames_* the tab binds (148-390, status 378, decolorize 390); WaypointSpriteLayer reads cl_hidewaypoints (61) + g_waypointsprite_alpha/fontsize/text/edgeoffset_*/crosshairfadealpha (66-87); hud_damage read by ViewEffects.cs:199", result: pass }
+      - { kind: code, ref: "grep DialogHudConfirm over game/ -> definition only (dead)", result: fail }
+    confidence: high
+    notes: "Scoreboard cvar consumption is cl-hud.panel.scoreboard's row; hud_dynamic_* is cl-hud.engine.dynamic_shake/follow (live there). The waypoint render stack landed with difficult-items Phase 2, which is why this tab is far more live than the 06-14 audit recorded."
+
+  - id: menu-dialogs.settings.game_messages
+    name: "Game>Messages tab: spree/frag info, gametype notifications, chatbox/console, announcer toggles"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_settings_game_messages.qc:XonoticGameMessageSettingsTab_fill"
+    port_refs:
+      - "game/menu/dialogs/DialogSettingsGame.cs:DialogSettingsGameMessages.Fill (700-783)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationTokens.cs:146 (notification_show_sprees live)"
+    constants:
+      - { name: "CTF labels", base: "sprintf with MapInfo_Type_ToText(CTF)", port: "hardcoded 'Capture the Flag' text", match: true }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: partial
+      audio: partial
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Every makeMulti sibling set is dropped: 'Powerup notifications' writes notification_CENTER_POWERUP_INVISIBILITY but not the 13 sibling CENTER/INFO powerup cvars; weapon centerprint/info rows drop 5 siblings each; CHOICE_FRAG drops 7; INFO_QUIT_DISCONNECT drops 2; ANNCE_NUM_RESPAWN_1 drops 9; KILLSTREAK/ACHIEVEMENT drop theirs — so most toggles only affect a fraction of the messages they claim to."
+      - "The announcer toggle cvars (notification_ANNCE_*) are CONFIRMED unread: NotificationSystem.cs has no per-notification 'notification_<NAME>' cvar lookup at dispatch — respawn-countdown/killstreak/achievement announcer checkboxes have zero effect."
+      - "con_notify ('console messages in the top left') and notification_allow_chatboxprint are bound but have NO reader — dead toggles."
+      - "notification_show_sprees IS consumed (NotifTokens.cs:146) and so are the sub-toggles: show_location (152), show_sprees_center (208) + center_specialonly (215), show_sprees_info bits (232-251) + info_newline (233) — all live via NotificationSystem.cs:430 NotifTokens.Resolve."
+    verification:
+      - { kind: code, ref: "grep notification_ANNCE over game+src -> menu bindings only, and NotificationSystem.cs has no dynamic per-notification cvar gate", result: fail }
+      - { kind: code, ref: "notification_CHOICE_* rows ARE pushed to the server (ClientNet.cs:969-971 PushReplicatedSet(ReplicatedChoiceCvars) — the QC ReplicateVars analogue) and consumed per-client (Commands.cs:258 IsRegisteredChoiceCvar; NotificationSystem MSG_CHOICE picks optiona/optionb by the replicated value)", result: pass }
+    confidence: high
+    notes: "Notification-system fidelity (which cvars the dispatcher consults) belongs to the notifs unit; this row records that the dialog exists, binds the right primary cvars, and loses the multi-writes. Verify pass 2026-07-02: CHOICE replication confirmed live (the old 'sendCvars unimplemented for CHOICE' gap was wrong); spree sub-toggles confirmed live; ANNCE gating confirmed absent."
+
+  - id: menu-dialogs.settings.game_model
+    name: "Game>Models tab: simple items, ghost items, force models/colors, body fading, gibs"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_settings_game_model.qc:XonoticGameModelSettingsTab_fill"
+    port_refs:
+      - "game/menu/dialogs/DialogSettingsGame.cs:DialogSettingsGameModel.Fill (378-427)"
+      - "game/client/ClientWorld.cs:1439/1642/1827 (cl_ghost_items / cl_forceplayercolors / cl_forceplayermodels live)"
+      - "game/client/ModelTint.cs:193 (cl_deathglow live)"
+    constants:
+      - { name: "cl_forceplayercolors values", base: "0/1/3/4/5/2 (Never..Always)", port: "same six, same order", match: true }
+      - { name: "cl_nogibs values", base: "1 None / 0.75 Few / 0.5 Many / 0 Lots", port: "same values bound — but no reader", match: false }
+      - { name: "cl_ghost_items_color presets", base: "5 named R G B strings", port: "same strings bound — no reader", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "cl_simple_items is DEAD (no reader — item models always 3D)."
+      - "cl_nogibs is DEAD (gib density fixed; the gibs full-parity epic on feature/cpuoptimization is still pending on main)."
+      - "cl_ghost_items_color is DEAD (only the alpha half of ghosting is live via ClientWorld:1439)."
+    verification:
+      - { kind: code, ref: "ClientWorld reads cl_ghost_items (1439), cl_forceplayercolors (1642), cl_forceplayermodels (1827); ModelTint reads cl_deathglow (193); grep cl_simple_items/cl_nogibs/cl_ghost_items_color -> menu only", result: pass }
+    confidence: high
+    notes: "Force-model/color SEMANTICS (duel/teamgame branches of the 0/1/3/4/5/2 domain) not behavior-verified — only that the cvar is consumed."
+
+  - id: menu-dialogs.settings.game_view
+    name: "Game>View tab: FOV, 1st/3rd person, bob/idle smoothing, zoom family, velocity zoom, reticle"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_settings_game_view.qc:XonoticGameViewSettingsTab_fill"
+    port_refs:
+      - "game/menu/dialogs/DialogSettingsGame.cs:DialogSettingsGameView.Fill (446-578)"
+      - "game/client/FirstPersonView.cs (fov/zoom*/velocityzoom/eventchase/cl_bob/cl_bobfall/v_idlescale live)"
+      - "game/client/ChaseCamera.cs:57 (chase_back live)"
+      - "game/net/NetGame.cs:3111 (chase_active live)"
+    constants:
+      - { name: "fov range", base: "60-130 step 5", port: "same; FirstPersonView reads fov", match: true }
+      - { name: "cl_zoomfactor domain", base: "2-10/0.5 + 11-30/1", port: "same enumeration", match: true }
+      - { name: "cl_eventchase_death", base: "checkboxEx value 2", port: "FlagCheckBox bit 0 (writes 1, not 2)", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "cl_eventchase_death checkbox writes the wrong value: QC checkBoxEx(2,...) sets 2 (chase even while the body slides); the port FlagCheckBox toggles bit 0 -> writes 1, and FirstPersonView:591 special-cases ==2 — so ticking the box actually DISABLES the default-2 behavior."
+      - "cl_unpress_zoom_on_death / _on_spawn / _on_weapon_switch and cl_unpress_attack_on_weapon_switch are DEAD as cvars — the unpress-on-death behavior is hardcoded always-on (NetGame:3097 comment), not toggleable."
+      - "cl_smoothviewheight is live (NetGame) but QC's chase_active in [-1,0] gating on the perspective sub-rows is reduced to single-condition binds."
+      - "'View bobbing' drops the cl_bob2 makeMulti (DialogSettingsGame.cs:476 writes cl_bob only) while FirstPersonView.cs:675 reads cl_bob2 LIVE — ticking the box enables only half the QC bob (the horizontal component stays 0)."
+      - "cl_clippedspectating IS replicated + consumed server-side (Commands.cs:586 ClippedSpectatingProvider)."
+    verification:
+      - { kind: code, ref: "FirstPersonView reads fov(293,528)/cl_zoomfactor(277,302)/cl_zoomspeed(304)/cl_zoomsensitivity(375)/cl_zoomscroll(257,325)/cl_velocityzoom_enabled+type(545)/cl_eventchase_death(591,740)/cl_bob(651)/cl_bobfall(706)/v_idlescale(603); ChaseCamera reads chase_back(57)", result: pass }
+      - { kind: code, ref: "grep cl_unpress -> menu bindings + comments only", result: fail }
+    confidence: high
+    notes: "View bob / chase camera landed after the 06-14 audit (which recorded them 'not implemented'); this tab is now mostly live. chase_up consumption unverified (only chase_back seen). cl_reticle is bound AND live (game/client/ReticleOverlay.cs reads it)."
+
+  - id: menu-dialogs.settings.game_weapons
+    name: "Game>Weapons tab: priority list, cycling opts, autoswitch, viewmodel visuals, tracer teamcolor"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_settings_game_weapons.qc:XonoticGameWeaponsSettingsTab_fill"
+    port_refs:
+      - "game/menu/dialogs/DialogSettingsGame.cs:DialogSettingsGameWeapons.Fill (600-682)"
+      - "game/menu/framework/WeaponPriorityList.cs (cl_weaponpriority editor)"
+      - "src/XonoticGodot.Common/Gameplay/Inventory.cs:177/587 (cl_weaponpriority / cl_weaponimpulsemode live)"
+      - "game/client/ViewModel.cs:933-953 (cl_gunalign/cl_followmodel/cl_bobmodel/cl_viewmodel_alpha live)"
+      - "src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs:408 (cl_tracers_teamcolor live)"
+    constants:
+      - { name: "cl_gunalign radios", base: "4 left / 1 center / 3 right", port: "same values; ViewModel:933 consumes", match: true }
+      - { name: "cl_autoswitch_cts", base: "0 never / -1 default / 1 always", port: "same; replicated to server (Commands.cs:225)", match: true }
+      - { name: "apply command", base: "sendcvar cl_weaponpriority", port: "same string — inert in MenuCommand (no sendcvar case)", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "r_drawviewmodel is DEAD (viewmodel always drawn; only its dependents' cvars are live)."
+      - "cl_weaponpriority_useforcycling and cl_unpress_attack_on_weapon_switch have no reader — dead toggles."
+      - "'Gun model swaying' drops the cl_leanmodel makeMulti (DialogSettingsGame.cs:651 writes cl_followmodel only) while ViewModel.cs:942 reads cl_leanmodel LIVE (default 1) — unchecking the box leaves the lean component ON."
+      - "'Apply immediately' (sendcvar cl_weaponpriority) is inert — functionally superseded by the automatic cvar-replication list (ClientNet.cs:896-906 pushes cl_weaponpriority/cl_autoswitch to the server), so the button's absence of effect is mostly harmless but the QC immediate-push semantic is lost."
+      - "Priority list lacks the QC '* = mutator weapon' row marker verification and the per-weapon cl_weaponpriorityN group editors (Base keybinder weapon groups; menu-core.keys.keybinder notes the same catalog gap)."
+    verification:
+      - { kind: code, ref: "Inventory.cs:177 parses cl_weaponpriority for switching; server Commands.cs:511 PriorityProvider uses the replicated value; ViewModel reads all four visual cvars", result: pass }
+    confidence: high
+    notes: "Weapon-cycling behavior fidelity (impulse mode semantics) is the weapons unit's audit."
+
+  - id: menu-dialogs.settings.input
+    name: "Input tab: keybinder list + mouse (sensitivity/filter/invert/accel) + other (console/jump/jetpack/joystick), userbind + bindings-reset dialogs"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_settings_input.qc:XonoticInputSettingsTab_fill"
+      - "menu/xonotic/dialog_settings_input.qc:linkSensitivities"
+      - "menu/xonotic/dialog_settings_input_userbind.qc:XonoticUserbindEditDialog_fill"
+      - "menu/xonotic/dialog_settings_bindings_reset.qc:XonoticBindingsResetDialog_fill"
+    port_refs:
+      - "game/menu/dialogs/DialogSettingsInput.cs:Fill (32-130) + BuildKeyBinder (146)"
+      - "game/menu/dialogs/DialogSettingsInput.cs:InvertMouseCheckBox (254)"
+      - "game/net/NetGame.cs:5307/5317 (sensitivity + m_pitch sign live)"
+      - "game/menu/dialogs/DialogBindingsReset.cs (DEAD — no caller; reset is direct)"
+    constants:
+      - { name: "sensitivity range", base: "0.1-9.9 step 0.1 + linked input box", port: "same range, slider+box both bound to the cvar (event-linked)", match: true }
+      - { name: "m_pitch invert", base: "checkbox value 1.022 (sign flip keeping magnitude)", port: "InvertMouseCheckBox flips sign, preserves magnitude, default |0.022|... registered default '1'", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "DEAD mouse rows: m_filter (no smoothing path), m_accelerate + m_accelerate_minspeed/maxspeed (no accel model), vid_dgamouse, menu_mouse_absolute + its hud_cursormode makeMulti (Godot owns the cursor); joy_enable dead (no joystick input path). Sensitivity + invert ARE live (NetGame:5307/5317)."
+      - "con_closeontoggleconsole has no reader — dead toggle."
+      - "cl_movement_track_canjump and cl_jetpack_jump are replicated to the server (Commands.cs:228-229) — consumption is physics-player's audit; the dialog side is wired."
+      - "The userbind edit dialog (dialog_settings_input_userbind.qc) is NOT ported: the 'Edit...' button only logs (DialogSettingsInput.cs:243 OpenUserbindEdit inert) — no custom press/release command binds."
+      - "The bindings-reset CONFIRM dialog is dead code (DialogBindingsReset.cs has no caller); 'Reset all' resets immediately without asking."
+      - "m_pitch's registered default is '1' (port), not DP's 0.022 — magnitude is meaningless in the port (only sign read) but the cvar VALUE diverges from Base for anything else that might read it."
+    verification:
+      - { kind: code, ref: "NetGame.cs:5307 reads sensitivity, 5317 reads m_pitch sign; grep m_filter/m_accelerate/con_closeontoggleconsole -> menu only; DialogBindingsReset grep -> definition only", result: pass }
+    confidence: high
+    notes: "The keybinder widget internals (reduced 24-action catalog, single key per action, no weapon-group rows) are menu-core.keys.keybinder's row — not duplicated here."
+
+  - id: menu-dialogs.settings.user
+    name: "User tab: menu-skin list, text-language list, gentle-mode trio (+ language warning dialog)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_settings_user.qc:XonoticUserSettingsTab_fill"
+      - "menu/xonotic/dialog_settings_user_languagewarning.qc:XonoticLanguageWarningDialog_fill"
+    port_refs:
+      - "game/menu/dialogs/DialogSettingsUser.cs:Fill (37-88)"
+      - "game/menu/dialogs/DialogMediaSkinList.cs (skin scan+set, embedded)"
+      - "game/menu/framework/Localization.cs:SetLanguage"
+      - "game/menu/dialogs/DialogLanguageWarning.cs (DEAD — no caller)"
+    constants:
+      - { name: "set-language command", base: "prvm_language \"$_menu_prvm_language\"; menu_restart; menu_cmd languageselect", port: "verbatim; all three verbs handled (MenuCommand:260-273)", match: true }
+      - { name: "gentle cvars", base: "cl_gentle master; cl_gentle_gibs+cl_gentle_damage (makeMulti); cl_gentle_messages", port: "same cvars; the gibs checkbox drops the cl_gentle_damage multi-write", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Language list is a TextSlider of names, not the QC listbox with translation-percentage dimming (menu-core.lists.language records the same)."
+      - "The in-match language-warning dialog is dead (DialogLanguageWarning.cs, zero callers): switching language while connected applies silently instead of warning + offering disconnect."
+      - "cl_gentle is only partially consumed (ViewEffects.cs:272 reads cl_gentle/cl_gentle_damage for the damage flash); gib/blood content gating and cl_gentle_messages text-replacement are unverified — and 'Just the gore' drops its cl_gentle_damage sibling write."
+    verification:
+      - { kind: code, ref: "DialogMediaSkinList scans gfx/menu/*/skinvalues.txt + menu_skin + MenuSkin.Reload (menu-core.lists.skins verifies); Localization.SetLanguage + menu_restart live; grep DialogLanguageWarning -> definition only", result: pass }
+    confidence: high
+    notes: "Skin/language list widget internals owned by menu-core.lists.skins / menu-core.lists.language."
+
+  - id: menu-dialogs.settings.misc
+    name: "Misc tab: network/HTTP groups, tooltips/animations/textshadow/showtime, Advanced settings + Factory reset (+ cvars dialog host + reset confirm)"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_settings_misc.qc:XonoticMiscSettingsTab_fill"
+      - "menu/xonotic/dialog_settings_misc_cvars.qc:XonoticCvarsDialog_fill"
+      - "menu/xonotic/dialog_settings_misc_reset.qc:XonoticResetDialog_fill"
+    port_refs:
+      - "game/menu/dialogs/DialogSettingsMisc.cs:Fill (21-110)"
+      - "game/menu/dialogs/DialogCvarList.cs (reachable ONLY via dev --menu-screen cvarlist)"
+      - "game/menu/framework/MenuCommand.cs:170-175 (cvar_resettodefaults_all)"
+    constants:
+      - { name: "factory reset command", base: "saveconfig backup.cfg; exec default.cfg (behind a Yes/No dialog)", port: "cvar_resettodefaults_all direct (no dialog, no backup)", match: false }
+      - { name: "menu_tooltips domain", base: "0/1/2 (advanced shows cvar+command)", port: "same values bound; tooltip system ignores the cvar (menu-core.vm.tooltips)", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "'Advanced settings...' is DEAD: it issues menu_showcvarsdialog, which MenuCommand does not handle and MenuDialogRegistry does not know — DialogCvarList (the ported cvar editor) is unreachable from the UI (dev --menu-screen cvarlist only)."
+      - "'Factory reset' diverges dangerously: no confirm dialog (dialog_settings_misc_reset.qc unported — the QC Yes/No + 'creates a backup config' promise), no backup.cfg, and cvar_resettodefaults_all resets EVERY cvar in the store (QC's exec default.cfg re-applies defaults through the cfg tree)."
+      - "DEAD rows: shownetgraph (no netgraph), cl_netrepeatinput, crypto_aeslevel, cl_curl_maxdownloads/maxspeed (no HTTP download system), menu_tooltips (not consulted), menu_animations (fan animation uses fixed AnimSpeed), r_textshadow, showtime/showdate (no clock overlay; the showdate multi IS hand-reproduced via a Toggled handler)."
+      - "cl_movement_errorcompensation is read (NetGame.cs:5772) but FORCED OFF whenever cl_movement_smoothing_faithful=1 — the port DEFAULT — so with stock config the checkbox has no effect (it only tunes the non-faithful smoothing path); port cvar default 0 = Base-faithful."
+    verification:
+      - { kind: code, ref: "MenuCommand.Dispatch: no menu_showcvarsdialog/exec case; Shell.cs:187 is DialogCvarList's only constructor site (dev flag); cvar_resettodefaults_all loops ResetToDefault over all names (MenuCommand.cs:170-175)", result: fail }
+    confidence: high
+    notes: "The cvar-list WIDGET internals (search/edit/revert fidelity) are menu-core.misc.cvarlist's row — but note its liveness claim predates this finding: the hosting button is dead, so the editor is dev-only."
+
+  - id: menu-dialogs.mp.container
+    name: "Multiplayer dialog: Servers/Create/Profile tab container"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_multiplayer.qc:XonoticMultiplayerDialog_fill"
+    port_refs:
+      - "game/menu/MultiplayerScreen.cs:BuildUi (45-73)"
+    constants:
+      - { name: "tab order", base: "Servers / Create / Profile (4/3 cols each)", port: "same three, same order", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "MultiplayerScreen builds the three tabs (Create/Profile embedded with Embedded=true); reachable from the nexposee Multiplayer tile + the servers/profile nav verbs", result: pass }
+    confidence: high
+    notes: "Media moved out of this dialog in Base 0.8.6 (it is its own nexposee tile) — the port matches; MediaScreen is menu-core.media.*."
+
+  - id: menu-dialogs.mp.join
+    name: "Servers tab: filter row (Categories/Empty/Full/Laggy/Pause), sort headers, address+bookmark+info row, Join"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_multiplayer_join.qc:XonoticServerListTab_fill"
+    port_refs:
+      - "game/menu/MultiplayerScreen.cs:BuildServersTab (79-160)"
+    constants:
+      - { name: "filter cvars", base: "menu_slist_categories/showempty/showfull/showlaggy + net_slist_pause", port: "same five bound; Categories honestly labeled unsupported", match: true }
+      - { name: "sort columns", base: "5 sort buttons (ping/host/map/type/players)", port: "same five, click toggles order", match: true }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "menu_slist_categories toggle is bound but the category system does not exist (menu-core.browser.serverlist gap); net_slist_pause is bound but there is no periodic auto-refresh to pause (the port refreshes once on first show)."
+      - "QC's REFRESHSERVERLIST_ASK semantics (re-ask master vs re-ping cache) collapse to a single full refresh."
+    verification:
+      - { kind: code, ref: "BuildServersTab reproduces the QC row layout; refresh/sort/bookmark/info/join wired to ServerBrowser (menu-core.browser.serverlist verifies list behavior + protocol)", result: pass }
+    confidence: high
+    notes: "Server list mechanics (favorites format, filters semantics, row presentation) are menu-core.browser.serverlist's rows; this row is the tab chrome, which is faithful."
+
+  - id: menu-dialogs.mp.serverinfo
+    name: "Server-info dialog: Status tab (hostname/address/gametype/map/mod/version/settings/players/bots/slots/encryption/ID) + ToS tab"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_multiplayer_join_serverinfo.qc:XonoticServerInfoDialog_loadServerInfo"
+      - "menu/xonotic/dialog_multiplayer_join_serverinfotab.qc:XonoticServerInfoTab_fill"
+      - "menu/xonotic/dialog_multiplayer_join_termsofservice.qc:XonoticServerToSTab_loadToS"
+    port_refs:
+      - "game/menu/dialogs/DialogServerInfo.cs"
+    constants:
+      - { name: "qcstatus field keys", base: "P pure / S slots / F flags / T tos / M modname (colon-tokenized)", port: "subset parsed — depth unverified", match: false }
+    status:
+      logic: partial
+      values: unknown
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The Terms-of-Service tab is missing entirely (no urllib fetch of the server's ToS URL, no second tab); QC shows it when the qcstatus advertises a ToS."
+      - "The in-dialog PLAYER LIST (score/ping/team-colored rows from the status reply, playerlist.qc) is missing — DialogServerInfo shows infostring fields only (menu-core.lists.stats records playerlist.qc as unported)."
+      - "Join! from a dialog opened without an address is inert (DialogServerInfo.cs:226 logs); pure-violations ('Settings:' modified count), encryption requirement wording, and the key/ID crypto fields are not verified against the QC derivation."
+    verification:
+      - { kind: code, ref: "DialogServerInfo pushed live from MultiplayerScreen.cs:375 (Info... button / server row); field-level parity unverified", result: pass }
+    confidence: medium
+    notes: "Verify pass should diff DialogServerInfo's field derivation against XonoticServerInfoDialog_loadServerInfo's qcstatus tokenizer."
+
+  - id: menu-dialogs.mp.create
+    name: "Create tab: gametype list + show-all, time/frag/teams/slots/bots/skill sliders, maplist column, Mutators..., Start"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_multiplayer_create.qc:XonoticServerCreateTab_fill"
+      - "menu/xonotic/dialog_multiplayer_create.qc:GameType_ConfigureSliders"
+      - "menu/xonotic/dialog_multiplayer_create.qc:allowBotVsHuman/allowBotSkill"
+    port_refs:
+      - "game/menu/CreateGameScreen.cs:BuildUi/BuildGametypeColumn/ModeMenus (64-233); MatchConfig assembled at 534"
+      - "game/Shell.cs (StartGameRequested -> listen server)"
+    constants:
+      - { name: "timelimit_override domain", base: "Default -1; 1-10/1, 15-30/5, 40-60/10; Infinite 0", port: "identical (CreateGameScreen.cs:199-200)", match: true }
+      - { name: "bot skill labels", base: "Botlike..Godlike (0-10)", port: "same 11 labels", match: true }
+      - { name: "slots/bots ranges", base: "menu_maxplayers 1-32, bot_number 0-9", port: "same; consumed at start (MatchConfig BotCount=bot_number)", match: true }
+      - { name: "per-gametype frag cvar map", base: "gt.m_configuremenu per gametype (e.g. ctf capturelimit_override, lms g_lms_lives_override, nb g_nexball_goallimit)", port: "hand-built ModeMenus table (66-88) — spot-matches ctf/lms/nb/race; full diff not done", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The per-gametype slider table is a hand copy, not registry-driven from each gametype's m_configuremenu — ranges/cvars for ka/kh/dom/mayhem etc. are unverified against Base and will drift silently when Base rebalances."
+      - "bot_vs_human dependency predicates simplified: QC allowBotSkill enables skill when (bot_vs_human&&teams<2)||bot_number>0; the port gates skill on bot_number in [1,99] only — with 'Bots against humans' on and bot_number 0 the skill slider greys where Base enables it."
+      - "QC campaign gating (setDependent g_campaign 0 on bots/Mutators rows) not reproduced (the create tab is not used for campaign in the port flow — low impact)."
+      - "Maplist widget internals (permissive no-mapinfo filtering, missing type-to-search) are menu-core.create.maplist's gaps."
+    verification:
+      - { kind: code, ref: "Start gathers MatchConfig{Map,Gametype,BotCount=bot_number,...} (CreateGameScreen.cs:534) and Shell starts a real listen server — the QC MapList_LoadMap analogue, verified end-to-end by the --map/--host boot path", result: pass }
+    confidence: high
+    notes: "timelimit_override/fraglimit_override/g_*_teams_override consumption at match start is the server unit's business; the menu writes the same cvars Base writes."
+
+  - id: menu-dialogs.mp.create_mapinfo
+    name: "Map-info popup: preview image, title/author/description, supported-gametype tags, Close/Play"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_multiplayer_create_mapinfo.qc:XonoticMapInfoDialog_loadMapInfo"
+      - "menu/xonotic/dialog_multiplayer_create_mapinfo.qc:XonoticMapInfoDialog_fill"
+    port_refs:
+      - "game/menu/dialogs/DialogCreateGameMapInfo.cs"
+    constants:
+      - { name: "preview fallback chain", base: "maps/<bsp> -> levelshots/<bsp> -> nopreview_map", port: "maps/<bsp> -> nopreview (levelshots step unverified)", match: false }
+    status:
+      logic: partial
+      values: unknown
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Supported-gametype tag row (one label per registered gametype, dimmed when the map's .mapinfo lacks the mode) not verified in the port dialog; Base derives it from MapInfo_Map_supportedGametypes."
+      - "QC 'Play' starts the map directly via MapList_LoadMap (disabled under g_campaign); the port's equivalent start plumbing exists but its parity with the Create tab's start path is unverified."
+    verification:
+      - { kind: code, ref: "pushed live from CreateGameScreen.cs:472 (map row double-click / info affordance)", result: pass }
+    confidence: medium
+    notes: "Thin dialog; a verify pass should diff field population + the gametype tag row."
+
+  - id: menu-dialogs.mp.create_mutators
+    name: "Mutators dialog: gameplay mutators, weapon/item mutators, weapon-arena radios + per-weapon grid, special arenas (InstaGib/NIX), start-weapons"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_multiplayer_create_mutators.qc:XonoticMutatorsDialog_fill"
+      - "menu/xonotic/dialog_multiplayer_create_mutators.qc:checkCompatibility_pinata"
+      - "menu/xonotic/dialog_multiplayer_create_mutators.qc:XonoticMutatorsDialog_close"
+    port_refs:
+      - "game/menu/dialogs/DialogMutators.cs (77-330 fill; 366+ SliderCheckBox/WeaponCheckBox/ArenaRadio)"
+    constants:
+      - { name: "g_bloodloss slider-checkbox", base: "10-50/1, off=0", port: "same (savedValue 20)", match: true }
+      - { name: "low-gravity slider-checkbox", base: "sv_gravity 80-400/8 off=800 saved=200 (shown as % via 0.125 multiplier)", port: "offValue 800 / savedValue 200 (display multiplier unverified)", match: true }
+      - { name: "start-weapons multi", base: "17 g_balance_*_weaponstartoverride cvars set together, offValue -1", port: "the full 17-cvar multi IS reproduced (DialogMutators.cs:627 const)", match: true }
+      - { name: "buffs off-value", base: "g_buffs cvarOffValue -1", port: "unverified", match: false }
+    status:
+      logic: faithful
+      values: partial
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The checkCompatibility_* dependency predicates (pinata/weaponstay/newtoys/weaponarena-weapon vs instagib/nix/overkill/melee/weaponarena state) are not reproduced — incompatible mutator combos that Base greys out are freely clickable."
+      - "g_new_toys + g_new_toys_autoreplace radios: presence verified, the newtoys compat gating dropped; g_touchexplode/g_cloaked/g_midair/g_vampire etc. presence verified via fill; per-row off-values (g_buffs -1) unverified."
+      - "QC close hook (refilter the maplist on dialog close, XonoticMutatorsDialog_close) — the port refilters via its own signal path, unverified."
+      - "Whether each g_* cvar the dialog writes takes effect is the owning mutator unit's audit (e.g. mutator-nix records the double-activation risk this dialog's radio-group normally prevents)."
+    verification:
+      - { kind: code, ref: "DialogMutators pushed live from CreateGameScreen.cs:412; arena radio group resets siblings on select (the QC radio semantics); start-weapon 17-cvar multi present", result: pass }
+    confidence: medium
+    notes: "The one place the port DOES honor a QC makeMulti faithfully (start weapons)."
+
+  - id: menu-dialogs.mp.profile
+    name: "Profile tab: name box + color/charmap pickers, model selector + glow/detail palettes, stats opt-ins, language button, Apply"
+    layer: [presentation]
+    base_refs:
+      - "menu/xonotic/dialog_multiplayer_profile.qc:XonoticProfileTab_fill"
+      - "menu/xonotic/dialog_multiplayer_profile.qc:XonoticProfileTab_draw"
+    port_refs:
+      - "game/menu/dialogs/DialogMultiplayerProfile.cs:BuildUi (30-135)"
+    constants:
+      - { name: "apply command", base: "color -1 -1; name \"$_cl_name\"; playermodel $_cl_playermodel; playerskin $_cl_playerskin", port: "verbatim string (ApplyCommand) — every verb unhandled by MenuCommand -> inert", match: false }
+      - { name: "stats opt-in cvars", base: "cl_allow_uidtracking gating uid2name+uidranking", port: "same three, same dependency", match: true }
+      - { name: "name forbidden chars", base: "\\r\\n\\\\\\\"$ maxLength -127 bytes", port: "unverified on the port input box", match: false }
+    status:
+      logic: partial
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "'Apply immediately' is INERT: color/name/playermodel/playerskin are not MenuCommand verbs, so the button just logs — profile edits reach the game only via the replicated _cl_* cvars at the NEXT connect, never live mid-match (Base pushes them to the running engine instantly)."
+      - "The blinking 'Name' header when _cl_name=='Player' (XonoticProfileTab_draw alpha pulse) — ProfileNamePreview exists but the pulse behavior is unverified."
+      - "Stats pane is an honest empty placeholder (statslist.qc unported — menu-core.lists.stats); 'Select language...' routes to the Settings User tab rather than the languageselect overlay (same destination content)."
+      - "cl_allow_uid* opt-ins write locally but QC sendCvars (push to the connected server) is not implemented — mid-match consent changes don't propagate until reconnect."
+    verification:
+      - { kind: code, ref: "MenuCommand.Dispatch has no color/name/playermodel/playerskin cases (falls to inert default); DialogMultiplayerProfile hosts the faithful pickers (menu-core.profile.player_setup_widgets verifies widget math)", result: fail }
+    confidence: high
+    notes: "The name/model/color WIDGETS are menu-core.profile.player_setup_widgets' rows; this row owns the tab layout + apply semantics."

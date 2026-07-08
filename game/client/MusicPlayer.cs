@@ -1,11 +1,12 @@
 // Client-side music player — the Godot node that actually plays background music for maps.
 //
-// Implements the Xonotic/DP priority system (from QC TargetMusic_Advance):
+// Faithful port of QC TargetMusic_Advance (common/mapobjects/target/music.qc:179-213):
 //   Priority (highest wins): trigger_music > target_music > cdtrack (default)
 //
-// Each frame, the player selects the highest-priority active music source, crossfades to its track
-// (fading out the old, fading in the new), and loops it. The music is NON-POSITIONAL (heard equally
-// everywhere) and routes to the "Music" Godot audio bus (controlled by the bgmvolume cvar).
+// QC maintains a .state (0..1) PER listed entity and ramps it up (frametime/fade_time) for the best
+// source and down (frametime/fade_rate) for all others — ALL sources play simultaneously at their own
+// volume. The port replicates this exactly: one AudioStreamPlayer per distinct track path (created
+// on demand, stopped and freed when state reaches 0), with SourceState tracking the per-source ramp.
 //
 // For the listen-server path, target_music/trigger_music entities live in the same process, so we read
 // their state directly (no networking needed). The server's GameWorld exposes the entities via the
@@ -43,19 +44,47 @@ public sealed partial class MusicPlayer : Node
     /// <summary>Volume multiplier from bgmvolume cvar (0-1). Updated externally each frame or on cvar change.</summary>
     public float BgmVolume { get; set; } = 0.7f;
 
-    // ---- live state ----
-    private AudioStreamPlayer? _playerA;   // the two crossfade slots
-    private AudioStreamPlayer? _playerB;
-    private AudioStreamPlayer? _active;    // which slot is currently the "live" one
-    private AudioStreamPlayer? _fading;    // which slot is fading out
+    /// <summary>
+    /// QC <c>target_music_kill()</c> at <c>NextLevel</c>: when the match reaches intermission the map music is
+    /// stopped (the cdtrack / target_music / trigger_music sources are silenced) so the scoreboard plays over
+    /// silence rather than the looping map track. Set by the host from the networked intermission flag. (The
+    /// Base intermission <c>cd loop sv_intermission_cdtrack</c> switch is empty by default, so killing the map
+    /// music is the visible behaviour.)
+    /// </summary>
+    public bool Intermission { get; set; }
 
-    private string _activeTrack = "";      // the track path currently playing on _active
-    private float _activeVolume = 1f;      // target volume (from the music source's .volume field)
-    private float _fadeInProgress = 1f;    // 0..1, how far through the fade-in the active track is
-    private float _fadeOutProgress = 1f;   // 0..1, how far through the fade-out the fading track is
-    private float _fadeInTime = 2f;        // seconds for the current fade-in
-    private float _fadeOutTime = 2f;       // seconds for the current fade-out
-    private float _activeFadeOutSpec;      // the ACTIVE source's own fade_rate (0 = unset → DefaultFadeTime)
+    /// <summary>
+    /// QC FixIntermissionClient: the value of <c>sv_intermission_cdtrack</c> — a space-separated list of music
+    /// tracks; when intermission begins, Base picks a random word (RandomSelection over the words) and
+    /// <c>cd loop &lt;track&gt;</c>s it for the scoreboard. Empty (the stock default) = no switch, so the map
+    /// music is simply killed (see <see cref="Intermission"/>). Set by the host from the server cvar.
+    /// </summary>
+    public string IntermissionCdTrack { get; set; } = "";
+
+    // The track chosen once when intermission begins (RandomSelection is a one-shot pick, not re-rolled each
+    // frame). Reset when intermission ends so a fresh match re-rolls.
+    private string _chosenIntermissionTrack = "";
+    private bool _intermissionLatched;
+    private readonly System.Random _intermissionRng = new();
+
+    // ---- live state — per-source model (QC TargetMusic_Advance .state per entity) ----
+    // QC maintains a .state (0..1 ramp) PER listed entity: the "best" source ramps UP by frametime/fade_time,
+    // ALL others ramp DOWN by frametime/fade_rate, and every source plays simultaneously at state*volume*bgm.
+    // The port replicates this faithfully: one AudioStreamPlayer per distinct track path (pooled; stopped and
+    // removed when state reaches 0), with a per-track SourceState recording the ramp position + fade params.
+
+    private sealed class SourceState
+    {
+        public AudioStreamPlayer? Player;  // Godot player node (null until the stream loads)
+        public float State;               // QC .state: 0..1 ramp (0 = silent, 1 = full volume)
+        public float FadeTime;            // QC fade_time: seconds to ramp UP (from source entity or DefaultFadeTime)
+        public float FadeRate;            // QC fade_rate: seconds to ramp DOWN
+        public float Volume;              // target volume from the source entity (1 = full)
+        public bool LoadFailed;           // true if the stream couldn't be loaded (skip forever)
+    }
+
+    // keyed by resolved track path (case-insensitive)
+    private readonly Dictionary<string, SourceState> _sources = new(StringComparer.OrdinalIgnoreCase);
 
     // ---- music source scan ----
     // These are populated by the host (listen server) each frame or on entity state change.
@@ -85,18 +114,15 @@ public sealed partial class MusicPlayer : Node
 
     public override void _Ready()
     {
-        _playerA = new AudioStreamPlayer { Name = "MusicA", Bus = MusicBus, VolumeDb = -80f };
-        _playerB = new AudioStreamPlayer { Name = "MusicB", Bus = MusicBus, VolumeDb = -80f };
-        AddChild(_playerA);
-        AddChild(_playerB);
-
-        // Start the cdtrack if we have one at boot time.
+        // Per-source model: no pre-allocated slots; AudioStreamPlayers are created on demand per track.
+        // If we have a cdtrack at boot, prime the source so it starts at state 0 and ramps in.
         if (!string.IsNullOrEmpty(CdTrack))
-            StartTrack(CdTrack, 1f, DefaultFadeTime);
+            EnsureSource(CdTrack, 1f, DefaultFadeTime, DefaultFadeTime);
     }
 
     public override void _Process(double delta)
     {
+        using var _scope = FrameProfiler.Scope("music"); // [profiling] §18: out of proc:other
         float dt = (float)delta;
 
         // --- evaluate the priority stack to find the best music source ---
@@ -114,24 +140,36 @@ public sealed partial class MusicPlayer : Node
             EvaluateMusicSources(out bestTrack, out bestVolume, out fadeIn, out fadeOut);
         }
 
-        // --- if the best track changed, start a crossfade ---
-        // The OUTGOING track fades on ITS OWN fade_rate (captured when it started — QC TargetMusic_Advance
-        // ramps each source down by frametime/its.fade_rate), the incoming one on its fade_time.
-        if (!string.Equals(bestTrack, _activeTrack, StringComparison.OrdinalIgnoreCase))
+        // QC target_music_kill() at NextLevel + the FixIntermissionClient `cd loop sv_intermission_cdtrack`
+        // switch: at intermission, if sv_intermission_cdtrack names one or more tracks, pick a random word once
+        // (QC RandomSelection over FOREACH_WORD) and loop it for the scoreboard; otherwise silence the map music
+        // entirely.
+        if (Intermission)
         {
+            if (!_intermissionLatched)
+            {
+                _intermissionLatched = true;
+                _chosenIntermissionTrack = PickIntermissionTrack();
+            }
+            bestTrack = _chosenIntermissionTrack;   // chosen track, or "" to kill the music
             if (!string.IsNullOrEmpty(bestTrack))
-                StartTrack(bestTrack, bestVolume, fadeIn, fadeOut);
-            else
-                FadeOutCurrent(_activeFadeOutSpec);
+            {
+                bestVolume = 1f;
+                fadeIn = DefaultFadeTime;
+                fadeOut = DefaultFadeTime;
+            }
         }
-        else if (_active is not null)
+        else if (_intermissionLatched)
         {
-            // Same track, but volume may have changed (e.g. trigger_music volume differs from cdtrack).
-            _activeVolume = bestVolume;
+            // Intermission ended (restart / next map) — re-roll on the next intermission.
+            _intermissionLatched = false;
+            _chosenIntermissionTrack = "";
         }
 
-        // --- drive the crossfade ---
-        DriveFade(dt);
+        // --- per-source state ramp (QC TargetMusic_Advance) ---
+        // Ensure the best source exists; for every source ramp state up (if best) or down (if not), then
+        // apply volumes. This is the faithful port of the QC per-entity .state model.
+        AdvanceAllSources(bestTrack, bestVolume, fadeIn, fadeOut, dt);
     }
 
     // ========================================================================
@@ -184,7 +222,12 @@ public sealed partial class MusicPlayer : Node
             RefreshMusicEntities();
 
             // Scan for active trigger_music whose touch is fresh (player inside it this frame).
+            // QC Ent_TriggerMusic_Think runs for the local client each frame; the LAST entity
+            // processed whose volume contains the player wins (latest in CL_LinkPacketEntities).
+            // Mirror that by picking the entry with the highest PushLTime stamp (most recently
+            // touched) — equivalent to "last one wins" when multiple volumes overlap.
             Entity? bestTrigger = null;
+            float bestTriggerTime = float.NegativeInfinity;
             for (int i = 0; i < _triggerMusic.Count; i++)
             {
                 Entity e = _triggerMusic[i];
@@ -192,13 +235,13 @@ public sealed partial class MusicPlayer : Node
                 if (e.Active != MapMover.ActiveActive) continue;
                 if (string.IsNullOrEmpty(e.Noise)) continue;
                 // The touch handler stamps PushLTime each frame the player overlaps.
-                // Consider it "active" if touched within the freshness window.
-                if (ServerTime - e.PushLTime <= TouchFreshnessWindow)
+                // Consider it "active" if touched within the freshness window; keep the
+                // most-recently-touched one (highest PushLTime) to match QC last-wins order.
+                if (ServerTime - e.PushLTime <= TouchFreshnessWindow
+                    && e.PushLTime > bestTriggerTime)
                 {
                     bestTrigger = e;
-                    // Don't break — last one wins if multiple overlap (QC uses the last-touched),
-                    // but for simplicity we take the first found.
-                    break;
+                    bestTriggerTime = e.PushLTime;
                 }
             }
             if (bestTrigger is not null)
@@ -284,105 +327,112 @@ public sealed partial class MusicPlayer : Node
         e.MusicFadeOut > 0f ? e.MusicFadeOut : DefaultFadeTime);
 
     // ========================================================================
-    //  Track management
+    //  Per-source state engine (QC TargetMusic_Advance faithful port)
     // ========================================================================
 
-    /// <param name="track">Resolved VFS track path.</param>
-    /// <param name="volume">The source's target volume.</param>
-    /// <param name="fadeIn">Seconds to ramp the NEW track in (the source's fade_time).</param>
-    /// <param name="fadeOutSpec">The NEW source's fade_rate — remembered so when THIS track is later
-    /// replaced, it fades out on its own spec (QC ramps each source down by frametime/its.fade_rate).</param>
-    private void StartTrack(string track, float volume, float fadeIn, float fadeOutSpec = 0f)
+    /// <summary>
+    /// Ensure a <see cref="SourceState"/> entry exists for <paramref name="track"/> and update its fade
+    /// params. Called when evaluating the best source so the entry exists before <see cref="AdvanceAllSources"/>
+    /// ticks it. If the source was already known its fade params are refreshed (in case the entity's
+    /// fade_time/fade_rate map keys changed).
+    /// </summary>
+    private SourceState EnsureSource(string track, float volume, float fadeIn, float fadeOut)
     {
-        AudioStream? stream = LoadMusicStream(track);
-        if (stream is null)
+        if (!_sources.TryGetValue(track, out SourceState? src))
         {
-            // Can't load this track — treat as silence.
-            _activeTrack = track; // remember it so we don't keep retrying
-            FadeOutCurrent(_activeFadeOutSpec);
-            return;
+            src = new SourceState { State = 0f };
+            _sources[track] = src;
         }
-
-        // Make the stream loop.
-        AudioStream looping = AudioLoop.MakeLooping(stream, out bool nativeLoop);
-
-        // Determine which slot to use for the new track (the one NOT currently active).
-        AudioStreamPlayer? newActive = (_active == _playerA) ? _playerB : _playerA;
-        if (newActive is null) return;
-
-        // Start fading out the old track (if any) — on the OLD source's fade_rate, captured when it started.
-        if (_active is not null && _active.Playing)
-        {
-            _fading = _active;
-            _fadeOutProgress = 0f;
-            float fo = _activeFadeOutSpec > 0f ? _activeFadeOutSpec : DefaultFadeTime;
-            _fadeOutTime = fo;
-        }
-
-        // Start the new track.
-        newActive.Stream = looping;
-        newActive.VolumeDb = -80f; // start silent, fade in
-        if (!nativeLoop)
-            newActive.Finished += () => { if (IsInstanceValid(newActive) && newActive.Stream == looping) newActive.Play(); };
-        newActive.Play();
-
-        _active = newActive;
-        _activeTrack = track;
-        _activeVolume = volume;
-        _fadeInProgress = 0f;
-        _fadeInTime = fadeIn > 0f ? fadeIn : DefaultFadeTime;
-        _activeFadeOutSpec = fadeOutSpec; // this track's OWN fade_rate, used when IT later fades out
+        src.Volume   = volume > 0f ? volume : 1f;
+        src.FadeTime = fadeIn  > 0f ? fadeIn  : DefaultFadeTime;
+        src.FadeRate = fadeOut > 0f ? fadeOut : DefaultFadeTime;
+        return src;
     }
 
-    private void FadeOutCurrent(float fadeTime)
+    /// <summary>
+    /// Port of QC <c>TargetMusic_Advance</c> (music.qc:179-213): for every known source advance its
+    /// <c>.state</c> ramp up (if it IS the best) or down (otherwise), ensure its AudioStreamPlayer exists
+    /// and is playing, then apply <c>state * volume * bgmvolume</c> to its volume. Sources that reach
+    /// state 0 are stopped and removed.
+    /// </summary>
+    private void AdvanceAllSources(string bestTrack, float bestVolume, float fadeIn, float fadeOut, float dt)
     {
-        if (_active is not null && _active.Playing)
-        {
-            _fading = _active;
-            _fadeOutProgress = 0f;
-            _fadeOutTime = fadeTime > 0f ? fadeTime : DefaultFadeTime;
-        }
-        _active = null;
-        _activeTrack = "";
-    }
+        float bgm = Mathf.Clamp(BgmVolume, 0f, 1f);
 
-    // ========================================================================
-    //  Crossfade driver
-    // ========================================================================
+        // Ensure the best source entry is present with up-to-date params (QC: it is in TargetMusic_list).
+        if (!string.IsNullOrEmpty(bestTrack))
+            EnsureSource(bestTrack, bestVolume, fadeIn, fadeOut);
 
-    private void DriveFade(float dt)
-    {
-        // Fade in the active track.
-        if (_active is not null && IsInstanceValid(_active) && _fadeInProgress < 1f)
-        {
-            _fadeInProgress += dt / _fadeInTime;
-            if (_fadeInProgress > 1f) _fadeInProgress = 1f;
-        }
+        // Track which sources completed a fade-out this frame so we can remove them after the loop.
+        List<string>? toRemove = null;
 
-        // Fade out the old track.
-        if (_fading is not null && IsInstanceValid(_fading) && _fadeOutProgress < 1f)
+        foreach (var kv in _sources)
         {
-            _fadeOutProgress += dt / _fadeOutTime;
-            if (_fadeOutProgress > 1f)
+            string track = kv.Key;
+            SourceState src = kv.Value;
+
+            bool isBest = string.Equals(track, bestTrack, StringComparison.OrdinalIgnoreCase);
+
+            // QC TargetMusic_Advance: ramp up for the best source, down for all others.
+            if (isBest)
             {
-                _fadeOutProgress = 1f;
-                _fading.Stop();
-                _fading = null;
+                // state += (fade_time > 0) ? frametime/fade_time : 1.0 (instant)
+                float step = src.FadeTime > 0f ? dt / src.FadeTime : 1f;
+                src.State = System.Math.Min(1f, src.State + step);
+            }
+            else
+            {
+                // state -= (fade_rate > 0) ? frametime/fade_rate : 1.0 (instant)
+                float step = src.FadeRate > 0f ? dt / src.FadeRate : 1f;
+                src.State = System.Math.Max(0f, src.State - step);
+            }
+
+            float vol = src.State * src.Volume * bgm;
+
+            if (!src.LoadFailed && src.Player is null && src.State > 0f)
+            {
+                // Lazy-create the AudioStreamPlayer the first time this source needs to be audible.
+                AudioStream? stream = LoadMusicStream(track);
+                if (stream is null)
+                {
+                    src.LoadFailed = true;
+                }
+                else
+                {
+                    AudioStream looping = AudioLoop.MakeLooping(stream, out bool nativeLoop);
+                    var player = new AudioStreamPlayer { Name = $"Music_{track.Replace('/', '_')}", Bus = MusicBus, VolumeDb = -80f };
+                    AddChild(player);
+                    player.Stream = looping;
+                    if (!nativeLoop)
+                        player.Finished += () => { if (IsInstanceValid(player) && player.Stream == looping) player.Play(); };
+                    player.Play();
+                    src.Player = player;
+                }
+            }
+
+            if (src.Player is { } p && IsInstanceValid(p))
+            {
+                if (vol <= 0.001f)
+                {
+                    // QC: source silent — stop and clean up the node; record for removal from dictionary.
+                    p.Stop();
+                    p.QueueFree();
+                    src.Player = null;
+                    if (src.State <= 0f)
+                        (toRemove ??= new()).Add(track);
+                }
+                else
+                {
+                    // Ensure the player is playing (it might have been stopped before reaching 0 on a prior frame).
+                    if (!p.Playing) p.Play();
+                    p.VolumeDb = Mathf.LinearToDb(vol);
+                }
             }
         }
 
-        // Apply volumes.
-        float bgm = Mathf.Clamp(BgmVolume, 0f, 1f);
-        if (_active is not null && IsInstanceValid(_active))
-        {
-            float vol = _activeVolume * bgm * _fadeInProgress;
-            _active.VolumeDb = vol <= 0.001f ? -80f : Mathf.LinearToDb(vol);
-        }
-        if (_fading is not null && IsInstanceValid(_fading))
-        {
-            float vol = bgm * (1f - _fadeOutProgress);
-            _fading.VolumeDb = vol <= 0.001f ? -80f : Mathf.LinearToDb(vol);
-        }
+        if (toRemove is not null)
+            foreach (string key in toRemove)
+                _sources.Remove(key);
     }
 
     // ========================================================================
@@ -410,6 +460,26 @@ public sealed partial class MusicPlayer : Node
             catch { return null; }
         }
         return null;
+    }
+
+    /// <summary>
+    /// QC FixIntermissionClient: pick a random word from <see cref="IntermissionCdTrack"/> (the
+    /// <c>sv_intermission_cdtrack</c> value), reproducing the QC <c>RandomSelection_Init();
+    /// FOREACH_WORD(... RandomSelection_AddString(it, 1, 1)); RandomSelection_chosen_string</c> dance. Empty
+    /// value (the stock default) → "" (no track, the map music is killed). Each word is added with equal
+    /// weight, so the choice is uniform over the words.
+    /// </summary>
+    private string PickIntermissionTrack()
+    {
+        if (string.IsNullOrWhiteSpace(IntermissionCdTrack))
+            return "";
+        string[] words = IntermissionCdTrack.Split(
+            (char[]?)null, StringSplitOptions.RemoveEmptyEntries);
+        if (words.Length == 0)
+            return "";
+        // Resolve to the VFS path the AudioLoader expects (bare "12" → "cdtracks/track012", etc.) — the same
+        // normalization the cdtrack/target_music paths get, so the chosen track loads identically.
+        return ResolveMusicPath(words[_intermissionRng.Next(words.Length)]);
     }
 
     // ========================================================================

@@ -67,6 +67,15 @@ public sealed class Player : Entity
     public new float RespawnTime;
 
     /// <summary>
+    /// QC <c>.spawn_time</c> (server/client.qc:690) — the sim time this player most recently spawned.
+    /// Used by CTS trigger_multiple to detect whether a client has respawned since they last fired the trigger
+    /// (multi.qc multi_trigger: <c>this.enemy.spawn_time &lt;= triggertime</c> → "haven't respawned yet").
+    /// Set to <see cref="Services.IGameClock.Time"/> each time the player is placed in-world by
+    /// <see cref="SpawnSystem"/>. 0 at construction (player has never spawned).
+    /// </summary>
+    public float SpawnTime;
+
+    /// <summary>
     /// QC <c>STAT(WEAPONS, this)</c> — the owned-weapon set (a WEPSET bitfield in QC). Modeled here as a set
     /// of weapon NetNames ("blaster", "machinegun", …) so it reads against <see cref="Weapons"/> without a
     /// bit-index registry. Repopulated from the starting loadout on every spawn (QC <c>start_weapons</c>).
@@ -76,6 +85,11 @@ public sealed class Player : Entity
     /// <summary>QC IS_BOT_CLIENT(this) — true for an AI-controlled player (affects spawn restriction filtering).</summary>
     public bool IsBot;
 
+    /// <summary>The floating chat-bubble entity shown over this player while typing (QC <c>.chatbubbleentity</c>,
+    /// server/client.qc <c>UpdateChatBubble</c>/<c>ChatBubbleThink</c>). Spawned, followed and freed by
+    /// <c>GameWorld.UpdateChatBubble</c>. (playtest #35c)</summary>
+    public Entity? ChatBubble;
+
     /// <summary>
     /// QC the bot's <c>skill</c> level (0..10), set when the bot is created. Feeds the skill-weighted team
     /// balance (Teamplay.SkillProvider) so a strong bot counts as "more" than a weak one. Meaningless for humans
@@ -83,8 +97,55 @@ public sealed class Player : Entity
     /// </summary>
     public float BotSkill = 5f;
 
+    /// <summary>
+    /// QC <c>.bot_moveskill</c>: a movement-skill term added to <see cref="BotSkill"/> wherever the AI decides to
+    /// bunnyhop (havocbot.qc:1315 gates on <c>skill + bot_moveskill &gt;= bot_ai_bunnyhop_skilloffset</c>). Stock
+    /// non-campaign default is 0 (the READSKILL reward factor is 0; bot.qc:276). The midair mutator forces this to 0
+    /// on spawn to suppress bunnyhopping WITHOUT degrading aim/reaction (which key off <see cref="BotSkill"/>).
+    /// </summary>
+    public float BotMoveSkill;
+
+    /// <summary>
+    /// QC <c>.bot_aggresskill</c> (server/bot/default/bot.qc:282, READSKILL column 11): a per-bot aggression
+    /// modifier added to <see cref="BotSkill"/> in the fire decision (aim.qc:325-328) — it widens the
+    /// close-range "always fire" band, raises the long-range fire chance, and shortens the fire-timer cooldown,
+    /// so an aggressive bot shoots more eagerly at distance. Stock non-campaign default 0 (the READSKILL reward
+    /// factor is 0; populated only from the bots.txt skill columns). Read by <see cref="BotAim"/>.
+    /// </summary>
+    public float BotAggresSkill;
+
+    /// <summary>
+    /// QC <c>.bot_aimskill</c> (server/bot/default/bot.qc:285, READSKILL column 13): a per-bot aiming modifier
+    /// added to <see cref="BotSkill"/> in the max-fire-deviation formula (aim.qc:372) — a higher aim skill
+    /// narrows the fire cone (tighter aim required before shooting). Stock non-campaign default 0 (READSKILL
+    /// reward factor 0; populated only from the bots.txt skill columns). Read by <see cref="BotAim"/>.
+    /// </summary>
+    public float BotAimSkill;
+
     /// <summary>QC <c>.maycheat</c>: a per-player override that always permits cheats regardless of <c>sv_cheats</c>.</summary>
     public bool MayCheat;
+
+    /// <summary>QC <c>.lip</c> (reused by server/cheats.qc): the count of corpse clones this player has spawned this
+    /// life via the CLONE_MOVING/CLONE_STANDING cheats. The clone impulses are permitted (independent of
+    /// <c>sv_cheats</c>) while this is below <c>sv_clones</c> — see <c>Cheats.Allowed</c>.</summary>
+    public int Lip;
+
+    /// <summary>
+    /// QC <c>.speedrunning</c> (server/cheats.qc CHIMPULSE_SPEEDRUN): set when the player has teleported back to
+    /// their <see cref="PersonalCheckpoint"/> via the SPEEDRUN (141) cheat impulse. A flag the speedrun timing
+    /// reads to know a run was aborted/reset.
+    /// </summary>
+    public bool Speedrunning;
+
+    /// <summary>
+    /// QC the <c>.personal</c> (<c>personal_wp</c>) checkpoint entity (server/cheats.qc CHIMPULSE_SPEEDRUN_INIT):
+    /// the player's snapshotted speedrun checkpoint — origin/view-angle/velocity plus the full resource/weapon/
+    /// item/status-effect/pause-timer state taken when <c>waypoint_personal_here</c> (impulse 30) is pressed, and
+    /// restored when <c>SPEEDRUN</c> (impulse 141) is pressed. Modeled as a value snapshot on the player rather
+    /// than a separate entity (the QC <c>personal_wp</c> edict only ever stores state — it is never simulated).
+    /// <c>null</c> until the player first deploys a personal waypoint this life.
+    /// </summary>
+    public PersonalCheckpoint? PersonalCheckpoint;
 
     /// <summary>
     /// QC <c>.winning</c>: set at match end for the player(s) who won (the scoreboard leader, or each member of
@@ -133,6 +194,15 @@ public sealed class Player : Entity
     public int WantsJoin;
 
     /// <summary>
+    /// QC <c>.clientcolors</c> (server/teamplay.qc <c>setcolor</c> / <c>SetPlayerColors</c>): the player's packed
+    /// pants(low nibble)+shirt(high nibble) color, i.e. <c>16*shirt + pants</c>. In a team game it is forced to
+    /// <c>16*team + team</c> (both nibbles the team color); in FFA it keeps the player's chosen shirt+pants from
+    /// the <c>color</c> command. The player-model colormap derives from this. Server-authority value; the network
+    /// of clientcolors to the client is deferred, but the encoding is kept faithful so team-from-color works.
+    /// </summary>
+    public int ClientColors;
+
+    /// <summary>
     /// QC <c>.autojoin_checked</c> (server/client.qc): the one-shot autojoin latch. A bot sets it to 1 and joins
     /// once in ObserverOrSpectatorThink; a real client's delayed autojoin (PlayerPreThink, after MIN_SPEC_TIME)
     /// sets it to 1 after trying, or -1 to keep retrying briefly. 0 = not yet attempted.
@@ -146,8 +216,26 @@ public sealed class Player : Entity
     /// </summary>
     public bool JoinJumpReleased = true;
 
+    /// <summary>
+    /// QC <c>CS(this).startplaytime</c> (server/client.qh:67): the absolute sim time
+    /// (<see cref="Services.IGameClock.Time"/>) at which this client last switched from spectator to live
+    /// player — set in <c>PutPlayerInServer</c> only on a spectator→player transition (QC client.qc:780, gated on
+    /// the prior <c>killcount == FRAGS_SPECTATOR</c>), NOT on a mid-life respawn. Used as the per-client playtime
+    /// denominator (e.g. the kick_teamkiller rate gate: <c>time - startplaytime</c>). 0 until the first Join.
+    /// </summary>
+    public float StartPlayTime;
+
     /// <summary>QC IS_DEAD(this): the player is dying or already dead (<see cref="Entity.DeadState"/> != No).</summary>
     public bool IsDead => DeadState != DeadFlag.No;
+
+    /// <summary>
+    /// QC <c>.death_origin</c> (server/damage.qh:67): the player's <c>.origin</c> latched at the moment of death,
+    /// set in the Obituary path (<c>targ.death_origin = targ.origin</c>, server/damage.qc:238). Read by the
+    /// "spawn near where you died" features — the spawn_near_teammate <c>closetodeath</c> selection
+    /// (sv_spawn_near_teammate.qc:174) and the personal/here/danger waypoints (server/impulse.qc). Zero until the
+    /// player's first death.
+    /// </summary>
+    public Vector3 DeathOrigin;
 
     // ===== chat state (server/chat.qc Say + server/command/cmd.qc ignore-list CRUD — T46) =====
     // The flat per-client chat fields QC keeps on the clientstate (CS(this)): the three per-say-type flood

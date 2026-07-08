@@ -1,0 +1,315 @@
+unit: deathmatch
+category: gametype
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-27"
+summary:
+  feature_count: 9
+  worst_gaps:
+    - "Menu gametype-description prose (deathmatch.qc:describe) now ported+live (MenuDescription) but only surfaces during a gametype vote (sv_vote_gametype, opt-in) on a listen server"
+    - "Teamkill escalation curve (g_teamkill_punishing) unmodeled — unreachable in FFA DM"
+    - "OnDeath writes victim.GtDeaths/GtSuicides which have no readers (harmless dead writes; scoreboard counts come from Scores.GiveFrags read-through)"
+features:
+  - id: deathmatch.gametype.identity
+    name: "Deathmatch gametype registration & identity (dm, FFA, USEPOINTS|PREFERRED)"
+    layer: [shared]
+    base_refs:
+      - "common/gametypes/gametype/deathmatch/deathmatch.qh:INIT(Deathmatch)"
+      - "common/gametypes/gametype/deathmatch/sv_deathmatch.qh:REGISTER_MUTATOR(dm)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:Deathmatch (ctor)"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:OnInit"
+    constants:
+      - { name: "short_name", base: "dm", port: "dm", match: true }
+      - { name: "display_name", base: "Deathmatch", port: "Deathmatch", match: true }
+      - { name: "teamplay", base: "false (FFA)", port: "TeamGame=false", match: true }
+      - { name: "flags", base: "USEPOINTS|PREFERRED", port: "implicit (frag-based, default mode)", match: true }
+      - { name: "default_pointlimit", base: "30", port: "DefaultFragLimit=30", match: true }
+      - { name: "default_timelimit_min", base: "15", port: "timelimit cvar default 15", match: true }
+      - { name: "default_leadlimit", base: "0", port: "leadlimit cvar default 0 (now read by DM win condition)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "deathmatch.qh gametype_init args vs Deathmatch ctor/NetName", result: pass }
+      - { kind: code, ref: "GameWorld.DefaultGameType == \"dm\" → ResolveGameType activates Deathmatch", result: pass }
+    confidence: high
+    notes: "Identity is set in the ctor; OnInit is a documented no-op (no per-match state to seed). m_isAlwaysSupported (always offered on any map) is not ported — a map-pool concern, out of scope here. Wave-2 added LeadLimit reading, so the prior default_leadlimit mismatch (DM ignores leadlimit) is now resolved."
+
+  - id: deathmatch.scoring.frag_matrix
+    name: "FFA frag scoring: enemy +1, suicide -1, world/accident death -1"
+    layer: [authority]
+    base_refs:
+      - "server/damage.qc:GiveFrags"
+      - "server/damage.qc:Obituary"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:OnDeath"
+      - "src/XonoticGodot.Server/Scores.cs:GiveFrags"
+      - "src/XonoticGodot.Server/Scores.cs:Obituary"
+    constants:
+      - { name: "enemy_frag", base: "+1", port: "+1", match: true }
+      - { name: "suicide", base: "-1", port: "-1", match: true }
+      - { name: "world_accident_death", base: "-1 (GiveFrags(targ,targ,-1))", port: "-1", match: true }
+      - { name: "game_stopped_gate", base: "GiveFrags bails if game_stopped", port: "OnDeath bails if MatchEnded", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "OnDeath writes victim.GtDeaths/GtSuicides which have no readers (dead writes); the scoreboard's Deaths/Suicides come from Scores.GiveFrags read-through. Harmless, not player-visible."
+    verification:
+      - { kind: code, ref: "server/damage.qc:GiveFrags 43-79 vs Deathmatch.OnDeath matrix", result: pass }
+      - { kind: code, ref: "Scores.cs ownsScore=false → SP_SCORE read-through from Player.ScoreFrags (no double-count)", result: pass }
+      - { kind: code, ref: "grep readers of GtDeaths/GtSuicides → none outside the write site", result: pass }
+    confidence: high
+    notes: "Unchanged by Waves 1/2 (Scores.cs not touched). Scoring is split: Deathmatch owns SP_SCORE (the sort/fraglimit key), Scores fills aux KILLS/DEATHS/SUICIDES read-through to avoid double-counting. Teamkill branch is present but unreachable in FFA (SameTeam guarded false when TeamGame=false)."
+
+  - id: deathmatch.scoring.teamkill_punishing
+    name: "Teamkill punishment escalation (g_teamkill_punishing)"
+    layer: [authority]
+    base_refs:
+      - "server/damage.qc:GiveFrags (teamkills * (teamkills-1) * 0.5 penalty)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:OnDeath (teamkill branch, flat -1)"
+    constants:
+      - { name: "g_teamkill_punishing", base: "0 (default off)", port: "not read; flat -1 on teamkill", match: false }
+      - { name: "penalty_curve", base: "tk*(tk-1)*0.5 = -1,-2,-4,-7,-11,...", port: "flat -1", match: false }
+    status:
+      logic: partial
+      values: partial
+      timing: na
+      presentation: na
+      audio: na
+      liveness: na
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "DM is FFA so this never fires in practice; the escalating teamkill penalty is unmodeled, but unreachable in deathmatch (relevant only to team modes)."
+    verification:
+      - { kind: code, ref: "Deathmatch.SameTeam returns false when TeamGame=false → teamkill branch unreachable in DM", result: pass }
+    confidence: medium
+    notes: "STILL OPEN (unchanged). Listed for completeness: the teamkill branch exists in OnDeath but is dead code in FFA. The escalating g_teamkill_punishing curve belongs to the team gametypes' parity rows, not DM. Default off (0) regardless."
+
+  - id: deathmatch.winconditions.fraglimit
+    name: "Point/frag limit ends the match (topscore >= pointlimit)"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:WinningCondition_Scores (fraglimit_reached)"
+      - "common/gametypes/sv_rules.qc:GameRules_limit_score"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:FragLimit"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:UpdateLeaderAndCheckLimit"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:RecomputeLeader"
+      - "src/XonoticGodot.Server/GameWorld.cs:DriveGametypeFrame"
+      - "src/XonoticGodot.Server/GameWorld.cs:RunCheckRulesWorld"
+    constants:
+      - { name: "pointlimit_default", base: "30 (fraglimit)", port: "30 (DefaultFragLimit)", match: true }
+      - { name: "limit==0 means unlimited", base: "yes", port: "yes (limit>0 guard)", match: true }
+      - { name: "g_dmlimit cvar", base: "does not exist in Base", port: "checked before fraglimit", match: false }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "The port reads a non-Base convenience cvar g_dmlimit before falling back to the engine fraglimit. Base has no g_dmlimit (only TDM has g_tdm_point_limit). With g_dmlimit unset the behavior is identical to Base; it only diverges if an operator sets the invented cvar."
+    gaps: []
+    verification:
+      - { kind: code, ref: "WinningCondition_Scores fraglimit_reached vs RecomputeLeader best.ScoreFrags >= limit (world.qc:1625)", result: pass }
+      - { kind: code, ref: "GameWorld.OnEndFrame → DriveGametypeFrame → Match.Deathmatch.RecomputeLeader(Clients.Players) every tick (live)", result: pass }
+    confidence: high
+    notes: "MatchEnded latch is checked incrementally in OnDeath and authoritatively each tick via RecomputeLeader (now over best/second) on the live DriveGametypeFrame path, then consumed by RunCheckRulesWorld. Wave-2 reworked the incremental latch to skip the fraglimit-alone end when leadlimit_and_fraglimit requires both (correct vs Base)."
+
+  - id: deathmatch.winconditions.leadlimit
+    name: "Lead limit ends the match (topscore - secondscore >= leadlimit) + leadlimit_and_fraglimit"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:WinningCondition_Scores (leadlimit_reached, leadlimit_and_fraglimit, world.qc:1626-1633)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:LeadLimit"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:LeadAndFrag"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:RecomputeLeader"
+      - "src/XonoticGodot.Server/GameWorld.cs:DriveGametypeFrame"
+    constants:
+      - { name: "leadlimit_default", base: "0 (disabled)", port: "0 (CvarLeadLimit, DefaultLeadLimit=0)", match: true }
+      - { name: "leadlimit_reached formula", base: "topscore - secondscore >= leadlimit", port: "best.ScoreFrags - second.ScoreFrags >= leadlimit", match: true }
+      - { name: "leadlimit_and_fraglimit", base: "0; if both limits set, require BOTH else either", port: "LeadAndFrag gate, same branch (world.qc:1630)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Deathmatch.RecomputeLeader fraglimit/leadlimit/LeadAndFrag branch vs world.qc:1625-1633 — both formula and AND/OR gate match", result: pass }
+      - { kind: code, ref: "DriveGametypeFrame calls RecomputeLeader(Clients.Players) every tick → leadlimit checked authoritatively on the live path (live)", result: pass }
+      - { kind: code, ref: "second-place tracking added to RecomputeLeader (best/second scan) supplies the runner-up score the lead margin needs", result: pass }
+    confidence: high
+    notes: "FIXED by Wave-2 (was logic/values/timing: missing, liveness: na). LeadLimit reads the generic engine `leadlimit` (DM has no gametype-prefixed lead cvar — correct), LeadAndFrag reads `leadlimit_and_fraglimit`. The runner-up score now comes from a best/second pass in RecomputeLeader. At defaults (leadlimit=0) the leadlimit_reached guard is false so behavior is identical to before; with leadlimit set the match now ends on the lead margin, honoring the AND/OR leadlimit_and_fraglimit semantics."
+
+  - id: deathmatch.winconditions.timelimit_overtime
+    name: "Time limit + overtime/sudden-death (tie at limit keeps playing)"
+    layer: [authority]
+    base_refs:
+      - "server/world.qc:WinningCondition_Scores (GetWinningCode/equality)"
+      - "server/world.qc:CheckRules_World (overtime/sudden-death cascade)"
+    port_refs:
+      - "src/XonoticGodot.Server/GameWorld.cs:RunCheckRulesWorld"
+      - "src/XonoticGodot.Server/GameWorld.cs:OverTime (OnOvertimeStarted/OnSuddenDeathStarted sinks)"
+      - "src/XonoticGodot.Server/OverTimeManager.cs"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:ReportsTie"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:FfaTie.TopTwoTied"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:OVERTIME_TIME/OVERTIME_FRAG"
+    constants:
+      - { name: "timelimit_default_min", base: "15", port: "15", match: true }
+      - { name: "timelimit_seconds", base: "minutes*60 offset by game_starttime", port: "TimeLimitMinutes*60 + GameStartTime", match: true }
+      - { name: "tie_at_limit", base: "StartSuddenDeathOvertime (keep playing)", port: "FfaTie top-two-tied → overtime", match: true }
+      - { name: "overtime_center_notif", base: "CENTER_OVERTIME_TIME (f1=added seconds) / CENTER_OVERTIME_FRAG, all.inc:778-780 — center-print only, no announcer sound", port: "OVERTIME_TIME/OVERTIME_FRAG via OnOvertimeStarted/OnSuddenDeathStarted → NotificationSystem.Send(Center)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "RunCheckRulesWorld cascade vs CheckRules_World world.qc:1741-1860", result: pass }
+      - { kind: code, ref: "FfaTie.TopTwoTied (top two primary scores equal) vs WinningConditionHelper_equality FFA", result: pass }
+      - { kind: code, ref: "OverTimeManager.InitiateOvertime → OnOvertimeStarted(seconds) wired in GameWorld.OverTime to NotificationSystem.Send(All, Center, OVERTIME_TIME, seconds); TickSuddenDeathWarning → OnSuddenDeathStarted → Center OVERTIME_FRAG (GameWorld.cs:144-147) — overtime/sudden-death center notifications now LIVE", result: pass }
+      - { kind: code, ref: "NotificationsList registers OVERTIME_TIME/OVERTIME_FRAG (NotificationsList.cs:479-480); Base MSG_CENTER_NOTIF(OVERTIME_TIME/FRAG) all.inc:778-780 carry no ANNCE sound → audio na (center-print only)", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-25 baseline: the overtime/sudden-death CENTER notifications are now wired end-to-end and LIVE. GameWorld.OverTime supplies OnOvertimeStarted→Center OVERTIME_TIME(seconds) and OnSuddenDeathStarted→Center OVERTIME_FRAG, both registered in NotificationsList. Base's OVERTIME_TIME/FRAG are MSG_CENTER_NOTIF (center-print), NOT announcer sounds, so audio is na (the prior baseline 'announcer'/'audio: unknown' framing was imprecise — there is no overtime announcer cue in Base). Win-condition framework (timelimit→overtime→sudden death→intermission) is shared; DM feeds it via ReportsTie/FfaTie and the fraglimit/leadlimit latch. (Wave-8e also documented STAT(OVERTIMES) HUD subtext networking via the MatchState packet, but that is the framework's HUD-timer concern, not a DM-specific row.)"
+
+  - id: deathmatch.announce.frags_remaining
+    name: "Remaining-frags announcer (1/2/3 frags left)"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/gametypes/gametype/deathmatch/sv_deathmatch.qc:MUTATOR_HOOKFUNCTION(dm, Scores_CountFragsRemaining)"
+      - "server/world.qc:WinningCondition_Scores (ANNCE_REMAINING_FRAG_1/2/3 send, world.qc:1590-1622)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:CountFragsRemaining"
+      - "src/XonoticGodot.Common/Gameplay/Scoring/GameScores.cs:ResetFragsRemaining"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:RecomputeLeader"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:REMAINING_FRAG_1/2/3"
+      - "game/hud/HudNotifications.cs:PlayAnnouncer"
+    constants:
+      - { name: "announce_thresholds", base: "fragsleft == 1,2,3", port: "fragsleft == 1,2,3", match: true }
+      - { name: "sounds", base: "misc/1fragleft, 2fragsleft, 3fragsleft", port: "REMAINING_FRAG_{1,2,3} → 1fragleft/2fragsleft/3fragsleft (registered + enabled)", match: true }
+      - { name: "fragsleft formula", base: "min/max of (limit-top) and (second+leadlimit-top); fragsleft_last anti-repeat", port: "same min/max + _fragsLeftLast latch", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "The QC suddenDeathEnding branch (checkrules_suddendeathend forcing fragsleft=1) is passed as false from DM (framework-owned, not surfaced). Minor: only affects the final sudden-death-end 'frag-left' cue, not the normal 1/2/3 approach announce."
+    verification:
+      - { kind: code, ref: "GameScores.CountFragsRemaining vs world.qc:1592-1622 — fragsleft min/max, leadlimit_and_fraglimit max-branch, fragsleft_last anti-repeat, REMAINING_FRAG_1/2/3 send all match", result: pass }
+      - { kind: code, ref: "Deathmatch.RecomputeLeader computes top/second over non-spectators (PrimaryScore) and calls CountFragsRemaining every tick on the live DriveGametypeFrame path — DM-only hook gating is implicit (only DM's RecomputeLeader calls it)", result: pass }
+      - { kind: code, ref: "NotificationsList A(\"REMAINING_FRAG_1\",\"1fragleft\") registered enabled; SoundsList preloads 1fragleft/2fragsleft/3fragsleft", result: pass }
+      - { kind: code, ref: "HudNotifications case MsgType.Annce → PlayAnnouncer → queue → LoadAnnouncerStream → play (same live path as the minutes announcer)", result: pass }
+      - { kind: code, ref: "Activate() calls GameScores.ResetFragsRemaining() so the cue re-arms each match (QC fragsleft_last reset)", result: pass }
+    confidence: high
+    notes: "FIXED by Wave-2 (was all-missing, liveness na). Now wired end-to-end: RecomputeLeader (live every tick via OnEndFrame→DriveGametypeFrame) scans top/second non-spectator primary scores → GameScores.CountFragsRemaining (faithful port of world.qc:1592-1622, with the leadlimit_and_fraglimit max/min branch and the fragsleft_last anti-repeat) → NotificationSystem.Send(Annce, REMAINING_FRAG_n) → networked → HudNotifications.PlayAnnouncer plays the 1/2/3-fragleft voice. Only the sudden-death-end fragsleft=1 forcing is deferred (framework-owned, passed false)."
+
+  - id: deathmatch.respawn.timing
+    name: "Respawn delay scheduling (calculate_player_respawn_time)"
+    layer: [authority]
+    base_refs:
+      - "server/client.qc:calculate_player_respawn_time"
+      - "server/client.qc:PlayerThink (DEAD_* respawn state machine, client.qc:2359-2438)"
+      - "server/client.qh:GAMETYPE_DEFAULTED_SETTING"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Player/RespawnTiming.cs:Calculate"
+      - "src/XonoticGodot.Common/Gameplay/Player/RespawnTiming.cs:GametypeDefaulted"
+      - "src/XonoticGodot.Server/GameWorld.cs:DeadPlayerThink (RespawnTiming.Calculate(..., GameType?.NetName))"
+      - "src/XonoticGodot.Server/GameWorld.cs:OnClientMove"
+      - "src/XonoticGodot.Server/GameWorld.cs:ShowRespawnCountdown (10-9-8 announcer reader)"
+      - "src/XonoticGodot.Server/GameWorld.cs:AnnceIfEnabledTo (NUM_RESPAWN_n send, opt-in/disabled by default)"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:NUM_RESPAWN_{n} (enabled:false)"
+    constants:
+      - { name: "dm_respawn_delay_small", base: "g_dm_respawn_delay_small 0 → fallback g_respawn_delay_small 2", port: "g_respawn_delay_small (fallback 2)", match: true }
+      - { name: "dm_respawn_delay_large", base: "g_dm_respawn_delay_large 0 → fallback g_respawn_delay_large 2", port: "g_respawn_delay_large (fallback 2)", match: true }
+      - { name: "respawn_delay_max", base: "g_dm_respawn_delay_max 0 → g_respawn_delay_max 5", port: "g_respawn_delay_max (fallback 5)", match: true }
+      - { name: "small_count (FFA)", base: "g_respawn_delay_small_count 0 → 2 in FFA", port: "smallCount<=0 → 2 (non-teamplay)", match: true }
+      - { name: "large_count", base: "g_respawn_delay_large_count 8", port: "fallback 8", match: true }
+      - { name: "player_count_scaling", base: "interpolate small..large by pcount between counts", port: "implemented (same lerp formula)", match: true }
+      - { name: "respawn_waves", base: "g_respawn_waves 0 → ceil((time+sdelay)/waves)*waves", port: "implemented (same ceil-quantize)", match: true }
+      - { name: "respawn_countdown_arm", base: "10-count when sdelay+waves>=5 and wait>1.75s", port: "RespawnCountdown=10 (same condition)", match: true }
+      - { name: "forced_respawn", base: "g_forced_respawn → RESPAWN_FORCE flag", port: "g_forced_respawn → RespawnFlag.Force", match: true }
+      - { name: "GAMETYPE_DEFAULTED_SETTING dm-prefix", base: "reads g_dm_respawn_delay_* first, then g_respawn_delay_*; honors g_respawn_delay_forced; negative override→0", port: "GametypeDefaulted('dm', ...) reads g_dm_respawn_delay_* first then generic; negative→0, zero-or-g_respawn_delay_forced→max(0,generic)", match: true }
+      - { name: "respawn_countdown_announce", base: "ShowRespawnCountdown ceil(respawn_time-time), 0.5s overlap guard, Announcer_PickNumber(CNT_RESPAWN,n)→ANNCE_NUM_RESPAWN_n NOTIF_ONE; NUM_RESPAWN ships disabled (opt-in)", port: "GameWorld.ShowRespawnCountdown identical ceil + 0.5s guard, AnnceIfEnabledTo→NUM_RESPAWN_n OneOnly; NUM_RESPAWN_n registered enabled:false", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "RespawnTiming.Calculate vs calculate_player_respawn_time client.qc:1399-1485 — pcount scaling, waves ceil-quantize, respawn_time_max, countdown arm, RESPAWN_FORCE all present and matching", result: pass }
+      - { kind: code, ref: "RespawnTiming.GametypeDefaulted vs GAMETYPE_DEFAULTED_SETTING (client.qh:347-351): negative→0, zero-or-g_respawn_delay_forced→max(0,generic), else override — exact match; live caller GameWorld.cs passes GameType?.NetName='dm' so g_dm_respawn_delay_* is now consulted", result: pass }
+      - { kind: code, ref: "GameWorld.DeadPlayerThink (DEAD_* machine) driven per-tick from OnClientMove (line 1787); on death edge calls RespawnTiming.Calculate(p, roster, teamplay, GameType?.NetName)", result: pass }
+      - { kind: code, ref: "GameWorld.ShowRespawnCountdown (GameWorld.cs:2986-3006) is a line-faithful port of ShowRespawnCountdown (client.qc:2043-2060): IS_DEAD guard, ceil(respawn_time-time), number<=respawn_countdown, 0.5s overlap guard, NUM_RESPAWN_n send; called from DeadPlayerThink:2968 every dead tick → READER now LIVE (was fail in 2026-06-25 baseline)", result: pass }
+      - { kind: code, ref: "NotificationsList NUM_RESPAWN_{n} registered enabled:false (matches Base opt-in announcer); AnnceIfEnabledTo gates on the shipped Enabled flag so it stays silent at defaults exactly like Base", result: pass }
+    confidence: high
+    notes: "FIXED since 2026-06-25 baseline: the 10-9-8 respawn-countdown announcer is now implemented and LIVE. GameWorld.ShowRespawnCountdown (GameWorld.cs:3558) is a line-faithful port of Base ShowRespawnCountdown (client.qc:2043-2060), called from DeadPlayerThink (GameWorld.cs:3540) on every dead-player tick (the same OnClientMove→DeadPlayerThink path that drives RespawnTiming.Calculate). It reads Player.RespawnCountdown (the value RespawnTiming seeds to 10 for waits>=5s), fires NUM_RESPAWN_n via AnnceIfEnabledTo→NotificationSystem.Send(OneOnly). Like Base, the NUM_RESPAWN announcer ships disabled (enabled:false), so it is silent at defaults until the player opts in — that is faithful, not a gap. The earlier 'no reader/announcer' fail is resolved. Deathmatch.ScheduleRespawn/RespawnDelay (the flat 2s) remains DEAD CODE (overridden in GameWorld), unchanged. Re-verified 2026-06-27: no drift."
+
+  - id: deathmatch.menu.describe
+    name: "Menu gametype-description prose (free-for-all help text shown in the gametype picker)"
+    layer: [presentation]
+    base_refs:
+      - "common/gametypes/gametype/deathmatch/deathmatch.qc:METHOD(Deathmatch, describe) (MENUQC)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Deathmatch.cs:MenuDescription"
+      - "src/XonoticGodot.Common/Gameplay/GameplayBases.cs:GameType.MenuDescription (virtual, default null)"
+      - "game/net/NetGame.cs:UpdateMapVotePanel (reads gt.MenuDescription → Candidate.Description, gametype-vote branch)"
+      - "game/hud/MapVotePanel.cs:DrawDescription (renders the wrapped multi-line description on GametypeVote items)"
+    constants:
+      - { name: "describe_text", base: "3-paragraph MENUQC PAGE_TEXT (FFA fight, scoring +1/-1, powerups/items)", port: "3-paragraph MenuDescription (FFA fight, +1/-1 scoring, Mega Health/Mega Armor)", match: true }
+    status:
+      logic: na
+      values: na
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: partial
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "MenuDescription only renders during a GAMETYPE vote (sv_vote_gametype, opt-in default 0); a normal map vote and the static menu gametype-picker do not surface it. This matches Base (describe() is shown only in the gametype-vote ballot, GameTypeVote_DrawGameTypeItem), but means the prose is unseen at stock settings."
+      - "Listen-server only: the whole mapvote/gametype-vote ballot is fed from the in-process GameWorld.MapVote (NetGame.UpdateMapVotePanel); a dedicated-server / remote client has no ENT_CLIENT_MAPVOTE net entity, so it never sees the description. This is the broader mapvote-net gap tracked in sv-mapvoting / sv-intermission, not a DM-specific defect."
+    verification:
+      - { kind: code, ref: "Deathmatch.MenuDescription (Deathmatch.cs:87) overrides GameType.MenuDescription (GameplayBases.cs:381, default null) with the 3-paragraph FFA prose — faithful structure vs deathmatch.qc:7-16 describe() (FFA fight / +1 -1 scoring / Mega Health+Armor powerups)", result: pass }
+      - { kind: code, ref: "NetGame.UpdateMapVotePanel (NetGame.cs:3772-3781): on isGametypeVote, GameTypes.ByName(c.MapName) → desc = gt.MenuDescription, packed into MapVotePanel.Candidate.Description; live every frame on the listen-server feed", result: pass }
+      - { kind: code, ref: "MapVotePanel.DrawDescription (MapVotePanel.cs:619) drawn when GametypeVote && !empty(c.Description) (MapVotePanel.cs:523,538) — the wrapped multi-line block under the gametype icon", result: pass }
+      - { kind: code, ref: "GameWorld.cs:4088 starts the gametype vote only when sv_vote_gametype != 0 (Cvars.cs:493 default 0) AND PlayerCount>0 — opt-in, matching Base's gametype-vote-only describe surface", result: pass }
+    confidence: high
+    notes: "FIXED by Wave-16: Deathmatch now overrides MenuDescription (a faithful 3-paragraph port of deathmatch.qc:7-16 describe()), and it IS wired to a live reader — NetGame.UpdateMapVotePanel feeds it into MapVotePanel.Candidate.Description on the gametype-vote branch, and MapVotePanel.DrawDescription renders the wrapped block. So presentation is now faithful (was missing). Liveness is PARTIAL, not full live: the description surfaces only during a gametype vote (sv_vote_gametype, opt-in default 0 — faithful to Base, where describe() shows only in the gametype-vote picker) and only on a listen server (the dedicated/remote-client mapvote-net-entity gap is tracked in sv-mapvoting, not here). Corrects the 2026-06-27 baseline claim that 'the port's GameType base class has no Describe() override' — GameType.MenuDescription now exists and DM overrides it."

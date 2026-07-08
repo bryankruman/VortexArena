@@ -98,4 +98,64 @@ public class DominationRoundbasedTests
         Assert.Equal(0, dom.GetTeamScore(Teams.Red)); // ST_SCORE (ticks) untouched
         Assert.Equal(0, red.ScoreFrags);
     }
+
+    /// <summary>
+    /// QC dompointtouch: while a round is active but not yet started (round_handler_IsActive &amp;&amp;
+    /// !round_handler_IsRoundStarted), captures are blocked. The port gates on
+    /// <see cref="Domination.RoundStartedSource"/> returning false.
+    /// </summary>
+    [Fact]
+    public void RoundBased_CaptureBlockedWhileRoundNotStarted()
+    {
+        Facade();
+        var dom = new Domination();
+        ControlPoint cp = dom.AddControlPoint(new Vector3(0, 0, 0));
+        dom.Activate();
+        dom.RoundStart();
+
+        // Wire the round-not-started source (simulates EnableRounds wiring in GameWorld).
+        bool roundStarted = false;
+        dom.RoundStartedSource = () => roundStarted;
+
+        var red = NewPlayer(Teams.Red);
+
+        // While round is not started: capture attempt must be blocked.
+        dom.CapturePoint(red, cp);
+        Assert.Equal(Teams.None, cp.OwnerTeam); // still neutral
+        Assert.Equal(0, dom.GetTeamCaps(Teams.Red));
+
+        // Once the round starts: capture is allowed.
+        roundStarted = true;
+        dom.CapturePoint(red, cp);
+        Assert.Equal(Teams.Red, cp.OwnerTeam);
+    }
+
+    /// <summary>
+    /// QC Domination_RoundStart: clears LastRoundWinner so <see cref="Domination.CheckRoundWinner"/> can
+    /// credit a new winner in the next round. Without this clear, a second round win would not bank caps.
+    /// </summary>
+    [Fact]
+    public void RoundBased_RoundStart_ClearsLastRoundWinner()
+    {
+        Facade();
+        var dom = new Domination();
+        ControlPoint a = dom.AddControlPoint(new Vector3(100, 0, 0));
+        dom.Activate();
+        dom.RoundStart();
+
+        // Red wins the first round.
+        var red = NewPlayer(Teams.Red);
+        dom.CapturePoint(red, a);
+        Assert.True(dom.CheckRoundWinner());
+        Assert.Equal(1, dom.GetTeamCaps(Teams.Red));
+
+        // A new round begins: RoundStart resets the winner latch.
+        a.OwnerTeam = Teams.None;
+        dom.RoundStart();
+
+        // Red wins again — caps should now be 2, not stuck at 1.
+        dom.CapturePoint(red, a);
+        Assert.True(dom.CheckRoundWinner());
+        Assert.Equal(2, dom.GetTeamCaps(Teams.Red));
+    }
 }

@@ -90,6 +90,7 @@ public static class HudLayoutDefaults
         ["crosshair"]    = E(0.00f, 0.00f, 1.00f, 1.00f, "0", "", "1", Main, CfgNo),
         ["fps"]          = E(0.00f, 0.00f, 1.00f, 1.00f, "0", "", "1", All, CfgNo),
         ["ping"]         = E(0.00f, 0.00f, 1.00f, 1.00f, "0", "", "1", All, CfgNo),
+        ["position"]     = E(0.00f, 0.00f, 1.00f, 1.00f, "0", "", "1", All, CfgNo),
         ["vehicle"]      = E(0.29f, 0.84f, 0.42f, 0.16f, "0", "", "1", Main, CfgNo),
     };
 

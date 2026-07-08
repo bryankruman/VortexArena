@@ -98,6 +98,18 @@ public partial class MenuRoot : Control
         ShowScreen(new MainMenu());
     }
 
+    public override void _ExitTree()
+    {
+        // Release the skinned custom mouse cursor installed in _Ready/Restart BEFORE the RenderingServer is
+        // torn down. The DisplayServer holds the cursor image's texture independently of the scene tree, so it
+        // outlives every node we free; left set, its texture RID is released only after RenderingServer::finish(),
+        // which the engine reports on quit as "N RIDs of type Texture were leaked at exit" /
+        // "~ImageTexture: RenderingServer::get_singleton() is null" (godotengine/godot#98806). Resetting to the
+        // default cursor here — _ExitTree fires during SceneTree teardown on EVERY quit path, server still alive —
+        // frees it cleanly, whether the game is closed from the window button, the menu, or a direct CLI launch.
+        Input.SetCustomMouseCursor(null, Input.CursorShape.Arrow);
+    }
+
     /// <summary>
     /// QC <c>menu_restart</c> — rebuild the front-end so a skin or language change takes effect: discard the
     /// cached skin theme (<see cref="MenuSkin.Reload"/>), re-apply the freshly-built <see cref="Theme"/> (which

@@ -1,0 +1,418 @@
+unit: domination
+category: gametype
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-27"
+summary:
+  feature_count: 14
+  worst_gaps:
+    - "dom_team palette entities (per-team point models/sounds/messages from map dom_team edicts) are not implemented; the port hardcodes the default dom_<color>.md3 palette in DomPointModel (non-default maps only)."
+    - "WaypointSprite_Ping (one-shot radar ping on capture) is not emitted separately; the port rebuilds the sprite set each tick (pull model) so ownership/color updates flow, but the explicit ping flash is absent."
+    - "Round-based player-blocking now reproduces QC player_blocked's movement freeze (zeroed .movement + blocked jump) live via PlayerPhysics.RoundMoveForbidden, gated on the round handler's IsRoundStarted; the only residual is QC disableclientprediction=1, an intended divergence (no DP networking stat in the port). Round-based only, non-default."
+features:
+  - id: domination.init.mutator_limits
+    name: "Mutator register + score/lead limit + team setup"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/domination/sv_domination.qh:REGISTER_MUTATOR(dom) (point_limit/leadlimit ONADD)"
+      - "common/gametypes/gametype/domination/sv_domination.qc:dom_DelayedInit"
+      - "common/gametypes/gametype/domination/domination.qh:Domination"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:PointLimit"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:LeadLimit"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType"
+    constants:
+      - { name: "pointlimit_default", base: "200 (mapinfo; cvar -1)", port: "200", match: true }
+      - { name: "teams_default", base: "2", port: "2", match: true }
+      - { name: "leadlimit_default", base: "0 (mapinfo; cvar -1)", port: "0", match: true }
+      - { name: "roundbased_point_limit", base: "5", port: "5 (applied in PointLimit roundbased branch)", match: true }
+      - { name: "leadlimit_cvar_source", base: "g_domination_point_leadlimit", port: "g_domination_point_leadlimit (else leadlimit)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "g_domination_teams_override>=2 (force-N and disable dom_team) handled for team count, but dom_team palette entities (per-team point models/sounds) are not implemented; the port hardcodes the default dom_<color>.md3 palette in DomPointModel."
+    verification:
+      - { kind: code, ref: "PointLimit roundbased branch reads g_domination_roundbased_point_limit (default 5); LeadLimit reads g_domination_point_leadlimit; GameWorld ActivateGameType case Domination @2257", result: pass }
+    confidence: high
+    notes: "Roundbased cap limit (5) applied in PointLimit; LeadLimit reads dom-specific g_domination_point_leadlimit. Both match Base ONADD. Unchanged 2026-06-25 re-verify."
+
+  - id: domination.controlpoint.spawn
+    name: "Control point entity spawn (dom_controlpoint / team_dom_point)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/domination/sv_domination.qc:dom_controlpoint_setup"
+      - "common/gametypes/gametype/domination/sv_domination.qc:spawnfunc(dom_controlpoint)"
+      - "common/gametypes/gametype/domination/sv_domination.qc:AnimateDomPoint"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:SpawnControlPoint"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:DropPointToFloor"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:DomPointModel"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:AnimateDomPoint"
+      - "src/XonoticGodot.Server/GameWorld.cs:WireObjectiveSpawns Domination arm (objective sink @2527 -> SpawnControlPoint @2531)"
+    constants:
+      - { name: "bbox", base: "(-48,-48,-32)..(48,48,32)", port: "(-48,-48,-32)..(48,48,32)", match: true }
+      - { name: "per_point_frags(amt)", base: "1", port: "1", match: true }
+      - { name: "per_point_wait(rate_s)", base: "5", port: "5", match: true }
+      - { name: "think_rate_s", base: "0.1", port: "0.1", match: true }
+      - { name: "default_message", base: "\" has captured a control point\"", port: "\" has captured a control point\"", match: true }
+      - { name: "origin_z_offset", base: "+20 then DropToFloor", port: "+20 then DropPointToFloor (box trace down)", match: true }
+      - { name: "scale", base: "0.6 default", port: "0.6 (e.ScaleFactor = 0.6f)", match: true }
+      - { name: "frame_anim(t_width/t_length)", base: "0.02 / 239 (AnimateDomPoint ++frame)", port: "0.02 / 239 (TWidth/TLength; AnimateDomPoint live in PointThinkEntity)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "objective sink @2531 -> SpawnControlPoint -> SpawnObjective (Touch/Think wired); e.Team=initialTeam; e.Model=DomPointModel; e.ScaleFactor=0.6; +20 then DropPointToFloor box trace; EF_LOWPRECISION/EF_FULLBRIGHT set; AnimateDomPoint advances self.Frame every TWidth(0.02) wrapping at TLength(239), called from PointThinkEntity live", result: pass }
+    confidence: high
+    notes: "FIX 2026-06-25 (re-verify): presentation partial->faithful; scale match false->true (e.ScaleFactor=0.6f now set, line 374); frame_anim match false->true (AnimateDomPoint ported with TWidth 0.02 / TLength 239 and called live each think from PointThinkEntity). The two residual presentation gaps from the prior audit (no frame loop, scale not applied) are both closed. The point body model (dom_<color>.md3 / dom_unclaimed.md3) is set on spawn AND on capture, and the '+0 0 20 then DropToFloor' placement is reproduced via DropPointToFloor box-trace."
+
+  - id: domination.capture.touch
+    name: "Instant point capture on player touch"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/domination/sv_domination.qc:dompointtouch"
+      - "common/gametypes/gametype/domination/sv_domination.qc:dompoint_captured"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:CapturePoint"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:PointTouchEntity"
+    constants:
+      - { name: "recapture_guard_s", base: "0.3 (time < captime+0.3)", port: "0.3 (armed once Captime>0)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "IS_INDEPENDENT_PLAYER skip not mirrored (port has no independent-player concept here)."
+      - "Capture is instant (no neutral interim state); Base's neutral-during-delay is purely cosmetic (capturetime path is commented out in QC), so functionally equivalent."
+    verification:
+      - { kind: code, ref: "CapturePoint: Captime>0 && now<Captime+0.3 guard (Captime set at capture); RoundStartedSource now wired @GameWorld.cs:2807 in the dom.RoundBased branch (dom.RoundStartedSource = () => domRounds.IsRoundStarted), so the round_handler_IsActive && !IsRoundStarted capture block is LIVE in the round-based variant", result: pass }
+    confidence: high
+    notes: "FIX 2026-06-27 (re-verify): the round-not-started capture gate is no longer dead. GameWorld.ActivateGameType now assigns dom.RoundStartedSource = () => domRounds.IsRoundStarted (GameWorld.cs:2807, inside the if(dom.RoundBased) arm alongside RoundEndTimeSource @2806), so CapturePoint's `if (RoundStartedSource is { } s && !s()) return;` actually fires in the round-based variant while a round is active-but-unstarted (QC round_handler_IsActive && !round_handler_IsRoundStarted). In the tick variant the source stays null (correctly inert). The 0.3s self-recapture guard remains live (point.Captime armed at capture). The prior baseline gap (source unwired -> dead) is closed."
+
+  - id: domination.scoring.tick
+    name: "Periodic per-point score tick to owning team + capturer"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/domination/sv_domination.qc:dompointthink"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:PointThink"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:Tick"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:AddTeamScore"
+    constants:
+      - { name: "point_amt", base: "g_domination_point_amt(0)=>.frags(1)", port: "PointAmountFor: cvar else .frags(1)", match: true }
+      - { name: "point_rate_s", base: "g_domination_point_rate(0)=>.wait(5)", port: "PointRateFor: cvar else .wait(5)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "PointThink: VehicleCommon.GameStopped gate (pushed live every frame at GameWorld.cs:1771) + now<GameStartTimeProvider (wired GameWorld.cs:616); team+capturer credit to ST_SCORE+ST_DOM_TICKS", result: pass }
+    confidence: high
+    notes: "PointThink reads VehicleCommon.GameStopped (pushed = Intermission.Running || MatchEnded every frame at line 1771). NOTE CORRECTION 2026-06-25: GameStopped does NOT include a timeout-pause term (line 1494-1497 confirms QC never sets game_stopped for a timeout; the pause is realised via slowmo, not a hard freeze) — the prior baseline note claiming Timeout.IsPaused was the fix was inaccurate, but the current behavior is QC-faithful. Scoring.GameScores.GameStopped is now also assigned (line 1772), correcting the prior 'never assigned' note. Warmup gate (time<game_starttime) live. Status unchanged faithful/live."
+
+  - id: domination.scoring.rules
+    name: "Scoreboard rules (ticks/caps/takes columns + sort keys)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/domination/sv_domination.qc:ScoreRules_dom"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:DeclareScoreRules"
+    constants:
+      - { name: "disable_frags_primary_swap", base: "disable_frags => ticks PRIMARY else SCORE", port: "same", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "DeclareScoreRules roundbased vs non-roundbased arms vs ScoreRules_dom (sv_domination.qc:533)", result: pass }
+    confidence: high
+    notes: "Both arms (caps PRIMARY in roundbased; ticks/score with disable_frags swap in non-roundbased) match QC. Player DOM_TICKS/DOM_TAKES columns declared. Unchanged 2026-06-25 re-verify."
+
+  - id: domination.win.pointlimit
+    name: "Point-limit / lead-limit team win (tick variant)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/domination/sv_domination.qh:REGISTER_MUTATOR(dom) GameRules_limit_score/lead"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:UpdateLeaderAndCheckLimit"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:LeadLimit"
+      - "src/XonoticGodot.Server/GameWorld.cs:MatchHasEnded (case Domination)"
+    constants:
+      - { name: "pointlimit", base: "200", port: "200", match: true }
+      - { name: "leadlimit_cvar_source", base: "g_domination_point_leadlimit (->GameRules_limit_lead)", port: "g_domination_point_leadlimit", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "UpdateLeaderAndCheckLimit (best primary >= pointlimit; lead via LeadLimit) + GameWorld MatchHasEnded reads dom.MatchEnded/LeaderTeam", result: pass }
+    confidence: high
+    notes: "LeadLimit reads g_domination_point_leadlimit (matching GameRules_limit_lead). Leader scan + point/lead-limit latch via the unified primary slot; tied-at-limit -> overtime via ReportsTie. Unchanged 2026-06-25 re-verify."
+
+  - id: domination.roundbased.win
+    name: "Round-based variant: own-all-points round win + caps"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/domination/sv_domination.qc:Domination_CheckWinner"
+      - "common/gametypes/gametype/domination/sv_domination.qc:Domination_count_controlpoints"
+      - "common/gametypes/gametype/domination/sv_domination.qc:Domination_RoundStart"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:CheckRoundWinner"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:CountAndFindRoundWinner"
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:RoundStart"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (EnableRounds + RoundEndTimeSource @2744-2751)"
+    constants:
+      - { name: "round_timelimit_s", base: "120 (autocvar_g_domination_round_timelimit; round_handler_Init arg)", port: "120 (EnableRounds @2750 passes roundTimeLimit: Cvars.FloatOr(\"g_domination_round_timelimit\", 120))", match: true }
+      - { name: "warmup_s", base: "5 (autocvar_g_domination_warmup)", port: "5 (EnableRounds @2749 passes countdown: Cvars.FloatOr(\"g_domination_warmup\", 5))", match: true }
+      - { name: "end_delay_s", base: "5 (round_handler_Init first arg)", port: "5 (EnableRounds @2748 passes endDelay: 5f)", match: true }
+      - { name: "caps_to_win_match", base: "5 (roundbased_point_limit)", port: "5 (enforced in CheckRoundWinner)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "GameWorld.cs:2744-2750 Domination arm now calls EnableRounds(dom.CanRoundStart, dom.CheckRoundWinner, dom.RoundStart, endDelay: 5f, countdown: Cvars.FloatOr(\"g_domination_warmup\", 5f), roundTimeLimit: Cvars.FloatOr(\"g_domination_round_timelimit\", 120f)); EnableRounds @1594 calls Rounds.Init(d,c,rtl) since all three are non-null, so the round uses 120/5/5 not the generic 180 default. Base gametypes-server.cfg: g_domination_round_timelimit 120, g_domination_warmup 5. CheckRoundWinner caps logic + ROUND_OVER/ROUND_TEAM_WIN_<team> notifs all present", result: pass }
+    confidence: high
+    notes: "FIX 2026-06-25 (re-verify): round_timelimit values partial->faithful and timing partial->faithful. The prior baseline (2026-06-26) recorded a 180-vs-120 mismatch because the Domination EnableRounds call omitted the round-timing args; the call now passes endDelay:5/countdown:g_domination_warmup(5)/roundTimeLimit:g_domination_round_timelimit(120), so Rounds.Init runs with the correct dom cvars (matching CA/FreezeTag). round_timelimit_s match false->true; warmup now read from the cvar (not coincidence); added end_delay_s (5, match). Round-based is non-default (g_domination_roundbased 0). Per-round CENTER/INFO notifications + cumulative 5-cap match win + single-round resolution + time-out no-winner all correctly wired."
+
+  - id: domination.capture.audio
+    name: "Capture sound (DOM_CLAIM) + narration (play2all)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/domination/sv_domination.qc:dompoint_captured (_sound head.noise / play2all head.noise1)"
+      - "common/gametypes/gametype/domination/sv_domination.qc:dom_spawnteams (SND_DOM_CLAIM default capsound, noise1 \"\")"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:AnnounceCapture"
+      - "src/XonoticGodot.Common/Gameplay/Sounds/SoundsList.cs:DOM_CLAIM"
+    constants:
+      - { name: "cap_sound", base: "domination/claim (SND_DOM_CLAIM)", port: "DOM_CLAIM -> domination/claim", match: true }
+      - { name: "narration_noise1_default", base: "\"\" (no play2all by default)", port: "none played", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "AnnounceCapture -> SoundSystem.PlayOn(player,\"DOM_CLAIM\") (registered SoundsList.cs:96 -> domination/claim); Base default dom_team capsound = SND_DOM_CLAIM, noise1 default \"\" (no narration sound)", result: pass }
+    confidence: high
+    notes: "The local capture sound DOM_CLAIM plays positionally on the capturer. Base's default dom_team supplies noise1=\"\" so play2all is NOT called by default — the port correctly omits a narration sound. Unchanged 2026-06-25 re-verify."
+
+  - id: domination.capture.notification
+    name: "Capture info notification (INFO_DOMINATION_CAPTURE_TIME)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/domination/sv_domination.qc:dompoint_captured (Send_Notification INFO_DOMINATION_CAPTURE_TIME)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:AnnounceCapture"
+      - "src/XonoticGodot.Common/Gameplay/Notifications/NotificationsList.cs:DOMINATION_CAPTURE_TIME"
+    constants:
+      - { name: "notif_args", base: "s1=netname s2=message f1=points f2=wait", port: "(NetName, message, points, seconds)", match: true }
+      - { name: "notif_arg_counts", base: "2 strings 2 floats", port: "2 strings 2 floats (NotificationsList.cs:711)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Base sends a bprint (not the INFO notification) in the round-based variant; the port collapses both paths to the same INFO_DOMINATION_CAPTURE_TIME line. Cosmetic-only, and round-based is non-default."
+    gaps:
+      - "Round-based variant: Base uses bprint(\"^3%s^3%s\") instead of the INFO notification; the port always sends the INFO line (see divergence_rationale)."
+    verification:
+      - { kind: code, ref: "AnnounceCapture -> NotificationSystem.Info(\"DOMINATION_CAPTURE_TIME\", netname, message, points, seconds); registered NotificationsList.cs:711 with matching 2/2 arg counts", result: pass }
+    confidence: high
+    notes: "The '<player> has captured a control point (N points every M seconds)' notification is broadcast on capture with the correct args. Unchanged 2026-06-25 re-verify."
+
+  - id: domination.hud.modicons_pps
+    name: "Mod-icons HUD: per-team points-per-second bars"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/gametypes/gametype/domination/sv_domination.qc:set_dom_state (total_pps / pps_red/blue/yellow/pink)"
+      - "common/gametypes/gametype/domination/cl_domination.qc:HUD_Mod_Dom"
+      - "common/gametypes/gametype/domination/cl_domination.qc:DrawDomItem"
+    port_refs:
+      - "src/XonoticGodot.Net/GametypeStatusBlock.cs:WriteDominationPps + Kind.Domination"
+      - "game/net/NetGame.cs:UpdateModIcons (case Domination -> SetDominationPps)"
+      - "game/hud/ModIconsPanel.cs:DrawDomination / DrawDomItem / SetDominationPps"
+    constants:
+      - { name: "hud_panel_modicons_dom_layout", base: "0/1/2", port: "supported (LayoutCvar dom_layout)", match: true }
+      - { name: "wire_order", base: "total, red, blue, yellow, pink", port: "[0]=total,[1..4]=red,blue,yellow,pink", match: true }
+      - { name: "per_point_pps_numerator", base: "each point's amt/rate (cvar else .frags/.wait, default 1/5)", port: "per-point PointAmountFor/PointRateFor (cvar else .frags/.wait, default 1/5)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "WriteDominationPps (GametypeStatusBlock.cs:223) sums each point's PointAmountFor(cp)/PointRateFor(cp) into total + the owning team slot (neutral counts toward total only); Kind.Domination + 5 floats wired; NetGame case Domination -> SetDominationPps; per-peer on change", result: pass }
+    confidence: high
+    notes: "WriteDominationPps sums EACH point's own amt/rate (per-point resolvers PointAmountFor/PointRateFor, cvar override else .frags/.wait, default 1/5) — matching QC set_dom_state. Unchanged 2026-06-25 re-verify."
+
+  - id: domination.waypoint.sprite
+    name: "Control point waypoint sprite + radar team color/ping"
+    layer: [authority, presentation]
+    base_refs:
+      - "common/gametypes/gametype/domination/sv_domination.qc:WaypointSprite_SpawnFixed(WP_DomNeut) / WaypointSprite_UpdateSprites(WP_Dom<team>) / WaypointSprite_UpdateTeamRadar(RADARICON_DOMPOINT)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:CollectWaypoints"
+      - "src/XonoticGodot.Common/Gameplay/Waypoints/Waypoints.cs (DomNeut/DomRed/DomBlue/DomYellow/DomPink registered)"
+      - "game/net/ServerNet.cs:SendWaypoints (GameType.CollectWaypoints @938)"
+    constants:
+      - { name: "sprite_origin_offset", base: "origin + '0 0 32'", port: "origin + (0,0,32)", match: true }
+      - { name: "neutral_radar_color", base: "'0 1 1' (cyan)", port: "(0,1,1)", match: true }
+      - { name: "team_radar_color", base: "colormapPaletteColor(team-1)", port: "TeamRadarColor (red/blue/yellow/pink)", match: true }
+      - { name: "radar_icon", base: "RADARICON_DOMPOINT", port: "RadarIcon=1", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "WaypointSprite_Ping on capture (a one-shot radar ping) is not separately emitted; the port rebuilds the sprite set each tick (pull model) so ownership/color updates flow, but the explicit ping flash on capture is absent."
+    verification:
+      - { kind: code, ref: "CollectWaypoints emits one fixed sprite per point (DomSpriteName by owner, TeamRadarColor, RADARICON, +32z); called live by ServerNet.SendWaypoints @938 -> per-peer net push", result: pass }
+    confidence: high
+    notes: "Control points get an on-screen/radar waypoint sprite whose def + tint track the owning team (DomNeut/cyan -> DomRed/Blue/Yellow/Pink + team color), fed live through CollectWaypoints->SendWaypoints. Only the capture ping flash is unported. Unchanged 2026-06-25 re-verify."
+
+  - id: domination.bot.role
+    name: "Bot role: rate unclaimed/contested/enemy control points"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/domination/sv_domination.qc:havocbot_role_dom"
+      - "common/gametypes/gametype/domination/sv_domination.qc:havocbot_goalrating_controlpoints"
+    port_refs:
+      - "src/XonoticGodot.Server/Bot/BotObjectiveRoles.cs:RoleDomination"
+      - "src/XonoticGodot.Server/Bot/BotObjectiveRoles.cs:GoalrateControlPoints"
+      - "src/XonoticGodot.Server/Bot/BotRoles.cs (dispatch 'dom')"
+    constants:
+      - { name: "cp_rating", base: "5000", port: "5000", match: true }
+      - { name: "cp_radius", base: "15000", port: "15000", match: true }
+      - { name: "items_rating/radius", base: "20000 / 8000", port: "20000 / 8000", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "GoalrateControlPoints skips cp where cp.Team==bot.Team; CapturePoint sets point.Entity.Team=team AND SpawnControlPoint sets e.Team=initialTeam -> the entity Team read is correct; BotRoles.cs:97 dispatches 'dom'/'domination' -> RoleDomination", result: pass }
+    confidence: high
+    notes: "Both spawn and capture mirror the owning team onto Entity.Team (QC goalentity.team), so bots correctly skip points their own team owns and target unclaimed/enemy/contested ones. Role dispatched live for 'dom'; rating shape + radii/scores match QC. Unchanged 2026-06-25 re-verify."
+
+  - id: domination.capture.eventlog
+    name: "Server gamelog echo on capture (dom_EventLog :dom:taken:)"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/domination/sv_domination.qc:dom_EventLog"
+      - "common/gametypes/gametype/domination/sv_domination.qc:dompoint_captured (dom_EventLog(\"taken\", ...))"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:EventLogEcho (field) + CapturePoint (invoke @487)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (dom.EventLogEcho wire @2735)"
+    constants:
+      - { name: "eventlog_tag", base: ":dom:taken:<team_before>[:<playerid>]", port: ":dom:taken:<teamBefore>[:<playerId>] (CapturePoint @487)", match: true }
+      - { name: "sv_eventlog_gate", base: "autocvar_sv_eventlog", port: "Cvars.Bool(\"sv_eventlog\") at wire site (GameWorld @2735)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: na
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "CapturePoint @487: EventLogEcho?.Invoke(\":dom:taken:\" + teamBefore + (player.PlayerId > 0 ? \":\" + player.PlayerId : \"\")) where teamBefore = point.OwnerTeam before reassignment (QC this.team = PREVIOUS team); GameWorld @2735 wires dom.EventLogEcho = line => { if (Cvars.Bool(\"sv_eventlog\")) GameLog.Echo(line); } in the Domination ActivateGameType arm", result: pass }
+    confidence: high
+    notes: "FIX 2026-06-25 (re-verify): logic/values missing->faithful, liveness na->live. The dom_EventLog seam is now ported: Domination.EventLogEcho (Domination.cs:100) is invoked in CapturePoint with the `:dom:taken:<team_before>[:<playerid>]` line (teamBefore captured before OwnerTeam reassignment, matching QC dom_EventLog(\"taken\", this.team, this.dmg_inflictor)), and GameWorld.ActivateGameType wires it to GameLog.Echo gated by sv_eventlog. Telemetry-only (server gamelog parsers / stats)."
+
+  - id: domination.roundbased.player_blocked
+    name: "Round-based player-blocking on round start / spawn"
+    layer: [authority]
+    base_refs:
+      - "common/gametypes/gametype/domination/sv_domination.qc:MUTATOR_HOOKFUNCTION(dom, reset_map_players)"
+      - "common/gametypes/gametype/domination/sv_domination.qc:MUTATOR_HOOKFUNCTION(dom, PlayerSpawn)"
+      - "common/gametypes/gametype/domination/sv_domination.qc:Domination_RoundStart"
+      - "common/physics/player.qc:395 (PlayerJump: if(this.player_blocked) return true)"
+      - "common/physics/player.qc:728-732 (sys_phys_update: player_blocked => movement = '0 0 0')"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/GameTypes/Domination.cs:RoundStart"
+      - "src/XonoticGodot.Common/Physics/PlayerPhysics.cs:RoundMoveForbidden (decl @142; consumed in Move @237 + PlayerJump @1064)"
+      - "src/XonoticGodot.Server/GameWorld.cs:ActivateGameType (PlayerPhysics.RoundMoveForbidden wire @2881; preamble clear @2773)"
+    constants: []
+    status:
+      logic: faithful
+      values: na
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "QC player_blocked also sets disableclientprediction=1 (a DarkPlaces networking stat that suppresses client-side movement prediction during the freeze). The port has no equivalent stat, so only the observable movement freeze (zeroed input + blocked jump) is reproduced; the prediction-suppression bit is intentionally not mirrored."
+    gaps:
+      - "QC sets/clears a literal per-player player_blocked field (reset_map_players=1, PlayerSpawn=!IsRoundStarted, Domination_RoundStart=0); the port instead reads the round handler's IsRoundStarted directly as the freeze window (RoundMoveForbidden = _ => !domRounds.IsRoundStarted). Equivalent window + observable effect, but no per-player flag is stored. disableclientprediction=1 not mirrored (see divergence_rationale)."
+    verification:
+      - { kind: code, ref: "Wave 16 (b3a9c06) added PlayerPhysics.RoundMoveForbidden: GameWorld.ActivateGameType dom-roundbased arm wires it @2881 to (_ => !domRounds.IsRoundStarted) and the preamble nulls it @2773; PlayerPhysics.Move zeroes `move` when the predicate fires @237-238 and PlayerJump returns blocked @1064-1065 — both on the live movement driver. Reproduces QC player.qc:728 (movement='0 0 0') + PlayerJump:395 (return true) for the pre-round window.", result: pass }
+    confidence: high
+    notes: "FIX 2026-06-27 (re-verify): logic partial->faithful, timing na->faithful, liveness partial->live; intended_divergence false->true. Wave 16 ported the player_blocked movement freeze as a live host-wired seam (PlayerPhysics.RoundMoveForbidden), mirroring the WeaponFireDriver.RoundFireForbidden pattern: while the dom roundbased round is active-but-unstarted (warmup/countdown/end-delay) the player's movement input is zeroed and jump is blocked on the live PlayerPhysics path. The freeze window is driven off the same live round handler (domRounds.IsRoundStarted) that the QC player_blocked flag tracks, so the timing matches. The ONLY residual is QC's disableclientprediction=1, which has no port stat and is flagged as an intended divergence (not a defect). The generic round-not-started gates (fire-forbidden @1621, dompoint capture gate via RoundStartedSource @2876, respawn suppression @3476) remain live alongside it. Round-based-only (g_domination_roundbased 0 default), non-default variant."

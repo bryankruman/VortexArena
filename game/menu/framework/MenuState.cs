@@ -27,8 +27,9 @@ namespace XonoticGodot.Game.Menu;
 /// </summary>
 public static class MenuState
 {
-    /// <summary>Where the menu persists the user's archived (DP <c>seta</c>) preferences.</summary>
-    public const string UserConfigPath = "user://config.cfg";
+    /// <summary>Where the menu persists the user's archived (DP <c>seta</c>) preferences
+    /// (under <see cref="UserPaths.BaseDir"/>, i.e. <c>~/XonData/config.cfg</c> by default).</summary>
+    public static string UserConfigPath => UserPaths.Resolve("config.cfg");
 
     private static CvarService? _cvars;
     private static VirtualFileSystem? _vfs;
@@ -55,6 +56,15 @@ public static class MenuState
     public static bool Booted => _booted;
 
     /// <summary>
+    /// The command-line flag that disabled config saving for this run, or null when saving is allowed.
+    /// DP's <c>Host_SaveConfig</c> refuses to write config.cfg for automation runs (<c>-benchmark</c> /
+    /// <c>-capturedemo</c>); the port's automation runs are <c>--quit-after-seconds</c> (perf harness, CI
+    /// smoke, scripted A/B — which pin cvars via <c>--cvar</c> that must NOT end up in the player's real
+    /// config) plus the explicit <c>--no-save-config</c> opt-out.
+    /// </summary>
+    public static string? ConfigSaveSuppressedBy { get; private set; }
+
+    /// <summary>
     /// One-time client bootstrap. Idempotent. Mounts <paramref name="dataPath"/> as the asset VFS, loads the
     /// stock config chain (client + server + notifications) into the shared cvar store with authentic
     /// defaults, applies the user's saved preferences, and publishes the ambient <see cref="Api.Services"/>
@@ -67,6 +77,25 @@ public static class MenuState
         if (_booted)
             return;
         _booted = true;
+
+        // DP Host_SaveConfig guard: an automation run must never rewrite the player's real config.cfg with
+        // harness state (--cvar pins, --bots fills). Detect it once here; SaveUserConfig checks the flag.
+        // --quit-after-seconds = perf/CI smoke, --camera-trace/--screenshot = scripted capture runs (they
+        // self-quit through the normal Shell teardown), --no-save-config = the explicit opt-out.
+        foreach (string a in OS.GetCmdlineArgs())
+        {
+            if (a is "--no-save-config" or "--quit-after-seconds" or "--camera-trace" or "--screenshot")
+            {
+                ConfigSaveSuppressedBy = a;
+                XonoticGodot.Common.Diagnostics.Log.Info(
+                    $"[MenuState] {a} present — config.cfg will NOT be saved this run (DP -benchmark rule).");
+                break;
+            }
+        }
+
+        // One-time relocation of the user's data out of Godot's hidden user:// dir into ~/XonData (no-op after
+        // the first run). Must run before LoadUserConfig below, or the migrated config.cfg wouldn't be seen.
+        UserPaths.MigrateLegacyUserData();
 
         _cvars ??= new CvarService();
 
@@ -98,7 +127,10 @@ public static class MenuState
         {
             try
             {
-                _interp = ConfigLoader.Load(_cvars, reader,
+                // The archive hook carries DP's CF_ARCHIVE provenance: a stock-tree `seta` marks the cvar
+                // archiveable (persist WHEN the user later changes it), a plain `set` does not — the shipped
+                // cfgs, not the C# registration tables, are the authority on what belongs in config.cfg.
+                _interp = ConfigLoader.Load(_cvars, reader, name => _cvars.MarkArchived(name),
                     "xonotic-client.cfg", "xonotic-server.cfg", "notifications.cfg");
                 XonoticGodot.Common.Diagnostics.Log.Info($"[MenuState] config: {_interp.CvarsAssigned} cvars from {_interp.FilesExecuted} cfg files " +
                          $"({_interp.AliasesDefined} aliases, {_interp.FilesMissing} missing).");
@@ -127,6 +159,23 @@ public static class MenuState
         // the thin KeyBindings.Defaults so the game is still playable. With a data dir the cfg already filled it.
         if (!XonoticGodot.Engine.Console.BindTable.List().Any())
             BindInput.SeedFromActions(KeyBindings.Defaults);
+
+        // (perf §12.7) PORT "smoothest play" video defaults. These override Xonotic's SHIPPED cfg values
+        // (xonotic-client.cfg sets vid_fullscreen 1; vid_vsync is assigned nowhere) but run BEFORE LockDefaults +
+        // LoadUserConfig below — so they become the locked DEFAULT (persisted only if the player moves them, and a
+        // player's own config.cfg value still wins). vid_fullscreen 2 = EXCLUSIVE fullscreen (takes the desktop
+        // compositor out of the present path — desktop-fullscreen 1 still composites on Windows, the missed-vblank
+        // double-frames in the hitch logs); vid_vsync 2 = mailbox (no FIFO cascade on a missed present). Either can
+        // be set 0/1 from the console or video menu. (Setting vid_vsync here, before the lock, also makes it a
+        // proper locked default instead of the post-lock "always-save" cvar RegisterEngineVideoDefaults created.)
+        _cvars.Set("vid_fullscreen", "2");
+        _cvars.Set("vid_vsync", "2");
+
+        // Lock the shipped baseline NOW — the full stock cfg tree is loaded but the user's saved overrides are
+        // not yet applied. This is DP's Cvar_LockDefaults: it freezes each cvar's current value as its default so
+        // SaveUserConfig can persist only what the user actually moved off-default (and so a cvar that only ever
+        // appears via user/console `seta` — never in the stock tree — is treated as always-save, not "at default").
+        _cvars.LockDefaults();
 
         // --- the user's saved preferences win over the stock defaults (incl. their saved `bind` lines) ---
         LoadUserConfig();
@@ -207,16 +256,25 @@ public static class MenuState
     }
 
     /// <summary>
-    /// Write every archived cvar to <c>user://config.cfg</c> as <c>seta NAME "VALUE"</c> (DP's config.cfg
-    /// archive dump). Called when the user applies settings or leaves the menu. Never throws.
+    /// Write the user's changed preferences to <c>user://config.cfg</c> as <c>seta NAME "VALUE"</c> lines —
+    /// DP's config.cfg rule (<c>Cvar_WriteVariables</c>): only archived cvars whose value differs from the
+    /// locked default (plus user/console-created cvars that have no locked default), via
+    /// <see cref="CvarService.ArchivedNamesToPersist"/>. Settings left at (or reset to) their shipped default
+    /// are omitted, so the file stays a lean diff rather than a full dump. Called when the user applies settings
+    /// or leaves the menu. Never throws.
     /// </summary>
     public static void SaveUserConfig()
     {
         if (_cvars is null)
             return;
+        // DP Host_SaveConfig's guards: no config write on automation runs (-benchmark/-capturedemo ⇔ our
+        // --quit-after-seconds/--no-save-config) and none from a session that never booted the config chain
+        // (host_framecount < 3 ⇔ !_booted) — either would overwrite the player's real prefs with junk.
+        if (!_booted || ConfigSaveSuppressedBy is not null)
+            return;
         var sb = new StringBuilder();
         sb.Append("// XonoticGodot — saved menu preferences (archived cvars + keybinds). Auto-generated; edits may be overwritten.\n");
-        foreach (string name in _cvars.ArchivedNames.OrderBy(n => n, StringComparer.Ordinal))
+        foreach (string name in _cvars.ArchivedNamesToPersist.OrderBy(n => n, StringComparer.Ordinal))
             sb.Append($"seta {name} \"{Escape(_cvars.GetString(name))}\"\n");
 
         // Dump the runtime keybind table (DP Key_WriteBindings) as `bind "KEY" "cmd"` lines so the user's

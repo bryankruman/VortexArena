@@ -1,0 +1,41 @@
+# Scope declarations for tools/parity-coverage.py (the Base coverage ledger).
+#
+#   exclude: deliberately OUT of parity scope. Requires a rationale — "not player-visible
+#            behavior" must be argued, not assumed. Excluded lines never count as unmapped.
+#   defer:   known-uncovered, an audit is scheduled/pending. Stays visible in COVERAGE.md as
+#            DEFERRED until the audit lands citations; the ledger then flags the entry for removal.
+#
+# Patterns are qcsrc-relative posix paths; `dir/**` matches the whole subtree.
+# Rule of thumb: prefer defer over exclude when in doubt — exclusions are how blind spots hide.
+
+exclude:
+  - pattern: "dpdefs/**"
+    rationale: >-
+      DarkPlaces/menu engine API declaration mirrors (builtin prototypes, extension defs,
+      keycodes) — declarations only, no behavior. The engine behavior behind these APIs is
+      audited where it is consumed (each unit's rows) and by the data/engine-layer checks
+      (CVAR-DIFF.md, ASSET-CHECK.md).
+
+defer:
+  - pattern: "common/mapinfo.qc"
+    note: "mapinfo unit — 2026-07-02 unmapped-area audit wave"
+  - pattern: "common/mapinfo.qh"
+    note: "mapinfo unit — 2026-07-02 unmapped-area audit wave"
+  - pattern: "common/minigames/**"
+    note: "minigames unit — 2026-07-02 unmapped-area audit wave"
+  - pattern: "menu/**"
+    note: "menu-core + menu-dialogs units — 2026-07-02 unmapped-area audit wave"
+  - pattern: "client/hud/panel/strafehud/**"
+    note: "cl-strafehud unit — 2026-07-02 unmapped-area audit wave"
+  - pattern: "common/command/**"
+    note: "console-commands unit — 2026-07-02 unmapped-area audit wave"
+  - pattern: "client/command/**"
+    note: "console-commands unit — 2026-07-02 unmapped-area audit wave"
+  - pattern: "server/command/getreplies.qc"
+    note: "console-commands unit — 2026-07-02 unmapped-area audit wave"
+  - pattern: "server/playerstats.qc"
+    note: "playerstats-xonstat unit — 2026-07-02 unmapped-area audit wave"
+  - pattern: "lib/urllib.qc"
+    note: "playerstats-xonstat unit — 2026-07-02 unmapped-area audit wave"
+  - pattern: "lib/json.qc"
+    note: "playerstats-xonstat unit — 2026-07-02 unmapped-area audit wave"

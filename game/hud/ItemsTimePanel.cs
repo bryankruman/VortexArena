@@ -98,6 +98,7 @@ public partial class ItemsTimePanel : HudPanel
         c.Register("hud_panel_itemstime_progressbar_name", "progressbar", CvarFlags.Save);
         c.Register("hud_panel_itemstime_progressbar_reduced", "0", CvarFlags.Save);
         c.Register("hud_panel_itemstime_hidespawned", "1", CvarFlags.Save);
+        c.Register("hud_panel_itemstime_hidebig", "0", CvarFlags.Save);
         c.Register("hud_panel_itemstime_text", "1", CvarFlags.Save);
 
         // Shared progress-bar alpha (global; QC autocvar_hud_progressbar_alpha). Idempotent.
@@ -146,6 +147,22 @@ public partial class ItemsTimePanel : HudPanel
         QueueRedraw();
     }
 
+    /// <summary>
+    /// QC <c>HUD_ItemsTime</c> enable gate (itemstime.qc:293-296): the panel draws only for spectators (mode 1),
+    /// or for spectators + everyone during warmup + (when <c>sv_itemstime == 2</c>) alive players too (mode 2).
+    /// With the stock cvars (<c>hud_panel_itemstime = 2</c>, <c>sv_itemstime = 1</c>) an ALIVE player in a normal
+    /// round therefore sees NOTHING — only spectators do. <paramref name="panelMode"/> is
+    /// <c>hud_panel_itemstime</c>; <paramref name="spectateeStatus"/> is QC <c>spectatee_status</c> (0 = self,
+    /// playing); <paramref name="warmup"/> is QC <c>warmup_stage</c>; <paramref name="itemstimeStat"/> is
+    /// QC <c>STAT(ITEMSTIME)</c> (= the live <c>sv_itemstime</c> tier 0/1/2).
+    /// </summary>
+    public static bool ShouldDraw(int panelMode, int spectateeStatus, bool warmup, int itemstimeStat)
+    {
+        if (panelMode == 1) return spectateeStatus != 0;
+        if (panelMode == 2) return spectateeStatus != 0 || warmup || itemstimeStat == 2;
+        return false;
+    }
+
     // -------------------------------------------------------------------------------------------------
     //  hidespawned mode resolution (QC autocvar_hud_panel_itemstime_hidespawned: 0/1/2).
     //  HideSpawned (the legacy public flag) forces at least mode 1 so old callers keep their behavior.
@@ -170,11 +187,18 @@ public partial class ItemsTimePanel : HudPanel
     {
         float now = CurrentTime();
         int hideMode = HideSpawnedMode();
+        // QC autocvar_hud_panel_itemstime_hidebig: when set, suppress Big Health (health_big) and Big Armor
+        // (armor_big) from the countdown panel. The server always tracks them; this is a client-only display
+        // preference. Default 0 = always show big items. Must be applied identically in both the count pass and
+        // the draw pass below so the grid layout uses the same item set it counted.
+        bool hideBig = CvarBool("hidebig");
 
         // --- Count the items to draw this frame (QC FOREACH count loop). ---
         int count = 0;
         foreach (var kv in Catalog)
         {
+            // QC hud_panel_itemstime_hidebig: skip health_big / armor_big when the option is on.
+            if (hideBig && (kv.Key == "health_big" || kv.Key == "armor_big")) continue;
             if (!_times.TryGetValue(kv.Key, out float t)) continue;
             if (CountsForGrid(t, now, hideMode)) count++;
         }
@@ -261,6 +285,8 @@ public partial class ItemsTimePanel : HudPanel
         int row = 0, column = 0;
         foreach (var kv in Catalog)
         {
+            // QC hud_panel_itemstime_hidebig: same filter as the count pass above — must match exactly.
+            if (hideBig && (kv.Key == "health_big" || kv.Key == "armor_big")) continue;
             if (!_times.TryGetValue(kv.Key, out float t)) continue;
             if (t == -1f) continue; // QC FOREACH gate: Item_ItemsTime_GetTime(id) != -1
 
@@ -354,10 +380,12 @@ public partial class ItemsTimePanel : HudPanel
             if (progressbarReduced) { pPos = numPos; pSize = new Vector2(((ar - 1f) / ar) * mySize.X, mySize.Y); }
             else { pPos = myPos; pSize = mySize; }
 
-            float frac = Mathf.Clamp(t / progressbarMaxtime, 0f, 1f);
-            // QC passes iconalign as the bar's baralign (so the bar grows away from the icon side).
-            DrawProgressBar(pPos, pSize, frac, iconalign ? 1 : 0, progressbarName,
-                new Color(color.R, color.G, color.B), pbAlpha);
+            // QC: HUD_Panel_DrawProgressBar(p_pos, p_size, name, t/maxtime, vertical=0, baralign=iconalign, color, alpha).
+            // Route through the shared faithful primitive (3-slice cap render + skin art resolve), not a flat fill —
+            // length_ratio is NOT pre-clamped here (the primitive clamps >1 internally, matching the QC).
+            float frac = t / progressbarMaxtime;
+            DrawProgressBar(new Rect2(pPos, pSize), progressbarName, frac, vertical: false,
+                baralign: iconalign ? 1 : 0, new Color(color.R, color.G, color.B), pbAlpha);
         }
 
         // Number / checkmark (QC: text on → seconds while t>0, else the checkmark in the number slot).
@@ -419,30 +447,6 @@ public partial class ItemsTimePanel : HudPanel
         float tx = box.Position.X + (box.Size.X - tw) * 0.5f;
         float ty = box.Position.Y + (box.Size.Y - sz) * 0.5f;
         DrawText(new Vector2(tx, ty), s, col, sz);
-    }
-
-    // -------------------------------------------------------------------------------------------------
-    //  Progress bar (QC HUD_Panel_DrawProgressBar — horizontal here; baralign 0 = grow-right, 1 = grow-left).
-    //  Renders the named skin art clipped to the fill rect; falls back to a tinted rect when art is missing.
-    // -------------------------------------------------------------------------------------------------
-    private void DrawProgressBar(Vector2 origin, Vector2 size, float lengthRatio, int baralign, string barName,
-        Color color, float alpha)
-    {
-        if (alpha <= 0f || lengthRatio <= 0f) return;
-        if (lengthRatio > 1f) lengthRatio = 1f;
-
-        var fill = new Color(color.R, color.G, color.B, alpha);
-        float w = size.X;
-        float left = origin.X;
-        if (baralign == 1) left += (1f - lengthRatio) * w;           // right align (grow left)
-        else if (baralign == 2) left += 0.5f * (1f - lengthRatio) * w; // center align
-        var fillRect = new Rect2(new Vector2(left, origin.Y), new Vector2(w * lengthRatio, size.Y));
-
-        if (!DrawSkinPic(barName, fillRect, fill))
-        {
-            DrawRect(new Rect2(origin, size), new Color(0f, 0f, 0f, alpha * 0.35f)); // track
-            DrawRect(fillRect, fill);
-        }
     }
 
     // -------------------------------------------------------------------------------------------------

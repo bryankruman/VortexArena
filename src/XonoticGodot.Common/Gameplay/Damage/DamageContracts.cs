@@ -63,4 +63,42 @@ public static class Combat
             HitLocation = hitLocation,
             Force = force,
         });
+
+    /// <summary>
+    /// QC <c>Heal(targ, inflictor, amount, limit)</c> (server/damage.qc:948): the central heal dispatcher —
+    /// symmetric counterpart to <c>Damage()</c>. Rejects heals when the target is freed, a spectator
+    /// (TakeDamage==No), frozen (STAT_FROZEN or STATUSEFFECT_Frozen), or dead. Dispatches to
+    /// <see cref="Entity.GtEventHeal"/> when the target carries one (an Onslaught generator / control-point
+    /// icon sets it to ons_GeneratorHeal / ons_ControlPoint_Icon_Heal, a func_assault_destructible sets it to
+    /// destructible_heal), else returns false (QC: <c>bool healed = targ.event_heal ? … : false</c>).
+    /// Returns true if any health was added.
+    ///
+    /// Note: QC also rejects when <c>game_stopped</c> is true; in this port that gate lives at the gametype
+    /// caller layer (the same pragmatic split as the <c>Damage()</c> dispatcher), so it is not checked here.
+    /// </summary>
+    public static bool Heal(Entity target, Entity? inflictor, float amount, float limit)
+    {
+        if (target.IsFreed)
+            return false;
+
+        // QC damage.qc:951: IS_CLIENT(targ) && CS(targ).killcount == FRAGS_SPECTATOR — spectator/observer guard.
+        // Port: a spectator's TakeDamage is set to DamageMode.No by MakePlayerObserver (matching the QC
+        // DAMAGE_NO set on observers); this covers the killcount==FRAGS_SPECTATOR case faithfully.
+        if (target.TakeDamage == DamageMode.No)
+            return false;
+
+        // QC damage.qc:952: STAT(FROZEN, targ) — frozen players cannot receive heals (they must be thawed first).
+        bool isFrozen = target.FrozenStat != 0
+            || (XonoticGodot.Common.Gameplay.StatusEffectsCatalog.Frozen is { } fz
+                && XonoticGodot.Common.Gameplay.StatusEffectsCatalog.Has(target, fz));
+        if (isFrozen)
+            return false;
+
+        // QC damage.qc:952: IS_DEAD(targ) — dead entities cannot be healed.
+        if (target.DeadState != DeadFlag.No)
+            return false;
+
+        // QC damage.qc:956-958: bool healed = (targ.event_heal) ? targ.event_heal(targ, inflictor, amount, limit) : false;
+        return target.GtEventHeal?.Invoke(target, inflictor, amount, limit) ?? false;
+    }
 }

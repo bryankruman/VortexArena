@@ -13,8 +13,10 @@ namespace XonoticGodot.Game.Menu;
 /// </summary>
 public static class MapList
 {
-    // Directories to scan for installed maps (Godot virtual paths). Mirrors the engine's maps/ search.
-    private static readonly string[] SearchDirs = { "res://maps", "user://maps" };
+    // Directories to scan for installed maps. res://maps is the in-tree resource root; the second is the
+    // user's loose-maps drop folder under ~/XonData (resolved to an absolute OS path). Mirrors the engine's
+    // maps/ search; DirAccess.Open accepts both Godot virtual paths and absolute OS paths.
+    private static string[] SearchDirs => new[] { "res://maps", UserPaths.Resolve("maps") };
 
     // Representative stock Xonotic map names — the fallback when nothing is installed on disk.
     private static readonly string[] Fallback =

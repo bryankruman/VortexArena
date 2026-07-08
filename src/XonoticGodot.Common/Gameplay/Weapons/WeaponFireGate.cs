@@ -1,5 +1,7 @@
 using XonoticGodot.Common.Framework;
 using XonoticGodot.Common.Services;
+// Alias the animdecide unit so the call sites read unambiguously (it lives flat in XonoticGodot.Common.Gameplay).
+using AnimDecideUnit = XonoticGodot.Common.Gameplay.AnimDecide;
 
 namespace XonoticGodot.Common.Gameplay;
 
@@ -37,6 +39,20 @@ public abstract partial class Weapon
         => PrepareAttack(actor, slot, fire, attackTime: float.NaN);
 
     /// <summary>
+    /// Variant of <see cref="PrepareAttack(Entity,WeaponSlot,FireMode,float)"/> that decouples the
+    /// <paramref name="buttonFire"/> (which physical fire button must be held) from <paramref name="fire"/>
+    /// (which fire MODE — i.e. which <c>wr_checkammo</c> + refire/animtime — to commit). In QC,
+    /// <c>weapon_prepareattack</c>'s <c>secondary</c> arg only selects the ammo check; the button is gated
+    /// earlier by <c>W_WeaponFrame</c> via the <c>fire</c> bitmask handed to <c>wr_think</c>. The headless
+    /// port re-derives the button check here, so weapons whose gate fires one MODE off the OTHER button
+    /// (Shotgun's out-of-ammo auto-melee: a secondary-mode slap triggered by an empty PRIMARY press) pass the
+    /// originating button as <paramref name="buttonFire"/> so the held-button gate matches what the player
+    /// actually pressed.
+    /// </summary>
+    public bool PrepareAttack(Entity actor, WeaponSlot slot, FireMode fire, float attackTime, FireMode buttonFire)
+        => PrepareAttackImpl(actor, slot, fire, attackTime, buttonFire);
+
+    /// <summary>
     /// Port of <c>weapon_prepareattack</c> with the explicit <c>attacktime</c> parameter (QC's last arg). The
     /// default <see cref="PrepareAttack(Entity,WeaponSlot,FireMode)"/> overload passes <c>NaN</c> meaning "use
     /// this weapon's standard <see cref="RefireFor"/>"; weapons that run on a private interlock timer
@@ -50,14 +66,19 @@ public abstract partial class Weapon
     /// animtime — see <see cref="AnimtimeFor"/>).
     /// </summary>
     public bool PrepareAttack(Entity actor, WeaponSlot slot, FireMode fire, float attackTime)
+        => PrepareAttackImpl(actor, slot, fire, attackTime, buttonFire: fire);
+
+    private bool PrepareAttackImpl(Entity actor, WeaponSlot slot, FireMode fire, float attackTime, FireMode buttonFire)
     {
         WeaponSlotState st = actor.WeaponState(slot);
         bool secondary = fire == FireMode.Secondary;
 
         // QC W_WeaponFrame only invokes wr_think's fire branch for a HELD button; the headless driver always
         // calls WrThink(Primary) for upkeep, so the button check is the authority that no shot leaks out when
-        // the player isn't pressing fire.
-        bool held = secondary ? st.ButtonAttack2 : st.ButtonAttack;
+        // the player isn't pressing fire. The button gated here is the one the player PRESSED (buttonFire),
+        // which can differ from the fire MODE being committed (Shotgun auto-melees a SECONDARY slap off an
+        // empty PRIMARY press).
+        bool held = buttonFire == FireMode.Secondary ? st.ButtonAttack2 : st.ButtonAttack;
         if (!held)
             return false;
 
@@ -123,6 +144,35 @@ public abstract partial class Weapon
                 s2.State = WeaponFireState.Ready;
         });
 
+        // [W14b LI1] animdecide upper-body action set-site. QC weapon_thinkf (weaponsystem.qc:415-423) latches the
+        // SHOOT (or MELEE) upper action only when it schedules a WFRAME_FIRE1/FIRE2 with a NON-ZERO animtime
+        // (`(fr == WFRAME_FIRE1 || fr == WFRAME_FIRE2) && t`). The committed attack is the port's WFRAME_FIRE
+        // analogue, so latch the action now (restart = true to mirror QC's restartanim = fr != WFRAME_IDLE, so a
+        // held-trigger stream restarts the window each shot). A ZERO-animtime fire mode (QC's `&& t` fails) does
+        // NOT latch a torso overlay and, like QC's else-branch (weaponsystem.qc:422-423), CLEARS a lingering
+        // SHOOT/MELEE — a zero-animtime shot returns the torso to idle.
+        //
+        // SHOOT vs MELEE (weaponsystem.qc:417-419): a PRIMARY shot off a WEP_TYPE_MELEE_PRI weapon, or a SECONDARY
+        // shot off a WEP_TYPE_MELEE_SEC weapon (the Shotgun's bash), latches MELEE instead of SHOOT. The mode here is
+        // `fire`, so test the matching melee spawnflag for that mode. (Pain/Draw/Taunt/Die latch at their own sites.)
+        float fireNow = Api.Services is not null ? Api.Clock.Time : 0f;
+        if (animtime > 0f)
+        {
+            bool primaryMelee = fire == FireMode.Primary && (SpawnFlags & WeaponFlags.TypeMeleePri) != 0;
+            bool secondaryMelee = fire == FireMode.Secondary && (SpawnFlags & WeaponFlags.TypeMeleeSec) != 0;
+            AnimDecideUnit.AnimUpperAction act0 = (primaryMelee || secondaryMelee)
+                ? AnimDecideUnit.AnimUpperAction.Melee
+                : AnimDecideUnit.AnimUpperAction.Shoot;
+            var (act, start) = AnimDecideUnit.SetAction(
+                actor.AnimUpperAction, actor.AnimActionStart, act0, fireNow, restart: true);
+            actor.AnimUpperAction = act;
+            actor.AnimActionStart = start;
+        }
+        else if (actor.AnimUpperAction is AnimDecideUnit.AnimUpperAction.Shoot or AnimDecideUnit.AnimUpperAction.Melee)
+        {
+            actor.AnimUpperAction = AnimDecideUnit.AnimUpperAction.None;
+        }
+
         return true;
     }
 
@@ -138,6 +188,13 @@ public abstract partial class Weapon
 
         if (WrCheckAmmo(actor, slot, secondary))
             return true;
+
+        // QC weapon_prepareattack_checkammo (weaponsystem.qc:254-256): a Shotgun whose secondary is melee does
+        // NOT dry-fire-click on an empty PRIMARY press — it stays quiet ("no clicking, just allow") so the
+        // out-of-ammo auto-melee can slap instead of clicking. Mirror that weapon-specific early-out here so
+        // the empty-primary auto-melee path is silent (and never auto-switches away) exactly like Base.
+        if (this is Shotgun shotgunWep && !secondary && shotgunWep.Secondary.Secondary == 1)
+            return false;
 
         WeaponSlotState st = actor.WeaponState(slot);
 
@@ -241,8 +298,11 @@ public abstract partial class Weapon
             float now0 = Api.Services is not null ? Api.Clock.Time : 0f;
             if (st.ReloadComplain < now0)
             {
+                // QC weaponsystem.qc:794 play2(actor, SND(UNAVAILABLE)) — a per-recipient 2D cue on CH_INFO at
+                // VOL_BASE 0.7 / ATTEN_NONE 0. SND(UNAVAILABLE) resolves to "weapons/unavailable" (NOT
+                // "misc/unavailable"); SoundSystem.Play2 plays the registered cue 2D with Base's vol/atten/channel.
                 if (Api.Services is not null)
-                    Api.Sound.Play(actor, SoundChannel.Item, "misc/unavailable.wav");
+                    SoundSystem.Play2(actor, "UNAVAILABLE");
                 st.ReloadComplain = now0 + 1f;
             }
             // switch away if the amount of ammo is not enough to keep using this weapon.
@@ -498,7 +558,8 @@ internal static class WeaponAmmo
         Hook hk => secondary ? hk.CheckAmmoSecondary(actor) : hk.CheckAmmoPrimary(actor),
         Tuba => true,
         Porto => true,
-        Vaporizer vp => vp.CheckAmmoPrimary(actor),
+        // wr_checkammo1 (rail, cells) / wr_checkammo2 (Blaster-laser secondary; free at the default Blaster ammo 0).
+        Vaporizer vp => secondary ? vp.CheckAmmoSecondary(actor) : vp.CheckAmmoPrimary(actor),
         // Overkill weapons (okmachinegun.qc / okshotgun.qc / oknex.qc / okhmg.qc / okrpc.qc): without these
         // cases they fell through to the default `true`, so wr_checkammo never ran. OkMachinegun/OkNex use the
         // primary check for both modes (the secondary is the unlimited blaster jump / the zoom key, like

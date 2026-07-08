@@ -1,0 +1,364 @@
+unit: monster-mage
+category: monster
+base_ref_rev: "v0.8.6-1779-g863cd3e84"
+last_audited: "2026-06-28"
+summary:
+  feature_count: 11
+  worst_gaps:
+    - "RandomRelocate / mr_think need_help scans remain behavioral approximations of the QC builtins (not bit-exact)."
+    - "anim.frames timing: animfixfps fps-normalization ('<start> 1 <fps>' rate component) not modeled — only the start frame index is stamped (timing: unknown)."
+    - "MENUQC describe() bestiary prose is ported verbatim in Mage.Describe() but has NO caller/UI surface (dead — no bestiary tooltip exists in the port)."
+features:
+  - id: monster-mage.spawn.setup
+    name: "Spawn + mr_setup (health, speeds, loot, size, attackfunc)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/mage.qc:spawnfunc(monster_mage)"
+      - "common/monsters/monster/mage.qc:METHOD(Mage, mr_setup)"
+      - "common/monsters/monster/mage.qh:CLASS(Mage)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Mage.cs:Spawn"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterSpawnFuncs.cs:Mage"
+      - "src/XonoticGodot.Common/Gameplay/MapObjects/MapObjectsRegistry.cs:222"
+    constants:
+      - { name: "g_monster_mage_health", base: "400", port: "400 (cfg)", match: true }
+      - { name: "g_monster_mage_speed_walk", base: "250", port: "250 (cfg)", match: true }
+      - { name: "g_monster_mage_speed_run", base: "400", port: "400 (cfg)", match: true }
+      - { name: "g_monster_mage_speed_stop", base: "50", port: "50 (cfg)", match: true }
+      - { name: "g_monster_mage_damageforcescale", base: "0.5", port: "0.5 (cfg)", match: true }
+      - { name: "g_monster_mage_loot", base: "health_big", port: "health_big (cfg)", match: true }
+      - { name: "m_mins", base: "-16 -16 -24", port: "-16 -16 -24", match: true }
+      - { name: "m_maxs", base: "16 16 55", port: "16 16 55", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "MapObjectsRegistry.cs:222 SpawnFuncs.Register(monster_mage) -> MonsterSpawnFuncs.Mage -> Spawn(mage) -> MonsterAI.Setup; e.Think wired -> RunThink", result: pass }
+      - { kind: value-diff, ref: "assets/data/xonotic-data.pk3dir/monsters.cfg g_monster_mage_* == Base monsters.cfg (lines 31-64, line-for-line verified 2026-06-25)", result: pass }
+    confidence: high
+    notes: "Setup values flow through MonsterAI.Cvar from the shipped monsters.cfg, which matches Base exactly. Skin randomized 0..4 like QC; heal switch handles 0/1/2 (skins 3/4 = no per-skin heal, same as Base). MonsterSound(spawn) at Setup keeps audio:faithful. (Registry line moved 212->222 since baseline; spawn/dispatch chain re-verified live 2026-06-25.)"
+
+  - id: monster-mage.attack.select
+    name: "Attack selection (melee push vs ranged teleport/spike)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/mage.qc:M_Mage_Attack"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Mage.cs:Attack"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:AttackCheck"
+    constants:
+      - { name: "g_monster_mage_attack_push_chance", base: "0.7", port: "0.7 (cfg)", match: true }
+      - { name: "g_monster_mage_attack_spike_chance", base: "0.45", port: "0.45 (cfg)", match: true }
+      - { name: "g_monster_mage_attack_teleport_chance", base: "0.1 (cfg; inline 0.2)", port: "0.1 (cfg); 0.1 inline-fallback", match: true }
+      - { name: "g_monsters_attack_range", base: "120", port: "120 (cfg)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: true
+    divergence_rationale: "Port re-derives melee/ranged from enemy distance inside Mage.Attack and calls Push/Teleport/FireSpike directly, rather than routing through WEP_MAGE_SPIKE.wr_think / OFFHAND_MAGE_TELEPORT.offhand_think. The weapon-entity wrapper is not modeled; the branch chances and gating are behaviorally equivalent."
+    gaps: []
+    verification:
+      - { kind: code, ref: "MonsterAI.AttackCheck:1242 -> st.Def.Attack -> Mage.Attack:157 distance split (<=AttackRange push 0.7; else teleport 0.1 / spike !ActiveSpike 0.45)", result: pass }
+    confidence: high
+    notes: "Inline TeleportChance fallback 0.1 matches cfg. Mage.Attack re-checks st.AttackFinished at its top. Per-attack cooldowns set inside each sub-attack. Spike one-at-a-time via st.ActiveSpike (QC .mage_spike). (AttackCheck moved 1102->1242 since baseline; re-verified 2026-06-25.)"
+
+  - id: monster-mage.attack.spike
+    name: "Homing electric spike (one in flight, seeker guidance)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/mage.qc:M_Mage_Attack_Spike"
+      - "common/monsters/monster/mage.qc:M_Mage_Attack_Spike_Think"
+      - "common/monsters/monster/mage.qc:M_Mage_Attack_Spike_Explode"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Mage.cs:FireSpike"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterFramework.cs:HomeProjectile"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:SpawnProjectile"
+    constants:
+      - { name: "g_monster_mage_attack_spike_damage", base: "45", port: "45 (cfg)", match: true }
+      - { name: "g_monster_mage_attack_spike_radius", base: "60", port: "60 (cfg)", match: true }
+      - { name: "g_monster_mage_attack_spike_delay", base: "2", port: "2 (cfg)", match: true }
+      - { name: "g_monster_mage_attack_spike_speed_max", base: "370", port: "370 (cfg)", match: true }
+      - { name: "g_monster_mage_attack_spike_accel", base: "480", port: "480 (cfg); 480 inline", match: true }
+      - { name: "g_monster_mage_attack_spike_decel", base: "480", port: "480 (cfg); 480 inline", match: true }
+      - { name: "g_monster_mage_attack_spike_turnrate", base: "0.65", port: "0.65 (cfg); 0.65 inline", match: true }
+      - { name: "g_monster_mage_attack_spike_smart", base: "1", port: "1 (cfg); 1 inline", match: true }
+      - { name: "g_monster_mage_attack_spike_smart_mindist", base: "600", port: "600 (cfg); 600 inline", match: true }
+      - { name: "g_monster_mage_attack_spike_smart_trace_min", base: "1000", port: "1000 (cfg); 1000 inline", match: true }
+      - { name: "g_monster_mage_attack_spike_smart_trace_max", base: "2500", port: "2500 (cfg); 2500 inline", match: true }
+      - { name: "launch_speed", base: "400", port: "400", match: true }
+      - { name: "ltime", base: "time+7", port: "Now+7", match: true }
+      - { name: "avelocity", base: "300 300 300", port: "300 300 300", match: true }
+      - { name: "edge_damage", base: "spike_damage*0.5", port: "spike_damage*0.5", match: true }
+      - { name: "muzzle_origin", base: "origin + v_forward*14 + '0 0 30' + v_right*-14", port: "origin + fwd*14 + '0 0 30' + right*-14 (FireSpike override of SpawnProjectile)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "FireSpike:188 -> SpawnProjectile (think NextThink=Now) -> HomeProjectile per-frame; Explode (MonsterAI.cs:1775-1790) RadiusDamage + onExplode + clears ActiveSpike", result: pass }
+      - { kind: code, ref: "onExplode (Mage.cs:215-219) plays weapons/grenade_impact.wav AND EffectEmitter.Emit(EXPLOSION_SMALL) -> EffectsList.cs:29 registered effect explosion_small; detonation particle is LIVE-emitted", result: pass }
+      - { kind: code, ref: "spike.NetName=\"mage_spike\" (Mage.cs:242); ProjectileCatalog.Classify (cs:251) now checks `Has(s,\"mage\")` -> MageSpike (cs:275) BEFORE the generic `Has(s,\"spike\",\"crylink\")` Crylink branch (cs:276); so \"mage_spike\" resolves to ProjectileType.MageSpike, NOT Crylink", result: pass }
+      - { kind: code, ref: "ProjectileType.MageSpike descriptor (cs:198-199): TR_VORESPIKE trail (VoreSpike violet 0.7/0.4/1.0), GlowSprite body, HasLight == PROJECTILE_MAGE_SPIKE (projectile.qc:368) -- the correct in-flight visual is now routed", result: pass }
+    confidence: high
+    notes: "FIX since the 2026-06-27 baseline: the spike CSQC misclassification regression is RESOLVED. ProjectileCatalog.Classify now orders the `mage`->MageSpike check (cs:275) ABOVE the generic `spike`/`crylink`->Crylink branch (cs:276), exactly as the baseline recommended, so spike.NetName=\"mage_spike\" no longer trips the Crylink branch -- it resolves to ProjectileType.MageSpike (TR_VORESPIKE violet vore-spike trail + glow + light), the Base PROJECTILE_MAGE_SPIKE visual. Detonation EXPLOSION_SMALL particle + grenade_impact sound already correct. Inline constants match Base; spike muzzle re-derives +30 up/-14 right via AngleVectors; FIRE sound electro_fire. Homing math faithful; one-at-a-time via st.ActiveSpike. (Classification + descriptor code-traced; the in-flight VoreSpike trail render itself is the same live render path as every other catalog projectile, not separately runtime-observed in a match.)"
+
+  - id: monster-mage.attack.push
+    name: "Explosive close-range push (AoE shove)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/mage.qc:M_Mage_Attack_Push"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Mage.cs:Push"
+    constants:
+      - { name: "g_monster_mage_attack_push_damage", base: "25", port: "25 (cfg)", match: true }
+      - { name: "g_monster_mage_attack_push_radius", base: "150", port: "150 (cfg)", match: true }
+      - { name: "g_monster_mage_attack_push_force", base: "300", port: "300 (cfg)", match: true }
+      - { name: "g_monster_mage_attack_push_delay", base: "1", port: "1 (cfg)", match: true }
+      - { name: "edge_damage", base: "push_damage (no falloff)", port: "PushDamage (no falloff)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "Push:216 -> WeaponSplash.RadiusDamage(PushDamage, PushDamage, PushRadius, force=PushForce, DeathTypes.MonsterMage); tagexp1.wav sound; EffectEmitter.Emit(TE_EXPLOSION) at e.Origin (Mage.cs:227)", result: pass }
+      - { kind: code, ref: "EffectEmitter.Emit(TE_EXPLOSION) -> EffectsList.cs:237 registers TE_EXPLOSION; matches mage.qc:308 Send_Effect(EFFECT_TE_EXPLOSION) — now LIVE-emitted (was missing at baseline)", result: pass }
+    confidence: high
+    notes: "FIX since baseline: the TE_EXPLOSION push particle (mage.qc:308 Send_Effect) is now emitted via EffectEmitter -> presentation missing->faithful (no remaining presentation gap). Both core and edge damage = push_damage (full damage at radius edge, matching QC). Push sound (tagexp1) played. Freezes movement via state=AttackMelee, sets anim/cooldown."
+
+  - id: monster-mage.attack.teleport
+    name: "Teleport behind / random-relocate near the target"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/mage.qc:M_Mage_Attack_Teleport"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Mage.cs:Teleport"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Mage.cs:RandomRelocate"
+    constants:
+      - { name: "g_monster_mage_attack_teleport_delay", base: "5 (cfg; inline 2)", port: "5 (cfg); 5 inline", match: true }
+      - { name: "g_monster_mage_attack_teleport_random", base: "0.4", port: "0.4 (cfg); 0.4 inline", match: true }
+      - { name: "g_monster_mage_attack_teleport_random_range", base: "1200", port: "1200 (cfg)", match: true }
+      - { name: "behind_trace_dist", base: "v_forward * -200", port: "-200 along target forward", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "RandomRelocate is an approximation of QC's MoveToRandomLocationWithinBounds builtin: 32 biased samples + ground-drop + bbox-fit test, not the engine's content-mask sampler (maxtries 256, jitter/dist params). Behaviorally equivalent (place at a random clear grounded spot within +/-1200) but not bit-exact — a LOGIC approximation, not a presentation gap."
+    verification:
+      - { kind: code, ref: "Teleport:235 random branch (RandomRelocate, chance teleport_random) + behind-blink branch (range gate, OnGround, tracebox backward NoMonsters, face target, velocity*=0.5, cooldown) == M_Mage_Attack_Teleport both halves", result: pass }
+      - { kind: code, ref: "EffectEmitter.Emit(SPAWN) at old+new origin in BOTH branches (Mage.cs:250-251, 267-268) -> EffectsList.cs:170 registers SPAWN; matches mage.qc:333-334,351-352 — now LIVE-emitted (was missing at baseline)", result: pass }
+    confidence: high
+    notes: "FIX since baseline: the EFFECT_SPAWN particles at both old and new origin (both teleport branches) are now emitted via EffectEmitter -> presentation missing->faithful. RandomRelocate remains a logic approximation (32 samples vs builtin 256-try content sampler) but behaviorally equivalent. inline TeleportDelay 5 / TeleportChance read cfg. No invented sound (QC plays none on teleport)."
+
+  - id: monster-mage.defend.shield
+    name: "Self damage-blocking shield"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/mage.qc:M_Mage_Defend_Shield"
+      - "common/monsters/sv_monsters.qc:Monster_Damage"
+      - "common/util.qc:healtharmor_applydamage"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Mage.cs:RaiseShield"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkPain"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:RunStatusTimers"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MonsterEventDamage"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterFramework.cs:Shield"
+    constants:
+      - { name: "g_monster_mage_shield_time", base: "3", port: "3 (cfg)", match: true }
+      - { name: "g_monster_mage_shield_delay", base: "7", port: "7 (cfg)", match: true }
+      - { name: "g_monster_mage_shield_blockpercent", base: "0.8", port: "0.8 (cfg/Mage.cs:47)", match: true }
+      - { name: "effective_damage_reduction", base: "~0.8% (damage*RES_ARMOR/100, RES_ARMOR=0.8)", port: "~0.8% (MonsterEventDamage ArmorValue/100, RaiseShield set ArmorValue=0.8) — single application, faithful", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "MarkPain:1576 subtracts `self.Health -= take` directly with no shield-specific reduction; the old take*=(1-blockpercent) shield cut + 0.9 fallback remain GONE", result: pass }
+      - { kind: value-diff, ref: "MonsterEventDamage:1708+ is the SOLE armor handling: armorblock = ArmorValue/100; RaiseShield ArmorValue=0.8 => ~0.8% block, single application == Monster_Damage healtharmor_applydamage(100, RES_ARMOR/100)", result: pass }
+      - { kind: code, ref: "RaiseShield:421-435 ApplyFor(Shield, time)+ArmorValue=blockpercent(cfg 0.8); RunStatusTimers:1272-1280 restores ShieldRestoreArmor + removes Shield on expiry", result: pass }
+    confidence: high
+    notes: "Unchanged since the 2026-06-25 baseline (still fixed): the double-counted ~80% MarkPain shield cut + hardcoded 0.9 fallback stay resolved. Shield reduces damage exactly once via the faithful ArmorValue/100 armor split (RaiseShield sets ArmorValue 0.8 => ~0.8% reduction, Base-faithful, near-cosmetic by design). Baseline monster armor (bound(0.2,0.5*SKILLMOD,0.9), Setup:264) modeled; duration/cooldown and armor bump-then-restore timing-faithful; no invented sound. (Note: QC StatusEffects_apply intensity arg = 0; port passes 1f to ApplyFor — intensity is unused for the armor-split reduction, near-cosmetic.)"
+
+  - id: monster-mage.defend.heal
+    name: "Radius heal of self/allies (skin variants: health/ammo/armor)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/mage.qc:M_Mage_Defend_Heal"
+      - "common/monsters/monster/mage.qc:M_Mage_Defend_Heal_Check"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Mage.cs:HealPulse"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Mage.cs:HealCheck"
+    constants:
+      - { name: "g_monster_mage_heal_allies", base: "20", port: "20 (cfg)", match: true }
+      - { name: "g_monster_mage_heal_range", base: "250", port: "250 (cfg)", match: true }
+      - { name: "g_monster_mage_heal_delay", base: "1.5", port: "1.5 (cfg)", match: true }
+      - { name: "ammo_topup", base: "cells 1 / rockets 1 / shells 2 / bullets 5", port: "cells 1 / rockets 1 / shells 2 / bullets 5", match: true }
+      - { name: "self_heal_eligibility", base: "monster branch: RES_HEALTH < max_health (ALL skins)", port: "monster branch: Health < MaxHealth (ALL skins)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "HealPulse:350 skin switch (player branch HEALING/AMMO_REGEN/ARMOR_REPAIR) + non-client branch GiveResourceWithLimit(Health,20,MaxHealth) vs M_Mage_Defend_Heal", result: pass }
+      - { kind: code, ref: "EffectEmitter.Emit(HEALING/AMMO_REGEN/ARMOR_REPAIR) per skin (Mage.cs:371/379/384 + HEALING for ally monsters :397) -> EffectsList.cs:193-195 registers all three; matches mage.qc Send_Effect — LIVE-emitted", result: pass }
+      - { kind: code, ref: "Healed-ally waypoint-sprite update NOW wired: Mage.cs:404-409 guards (it.spawnflags & INVINCIBLE)==0 then MonsterAI.UpdateHealthbar(allyState, it.Health) (MonsterAI.cs:470 normalizes health/MaxHealth, no-ops when Sprite null) == mage.qc:280-281 WaypointSprite_UpdateHealth", result: pass }
+      - { kind: code, ref: "HealCheck:425 monster branch `Health < MaxHealth` (no self special-case) == M_Mage_Defend_Heal_Check:103-104 -> self-heals on EVERY skin toward 400", result: pass }
+    confidence: high
+    notes: "FIX since the 2026-06-25 baseline: the healed-ally waypoint-sprite health update (mage.qc:280-281) is NOW invoked — HealPulse calls MonsterAI.UpdateHealthbar for ally monsters behind the INVINCIBLE guard, closing the last presentation gap (partial->faithful). Per-skin EFFECT_HEALING/AMMO_REGEN/ARMOR_REPAIR particles emit via EffectEmitter. self-heal eligibility correct (monster branch, all skins). Player skin 0/1/2 branches + per-resource caps match Base. No invented heal sound (audio faithful)."
+
+  - id: monster-mage.think.decide
+    name: "Per-think heal/shield decision (mr_think)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/mage.qc:METHOD(Mage, mr_think)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Mage.cs:Think"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Mage.cs:NeedsHelpNearby"
+    constants:
+      - { name: "g_monster_mage_heal_minhealth", base: "250", port: "250 (cfg)", match: true }
+      - { name: "heal_random_gate", base: "random()<0.5", port: "MonsterRandom.Next()<0.5", match: true }
+      - { name: "shield_random_gate", base: "random()<0.5", port: "MonsterRandom.Next()<0.5", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: na
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "QC mr_think scans BOTH clients (FOREACH_CLIENT) and monsters (IL_EACH g_monsters) for need_help; port NeedsHelpNearby uses one FindInRadius pass over all entities in heal_range, which conflates the two scans but covers both populations."
+    verification:
+      - { kind: code, ref: "Mage.Think:122 heal gate (rand<0.5 && Now>=AttackFinished && (health<minhealth || NeedsHelpNearby)) and shield gate:129 (rand<0.5 && enemy && Now>=ShieldDelay && health<MaxHealth && !Shield) vs mr_think", result: pass }
+    confidence: high
+    notes: "Heal trigger and shield trigger conditions match mr_think exactly. RunThink then runs the shared chase/attack. NeedsHelpNearby reuses HealCheck (self-heal-correct; explicitly skips self via `if (it == e) continue`)."
+
+  - id: monster-mage.death.pain
+    name: "Pain reaction + death anim (mr_pain / mr_death)"
+    layer: [authority]
+    base_refs:
+      - "common/monsters/monster/mage.qc:METHOD(Mage, mr_pain)"
+      - "common/monsters/monster/mage.qc:METHOD(Mage, mr_death)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Mage.cs:Think"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkPain"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MarkDead"
+    constants:
+      - { name: "mr_pain_return", base: "damage_take (unchanged)", port: "shared MarkPain (no mage override)", match: true }
+      - { name: "die_anim_pick", base: "random()>0.5 ? die2 : die1", port: "Mage.Think DeathLanded = MonsterRandom.Next()>0.5 (one-shot per death)", match: true }
+      - { name: "pain_sound_throttle", base: "Monster_Sound(monstersound_pain, 1.2, true)", port: "MonsterSound(pain, 1.2, true)", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: faithful
+      presentation: faithful
+      audio: faithful
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps: []
+    verification:
+      - { kind: code, ref: "mr_pain returns take unchanged (matches shared MarkPain passthrough); Mage.Think:104-112 picks die1/die2 once via st.DeathLanded = MonsterRandom.Next()>0.5 (== mr_death random()>0.5 ? anim_die2 : anim_die1), re-cleared on respawn", result: pass }
+      - { kind: code, ref: "MarkPain pain sound routed through MonsterSound(pain, 1.2, true) == Monster_Damage 1.2s delaytoo throttle", result: pass }
+    confidence: high
+    notes: "FIX since baseline: the mr_death random die1/die2 50/50 pick IS now modeled — Mage.Think sets st.DeathLanded via a once-per-death coin flip (ConditionalWeakTable DeathState gate, cleared on respawn), which AnimFrame maps to anim_die2 '10'/anim_die1 '9'. presentation upgraded partial->faithful for this row (the die-anim selection gap is closed; remaining concrete-frame-group concerns live in monster-mage.anim.frames). mr_pain passthrough faithful; pain/death sounds via MonsterSound honoring g_monsters_sounds + 1.2s throttle."
+
+  - id: monster-mage.anim.frames
+    name: "Animation frame groups (mr_anim)"
+    layer: [shared, presentation]
+    base_refs:
+      - "common/monsters/monster/mage.qc:METHOD(Mage, mr_anim)"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Mage.cs:AnimFrame"
+      - "src/XonoticGodot.Common/Gameplay/Monsters/MonsterAI.cs:MonsterAnim"
+    constants:
+      - { name: "anim_idle", base: "0 1 1", port: "AnimFrame Idle => 0", match: true }
+      - { name: "anim_walk/run", base: "1 1 1", port: "AnimFrame Walk/Run => 1", match: true }
+      - { name: "anim_shoot", base: "2 1 5", port: "AnimFrame Attack variant 0 => 2 (spike fire)", match: true }
+      - { name: "anim_duckjump", base: "4 1 5", port: "AnimFrame Attack variant 1 => 4 (Push)", match: true }
+      - { name: "anim_melee", base: "5 1 5", port: "AnimFrame Attack variant 2 => 5 (Heal pulse)", match: true }
+      - { name: "anim_pain1", base: "6 1 2", port: "AnimFrame Pain => 6", match: true }
+      - { name: "anim_die1/die2", base: "9/10 1 0.5", port: "AnimFrame Death => die2 ? 10 : 9", match: true }
+    status:
+      logic: faithful
+      values: faithful
+      timing: unknown
+      presentation: faithful
+      audio: na
+      liveness: live
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "timing (animfixfps fps normalization — the '<start> 1 <fps>' frame-rate component) is not modeled; only the start frame index is stamped onto Entity.Frame, so per-group playback rate is not normalized to Base."
+    verification:
+      - { kind: code, ref: "Mage.cs:69 AnimFrame(phase, die2, variant) returns the QC start indices: Idle 0 / Walk-Run 1 / Attack variant{0=>2 shoot,1=>4 duckjump,2=>5 melee} / Pain 6 / Death 9|10 — stamped onto Entity.Frame and played client-side via DriveAnimFrame/CSQCMODEL_AUTOUPDATE", result: pass }
+      - { kind: code, ref: "AnimVariant set per attack: FireSpike->0 (Mage.cs:187), Push->1 (240), HealPulse->2 (394), RaiseShield->0 (457); DriveAnimFrame (MonsterAI.cs:1346) passes AnimVariant through to AnimFrame", result: pass }
+    confidence: high
+    notes: "FIX since the 2026-06-25 baseline: AnimFrame now takes a variant arg (Mage.cs:69) and the Attack phase maps variant 0->anim_shoot '2', variant 1->anim_duckjump '4', variant 2->anim_melee '5' — matching M_Mage_Attack_Push (setanim anim_duckjump) and M_Mage_Defend_Heal (setanim anim_melee). The melee/duckjump-collapse gap is RESOLVED: values partial->faithful (all 7 groups now correct), presentation partial->faithful (distinct frame groups play per attack). die1/die2 random pick handled in monster-mage.death.pain. Only timing (animfixfps fps normalization) remains unknown."
+
+  - id: monster-mage.menu.describe
+    name: "MENUQC monster-tooltip description text"
+    layer: [presentation]
+    base_refs:
+      - "common/monsters/monster/mage.qc:METHOD(Mage, describe):515"
+    port_refs:
+      - "src/XonoticGodot.Common/Gameplay/Monsters/Mage.cs:Describe"
+    constants:
+      - { name: "describe prose", base: "Wielding nanotechnology as if it were sorcery, the Mage employs a range of unique abilities... (5 paragraphs)", port: "verbatim 5-paragraph prose concatenated into Mage.Describe() (Mage.cs:86-93)", match: true }
+    status:
+      logic: na
+      values: faithful
+      timing: na
+      presentation: partial
+      audio: na
+      liveness: dead
+    intended_divergence: false
+    divergence_rationale: null
+    gaps:
+      - "Mage.Describe() (Mage.cs:86-93) is the verbatim bestiary prose but has NO caller: the only references to Describe() are the base virtual (EntityClasses.cs:106) and unrelated DPM/DeferredCommands.Describe overloads. No bestiary/monster-tooltip UI surface in the port renders descriptor Describe() text, so the prose never reaches the screen."
+    verification:
+      - { kind: code, ref: "Mage.cs:86 override string? Describe() returns the 5-paragraph prose verbatim (== mage.qc:519-525 PAR() text)", result: pass }
+      - { kind: code, ref: "grep '.Describe(' over src/ shows no caller of the monster-descriptor Describe() — only EntityClasses.cs:106 base virtual + DPM/DeferredCommands unrelated overloads; no bestiary UI surface", result: fail }
+    confidence: high
+    notes: "FIX (partial) since the 2026-06-25 baseline: the describe prose is now PORTED verbatim in Mage.Describe() (values missing->faithful; matches mage.qc 5-PAR text), so presentation missing->partial (text exists in code) but liveness na->dead (no UI surface calls Describe(), same dead-code state as the spider/golem describe overrides). MENUQC-only flavor text, low gameplay impact."

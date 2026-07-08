@@ -53,9 +53,14 @@ public sealed class DoublejumpMutator : MutatorBase
         if (Api.Services is null) return false;
         Entity player = args.Player;
 
-        // QC PHYS_DOUBLEJUMP(player) == STAT(DOUBLEJUMP, player): the per-player doublejump stat. With the
-        // server cvar gating registration, the mutator is only active when sv_doublejump != 0, so the stat is
-        // effectively the cvar here (the headless sim has no per-player STAT override for it).
+        // QC: if (PHYS_DOUBLEJUMP(player)) { ... } — PHYS_DOUBLEJUMP(player) == STAT(DOUBLEJUMP, player), the
+        // per-player doublejump stat = Physics_ClientOption(this, "doublejump", autocvar_sv_doublejump). The
+        // physics call site supplies it as args.DoubleJump (from MovementParameters.DoubleJump). When it differs
+        // from sv_doublejump (g_physics_clientselect on, client picked a preset that flips doublejump) this
+        // honors the per-player value. When not supplied (null — e.g. unit tests) fall back to the raw cvar,
+        // which equals the stat in stock play. (SVQC registration is still gated on sv_doublejump via IsEnabled.)
+        bool perPlayerDoublejump = args.DoubleJump ?? (Api.Cvars.GetFloat("sv_doublejump") != 0f);
+        if (!perPlayerDoublejump) return false;
 
         // tracebox(player.origin + '0 0 0.01', player.mins, player.maxs, player.origin - '0 0 0.01', MOVE_NORMAL, player)
         Vector3 up = player.Origin + new Vector3(0f, 0f, 0.01f);

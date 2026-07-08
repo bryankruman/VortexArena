@@ -27,9 +27,13 @@ internal static class TgaDecoder
     /// Decode <paramref name="data"/> (a full .tga file image) into an RGBA8 <see cref="Image"/>, or
     /// null if the header is malformed or the image type is unsupported.
     /// </summary>
-    public static Image? Decode(byte[] data)
+    public static Image? Decode(byte[] data) => Decode(data, data?.Length ?? 0);
+
+    /// <summary>Length-taking overload (perf 2026-07-03) so the caller can hand in a POOLED, possibly-oversized
+    /// file buffer: only the first <paramref name="length"/> bytes are the file.</summary>
+    public static Image? Decode(byte[] data, int length)
     {
-        if (data == null || data.Length < 18)
+        if (data == null || length < 18)
             return null;
 
         // --- TGA header (18 bytes, little-endian) ---
@@ -57,7 +61,7 @@ internal static class TgaDecoder
             return null;
 
         int offset = 18 + idLength;
-        if (offset > data.Length)
+        if (offset > length)
             return null;
 
         // --- color map (palette) for type 1/9 ---
@@ -69,7 +73,7 @@ internal static class TgaDecoder
                 return null;
             paletteBytesPerEntry = (cmapEntrySize + 7) / 8;
             int cmapBytes = cmapLength * paletteBytesPerEntry;
-            if (offset + cmapBytes > data.Length)
+            if (offset + cmapBytes > length)
                 return null;
 
             palette = new byte[cmapLength * 4];
@@ -99,32 +103,40 @@ internal static class TgaDecoder
         }
 
         int pixelCount = width * height;
-        var outRgba = new byte[pixelCount * 4];
-
-        // Read pixels into a linear buffer in source order (the file's first row), then flip if needed.
-        if (rle)
+        // Pooled shared scratch (CreateFromData copies it out below, so the finally can return it).
+        // Collapses the per-texture decode-burst allocation (§12.6b) — see RgbaDecodeBuffer.
+        byte[] outRgba = RgbaDecodeBuffer.Rent(pixelCount * 4);
+        try
         {
-            if (!DecodeRle(data, offset, pixelCount, bytesPerPixel, baseType, pixelDepth, palette, outRgba))
-                return null;
+            // Read pixels into a linear buffer in source order (the file's first row), then flip if needed.
+            if (rle)
+            {
+                if (!DecodeRle(data, length, offset, pixelCount, bytesPerPixel, baseType, pixelDepth, palette, outRgba))
+                    return null;
+            }
+            else
+            {
+                if (!DecodeRaw(data, length, offset, pixelCount, bytesPerPixel, baseType, pixelDepth, palette, outRgba))
+                    return null;
+            }
+
+            // TGA's default origin is bottom-left: row 0 in the file is the BOTTOM of the image. Godot
+            // expects row 0 = top. Flip vertically unless the descriptor said top-to-bottom already.
+            if (!topToBottom)
+                FlipVertical(outRgba, width, height);
+
+            return Image.CreateFromData(width, height, false, Image.Format.Rgba8, outRgba);
         }
-        else
+        finally
         {
-            if (!DecodeRaw(data, offset, pixelCount, bytesPerPixel, baseType, pixelDepth, palette, outRgba))
-                return null;
+            RgbaDecodeBuffer.Return(outRgba);
         }
-
-        // TGA's default origin is bottom-left: row 0 in the file is the BOTTOM of the image. Godot
-        // expects row 0 = top. Flip vertically unless the descriptor said top-to-bottom already.
-        if (!topToBottom)
-            FlipVertical(outRgba, width, height);
-
-        return Image.CreateFromData(width, height, false, Image.Format.Rgba8, outRgba);
     }
 
-    private static bool DecodeRaw(byte[] data, int offset, int pixelCount, int bpp, int baseType,
+    private static bool DecodeRaw(byte[] data, int dataLength, int offset, int pixelCount, int bpp, int baseType,
                                   int depth, byte[]? palette, byte[] outRgba)
     {
-        if (offset + pixelCount * bpp > data.Length)
+        if (offset + (long)pixelCount * bpp > dataLength)
             return false;
         for (int i = 0; i < pixelCount; i++)
         {
@@ -134,12 +146,12 @@ internal static class TgaDecoder
         return true;
     }
 
-    private static bool DecodeRle(byte[] data, int offset, int pixelCount, int bpp, int baseType,
+    private static bool DecodeRle(byte[] data, int dataLength, int offset, int pixelCount, int bpp, int baseType,
                                   int depth, byte[]? palette, byte[] outRgba)
     {
         int produced = 0;
         int pos = offset;
-        int n = data.Length;
+        int n = dataLength;
         while (produced < pixelCount)
         {
             if (pos >= n)

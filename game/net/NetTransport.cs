@@ -111,9 +111,25 @@ public abstract class NetTransport : IDisposable
     private readonly List<int> _pendingConnects = new();
     private readonly List<int> _pendingDisconnects = new();
 
+    // ENet per-peer UNRELIABLE packet throttle. A fresh peer starts with the throttle pinned near 0 and only
+    // recovers it at the default recalc interval (ENET_PEER_PACKET_THROTTLE_INTERVAL = 5000 ms), so for the first
+    // ~5 s it DROPS almost every unreliable datagram — which starved the client's input on connect (the player
+    // crawled while the client predicted full-speed → the spawn-stutter; confirmed: throttle 0→32 exactly when
+    // input began flowing, with loss=0). We reconfigure every peer the moment it connects to recover fast: a SHORT
+    // recalc interval + full acceleration → the throttle reaches its max within ~one short interval instead of 5 s,
+    // and a modest deceleration still lets it back off under genuine remote congestion. Godot's
+    // ENetPacketPeer.ThrottleConfigure == enet_peer_throttle_configure (the change is replicated to the other end).
+    private const int ThrottleIntervalMs = 100;                          // recalc 50× faster than the 5000 ms default
+    private const int ThrottleAccel = 32;                                // ENET_PEER_PACKET_THROTTLE_SCALE → max in one interval
+    private const int ThrottleDecel = 4;                                 // still backs off on real congestion
+
     protected void HookSignals()
     {
-        Peer.PeerConnected += id => _pendingConnects.Add((int)id);
+        Peer.PeerConnected += id =>
+        {
+            Peer.GetPeer((int)id)?.ThrottleConfigure(ThrottleIntervalMs, ThrottleAccel, ThrottleDecel);
+            _pendingConnects.Add((int)id);
+        };
         Peer.PeerDisconnected += id => _pendingDisconnects.Add((int)id);
     }
 
@@ -191,6 +207,31 @@ public abstract class NetTransport : IDisposable
             if (Peer is null) return;
             Peer.DisconnectPeer(peerId, now);
         }
+
+        /// <summary>QC <c>CS(e).ping</c> (server/sv_main.qc bot_think / scoreboard.qc SP_PING): a connected
+        /// peer's round-trip time in milliseconds — ENet's own smoothed mean RTT estimate for the peer
+        /// (<see cref="ENetPacketPeer.PeerStatistic.RoundTripTime"/>, in ms), the "ping" the scoreboard shows.
+        /// Returns -1 for an unknown/disconnected peer (a bot / loopback host reads ~0). Mirrors the client-side
+        /// <see cref="Client.RoundTripMs"/> so the server can network each human's ping on the score row.</summary>
+        public int RoundTripMs(int peerId)
+        {
+            if (Peer is null) return -1;
+            ENetPacketPeer p = Peer.GetPeer(peerId);
+            if (p is null) return -1;
+            double rtt = p.GetStatistic(ENetPacketPeer.PeerStatistic.RoundTripTime);
+            return (int)System.Math.Round(rtt);
+        }
+
+        /// <summary>QC <c>CS(e).ping_packetloss</c> (server/world.qc:74): a connected peer's measured packet loss
+        /// as a 0..1 fraction. ENet reports <see cref="ENetPacketPeer.PeerStatistic.PacketLoss"/> on a 0..65536
+        /// scale (ENET_PEER_PACKET_LOSS_SCALE); we normalize it. Returns 0 for an unknown/disconnected peer.</summary>
+        public float PacketLoss(int peerId)
+        {
+            if (Peer is null) return 0f;
+            ENetPacketPeer p = Peer.GetPeer(peerId);
+            if (p is null) return 0f;
+            return Mathf.Clamp((float)(p.GetStatistic(ENetPacketPeer.PeerStatistic.PacketLoss) / 65536.0), 0f, 1f);
+        }
     }
 
     // =====================================================================================
@@ -255,5 +296,20 @@ public abstract class NetTransport : IDisposable
         /// <summary>Send a packet to the server on the chosen channel.</summary>
         public void SendToServer(ReadOnlySpan<byte> payload, bool reliable)
             => Send(ServerPeerId, payload, reliable);
+
+        /// <summary>Diagnostic (surfaced by net_input_trace): the server peer's ENet throttle/loss/RTT stats. The
+        /// packet throttle (0..32, ENET_PEER_PACKET_THROTTLE_SCALE) gates UNRELIABLE sends — a low value drops most
+        /// of them (the bug the per-peer ThrottleConfigure in HookSignals fixes); packetLoss is ENet's measured loss
+        /// (0..65536). Returns (-1,…) if not connected.</summary>
+        public (double Throttle, double ThrottleLimit, double Loss, double Rtt) DbgEnetStats()
+        {
+            if (!IsConnected) return (-1, -1, -1, -1);
+            ENetPacketPeer p = Peer.GetPeer(ServerPeerId);
+            if (p is null) return (-1, -1, -1, -1);
+            return (p.GetStatistic(ENetPacketPeer.PeerStatistic.PacketThrottle),
+                    p.GetStatistic(ENetPacketPeer.PeerStatistic.PacketThrottleLimit),
+                    p.GetStatistic(ENetPacketPeer.PeerStatistic.PacketLoss),
+                    p.GetStatistic(ENetPacketPeer.PeerStatistic.RoundTripTime));
+        }
     }
 }
