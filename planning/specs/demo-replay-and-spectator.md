@@ -456,6 +456,14 @@ version:
 4. **`DemoKind` (server/client) + recording-player netId** in the header — the client-demo design (2026-06-13
    decision: PVS-limited, non-blocking warning, all view modes).
 5. **Marker sidecar trailer** (above).
+6. **Asset manifest** in the header (map + the content packages the recording referenced, with hashes) — an
+   honest "this demo needs assets you don't have" message instead of silent misrendering; also the asset half
+   of the §16 compatibility story (code travels with the demo, assets are checked against it).
+
+> **v3 boundary rule (required by §16):** everything the MENU or engine needs to list/preview/gate a demo —
+> header, roster, duration, markers, asset manifest, indexes — stays **plain engine-readable format**, decodable
+> by ANY engine version without game code. Only the **frame payloads** (entity states, event packets, score
+> blocks) are game-code-scoped. v3 must not leak wire-format-dependent data into the trailers.
 
 ### Confirmed roadmap (Bryan, 2026-07-08) — after the merge playtest
 
@@ -475,3 +483,79 @@ version:
   all-in-RAM decoded frames (~400–600 MB + gen2 GC pressure for a 10-min match; the raw FILE is only ~3 MB
   and the OS cache keeps it hot).
 - Shared-replay (multi-viewer) time control stays deferred per §9 — local single-viewer first.
+
+---
+
+## 16. Code compatibility — today's honest limit, and the WASM direction (added 2026-07-08)
+
+Aligned with **[ADR-0013](../decisions/ADR-0013-modding-untrusted-client-code.md)** (sandboxed client-side
+game code as WASM via Wasmtime .NET; client-only, no `server.wasm`; parity split into `BaseProtocolHash` +
+mod manifest). This section applies that decision to demos.
+
+### The problem, stated precisely
+
+A demo's frame payloads are **wire packets**: entity states via `EntityStateCodec`, event bundles whose bodies
+reference the effect/sound/notification **registry ids** of the build that recorded them, score blocks in the
+snapshot's own layout. Rendering them correctly needs the same client-side code that produced them. Today that
+code is compiled into the game unversioned, so the only safe policy is the current one: `buildParity` equality
+in the header, playback **refuses a mismatch with an honest message** rather than misrendering. Consequence:
+every code change touching the wire or the registries orphans all prior demos. Acceptable during heavy
+development; not acceptable for a shipped game where players keep demo libraries.
+
+### The plan: package the ADR-0013 client module + manifest with the demo
+
+ADR-0013 already splits the compatibility identity in two, and demos should record BOTH:
+
+- **`BaseProtocolHash`** (engine + wire framing — `EntityStateCodec`, snapshot/bundle framing, prediction):
+  stays a **hard gate**, exactly like connecting to a server. The engine decodes frame payloads natively.
+- **The mod manifest** (the `client.wasm` + asset packs, each name/size/sha256/url — the same manifest a
+  server advertises on connect): the demo records the manifest the recording server was running, and
+  **embeds the `client.wasm`** (content-addressed; see below). Replay instantiates the recorded module in the
+  ADR-0013 locked-down store, so registries/notification text/effect+sound presentation match record time
+  regardless of what game content the viewer has installed. A content mismatch becomes **provision** (use the
+  embedded module / the hash cache / download assets), not rejection — the connect flow's exact analogue.
+
+Why this works with no extra machinery: a demo records **server output only** — server behavior is baked into
+the recorded data, so playback needs only the client presentation half, which is precisely ADR-0013's
+`client.wasm` scope. And it is the same mechanism a client needs anyway to join a modded/different-version
+server; build it once, demos inherit it.
+
+> **The honest promise this yields:** demos are playable across GAME-CONTENT versions (mods, balance/content
+> updates, registry changes) forever, but an ENGINE wire-framing change (`BaseProtocolHash` bump) still orphans
+> older demos — entity decode is native, per ADR-0013's scope boundary (prediction/sim stay compiled C#).
+> *Optional extension if long-term durability is wanted:* keep versioned `EntityStateCodec` decoders in-engine
+> (read-side only — old demos decode through the codec version stamped in their header). Cheap while codec
+> changes are rare; decide when the first post-ship `BaseProtocolHash` bump looms.
+
+### Design requirements this imposes (write code against these NOW)
+
+1. **Engine-readable vs content-scoped split** (the v3 boundary rule in §15): the container — header, trailers,
+   indexes, markers, manifest — is plain versioned format the ENGINE owns; any version can list, preview, and
+   gate a demo without instantiating game code or touching `BaseProtocolHash`. Frame payloads are gated data.
+   `DemoFormat` container code must never grow semantic knowledge of payload internals.
+2. **Two-part gate + provision** replacing parity equality: (a) `BaseProtocolHash` — hard, honest "recorded by
+   an incompatible engine"; (b) manifest — provisionable (embedded module, `sha256` cache, asset download),
+   honest "missing assets: …" only when provisioning fails. Never a silent misrender.
+3. **Embed content-addressed:** `codePackageHash` in the header + the module bytes in a trailer section
+   (self-containment, §5 — a shared file works offline); on first open the module is deduplicated into the
+   ADR-0013 hash cache, so a library of demos from one version stores it once. Hash-only demos (no embedded
+   bytes) are valid when the cache/manifest can satisfy them.
+4. **Sandbox contract is ADR-0013's, unchanged:** a demo from the internet is executable content — zero ambient
+   authority, curated host imports, fuel/epoch/memory caps, hash-pinned downloads. Nothing demo-specific to add.
+5. **Determinism note:** replay injects recorded states, it never re-simulates (§1 non-goals), so the module
+   only needs deterministic decode/presentation — which serialization already is. This is why packaged-code
+   replay is cheap here where full re-sim replay systems find it hard.
+6. **Cinematic scripts (`.xgcs`, T66)** reference a demo and inherit its pinning — a script is valid iff its
+   demo plays; no separate code-compat story.
+7. **CI regression corpus:** once packaging exists, keep golden demos from past versions and replay them
+   headless under every new build — compatibility becomes a *tested* promise, and the corpus doubles as a
+   renderer/HUD regression harness.
+
+### Sequencing
+
+The WASM track (ADR-0013: engine ABI/builtins, module pipeline, live-client integration) is NOT part of format
+v3 — v3 only lays the container groundwork that makes the retrofit clean: the boundary rule and the asset
+manifest (which is the manifest's asset half; the code half joins it later). When the WASM track lands, the
+demo format takes one further bump (manifest + `codePackageHash` + embedded-module trailer + `BaseProtocolHash`
+replacing `buildParity`) and inherits durable demos. Until then `buildParity` equality remains the gate,
+deliberately.
