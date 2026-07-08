@@ -1,23 +1,23 @@
 using System;
 using Godot;
-using XonoticGodot.Net;
+using XonoticGodot.Net.Demo;
 
 namespace XonoticGodot.Game.Hud;
 
 /// <summary>
 /// [T63·P2] Demo-replay time-control bar (demo-replay-and-spectator.md §9): a bottom-of-screen strip with a
 /// draggable scrub slider, play/pause, a speed selector, and a time readout, driving the demo
-/// <see cref="IReplayEntitySource"/> playhead directly (the local single-viewer case). Visible only in a replay.
+/// <see cref="DemoPlayback"/> playhead directly (the local single-viewer case). Visible only in a replay.
 ///
 /// <para>Keybinds (handled here, chosen NOT to collide with the free-fly observer's WASD+mouse): <c>P</c> =
 /// pause/play, <c>←</c>/<c>→</c> = seek ∓5 s, <c>[</c>/<c>]</c> = slower/faster, <c>,</c>/<c>.</c> = step one frame,
-/// <c>R</c> = rewind. The mouse slider/buttons work whenever the cursor is free (e.g. the in-game menu/console is
-/// open); a dedicated "free cursor for replay controls" toggle is a later polish item.</para>
+/// <c>R</c> = smooth rewind. The mouse slider/buttons work whenever the cursor is free (e.g. the in-game menu/console
+/// is open); a dedicated "free cursor for replay controls" toggle is a later polish item.</para>
 /// </summary>
 public partial class ReplayControlBar : Control
 {
     /// <summary>The demo playhead this bar drives. Set by the host before the node enters the tree.</summary>
-    public IReplayEntitySource? Playback { get; set; }
+    public DemoPlayback? Playback { get; set; }
 
     private static readonly float[] SpeedLadder = { 0.25f, 0.5f, 1f, 2f, 4f };
     private const float SeekStep = 5f;        // arrow-key seek, seconds
@@ -81,21 +81,21 @@ public partial class ReplayControlBar : Control
     {
         if (Playback is null) return;
 
-        double dur = Math.Max(0.001, Playback.Duration);
+        double dur = Math.Max(0.001, Playback.DurationSeconds);
         _syncing = true;
         if (Math.Abs(_scrub.MaxValue - dur) > 1e-6) _scrub.MaxValue = dur;
-        _scrub.Value = Math.Clamp(Playback.DemoTime, 0, dur);
+        _scrub.Value = Math.Clamp(Playback.PlayheadSeconds, 0, dur);
         _syncing = false;
 
-        _time.Text = $"{Fmt(Playback.DemoTime)} / {Fmt(Playback.Duration)}";
-        _speed.Text = SpeedText(Playback.Speed);
-        _playPause.Text = Playback.Speed == 0f ? "▶" : "❚❚";
+        _time.Text = $"{Fmt(Playback.PlayheadSeconds)} / {Fmt(Playback.DurationSeconds)}";
+        _speed.Text = SpeedText(Playback);
+        _playPause.Text = Playback.Paused ? "▶" : "❚❚";
     }
 
     private void OnScrubChanged(double value)
     {
         if (_syncing || Playback is null) return; // ignore our own _Process writes — only react to user drags
-        Playback.SeekTo((float)value);
+        Playback.Seek((float)value);
     }
 
     public override void _UnhandledInput(InputEvent @event)
@@ -120,7 +120,9 @@ public partial class ReplayControlBar : Control
     private void TogglePause()
     {
         if (Playback is null) return;
-        Playback.Speed = Playback.Speed == 0f ? SpeedLadder[_ladderIndex] : 0f;
+        Playback.Paused = !Playback.Paused;
+        if (!Playback.Paused && Playback.Speed < 0f)
+            Playback.Speed = SpeedLadder[_ladderIndex]; // resuming from a rewind resumes FORWARD play
     }
 
     private void Slower()
@@ -139,24 +141,27 @@ public partial class ReplayControlBar : Control
 
     private void Rewind()
     {
-        if (Playback is not null) Playback.Speed = -1f;
+        if (Playback is null) return;
+        Playback.Speed = -1f;   // smooth rewind (§3): the playhead runs backward, clients lerp the reverse motion
+        Playback.Paused = false;
     }
 
     private void Seek(float deltaSeconds)
     {
-        if (Playback is not null) Playback.SeekTo(Playback.DemoTime + deltaSeconds);
+        if (Playback is not null) Playback.Seek(Playback.PlayheadSeconds + deltaSeconds);
     }
 
     private void StepFrame(float deltaSeconds)
     {
         if (Playback is null) return;
-        Playback.Speed = 0f; // frame-stepping implies paused
-        Playback.SeekTo(Playback.DemoTime + deltaSeconds);
+        Playback.Paused = true; // frame-stepping implies paused
+        Playback.Seek(Playback.PlayheadSeconds + deltaSeconds);
     }
 
-    private static string SpeedText(float speed)
+    private static string SpeedText(DemoPlayback playback)
     {
-        if (speed == 0f) return "❚❚";
+        if (playback.Paused) return "❚❚";
+        float speed = playback.Speed;
         if (speed < 0f) return $"◀{(-speed):0.##}×";
         return $"{speed:0.##}×";
     }

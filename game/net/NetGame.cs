@@ -71,9 +71,6 @@ public sealed partial class NetGame : Node3D
     private int _botSkill = -1;                 // -1 = unspecified: never write the `skill` cvar (MatchConfig.BotSkill)
     private string _campaignName = "";          // non-empty → host this listen server as a campaign level
     private int _campaignIndex;
-    private bool _isReplay;                      // [T63] true → this listen server hosts a demo playback (ReplayMode)
-    private string _demoPath = "";               // [T63] the .xgd to play back (CLI arg / user:// relative / OS path)
-    private DemoPlayback? _demoPlayback;         // [T63] the loaded demo, attached to ServerNet.ReplaySource
     private string _serverName = "XonoticGodot Listen Server";
     private string _playerName = "player";
     private VirtualFileSystem? _vfs;            // shared asset VFS (from the menu shell), for models/sounds/maps
@@ -92,6 +89,21 @@ public sealed partial class NetGame : Node3D
     private ClientNet? _client;
     private ClientWorld _render = null!;
     private DevHarness? _devHarness;            // dev capture (--fx-demo), inert unless a dev flag was passed
+
+    // --- demo record/replay (T62/T63/T65, planning/specs/demo-replay-and-spectator.md) ---
+    private XonoticGodot.Net.Demo.DemoRecorder? _demoRecorder;   // active `record` sink on ServerNet.DemoSink
+    private XonoticGodot.Net.Demo.DemoPlayback? _demoPlayback;   // active replay source on ServerNet.ReplaySource
+    private string _replayDemoPath = "";        // non-empty → this listen server boots in replay mode
+    private Client.SpectatorCamera? _spectatorCam; // [T65] free-roam replay camera (replaces the predicted eye)
+
+    /// <summary>[T63] One-shot handoff for <c>playdemo</c> across the Shell's listen-server reboot: the reboot
+    /// builds a fresh NetGame (via <see cref="MapChangeRequested"/>, which only carries map/gametype/bots), so
+    /// the demo path rides this static and is consumed by <see cref="StartListenServer"/> on the new instance.</summary>
+    internal static string? PendingReplayDemo;
+
+    /// <summary>This listen server is a demo replay host (entities injected from a recording).</summary>
+    private bool IsReplay => !string.IsNullOrEmpty(_replayDemoPath);
+
     // The background parse/build queue (S1): the idle player-model warm AND the live on-demand player-model
     // path (perf §9.4 Wave 1 — first sight of N bots streams one model build per frame instead of all at once).
     private XonoticGodot.Game.Client.BackgroundAssetStreamer? _streamer;
@@ -407,25 +419,29 @@ public sealed partial class NetGame : Node3D
     }
 
     /// <summary>
-    /// [T63] Configure this node as a DEMO REPLAY (demo-replay-and-spectator.md §2,6,10): a listen server hosted in
-    /// <see cref="GameWorld.ReplayMode"/> whose entities come from <paramref name="demoPath"/> (a <c>.xgd</c>), with
-    /// the local client self-connected as a free-flying observer. The map/gametype are read from the demo header at
-    /// boot (so the client renders the right worldmodel). A bare listen-server config with the replay flag set; the
-    /// boot path branches on <c>_isReplay</c>. A <c>--playdemo &lt;path&gt;</c> CLI flag mirrors this.
+    /// [T63] Configure this node as a DEMO REPLAY host (planning/specs/demo-replay-and-spectator.md §10): a
+    /// listen server booted on the demo's own map whose networked entities are injected from the recording
+    /// instead of a live match. The local viewer joins as a free-flying spectator; time control rides the
+    /// <c>demo_pause</c>/<c>demo_seek</c>/<c>demo_speed</c> console commands. Returns false (and logs) when the
+    /// file is unreadable, so the caller can stay on the menu instead of booting a broken session.
     /// </summary>
-    public void ConfigureReplay(string demoPath, VirtualFileSystem? vfs = null,
-        XonoticGodot.Engine.Simulation.CvarService? cvars = null, string playerName = "spectator")
+    public bool ConfigureReplay(string demoPath, string playerName = "player",
+        VirtualFileSystem? vfs = null, XonoticGodot.Engine.Simulation.CvarService? cvars = null)
     {
-        _isListenServer = true;     // a replay IS a listen server (loopback) — reuse that boot path
-        _isReplay = true;
-        _demoPath = demoPath ?? "";
-        _host = "127.0.0.1";
-        _gametype = "dm";           // overwritten from the demo header at boot
-        _botCount = 0;
-        _serverName = "XonoticGodot Replay";
-        _playerName = string.IsNullOrWhiteSpace(playerName) ? "spectator" : playerName;
-        _vfs = vfs;
-        _sharedCvars = cvars;
+        XonoticGodot.Net.Demo.DemoHeaderInfo header;
+        try
+        {
+            header = XonoticGodot.Net.Demo.DemoFormat.ReadHeader(demoPath);
+        }
+        catch (System.Exception ex)
+        {
+            GD.PrintErr($"[NetGame] cannot replay '{demoPath}': {ex.Message}");
+            return false;
+        }
+        ConfigureListenServer(header.MapName, header.Gametype, botCount: 0, playerName: playerName,
+            serverName: "XonoticGodot Replay", vfs: vfs, cvars: cvars);
+        _replayDemoPath = demoPath;
+        return true;
     }
 
     // =====================================================================================
@@ -487,6 +503,19 @@ public sealed partial class NetGame : Node3D
         // hasn't completed yet still has somewhere to draw once snapshots flow.
         SetupRender();
         SetupCameraAndHud();
+
+        // [T65] Replay spectator camera: a free-roam view (WASD + mouse look, F = follow a player) replaces the
+        // first-person predicted eye during demo playback (UpdateCamera is gated off while this is Current).
+        if (_demoPlayback is not null)
+        {
+            _spectatorCam = new Client.SpectatorCamera
+            {
+                Name = "SpectatorCamera",
+                TargetProvider = CollectSpectatorTargets,
+            };
+            AddChild(_spectatorCam);
+            _spectatorCam.MakeCurrent();
+        }
 
         // Dev capture: `--fx-demo [effect]` rides on the live ClientWorld to burst a named effect in front of the
         // player each frame for an effect-parity --screenshot (the survivor of GameDemo's inline dev flags; see
@@ -563,56 +592,6 @@ public sealed partial class NetGame : Node3D
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
     }
 
-    /// <summary>[T63] Resolve + open the replay demo, gate on build-parity, and seed <c>_map</c>/<c>_gametype</c>
-    /// from its header. Returns false (aborting the boot) if the demo can't be found or read.</summary>
-    private bool OpenDemoForReplay()
-    {
-        string? osPath = ResolveDemoPath(_demoPath);
-        if (osPath is null)
-        {
-            GD.PrintErr($"[NetGame] replay: demo not found '{_demoPath}'.");
-            return false;
-        }
-        try
-        {
-            _demoPlayback = DemoPlayback.OpenFile(osPath);
-        }
-        catch (Exception e)
-        {
-            GD.PrintErr($"[NetGame] replay: failed to open '{osPath}': {e.Message}");
-            return false;
-        }
-
-        uint demoParity = _demoPlayback.Header.BuildParity;
-        uint buildParity = NetProtocol.BuildParity();
-        if (demoParity != buildParity)
-            GD.PushWarning($"[NetGame] replay: demo build-parity 0x{demoParity:X8} != build 0x{buildParity:X8} — "
-                           + "content tables differ; playback may misrender events/models.");
-
-        _map = _demoPlayback.Header.MapName;
-        _gametype = string.IsNullOrWhiteSpace(_demoPlayback.Header.GameType) ? "dm" : _demoPlayback.Header.GameType;
-        _botCount = 0;
-        GD.Print($"[NetGame] replay '{System.IO.Path.GetFileName(osPath)}': map '{_map}', gt {_gametype}, "
-                 + $"{_demoPlayback.FrameCount} frames, {_demoPlayback.Duration:0.0}s.");
-        return true;
-    }
-
-    /// <summary>Resolve a demo argument to an OS path: an existing file as-given wins; else try
-    /// <c>user://&lt;arg&gt;</c> and <c>user://demos/&lt;arg&gt;</c> (with/without <c>.xgd</c>). Null if none exist.</summary>
-    private static string? ResolveDemoPath(string arg)
-    {
-        if (string.IsNullOrWhiteSpace(arg)) return null;
-        if (System.IO.File.Exists(arg)) return arg;
-        string withExt = arg.EndsWith(".xgd", StringComparison.OrdinalIgnoreCase) ? arg : arg + ".xgd";
-        if (System.IO.File.Exists(withExt)) return withExt;
-        foreach (string cand in new[] { "user://" + withExt, "user://demos/" + withExt })
-        {
-            string os = ProjectSettings.GlobalizePath(cand);
-            if (System.IO.File.Exists(os)) return os;
-        }
-        return null;
-    }
-
     /// <summary>
     /// Boot the listen server: build the map (or a test floor), stand up a <see cref="GameWorld"/> on it,
     /// activate the gametype, fill it with bots, and start a <see cref="ServerNet"/>. The world's collision
@@ -621,10 +600,17 @@ public sealed partial class NetGame : Node3D
     /// </summary>
     private void StartListenServer()
     {
-        // [T63] Replay: read the demo header up front so the rest of this boot (BSP, gametype, render, music) uses
-        // the RECORDED map/gametype. Seeds _map/_gametype/_botCount; the playback is wired to ReplaySource below.
-        if (_isReplay && !OpenDemoForReplay())
-            return;
+        // [T63] `playdemo` hands the demo path across the Shell's listen-server reboot via the one-shot static
+        // (MapChangeRequested only carries map/gametype/bots; the fresh NetGame consumes the path here). A
+        // direct ConfigureReplay already set _replayDemoPath. A replay simulates no match of its own — the
+        // recorded entities are the content — so any inherited bot fill is dropped.
+        if (!IsReplay && PendingReplayDemo is not null)
+        {
+            _replayDemoPath = PendingReplayDemo;
+            PendingReplayDemo = null;
+        }
+        if (IsReplay)
+            _botCount = 0;
 
         // --- collision: load the map's BSP collision if we can resolve it, else a flat test floor. ---
         CollisionWorld collision;
@@ -670,7 +656,7 @@ public sealed partial class NetGame : Node3D
 
         _serverWorld = new GameWorld(collision, mapEntities,
             sharedCvars: unifyStore ? _sharedCvars : null) { MapName = _map };
-        if (_isReplay) _serverWorld.ReplayMode = true; // [T63] match logic inert; entities injected from the demo
+        if (IsReplay) _serverWorld.ReplayMode = true; // [T63] match logic inert; entities injected from the demo
         // B3: on the interactive client-hosted path (a windowed listen server), clamp the per-render-frame
         // catch-up so a hitch isn't followed by a frame running 16× the sim — that second spike would miss
         // another vblank. The small backlog drains over the next few frames instead. A headless dedicated host
@@ -734,11 +720,9 @@ public sealed partial class NetGame : Node3D
         // listen server that left the player a permanent observer at world origin under the black connect overlay.
         // `sv_spectate 0` = "clients spawn as players immediately" (the cvar's own definition) restores the intended
         // ~1s autojoin so Create→Start drops you into the game, like real Xonotic. (Join-on-fire still works.)
-        _serverWorld.Services.Cvars.Set("sv_spectate", "0");
-
-        // [T63] Replay: the viewer must stay a free-flying OBSERVER (never autojoin the empty recorded match), so
-        // re-arm the spectator hold the listen-server path just cleared.
-        if (_isReplay) _serverWorld.Services.Cvars.Set("sv_spectate", "1");
+        // [T63] A replay host inverts this: the viewer must STAY a free-flying spectator (ServerNet also
+        // suppresses the observer join-edges while a ReplaySource is installed).
+        _serverWorld.Services.Cvars.Set("sv_spectate", IsReplay ? "1" : "0");
 
         // A single-player campaign is "host AND play" too, but g_campaign re-arms the spectator-hold sv_spectate
         // just cleared; opt the local host out so it spawns straight into the loaded level (Create-Game UX).
@@ -833,7 +817,6 @@ public sealed partial class NetGame : Node3D
             return;
         }
         _server = server;
-        if (_isReplay) _server.ReplaySource = _demoPlayback; // [T63] BuildEntitySet now reads the demo, not the world
         // Answer server-browser getinfo probes so this host shows up in the LAN list (no master heartbeat —
         // the port's transport is ENet, so registering with the public DP masters would only mislead DP clients).
         server.EnableLanDiscovery(_port);
@@ -981,6 +964,10 @@ public sealed partial class NetGame : Node3D
                 };
         }
 
+        // [T62/T63] Demo hooks: attach the replay source (replay mode), wire DemoControl's recorder actions,
+        // and register the record/stop/playdemo/demo_* console commands.
+        SetupDemoHooks(cmd);
+
         // S5: spin up the dedicated server-sim worker now that ServerNet + the world + the sinks are all wired.
         // Install the shared gate on ServerNet (its Tick locks it) and hand the SAME object to the main thread
         // (_simGate) so _Process serialises its prediction span against the worker. Start LAST so no tick runs
@@ -1005,6 +992,230 @@ public sealed partial class NetGame : Node3D
             _serverThread.Start();
             GD.Print("[NetGame] sv_threaded 1 — server simulation running on a dedicated worker thread (XG-ServerSim).");
         }
+    }
+
+    // =====================================================================================
+    //  Demo record/replay wiring (T62/T63 — planning/specs/demo-replay-and-spectator.md)
+    // =====================================================================================
+
+    /// <summary>
+    /// Attach the demo seams to the freshly-booted listen server: in replay mode open the demo and install it
+    /// as <see cref="ServerNet.ReplaySource"/> (build-parity gated — an incompatible demo is rejected with an
+    /// honest message, never misrendered); wire <see cref="DemoControl"/>'s start/stop actions to the real
+    /// recorder (the <c>sv_autodemo</c> match-boundary lifecycle); and register the demo console commands.
+    /// </summary>
+    private void SetupDemoHooks(Commands cmd)
+    {
+        if (_serverWorld is null || _server is null)
+            return;
+
+        if (IsReplay)
+        {
+            try
+            {
+                var playback = XonoticGodot.Net.Demo.DemoPlayback.OpenFile(_replayDemoPath);
+                if (playback.Header.BuildParity != NetProtocol.BuildParity())
+                {
+                    GD.PrintErr($"[NetGame] demo '{_replayDemoPath}' was recorded by an incompatible build — refusing to misrender it.");
+                    playback.Dispose();
+                    _replayDemoPath = "";
+                }
+                else
+                {
+                    _demoPlayback = playback;
+                    _server.ReplaySource = playback;
+                    GD.Print($"[NetGame] replaying demo '{_replayDemoPath}' "
+                             + $"(map '{playback.Header.MapName}', {playback.DurationSeconds:0.0}s, "
+                             + $"{playback.Header.Roster.Count} recorded players).");
+                }
+            }
+            catch (System.Exception ex)
+            {
+                GD.PrintErr($"[NetGame] could not open demo '{_replayDemoPath}': {ex.Message}");
+                _replayDemoPath = "";
+            }
+        }
+
+        // DemoControl (QC the sv_autodemo lifecycle) decides WHEN to record at match boundaries; hand it the
+        // actual byte recorder it was designed to delegate to (closing that file's "host wires" TODO).
+        _serverWorld.Demo.StartRecording = StartDemoRecording;
+        _serverWorld.Demo.StopRecording = StopDemoRecording;
+        // Roster catch-up: clients (bots included) who connect after recording started — an sv_autodemo
+        // recording begins at match start, BEFORE the bots join — are appended to the recorder's roster and
+        // serialized as the file's FINAL roster at Finish.
+        _serverWorld.Demo.ClientJoined = p =>
+        {
+            if (_demoRecorder is not null && _server is not null)
+                _demoRecorder.AddRosterEntry(RosterEntryFor(p));
+        };
+
+        // GameWorld.Boot already ran this map's OnMatchStart (map-init happens inside Boot, BEFORE these hooks
+        // exist), so an sv_autodemo match is flagged Recording with no writer attached — catch up now.
+        if (_serverWorld.Demo.Recording && _demoRecorder is null && !IsReplay)
+            StartDemoRecording(_serverWorld.Demo.CurrentDemoName);
+
+        cmd.Register("record", "record <filename> — record a server-side demo to demos/<filename>.xgd", ctx =>
+        {
+            if (_demoPlayback is not null) { ctx.Print("cannot record while playing back a demo"); return true; }
+            if (_demoRecorder is not null) { ctx.Print($"already recording to {_demoRecorder.Path} — `stop` it first"); return true; }
+            string name = ctx.Arg(1);
+            if (string.IsNullOrWhiteSpace(name)) { ctx.Print("usage: record <filename>"); return true; }
+            StartDemoRecording(name);
+            ctx.Print(_demoRecorder is not null
+                ? $"recording to {_demoRecorder.Path}"
+                : "could not start recording (see the log)");
+            return true;
+        });
+
+        cmd.Register("stop", "stop — finish and save the demo currently being recorded", ctx =>
+        {
+            if (_demoRecorder is null) { ctx.Print("not recording a demo"); return true; }
+            string path = _demoRecorder.Path;
+            float duration = _demoRecorder.DurationSeconds;
+            StopDemoRecording();
+            ctx.Print($"completed demo: {path} ({duration:0.0}s)");
+            return true;
+        });
+
+        cmd.Register("playdemo", "playdemo <filename> — play back a recorded demo (.xgd)", ctx =>
+        {
+            string arg = ctx.Arg(1);
+            if (string.IsNullOrWhiteSpace(arg)) { ctx.Print("usage: playdemo <filename>"); return true; }
+            string path = ResolveDemoPath(arg);
+            XonoticGodot.Net.Demo.DemoHeaderInfo header;
+            try { header = XonoticGodot.Net.Demo.DemoFormat.ReadHeader(path); }
+            catch (System.Exception ex) { ctx.Print($"cannot play '{arg}': {ex.Message}"); return true; }
+            if (header.BuildParity != NetProtocol.BuildParity())
+            {
+                ctx.Print($"demo '{arg}' was recorded by an incompatible build");
+                return true;
+            }
+            // A replay boots as a fresh listen server on the DEMO's map; the path rides the one-shot static
+            // across the Shell reboot (RequestMapChange tears this NetGame down and builds the next).
+            PendingReplayDemo = path;
+            ctx.Print($"playing demo {path} (map '{header.MapName}', {header.DurationSeconds:0.0}s)");
+            RequestMapChange(header.MapName);
+            return true;
+        });
+
+        cmd.Register("demo_pause", "demo_pause — toggle demo playback pause", ctx =>
+        {
+            if (_demoPlayback is null) { ctx.Print("not playing a demo"); return true; }
+            _demoPlayback.Paused = !_demoPlayback.Paused;
+            ctx.Print(_demoPlayback.Paused ? "demo paused" : "demo resumed");
+            return true;
+        });
+
+        cmd.Register("demo_seek", "demo_seek <seconds> — seek demo playback to an absolute time", ctx =>
+        {
+            if (_demoPlayback is null) { ctx.Print("not playing a demo"); return true; }
+            _demoPlayback.Seek(ctx.ArgFloat(1));
+            ctx.Print($"demo at {_demoPlayback.PlayheadSeconds:0.0}s / {_demoPlayback.DurationSeconds:0.0}s");
+            return true;
+        });
+
+        cmd.Register("demo_speed", "demo_speed <factor> — set demo playback speed (0.25×–4×)", ctx =>
+        {
+            if (_demoPlayback is null) { ctx.Print("not playing a demo"); return true; }
+            float factor = ctx.ArgFloat(1);
+            if (factor <= 0f) { ctx.Print($"demo speed is {_demoPlayback.Speed:0.##}×"); return true; }
+            _demoPlayback.Speed = factor;
+            ctx.Print($"demo speed {_demoPlayback.Speed:0.##}×");
+            return true;
+        });
+    }
+
+    /// <summary>Start recording the live match to <c>demos/&lt;name&gt;.xgd</c>: build the header (map/gametype/
+    /// build-parity/roster) and attach a <see cref="XonoticGodot.Net.Demo.DemoRecorder"/> as the server's
+    /// <see cref="ServerNet.DemoSink"/>. Also the <see cref="DemoControl.StartRecording"/> action.</summary>
+    private void StartDemoRecording(string name)
+    {
+        if (_serverWorld is null || _server is null || _demoRecorder is not null || _demoPlayback is not null)
+            return;
+        try
+        {
+            string path = ResolveDemoPath(name);
+            var header = new XonoticGodot.Net.Demo.DemoHeaderInfo
+            {
+                BuildParity = NetProtocol.BuildParity(),
+                TickRate = 1f / XonoticGodot.Engine.Simulation.SimulationLoop.TicRate,
+                MapName = _map,
+                Gametype = _gametype,
+                StartWallclockUnixMs = System.DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+            };
+            foreach (Player p in _serverWorld.Clients.Players)
+                if (!p.IsObserver)
+                    header.Roster.Add(RosterEntryFor(p));
+            // demo_keyframe_interval (spec §4: ticks, default 144 ≈ 2s @ 72Hz) tunes file size vs seek latency;
+            // the recorder takes seconds, so convert via the sim tick PERIOD.
+            float intervalTicks = _serverWorld.Services.Cvars.GetFloat("demo_keyframe_interval");
+            float intervalSeconds = intervalTicks > 0f
+                ? intervalTicks * XonoticGodot.Engine.Simulation.SimulationLoop.TicRate
+                : XonoticGodot.Net.Demo.DemoRecorder.DefaultKeyframeIntervalSeconds;
+            _demoRecorder = XonoticGodot.Net.Demo.DemoRecorder.CreateFile(path, header, intervalSeconds);
+            _server.DemoSink = _demoRecorder;
+            GD.Print($"[NetGame] demo recording started: {path}");
+        }
+        catch (System.Exception ex)
+        {
+            GD.PrintErr($"[NetGame] could not start demo recording '{name}': {ex.Message}");
+            _demoRecorder?.Dispose();
+            _demoRecorder = null;
+        }
+    }
+
+    /// <summary>One demo roster entry for a live player — shared by the record-start roster snapshot and the
+    /// mid-recording join catch-up so the two can't drift. Colormap mirrors the team code (the same value the
+    /// wire's TEAM byte carries; the FFA packed-colors path doesn't reach the demo roster yet).</summary>
+    private XonoticGodot.Net.Demo.DemoRosterEntry RosterEntryFor(Player p)
+        => new(_server!.NetIdForPlayer(p), p.NetName, (int)p.Team, p.Model, (int)p.Team);
+
+    /// <summary>Detach + finalize the active demo recording (writes the seek index and patches the header
+    /// duration — the file is now self-contained and playable). Also the <see cref="DemoControl.StopRecording"/>
+    /// action and part of <see cref="Shutdown"/>, so a quit mid-match still saves the demo.</summary>
+    private void StopDemoRecording()
+    {
+        if (_demoRecorder is null)
+            return;
+        if (_server is not null)
+            _server.DemoSink = null;
+        GD.Print($"[NetGame] demo recording finished: {_demoRecorder.Path} "
+                 + $"({_demoRecorder.DurationSeconds:0.0}s, {_demoRecorder.FrameCount} frames)");
+        _demoRecorder.Stop();
+        _demoRecorder = null;
+    }
+
+    /// <summary>Resolve a user-typed demo name to a full path: absolute paths pass through; anything else lands
+    /// in <c>&lt;user://&gt;/demos/</c> (DemoControl's auto-names already carry a <c>demos/</c> prefix — strip it
+    /// so they don't nest); the <c>.xgd</c> extension is appended when missing.</summary>
+    internal static string ResolveDemoPath(string name)
+    {
+        name = name.Trim().Replace('\\', '/');
+        if (name.StartsWith("demos/", System.StringComparison.OrdinalIgnoreCase))
+            name = name["demos/".Length..];
+        if (!name.EndsWith(".xgd", System.StringComparison.OrdinalIgnoreCase))
+            name += ".xgd";
+        if (System.IO.Path.IsPathRooted(name))
+            return name;
+        return System.IO.Path.Combine(OS.GetUserDataDir(), "demos", name);
+    }
+
+    /// <summary>[T65] The spectator camera's follow-target feed: every recorded player currently in the client's
+    /// decoded entity stream, at its interpolated pose (the same source the renderer draws from).</summary>
+    private System.Collections.Generic.List<Client.SpectatorCamera.FollowTarget> CollectSpectatorTargets()
+    {
+        var targets = new System.Collections.Generic.List<Client.SpectatorCamera.FollowTarget>();
+        if (_client is null)
+            return targets;
+        foreach (int id in _client.RemoteIds)
+        {
+            if (!_client.TryGetRemoteState(id, out NetEntityState s) || s.Kind != NetEntityKind.Player)
+                continue;
+            if (!_client.SampleRemote(id, _client.LatestServerTime, out NVec3 origin, out _))
+                origin = s.Origin;
+            targets.Add(new Client.SpectatorCamera.FollowTarget(id, origin));
+        }
+        return targets;
     }
 
     /// <summary>
@@ -1820,7 +2031,7 @@ public sealed partial class NetGame : Node3D
         // [T63·P2] Demo replay time-control bar: a scrub slider + play/pause + speed selector along the bottom,
         // driving the demo playhead directly (local single-viewer case, demo-replay §9). Replay only; on its own
         // CanvasLayer above the HUD so the controls sit on top. Keybinds (space/←→/[ ]/,.) are handled in the bar.
-        if (_isReplay && _demoPlayback is not null)
+        if (IsReplay && _demoPlayback is not null)
         {
             var replayLayer = new CanvasLayer { Name = "ReplayUi", Layer = 6 };
             AddChild(replayLayer);
@@ -2806,6 +3017,12 @@ public sealed partial class NetGame : Node3D
         // leave the menu / the next match's visuals frozen at the old factor.
         XonoticGodot.Game.Client.ClientRenderTime.Scale = 1f;
 
+        // [T62/T63] Finalize any in-flight demo recording (writes the seek index + patches the duration, so a
+        // quit mid-match still leaves a playable file) and release the playback reader's file handle.
+        StopDemoRecording();
+        _demoPlayback?.Dispose();
+        _demoPlayback = null;
+
         if (_client is not null)
         {
             _client.EffectReceived -= OnEffectReceived;
@@ -2949,11 +3166,19 @@ public sealed partial class NetGame : Node3D
         // through both paired zones that stamped a bogus entry-facing view snap).
         XonoticGodot.Engine.Simulation.TriggerTouch.PredictedWarpBudget = 1;
 
-        // [T63·P2] Replay: advance the demo playhead by realDelta × speed BEFORE the server tick, so this frame's
-        // BuildEntitySet samples the updated playhead. The sim/snapshot clock still runs at real time (the world
-        // advances by dt below), so a paused playhead (speed 0) keeps snapshots flowing with frozen content — the
-        // viewer free-flies through a still scene; slow/fast/rewind fall out of the speed.
-        _demoPlayback?.Advance(dt);
+        // [T63] Replay drive (the two-clock model, spec §3): advance the demo playhead by real time × speed
+        // BEFORE the server tick so BuildEntitySet injects the fresh recorded set (the sim/snapshot clock keeps
+        // running at real time — pause freezes the entities, not the stream), then re-broadcast the recorded
+        // event packets the playhead crossed so effects/sounds/kill-feed re-fire exactly like live.
+        if (_demoPlayback is not null && _server is not null)
+        {
+            _demoPlayback.Advance(dt);
+            System.Collections.Generic.IReadOnlyList<XonoticGodot.Net.Demo.DemoEventPacket> demoEvents =
+                _demoPlayback.PendingEvents;
+            for (int i = 0; i < demoEvents.Count; i++)
+                _server.BroadcastRaw(demoEvents[i].Data, demoEvents[i].Reliable);
+            _demoPlayback.ClearPendingEvents();
+        }
 
         // Drive the listen server (if any) by real elapsed time — it runs its fixed ticks, pulls each client's
         // queued input, simulates, and broadcasts snapshots.
@@ -3367,8 +3592,10 @@ public sealed partial class NetGame : Node3D
         // DismissLoadingScreen when the player spawns. Final dismiss uses UpdateProgress to snap to 1.
         if (LoadingScreen is not null || _fallbackOverlay is not null)
         {
+            // [T63] A replay viewer never spawns (it stays a Health-0 observer forever), so treat the first
+            // snapshot as "spawned" there — otherwise the loading screen would never dismiss.
             HandshakeStage stage =
-                (_cameraReady && _client.Health > 0) ? HandshakeStage.Spawned
+                (_cameraReady && (_client.Health > 0 || _demoPlayback is not null)) ? HandshakeStage.Spawned
                 : !_client.Accepted                  ? HandshakeStage.Connecting
                 : !_cameraReady                       ? HandshakeStage.WaitingForServer
                 : HandshakeStage.Joining;
@@ -3440,7 +3667,8 @@ public sealed partial class NetGame : Node3D
         // handshake. The camera is first-placed in the firstSnapshot branch above. Drives the shared view (zoom
         // lerp + camera placement + eventchase + eye-contents), so it must run BEFORE the ViewEffects feed below
         // (which reads SampleEyeContents = _view.EyeContents).
-        if (_cameraReady)
+        // [T65] Replay: the free-roam SpectatorCamera owns the view — the first-person predicted eye stays off.
+        if (_cameraReady && _spectatorCam is null)
             UpdateCamera(dt);
 
         // Camera-trace capture (apparatus A2): once spawned, record the rendered camera origin + predicted state

@@ -605,7 +605,15 @@ public partial class Shell : Node
             Name = "Replay",
             ProcessMode = ProcessModeEnum.Always, // the hosted replay server keeps ticking under the pause menu
         };
-        net.ConfigureReplay(demoPath, MenuState.Vfs, MenuState.Cvars, ResolvePlayerName());
+        // ConfigureReplay reads the demo header (map/gametype) up front and refuses an unreadable file —
+        // return to the menu instead of booting a broken session.
+        if (!net.ConfigureReplay(XonoticGodot.Game.Net.NetGame.ResolveDemoPath(demoPath),
+                ResolvePlayerName(), MenuState.Vfs, MenuState.Cvars))
+        {
+            net.QueueFree();
+            ReturnToMainMenu();
+            return;
+        }
         net.LoadingScreen = _loadingScreen;
         net.DismissLoadingScreen = DismissLoadingScreen;
         WireConsoleToNet(net);

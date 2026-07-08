@@ -77,6 +77,23 @@ public sealed class ServerNet : IDisposable
     /// <summary>The transport's connection cap — the browser's slots fallback when g_maxplayers is unset.</summary>
     private int _maxClients = 32;
 
+    // --- demo record/replay seams (T62/T63, planning/specs/demo-replay-and-spectator.md §4/§6) ---
+
+    /// <summary>[T62] The optional demo tap: when set, <see cref="BroadcastSnapshots"/> hands it the omniscient
+    /// per-tick entity set right after <see cref="BuildEntitySet"/> (before the per-client encode), and each
+    /// flushed event bundle is recorded verbatim. Null = not recording (the live path pays one null check).</summary>
+    public XonoticGodot.Net.Demo.IDemoSink? DemoSink { get; set; }
+
+    /// <summary>[T63] The replay entity injector: when set, <see cref="BuildEntitySet"/> uses the recorded set
+    /// INSTEAD of the live world scan (a replay host's humans are all observers, which the scan skips anyway),
+    /// and observer join-edges are suppressed so viewers stay free-flying spectators.</summary>
+    public XonoticGodot.Net.Demo.IReplayEntitySource? ReplaySource { get; set; }
+
+    /// <summary>[T63] Re-broadcast a recorded server→client wire packet (an effect/sound/notification bundle,
+    /// leading control byte included) to every viewer — the replay host emits these as the demo playhead
+    /// crosses their recorded timestamps.</summary>
+    public void BroadcastRaw(ReadOnlySpan<byte> packet, bool reliable) => _transport.Broadcast(packet, reliable);
+
     // Reused writers (the networking spec's allocation discipline: one writer per send path, reset+refilled).
     private readonly BitWriter _snapshotWriter = new(2048);
     private readonly BitWriter _eventWriter = new(1024);
@@ -186,16 +203,6 @@ public sealed class ServerNet : IDisposable
 
     /// <summary>Per-frame captured positional sounds (broadcast unreliable in the sound bundle, DP SV_StartSound).</summary>
     private readonly List<CapturedSound> _soundQueue = new();
-
-    // --- demo recording (T62) ---
-    /// <summary>The active demo recording sink — null when not recording. <see cref="BroadcastSnapshots"/> taps it
-    /// once per advanced tick, right after the entity set is assembled.</summary>
-    public IDemoSink? DemoSink { get; private set; }
-    private DemoRecorder? _demoRecorder;
-
-    /// <summary>[T63] When set (replay mode), <see cref="BuildEntitySet"/> reads the recorded entity set from this
-    /// instead of scanning the live world — a replay is "a listen server whose entities come from a demo".</summary>
-    public IReplayEntitySource? ReplaySource { get; set; }
 
     /// <summary>One connected client: its peer id, its player, the input ring + ack cursor.</summary>
     private sealed class PeerState
@@ -345,20 +352,6 @@ public sealed class ServerNet : IDisposable
         _presetProvider = ResolvePresetVector;
         MovementParameters.PresetProvider = _presetProvider;
 
-        // Demo recording (T62): the world's DemoControl drives start/stop at match boundaries (gated by
-        // sv_autodemo, default on); we supply the byte-writing backend it documents as "host-wired". The recorder
-        // taps the omniscient _entityScratch right after BuildEntitySet, so the demo is full-state (free-cam
-        // replay works everywhere), not PVS-limited like a client demo.
-        _world.Demo.StartRecording = StartDemoRecorder;
-        _world.Demo.StopRecording = StopDemoRecorder;
-
-        // GameWorld.Boot already fired Demo.OnMatchStart (when sv_autodemo) BEFORE this ctor wired the hooks above,
-        // so that StartRecording invocation was a no-op (hook still null). Catch up: a match is flagged recording
-        // but has no backend yet → open the recorder now, before the first BroadcastSnapshots tick (no frames lost).
-        // Skipped in replay mode — a replay must never record itself (it would be a demo-of-a-demo).
-        if (!_world.ReplayMode && _world.Demo.Recording && DemoSink is null
-            && !string.IsNullOrEmpty(_world.Demo.CurrentDemoName))
-            StartDemoRecorder(_world.Demo.CurrentDemoName);
     }
 
     // --- per-player preset physics (T54): the provider + a per-sim-tick resolve cache ---
@@ -400,71 +393,6 @@ public sealed class ServerNet : IDisposable
         float[]? result = MoveVarsBlock.Hash(resolved) == MoveVarsBlock.Hash(globals) ? null : resolved;
         _presetCache[p] = result;
         return result;
-    }
-
-    // =====================================================================================
-    //  Demo recording (T62) — the byte-writing backend DemoControl's start/stop hooks wire to.
-    // =====================================================================================
-
-    /// <summary>Open a <c>.xgd</c> under <c>user://demos/</c> and begin recording the omniscient full-state demo.
-    /// Wired to <c>DemoControl.StartRecording</c> (fires at match start when <c>sv_autodemo</c> is on).</summary>
-    private void StartDemoRecorder(string name)
-    {
-        if (_world.ReplayMode) return; // a replay never records itself
-        StopDemoRecorder(); // close any prior recording first
-        try
-        {
-            string rel = name.EndsWith(".xgd", StringComparison.OrdinalIgnoreCase) ? name : name + ".xgd";
-            string osPath = ProjectSettings.GlobalizePath("user://" + rel);
-            string? dir = System.IO.Path.GetDirectoryName(osPath);
-            if (!string.IsNullOrEmpty(dir)) System.IO.Directory.CreateDirectory(dir);
-
-            int interval = (int)_world.Services.Cvars.GetFloat("demo_keyframe_interval");
-            var header = new DemoHeader
-            {
-                BuildParity = NetProtocol.BuildParity(),
-                // SimulationLoopTicRate is the tick PERIOD (seconds/tick, e.g. 1/72); the demo header (and
-                // DemoPlayback's frame↔time mapping) wants the RATE in Hz, so invert it (matches the handshake's
-                // `1/SimulationLoopTicRate` server-tick-rate field).
-                TickRate = SimulationLoopTicRate > 0f ? 1f / SimulationLoopTicRate : 72f,
-                MapName = _world.MapName,
-                GameType = _world.GameType?.NetName ?? GameWorld.DefaultGameType,
-                StartWallclockUnix = (long)Time.GetUnixTimeFromSystem(),
-                KeyframeInterval = interval > 0 ? interval : DemoFormat.DefaultKeyframeInterval,
-                Roster = BuildDemoRoster(),
-            };
-            var stream = new System.IO.FileStream(osPath, System.IO.FileMode.Create, System.IO.FileAccess.Write);
-            _demoRecorder = new DemoRecorder(stream, header) { Path = osPath };
-            DemoSink = _demoRecorder;
-            if (_world.Services.Cvars.GetFloat("developer") != 0f)
-                GD.Print($"[demo] recording → {osPath} (map={header.MapName}, gt={header.GameType}, players={header.Roster.Count})");
-        }
-        catch (Exception e)
-        {
-            GD.PushWarning($"[demo] could not start recording '{name}': {e.Message}");
-            _demoRecorder = null;
-            DemoSink = null;
-        }
-    }
-
-    /// <summary>Finalize + close the active demo (trailer/index written). Wired to <c>DemoControl.StopRecording</c>
-    /// (match end / level change / shutdown). Idempotent.</summary>
-    private void StopDemoRecorder()
-    {
-        if (_demoRecorder is null) return;
-        try { _demoRecorder.Finish(); }
-        catch (Exception e) { GD.PushWarning($"[demo] finalize failed: {e.Message}"); }
-        _demoRecorder = null;
-        DemoSink = null;
-    }
-
-    /// <summary>The demo header roster (spectate target list + scoreboard seed): one entry per current player.</summary>
-    private List<DemoRosterEntry> BuildDemoRoster()
-    {
-        var list = new List<DemoRosterEntry>();
-        foreach (Player p in _world.Clients.Players)
-            list.Add(new DemoRosterEntry(NetIdFor(p), p.NetName, (int)p.Team, p.Model, 0, p.IsBot));
-        return list;
     }
 
     /// <summary>Convenience: start a server on <paramref name="port"/> and drive <paramref name="world"/>.</summary>
@@ -560,7 +488,10 @@ public sealed class ServerNet : IDisposable
         // Observer/join lifecycle: a human connects as an OBSERVER (ClientConnect → TRANSMUTE(Observer)) and only
         // enters the match via Join — on +jump/+attack or the delayed autojoin. The headless world doesn't drive
         // this on the real-client path, so we run it here per accepted peer from its last input. (Bots autojoin.)
-        DriveObserverJoins();
+        // [T63] Suppressed in replay mode: a demo viewer must STAY a free-flying observer — +attack there means
+        // "cycle spectate target", never "join the (recorded) match".
+        if (ReplaySource is null)
+            DriveObserverJoins();
         return ticksRan;
     }
 
@@ -1939,8 +1870,9 @@ public sealed class ServerNet : IDisposable
 
         BuildEntitySet(now);
 
-        // Demo recording (T62): tap the omniscient full-state set every advanced tick (independent of whether any
-        // client is connected — a 0-bot listen server still records the world). DemoSink is null when not recording.
+        // [T62] Demo tap: record the omniscient per-tick entity set (the data free-cam replay needs — spec §4
+        // "record server-side, not in-eye") before any per-client PVS filtering/delta below can narrow it.
+        // Runs every advanced tick independent of connected clients — a 0-bot listen server still records.
         DemoSink?.RecordTick(now, _entityScratch);
 
         // movevars (the prediction-relevant sv_* set): recomputed once; sent per client only when its hash changes.
@@ -2103,20 +2035,16 @@ public sealed class ServerNet : IDisposable
         _entityScratch.Clear();
         _entityBounds.Clear();
 
-        // [T63] Replay: the networked entity set comes from the demo, not a live world scan (demo-replay §6). All
-        // humans are observers (skipped by the live scan anyway), so the recorded set is the ONLY entity source.
-        // Sample at the PLAYHEAD (P2's two-clock model — the playhead advances at realDelta×speed in NetGame._Process
-        // while `now`/snapshot time keeps real-time, so pause/slow/fast/rewind render smoothly). On a seek/jump, OR
-        // the Teleported bit into every entity for that one frame so the client snaps instead of lerping the gap.
+        // [T63] Replay injection (spec §6): the recorded set REPLACES the live scan — a replay world has no
+        // match players (all humans are observers, skipped below) and its own map entities must not shadow the
+        // recording. CopyEntities samples at the PLAYHEAD (spec §3's two-clock model — the playhead advances at
+        // realDelta×speed in NetGame._Process while `now`/snapshot time keeps real-time, so pause/slow/fast render
+        // smoothly), remaps recorded ids clear of live spectators, and stamps Teleported on the first post-seek
+        // copy so the client snaps instead of lerping the gap. No bounds are filled, so the per-client PVS cull
+        // conservatively keeps every recorded entity; antilag rings are pointless here (no shooting).
         if (ReplaySource is not null)
         {
-            bool teleport = ReplaySource.ConsumeSeekFlag();
-            foreach (KeyValuePair<int, NetEntityState> kv in ReplaySource.SampleCurrent())
-            {
-                NetEntityState s = kv.Value;
-                if (teleport) s.Flags |= NetEntityFlags.Teleported;
-                _entityScratch[kv.Key] = s;
-            }
+            ReplaySource.CopyEntities(_entityScratch);
             return;
         }
 
@@ -2886,6 +2814,10 @@ public sealed class ServerNet : IDisposable
         return NetEntityKind.Generic; // monsters, turrets, vehicles, mapobjects with alias models
     }
 
+    /// <summary>[T62] Public forward mapping for the demo header roster: the SAME stable id the snapshot
+    /// networks this player under, so a replay's spectate-target list keys match the recorded entity stream.</summary>
+    public int NetIdForPlayer(Player p) => NetIdFor(p);
+
     /// <summary>Get (or allocate) a player's small stable net id — works for bots (which have no ENet peer).</summary>
     private int NetIdFor(Player p)
     {
@@ -3219,6 +3151,21 @@ public sealed class ServerNet : IDisposable
         if (_effectQueue.Count == 0)
             return;
 
+        // [T62] Demo tap: the demo is omniscient, so record EVERY effect unfiltered (the per-recipient "except"
+        // routing below is a live-shooter courtesy that doesn't apply to a replay viewer).
+        if (DemoSink is not null)
+        {
+            _scratchWriter.Reset();
+            _scratchWriter.WriteByte((byte)NetControl.EventBundle);
+            int dpos = ReserveCount(_scratchWriter);
+            int dn = 0;
+            for (int i = 0; i < _effectQueue.Count; i++)
+                if (WriteEffect(_scratchWriter, _effectQueue[i].Request)) dn++;
+            PatchCount(_scratchWriter, dpos, dn);
+            if (dn > 0)
+                DemoSink.RecordEventPacket(_scratchWriter.WrittenSpan, reliable: false);
+        }
+
         // Build one bundle per recipient only when an exclusion is in play; otherwise broadcast a shared one.
         // Simple + correct: broadcast the bundle to all, but encode each effect once; the rare "except" case
         // is handled by sending that effect only to the non-excluded peers (a per-peer pass).
@@ -3319,7 +3266,11 @@ public sealed class ServerNet : IDisposable
             if (WriteSound(_eventWriter, _soundQueue[i].Event)) n++;
         PatchCount(_eventWriter, countPos, n);
         if (n > 0)
+        {
             _transport.Broadcast(_eventWriter.WrittenSpan, reliable: false);
+            // [T62] Demo tap: DP sound() is a pure broadcast, so the shared bundle IS the omniscient record.
+            DemoSink?.RecordEventPacket(_eventWriter.WrittenSpan, reliable: false);
+        }
 
         _soundQueue.Clear();
     }
@@ -3372,6 +3323,28 @@ public sealed class ServerNet : IDisposable
     {
         if (_notifyQueue.Count == 0)
             return;
+
+        // [T62] Demo tap: record the BROADCAST notifications (kill-feed / captures — NOTIF_ALL/ALL_EXCEPT; a
+        // replay viewer is never the excluded player). Targeted per-player notifications (pickup messages,
+        // private centerprints) are personal to the original recipient and stay out of the demo.
+        if (DemoSink is not null)
+        {
+            _scratchWriter.Reset();
+            _scratchWriter.WriteByte((byte)NetControl.ReliableBundle);
+            int dpos = ReserveCount(_scratchWriter);
+            int dn = 0;
+            for (int i = 0; i < _notifyQueue.Count; i++)
+            {
+                NotificationDispatch d = _notifyQueue[i].Dispatch;
+                if (d.Broadcast is not (NotifBroadcast.All or NotifBroadcast.AllExcept))
+                    continue;
+                WriteNotification(_scratchWriter, d);
+                dn++;
+            }
+            PatchCount(_scratchWriter, dpos, dn);
+            if (dn > 0)
+                DemoSink.RecordEventPacket(_scratchWriter.WrittenSpan, reliable: true);
+        }
 
         foreach (PeerState st in _peers.Values)
         {
@@ -3473,9 +3446,7 @@ public sealed class ServerNet : IDisposable
 
     public void Dispose()
     {
-        // Finalize any in-progress demo (a clean trailer/index) before tearing down — covers app quit / host stop
-        // when no match-end boundary fired. (A re-host on a reused world re-wires DemoControl in the new ctor.)
-        StopDemoRecorder();
+        // (Any in-progress demo is finalized by NetGame.Shutdown → StopDemoRecording before this runs.)
 
         // restore the default recording sinks so a torn-down server doesn't leave dangling net sinks.
         if (EffectEmitter.Sink is EffectNetSink) EffectEmitter.Sink = EffectEmitter.Recorder;
