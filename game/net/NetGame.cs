@@ -69,6 +69,9 @@ public sealed partial class NetGame : Node3D
     private int _botSkill = 5;
     private string _campaignName = "";          // non-empty → host this listen server as a campaign level
     private int _campaignIndex;
+    private bool _isReplay;                      // [T63] true → this listen server hosts a demo playback (ReplayMode)
+    private string _demoPath = "";               // [T63] the .xgd to play back (CLI arg / user:// relative / OS path)
+    private DemoPlayback? _demoPlayback;         // [T63] the loaded demo, attached to ServerNet.ReplaySource
     private string _serverName = "XonoticGodot Listen Server";
     private string _playerName = "player";
     private VirtualFileSystem? _vfs;            // shared asset VFS (from the menu shell), for models/sounds/maps
@@ -105,6 +108,7 @@ public sealed partial class NetGame : Node3D
     private Camera3D _camera = null!;
     private RadarPanel _radar = null!;
     private NetHud _hud = null!;                 // crosshair + health/armor readout (the always-on lightweight HUD)
+    private XonoticGodot.Game.Hud.ReplayControlBar? _replayBar; // [T63·P2] demo replay: scrub/pause/speed bar (replay only)
     // The full CSQC HUD panel set (weapon bar / ammo / kill-feed / centerprint / timer) on the net play path —
     // the same Hud GameDemo uses (T34 SEAM). It hosts the networked panels fed from the net stream; its own
     // Scoreboard panel is left UNUSED (T9's standalone _scoreboard owns the networked scoreboard). On a listen
@@ -339,6 +343,28 @@ public sealed partial class NetGame : Node3D
         _sharedCvars = cvars;
     }
 
+    /// <summary>
+    /// [T63] Configure this node as a DEMO REPLAY (demo-replay-and-spectator.md §2,6,10): a listen server hosted in
+    /// <see cref="GameWorld.ReplayMode"/> whose entities come from <paramref name="demoPath"/> (a <c>.xgd</c>), with
+    /// the local client self-connected as a free-flying observer. The map/gametype are read from the demo header at
+    /// boot (so the client renders the right worldmodel). A bare listen-server config with the replay flag set; the
+    /// boot path branches on <c>_isReplay</c>. A <c>--playdemo &lt;path&gt;</c> CLI flag mirrors this.
+    /// </summary>
+    public void ConfigureReplay(string demoPath, VirtualFileSystem? vfs = null,
+        XonoticGodot.Engine.Simulation.CvarService? cvars = null, string playerName = "spectator")
+    {
+        _isListenServer = true;     // a replay IS a listen server (loopback) — reuse that boot path
+        _isReplay = true;
+        _demoPath = demoPath ?? "";
+        _host = "127.0.0.1";
+        _gametype = "dm";           // overwritten from the demo header at boot
+        _botCount = 0;
+        _serverName = "XonoticGodot Replay";
+        _playerName = string.IsNullOrWhiteSpace(playerName) ? "spectator" : playerName;
+        _vfs = vfs;
+        _sharedCvars = cvars;
+    }
+
     // =====================================================================================
     //  Lifecycle
     // =====================================================================================
@@ -462,6 +488,56 @@ public sealed partial class NetGame : Node3D
         await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
     }
 
+    /// <summary>[T63] Resolve + open the replay demo, gate on build-parity, and seed <c>_map</c>/<c>_gametype</c>
+    /// from its header. Returns false (aborting the boot) if the demo can't be found or read.</summary>
+    private bool OpenDemoForReplay()
+    {
+        string? osPath = ResolveDemoPath(_demoPath);
+        if (osPath is null)
+        {
+            GD.PrintErr($"[NetGame] replay: demo not found '{_demoPath}'.");
+            return false;
+        }
+        try
+        {
+            _demoPlayback = DemoPlayback.OpenFile(osPath);
+        }
+        catch (Exception e)
+        {
+            GD.PrintErr($"[NetGame] replay: failed to open '{osPath}': {e.Message}");
+            return false;
+        }
+
+        uint demoParity = _demoPlayback.Header.BuildParity;
+        uint buildParity = NetProtocol.BuildParity();
+        if (demoParity != buildParity)
+            GD.PushWarning($"[NetGame] replay: demo build-parity 0x{demoParity:X8} != build 0x{buildParity:X8} — "
+                           + "content tables differ; playback may misrender events/models.");
+
+        _map = _demoPlayback.Header.MapName;
+        _gametype = string.IsNullOrWhiteSpace(_demoPlayback.Header.GameType) ? "dm" : _demoPlayback.Header.GameType;
+        _botCount = 0;
+        GD.Print($"[NetGame] replay '{System.IO.Path.GetFileName(osPath)}': map '{_map}', gt {_gametype}, "
+                 + $"{_demoPlayback.FrameCount} frames, {_demoPlayback.Duration:0.0}s.");
+        return true;
+    }
+
+    /// <summary>Resolve a demo argument to an OS path: an existing file as-given wins; else try
+    /// <c>user://&lt;arg&gt;</c> and <c>user://demos/&lt;arg&gt;</c> (with/without <c>.xgd</c>). Null if none exist.</summary>
+    private static string? ResolveDemoPath(string arg)
+    {
+        if (string.IsNullOrWhiteSpace(arg)) return null;
+        if (System.IO.File.Exists(arg)) return arg;
+        string withExt = arg.EndsWith(".xgd", StringComparison.OrdinalIgnoreCase) ? arg : arg + ".xgd";
+        if (System.IO.File.Exists(withExt)) return withExt;
+        foreach (string cand in new[] { "user://" + withExt, "user://demos/" + withExt })
+        {
+            string os = ProjectSettings.GlobalizePath(cand);
+            if (System.IO.File.Exists(os)) return os;
+        }
+        return null;
+    }
+
     /// <summary>
     /// Boot the listen server: build the map (or a test floor), stand up a <see cref="GameWorld"/> on it,
     /// activate the gametype, fill it with bots, and start a <see cref="ServerNet"/>. The world's collision
@@ -470,6 +546,11 @@ public sealed partial class NetGame : Node3D
     /// </summary>
     private void StartListenServer()
     {
+        // [T63] Replay: read the demo header up front so the rest of this boot (BSP, gametype, render, music) uses
+        // the RECORDED map/gametype. Seeds _map/_gametype/_botCount; the playback is wired to ReplaySource below.
+        if (_isReplay && !OpenDemoForReplay())
+            return;
+
         // --- collision: load the map's BSP collision if we can resolve it, else a flat test floor. ---
         CollisionWorld collision;
         XonoticGodot.Formats.Bsp.BspData? bsp = TryLoadMapBsp(_map);
@@ -497,6 +578,7 @@ public sealed partial class NetGame : Node3D
         //     server reads authentic balance/physics; a bare CLI host (no preloaded store) loads them too. ---
         System.Collections.Generic.IReadOnlyList<EntityDict>? mapEntities = bsp is not null ? BuildEntityDicts(bsp) : null;
         _serverWorld = new GameWorld(collision, mapEntities) { MapName = _map };
+        if (_isReplay) _serverWorld.ReplayMode = true; // [T63] match logic inert; entities injected from the demo
         // B3: on the interactive client-hosted path (a windowed listen server), clamp the per-render-frame
         // catch-up so a hitch isn't followed by a frame running 16× the sim — that second spike would miss
         // another vblank. The small backlog drains over the next few frames instead. A headless dedicated host
@@ -557,6 +639,10 @@ public sealed partial class NetGame : Node3D
         // `sv_spectate 0` = "clients spawn as players immediately" (the cvar's own definition) restores the intended
         // ~1s autojoin so Create→Start drops you into the game, like real Xonotic. (Join-on-fire still works.)
         _serverWorld.Services.Cvars.Set("sv_spectate", "0");
+
+        // [T63] Replay: the viewer must stay a free-flying OBSERVER (never autojoin the empty recorded match), so
+        // re-arm the spectator hold the listen-server path just cleared.
+        if (_isReplay) _serverWorld.Services.Cvars.Set("sv_spectate", "1");
 
         // A single-player campaign is "host AND play" too, but g_campaign re-arms the spectator-hold sv_spectate
         // just cleared; opt the local host out so it spawns straight into the loaded level (Create-Game UX).
@@ -647,6 +733,7 @@ public sealed partial class NetGame : Node3D
             return;
         }
         _server = server;
+        if (_isReplay) _server.ReplaySource = _demoPlayback; // [T63] BuildEntitySet now reads the demo, not the world
         // Answer server-browser getinfo probes so this host shows up in the LAN list (no master heartbeat —
         // the port's transport is ENet, so registering with the public DP masters would only mislead DP clients).
         server.EnableLanDiscovery(_port);
@@ -1203,6 +1290,17 @@ public sealed partial class NetGame : Node3D
         _scoreboard = new XonoticGodot.Game.Hud.ScoreboardPanel { Name = "Scoreboard", Visible = false };
         hudLayer.AddChild(_scoreboard);
         LayoutScoreboard();
+
+        // [T63·P2] Demo replay time-control bar: a scrub slider + play/pause + speed selector along the bottom,
+        // driving the demo playhead directly (local single-viewer case, demo-replay §9). Replay only; on its own
+        // CanvasLayer above the HUD so the controls sit on top. Keybinds (space/←→/[ ]/,.) are handled in the bar.
+        if (_isReplay && _demoPlayback is not null)
+        {
+            var replayLayer = new CanvasLayer { Name = "ReplayUi", Layer = 6 };
+            AddChild(replayLayer);
+            _replayBar = new XonoticGodot.Game.Hud.ReplayControlBar { Name = "ReplayControlBar", Playback = _demoPlayback };
+            replayLayer.AddChild(_replayBar);
+        }
 
         // Screen-effects layer (damage red-flash + liquid tint) — the SAME reusable ViewEffects node T4 built for
         // the local match, so the networked "play from menu" path also reacts to damage + underwater. It is its
@@ -1805,6 +1903,12 @@ public sealed partial class NetGame : Node3D
         EnsureProcessCvarCache();   // (§11 R11) hot-path cvar values are cached; refreshed on Changed
 
         float dt = (float)delta;
+
+        // [T63·P2] Replay: advance the demo playhead by realDelta × speed BEFORE the server tick, so this frame's
+        // BuildEntitySet samples the updated playhead. The sim/snapshot clock still runs at real time (the world
+        // advances by dt below), so a paused playhead (speed 0) keeps snapshots flowing with frozen content — the
+        // viewer free-flies through a still scene; slow/fast/rewind fall out of the speed.
+        _demoPlayback?.Advance(dt);
 
         // Drive the listen server (if any) by real elapsed time — it runs its fixed ticks, pulls each client's
         // queued input, simulates, and broadcasts snapshots.

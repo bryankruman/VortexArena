@@ -188,6 +188,12 @@ public sealed class GameWorld
     /// <summary>The current map name (set by the host before <see cref="Boot"/>); drives the rotation cursor.</summary>
     public string MapName { get; set; } = "";
 
+    /// <summary>[T63] Replay mode: the world hosts a demo playback rather than a live match. Match logic is inert
+    /// (no warmup, bots, rounds, damage, vote, end-of-match/intermission/map-rotation — see <see cref="OnStartFrame"/>
+    /// / <see cref="OnEndFrame"/>); the per-client observer movement step still runs so a viewer free-flies, and the
+    /// recorded entities are injected via <c>ServerNet.ReplaySource</c> instead of a live world scan.</summary>
+    public bool ReplayMode { get; set; }
+
     /// <summary>
     /// The map's background music track (QC cdtrack / worldspawn .music / worldspawn .noise). Populated by
     /// <see cref="ApplyWorldspawn"/> from the BSP entity lump, or set by the host from the mapinfo file before
@@ -844,6 +850,13 @@ public sealed class GameWorld
 
     private void OnStartFrame()
     {
+        // [T63] Replay: the recorded match is injected (ServerNet.ReplaySource), not simulated — no match logic
+        // runs here (warmup, bots, anticheat, contents/fall damage, vote, deferred cmds, mutator hooks, announcer).
+        // The per-client observer movement (the free-fly viewer) lives in the sim's per-client move step, not this
+        // start-of-frame hook, so it keeps running; snapshots are built in ServerNet. The world is a kinematic stage.
+        if (ReplayMode)
+            return;
+
         // Apply any runtime balance change (g_balance_* set via console/script/vote) before the tick reads weapon
         // stats: re-seed every weapon's cached balance block from the now-current cvars (QC autocvars are live).
         if (_weaponBalanceDirty)
@@ -1129,21 +1142,27 @@ public sealed class GameWorld
         // park during intermission/match-end/timeout and the boarding path blocks board/exit while stopped.
         XonoticGodot.Common.Gameplay.VehicleCommon.GameStopped = GameStopped;
 
-        // 1) gametype per-frame step (QC the gametype's StartFrame/CheckRules slice). MatchController.Tick
-        //    respawns due players (off Player.RespawnTime, set by the gametype's obituary handler) and keeps
-        //    the leader/limit authoritative. We respawn through ClientManager so PlayerSpawn fires.
-        DriveGametypeFrame();
-
-        // 2) round flow (QC round_handler think) — only for round-based modes that called EnableRounds.
-        if (Rounds is not null)
+        // [T63] Replay: skip ALL match progression (respawns, round flow, end-of-match/intermission/map-rotation)
+        // so the recorded playback never tears itself down or rotates the map. Recorded entities are injected by
+        // ServerNet.ReplaySource; the observer's own movement + snapshots are unaffected (they run elsewhere).
+        if (!ReplayMode)
         {
-            Rounds.GameStartTime = GameStartTime;
-            Rounds.IntermissionRunning = Intermission.Running;
-            Rounds.Think();
-        }
+            // 1) gametype per-frame step (QC the gametype's StartFrame/CheckRules slice). MatchController.Tick
+            //    respawns due players (off Player.RespawnTime, set by the gametype's obituary handler) and keeps
+            //    the leader/limit authoritative. We respawn through ClientManager so PlayerSpawn fires.
+            DriveGametypeFrame();
 
-        // 3) end-of-match check + intermission (QC CheckRules_World → NextLevel, then IntermissionThink).
-        CheckRulesAndIntermission();
+            // 2) round flow (QC round_handler think) — only for round-based modes that called EnableRounds.
+            if (Rounds is not null)
+            {
+                Rounds.GameStartTime = GameStartTime;
+                Rounds.IntermissionRunning = Intermission.Running;
+                Rounds.Think();
+            }
+
+            // 3) end-of-match check + intermission (QC CheckRules_World → NextLevel, then IntermissionThink).
+            CheckRulesAndIntermission();
+        }
 
         // 4) QC anticheat_endframe: advance the global evade phase walk (server/anticheat.qc).
         AntiCheat.EndFrame(Simulation.FrameTime, Time);

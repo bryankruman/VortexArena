@@ -395,9 +395,12 @@ public static class Cvars
         new("timelimit_max", "60", Save),
 
         // ---- demo recording (engine sv_autodemo; host-driven) ----
-        new("sv_autodemo", "0", Save, "record a server demo of the whole match"),
+        // DELIBERATE deviation from DP/Xonotic (which ship sv_autodemo 0): we default the omniscient server demo
+        // ON so a replay/cinematic always exists (demo-replay-and-spectator.md §4). One-cvar opt-out. NOT a parity bug.
+        new("sv_autodemo", "1", Save, "record a server demo of the whole match (default ON — replay source)"),
         new("sv_autodemo_perclient", "0", Save, "record a per-client demo (0=off,1=players,2=all)"),
         new("sv_autodemo_perclient_discardable", "0", Save, "per-client demos may be auto-deleted"),
+        new("demo_keyframe_interval", "144", Save, "demo keyframe cadence in ticks (~2s @ 72Hz) — file size vs seek latency"),
 
         // ---- world-item pickups (T35: common/items/* + server/items/items.qc; values from balance-xonotic.cfg
         //      + _all.cfg). NOTE: the SHIPPED g_pickup_items / g_powerups default is -1 ("use gametype default"),

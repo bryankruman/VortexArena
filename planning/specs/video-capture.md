@@ -85,9 +85,10 @@ The relaunched process:
 2. Boots straight into **replay mode** (`NetGame.ConfigureReplay`, `demo-replay-and-spectator.md` §10) at `speed = 1`.
    The **capture perspective is fixed for the whole render** — a capture run has no live input, so there is no
    mid-capture switching (`demo-replay-and-spectator.md` §8). `--capture-view` selects it: `director` (default;
-   hands-off auto-cam, ideal for unattended capture), `follow:<netId>` / `firstperson:<netId>` (a chosen player), or
-   `freefly` (a static start pose). A **client demo** ignores this and captures the recording player's own
-   first-person view — the only perspective it holds.
+   hands-off auto-cam, ideal for unattended capture), `follow:<netId>` / `firstperson:<netId>` (a chosen player),
+   `freefly` (a static start pose), or `script:<path>` (a cinematic playback script). A **client demo** accepts any
+   `--capture-view` too, but is **PVS-limited** (entities culled from the recording player are absent — the render
+   may show gaps); the recording player's own first-person is the most complete choice.
 3. Plays the demo to its end deterministically; when `DemoPlayback` reaches `duration`, it **quits the tree**, which
    **finalizes** the AVI (`MovieWriter._WriteEnd`).
 4. The **parent** (the menu, or a thin `tools/` wrapper) waits for the child to exit, then runs the optional ffmpeg
@@ -132,7 +133,7 @@ Menu-exposed and cvar-backed (DP equivalents in parentheses). The menu's "Record
 | `capturevideo_fps` | `60` | Fixed output frame rate (the heart of "perfect"). | `cl_capturevideo_fps` (30) |
 | `capturevideo_width` / `_height` | `0` / `0` | Capture resolution; `0` = current window size. Non-zero sets the window for the capture session. | `cl_capturevideo_width/height` |
 | `capturevideo_format` | `mp4` | `avi` (always works) \| `mp4` \| `ogv` (last two need ffmpeg). | `cl_capturevideo_ogg` |
-| `capturevideo_view` | `director` | Fixed capture perspective: `director` \| `follow:<id>` \| `firstperson:<id>` \| `freefly`. Locked for the render (no mid-capture switching); a client demo always captures the recorded player's first-person. | — |
+| `capturevideo_view` | `director` | Fixed capture perspective: `director` \| `follow:<id>` \| `firstperson:<id>` \| `freefly` \| `script:<path>`. Locked for the render (no mid-capture switching); works on a client demo too, but PVS-limited (data may be incomplete). | — |
 | `capturevideo_ffmpeg` | `ffmpeg` | ffmpeg binary (name on PATH, or absolute path). | — |
 | `capturevideo_quality` | `0.75` | MJPEG quality for the AVI; transcode bitrate/CRF derives from it. | `cl_capturevideo_ogg_theora_quality` |
 | `capturevideo_dir` | `videos/` | Output directory (under `user://` by default). | DP writes to the gamedir |

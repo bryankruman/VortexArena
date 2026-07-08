@@ -54,6 +54,10 @@ public partial class Shell : Node
     /// <summary>Bot count for the <c>--host</c> listen server (CLI <c>--bots N</c>); 0 = no bots.</summary>
     public int BootBots { get; set; }
 
+    /// <summary>[T63] <c>--playdemo &lt;path&gt;</c>: boot straight into a demo replay (a ReplayMode listen server +
+    /// free-fly observer), bypassing the menu. Path is a <c>.xgd</c> (OS path, or <c>user://[demos/]</c> relative).</summary>
+    public string? PlayDemoPath { get; set; }
+
     private CanvasLayer _menuLayer = null!;
     private MenuRoot _menu = null!;
     private ModelViewer? _viewer;
@@ -135,7 +139,9 @@ public partial class Shell : Node
         Input.MouseMode = Input.MouseModeEnum.Visible;
 
         // Optional: boot straight into a match (smoke test / dev), bypassing the menu.
-        if (!string.IsNullOrWhiteSpace(ConnectAddress))
+        if (!string.IsNullOrWhiteSpace(PlayDemoPath))
+            StartReplay(PlayDemoPath!);                     // --playdemo <path>: demo replay (ReplayMode + free-fly)
+        else if (!string.IsNullOrWhiteSpace(ConnectAddress))
             ConnectToServer(ConnectAddress!);               // --connect <addr>: join a real server
         else if (BootHost)
             StartListenServer(new MatchConfig { Map = BootMap ?? "", Gametype = BootGametype, BotCount = BootBots }); // --host [map]
@@ -483,6 +489,38 @@ public partial class Shell : Node
         _netGame = net;
 
         // Wait for the loading screen to actually be PAINTED before kicking off the blocking connect.
+        await WaitForFramePainted();
+        if (_netGame != net) return; // abandoned: TeardownGame was called while we awaited
+
+        AddChild(net);
+    }
+
+    /// <summary>
+    /// [T63] Boot a DEMO REPLAY: a <see cref="XonoticGodot.Server.GameWorld.ReplayMode"/> listen server playing back
+    /// <paramref name="demoPath"/>, with the local client self-connected as a free-flying observer
+    /// (demo-replay-and-spectator.md §10). The <c>--playdemo</c> entry; the Demos-menu Play button routes here too.
+    /// Map/gametype are read from the demo header inside <c>NetGame.ConfigureReplay</c>.
+    /// </summary>
+    public async void StartReplay(string demoPath)
+    {
+        Log.Info($"[Shell] replaying demo: {demoPath}");
+        TeardownGame();
+        ShowLoadingScreen("");
+
+        // Hide the menu (unfreeze + capture mouse) so the loading screen owns the screen during the blocking load.
+        EnterMatchView();
+
+        var net = new XonoticGodot.Game.Net.NetGame
+        {
+            Name = "Replay",
+            ProcessMode = ProcessModeEnum.Always, // the hosted replay server keeps ticking under the pause menu
+        };
+        net.ConfigureReplay(demoPath, MenuState.Vfs, MenuState.Cvars, ResolvePlayerName());
+        net.LoadingScreen = _loadingScreen;
+        net.DismissLoadingScreen = DismissLoadingScreen;
+        WireConsoleToNet(net);
+        _netGame = net;
+
         await WaitForFramePainted();
         if (_netGame != net) return; // abandoned: TeardownGame was called while we awaited
 

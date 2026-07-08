@@ -119,11 +119,13 @@ Recording is **on by default** on both sides, each gated by a single cvar so it 
   recorder backend wired and the default flipped on.
 - **Client** (`cl_autodemo`, default **1**) records the **stream it receives** and finalizes **when the session
   ends** — match end, disconnect, or quit. A client demo holds only what the server networked to that one viewer
-  (**PVS-limited**), so its replay is **locked to the recording player's own first-person perspective** — you
-  re-watch exactly what they saw, with no free-cam and no following other players (the data for those views is simply
-  not in the file). For the all-players, switch-perspective experience, replay the **server** demo. Both use the
-  **same `.xgd` format and `DemoRecorder`** — the differences are the data source (the client taps its decoded
-  per-snapshot entity set instead of `ServerNet`'s `_entityScratch`) and the **playback perspective lock** (§8).
+  (**PVS-limited** — entities the server culled from that viewer for anti-cheat were never sent, so they are simply
+  absent from the file). It still supports **every** view mode on playback (free-cam, follow others, director,
+  scripted cinematics) — the data is just **incomplete**: entities outside the recording player's PVS pop in/out as
+  they entered/left view, and following a player who was culled shows nothing while they were hidden. The menu flags
+  a client demo as PVS-limited so the viewer knows (§8); the **server** demo is the lossless, all-players source.
+  Both use the **same `.xgd` format and `DemoRecorder`** — the only difference is the data source (the client taps
+  its decoded per-snapshot entity set instead of `ServerNet`'s `_entityScratch`).
 
 > **Deliberate deviation from Base defaults.** DP ships `sv_autodemo 0` / `cl_autodemo 0`. We default **both to 1** as
 > a product decision (always have the replay), *not* a parity bug — flag it as intentional in the port headers so the
@@ -265,18 +267,22 @@ enum SpectatorMode { FreeFly, Follow, Director }
 
 ### Perspective availability — server demo vs client demo (and during capture)
 
-- **Server demo (all three modes).** You **pick the starting perspective** when the replay opens (default: Director),
-  and **switch freely in real time while watching** — FreeFly anywhere, Follow/cycle any player (1st-person or chase),
-  or Director. This is the full experience.
-- **Client demo (locked).** A client demo holds only the recording player's own PVS stream, so playback is **locked
-  to that player's first-person perspective** — no FreeFly, no following others (the data isn't there). The control
-  bar's camera switches are disabled; only that one viewpoint plays back. (A self-chase 3rd-person of the *same*
-  player is the only conceivable relaxation, since it's still that player's data — default off.)
+- **Server demo (lossless).** The omniscient full-state recording. **Pick the starting perspective** when the
+  replay opens (default: Director) and **switch freely while watching** — FreeFly anywhere, Follow/cycle any player
+  (1st-person or chase), Director, or a scripted cinematic. Every entity is present at every tick.
+- **Client demo (PVS-limited — same modes, incomplete data).** A client demo holds only the recording player's own
+  PVS stream, but it is **not locked** — all the same view modes are available (free-cam, follow others, director,
+  scripted cinematics). The caveat is **completeness, not capability**: entities the server culled from that viewer
+  (anti-cheat PVS culling) were never networked, so they are absent — a free-cam may fly through areas with missing
+  players/projectiles, and following a culled player shows nothing until they re-enter the recorder's PVS. The menu
+  and the replay both surface a **non-blocking "PVS-limited — data may be incomplete" warning** for a client demo so
+  the viewer understands the gaps; nothing is disabled. (The recording player's own first-person remains the most
+  complete viewpoint, since that's the PVS the file was built around.)
 - **During video capture (either demo).** The perspective is **fixed at capture start** and the recording follows it
   for the whole render — there is **no interactive switching mid-capture** (a capture run has no live input; see
   [`video-capture.md`](video-capture.md) §3). You choose the perspective (Director / Follow a chosen player /
-  first-person of a target) when you start the capture; it holds for the duration. A client-demo capture is, as
-  always, that player's first-person.
+  first-person of a target / a scripted cinematic) when you start the capture; it holds for the duration. A
+  client-demo capture works with any view too, under the same incompleteness caveat.
 
 1. **FreeFly** — the existing observer free-flight. Camera = the predicted observer eye (the viewer's own live
    spectator body). Nothing new beyond confirming the client predicts the `MOVETYPE_FLY` observer path (see §11).

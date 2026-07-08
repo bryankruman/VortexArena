@@ -112,6 +112,11 @@ public partial class Main : Node
             int mdl = Array.IndexOf(args, "--model");
             if (mdl >= 0 && mdl + 1 < args.Length)
                 shell.BootModel = args[mdl + 1];
+            // `--playdemo <path>` boots straight into a demo replay (a ReplayMode listen server + free-fly
+            // observer), bypassing the menu — the .xgd path is an OS path or a user://[demos/] relative name.
+            int pd = Array.IndexOf(args, "--playdemo");
+            if (pd >= 0 && pd + 1 < args.Length)
+                shell.PlayDemoPath = args[pd + 1];
             int gt = Array.IndexOf(args, "--gametype");
             if (gt >= 0 && gt + 1 < args.Length)
                 shell.BootGametype = args[gt + 1];
