@@ -104,3 +104,60 @@ Wire format, builtin API, security model, and phasing live in [`specs/modding.md
   versus Wasm for the *combination* of: prebuilt cross-platform native coverage incl. Apple Silicon, a mature
   capability sandbox, language-agnostic guests, and no GDExtension interop (libriscv) / no niche-language VM to
   maintain (QC VM). MoonSharp/Jint remain pure-managed fallbacks if per-RID native-lib deployment proves painful.
+
+## Addendum (2026-07-08) — scope widened to full DP/CSQC parity
+
+Confirmed direction (Bryan, 2026-07-08; drove `specs/demo-replay-and-spectator.md` §16): the goal is the full
+DarkPlaces property — **a client joining a newer/modded server downloads ONLY the module + assets, never an
+engine build; demos embed the module and replay under any engine of the same protocol era.** In DP terms the
+engine protocol is frozen-ish and `csprogs.dat` owns game meaning *including movement physics* (Xonotic's
+physics is QC shared code — CSQC predicts with the same source the server simulates). Two scope changes to
+the Decision above follow:
+
+1. **Game entity extension payload joins the module boundary (schema-driven).** The engine keeps a fixed
+   **core entity block** (id, kind, origin, angles, velocity, model name, interpolation flags — what native
+   interp/render placement needs). Every other per-entity field (health/armor/weapon/anim/gameplay bits — the
+   things that actually churn between game versions) is defined by a **module-published schema** (field name /
+   type / quantization / interp hint) and encoded by a **generic native codec** in the engine: the hot
+   encode/delta path stays compiled, compression stays field-level, and the schema is embedded in demo headers
+   so any tool can inspect old demos without instantiating the module. New gameplay field ⇒ new schema from
+   the module ⇒ **no `BaseProtocolHash` bump**. (Rejected alternative: fully opaque CSQC-style per-entity
+   blobs decoded in wasm — maximal freedom but per-entity guest calls per snapshot and only byte-level deltas;
+   the schema's type vocabulary can grow a reserved opaque-blob field type later if exotic data ever needs it.)
+
+2. **Movement physics becomes a module function run by BOTH sides — superseding "prediction stays compiled".**
+   The player-movement step ships in the module; the **server executes it for its authoritative player sim and
+   the client executes the same function inside prediction/reconcile** — one source of truth, so
+   client/server physics divergence is impossible by construction (the QC-shared-code property). The
+   **trust boundary is unchanged**: "no `server.wasm`" always meant the server never runs *untrusted* code —
+   here the server runs the module **it itself ships**, which is exactly as trusted as its own binary. Engine
+   updates are then needed only for true engine work (renderer, transport framing, core block).
+
+### Why this is efficient enough (the numbers behind "can we do 2 efficiently?")
+
+- A Wasmtime typed host→guest call is ~10–50 ns; a physics tick is 1 guest call + ~3–10 trace **host imports**
+  (collision stays native — traces call back into the engine's `CollisionWorld`).
+- Client prediction replays ~1–5 ticks/frame on loopback and ~7–15 at ~100 ms RTT ⇒ worst case ~150 boundary
+  crossings/frame ≈ **single-digit microseconds** of call overhead.
+- Guest numeric code runs ~1.1–2× native under Cranelift; the movement math itself is tens of microseconds per
+  frame today, so the ceiling is a sub-0.1 ms add in the worst case — invisible next to a 4–7 ms frame.
+- Server side: players × 72 Hz guest calls (e.g. 16 × 72 ≈ 1.2 k/s) — trivial.
+
+**Two engineering conditions make those numbers real (bake into the implementation):**
+
+1. **Epoch interruption, NOT per-instruction fuel, on the hot paths** (physics + per-snapshot decode).
+   Fuel metering instruments every guest instruction (~significant slowdown); epoch-based interruption is a
+   near-free periodic check and still guarantees a hung module can't freeze the client. Keep fuel for cold,
+   rarely-called guest entry points (UI/panel code) if wanted; the watchdog property must come from epochs.
+2. **Shared linear-memory structs, not per-call marshaling**: player state, input command, movevars, and trace
+   results live at fixed layouts in guest memory; host and guest read/write in place. No serialization in the
+   loop, and the reconcile replay reuses the same buffers.
+
+### Consequence for the parity gates
+
+`BaseProtocolHash` shrinks to: transport/channel framing + snapshot container/ack machinery + the core entity
+block + the schema-codec's own format + the host-import ABI (now including the trace/physics imports). All
+gameplay identity — registries, entity schema, physics, presentation — moves into the manifest/module, i.e.
+into content that travels with a connection or a demo. This is the durable-demos boundary
+(`demo-replay-and-spectator.md` §16) and the join-newer-server boundary, and they are the same boundary by
+construction.
