@@ -8,7 +8,7 @@ using Microsoft.CodeAnalysis.Operations;
 namespace XonoticGodot.SourceGen
 {
     /// <summary>
-    /// Roslyn analyzer enforcing the godot#105750 per-frame-allocation convention, Tier 2 (PERFORMANCE_REPORT.md
+    /// Roslyn analyzer enforcing the godot#105750 per-frame-allocation convention, Tier 2 (planning/PERFORMANCE_REPORT.md
     /// C3). It flags an implicit <c>string</c> → <c>StringName</c>/<c>NodePath</c> conversion (the per-call
     /// marshaling allocation — a string literal OR a <c>const string</c> passed to a Godot API typed
     /// <c>StringName</c>/<c>NodePath</c>) that occurs lexically inside a <c>_Process</c> / <c>_PhysicsProcess</c> /
@@ -40,7 +40,7 @@ namespace XonoticGodot.SourceGen
             description:
                 "A string literal or const string passed to a Godot API typed StringName/NodePath mints a " +
                 "StringName/NodePath allocation per call — a GC treadmill on a per-frame (_Process/_PhysicsProcess/" +
-                "_Draw) path. Cache it as a static readonly StringName (PERFORMANCE_REPORT.md C2/C3). Suppress with " +
+                "_Draw) path. Cache it as a static readonly StringName (planning/PERFORMANCE_REPORT.md C2/C3). Suppress with " +
                 "#pragma warning disable XG0002 on a genuine non-per-frame lambda.",
             helpLinkUri: "https://github.com/godotengine/godot/issues/105750");
 

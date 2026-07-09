@@ -1,0 +1,53 @@
+name: Deploy Upstream-Watch ledger to Pages
+
+# Publishes planning/upstream-watch/LEDGER.html as the GitHub Pages site.
+# The page is regenerated from LEDGER.yaml (the source of truth) on every deploy.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - planning/upstream-watch/LEDGER.yaml
+      - tools/upstream-ledger-html.py
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Allow one concurrent deployment; don't cancel an in-progress run.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install deps
+        run: pip install pyyaml
+      - name: Generate LEDGER.html from LEDGER.yaml
+        run: python tools/upstream-ledger-html.py
+      - name: Assemble site
+        run: |
+          mkdir -p _site
+          cp planning/upstream-watch/LEDGER.html _site/index.html
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

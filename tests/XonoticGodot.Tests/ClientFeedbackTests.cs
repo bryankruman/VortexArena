@@ -289,6 +289,32 @@ public class ClientFeedbackTests
     }
 
     [Fact]
+    public void ClientColors_RoundTrip_Through_The_Delta_Codec()
+    {
+        // [r15 #43] the packed 16*shirt+pants clientcolors slice (EntityField.Colors): a bot/player picking
+        // FFA profile colors must reach the client render entity; a colorless player (0) keeps the bit clear.
+        var baseline = new NetEntityState { EntNum = 3, Kind = NetEntityKind.Player };
+        var current = baseline;
+        current.Colors = 0x6B; // shirt 6, pants 11
+
+        var w = new BitWriter();
+        EntityField mask = EntityStateCodec.WriteDelta(w, baseline, current);
+        Assert.Equal(EntityField.Colors, mask); // only the colors byte on the wire
+
+        var r = new BitReader(w.WrittenSpan);
+        NetEntityState got = EntityStateCodec.ReadDelta(ref r, baseline);
+        Assert.Equal(0x6B, got.Colors);
+
+        // unchanged colors stay off the wire
+        var same = current;
+        same.Origin = new Vector3(2, 0, 0);
+        var w2 = new BitWriter();
+        EntityField mask2 = EntityStateCodec.WriteDelta(w2, current, same);
+        Assert.Equal(EntityField.Origin, mask2);
+        Assert.False(mask2.HasFlag(EntityField.Colors));
+    }
+
+    [Fact]
     public void Feedback_Stats_Stay_Off_The_Wire_When_Unchanged()
     {
         // a player whose nade timer is mid-charge but identical between frames: the mask must NOT include

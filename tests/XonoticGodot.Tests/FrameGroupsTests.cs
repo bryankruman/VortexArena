@@ -94,12 +94,17 @@ public class FrameGroupsTests
     }
 
     [Fact]
-    public void GarbageTokens_ParseToZero_LikeAtoi()
+    public void NonNumericFirstToken_SkipsLine_LaterGarbageStillAtoisToZero()
     {
-        // C atoi semantics: garbage -> 0, never a throw
-        FrameGroup g = Assert.Single(FrameGroups.Parse("abc 10"));
-        Assert.Equal(0, g.FirstFrame);
-        Assert.Equal(10, g.FrameCount);
+        // r11 correction (supersedes the old garbage->0 pin for the FIRST token): a PROSE line must not mint a
+        // phantom group — the DP-generated DPM sidecars carry a prose header, and "Used by DarkPlaces to
+        // simulate frame groups…" once became a clip literally named "simulate", shifting the real weapon
+        // slots off their indexes.
+        Assert.Empty(FrameGroups.Parse("abc 10"));
+        // C atoi semantics are KEPT for later tokens: garbage -> 0 (framecount then clamps to 1), never a throw.
+        FrameGroup g = Assert.Single(FrameGroups.Parse("7 abc"));
+        Assert.Equal(7, g.FirstFrame);
+        Assert.Equal(1, g.FrameCount);
     }
 
     [Fact]
@@ -121,6 +126,41 @@ public class FrameGroupsTests
     {
         Assert.Empty(FrameGroups.Parse(""));
         Assert.Empty(FrameGroups.Parse("// nothing but a comment"));
+    }
+
+    [Fact]
+    public void DpmGeneratedHeader_BlockCommentAndProse_AreSkipped()
+    {
+        // The DP-generated DPM weapon sidecars (h_rl/h_gl/h_electro/…) open with a /* */ prose header. The
+        // old parser read those prose lines as data — two phantom groups whose 5th words ("h_rl"/"simulate")
+        // became clip NAMES, shifting the real fire/fire2/idle/reload slots to indexes 2..5 and defeating the
+        // nameless 4-slot weapon contract: no DPM viewmodel ever animated (playtest r11).
+        const string text = "/*\n" +
+            "Generated framegroups file for h_rl\n" +
+            "Used by DarkPlaces to simulate frame groups in DPM models.\n" +
+            "*/\n" +
+            "\n" +
+            "1 31 30 0 // h_rl fire\n" +
+            "32 31 30 0 // h_rl fire\n" +
+            "63 101 3 1 // h_rl idle\n" +
+            "164 101 3 1 // h_rl idle\n";
+        List<FrameGroup> groups = FrameGroups.Parse(text);
+        Assert.Equal(4, groups.Count);
+        Assert.All(groups, g => Assert.Equal(string.Empty, g.Name)); // nameless → the weapon slot contract applies
+        Assert.Equal(1, groups[0].FirstFrame);
+        Assert.Equal(31, groups[0].FrameCount);
+        Assert.False(groups[0].Loop);
+        Assert.Equal(164, groups[3].FirstFrame);
+        Assert.True(groups[3].Loop);
+    }
+
+    [Fact]
+    public void ProseLineOutsideBlockComment_IsSkippedNotZeroParsed()
+    {
+        // A stray non-numeric line must not atoi to a phantom 0/1 group.
+        List<FrameGroup> groups = FrameGroups.Parse("stray prose line here\n5 10 20 1\n");
+        FrameGroup g = Assert.Single(groups);
+        Assert.Equal(5, g.FirstFrame);
     }
 
     [Fact]

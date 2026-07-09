@@ -81,7 +81,10 @@ public sealed partial class SpawnPointParticles : Node3D
         if (_points.Count == 0)
             return;
 
-        _pulseTimer -= (float)delta;
+        // #30 slowmo/pause: the glow pulse cadence is CSQC-time-driven in Base (Spawn_Draw runs per CSQC frame) —
+        // scale so a paused game stops emitting new pulses. (The rescan timer above stays on the raw delta: it's
+        // port-internal entity-registry housekeeping, not an animation.)
+        _pulseTimer -= XonoticGodot.Game.Client.ClientRenderTime.ScaleDelta((float)delta);
         if (_pulseTimer > 0f)
             return;
         _pulseTimer = PulseInterval;

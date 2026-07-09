@@ -257,7 +257,11 @@ public sealed partial class ModelGibs : Node3D
 
         public override void _PhysicsProcess(double delta)
         {
-            float dt = (float)delta;
+            // #30 slowmo/pause: gib tosses are Base CSQC (cl.time-driven) — scale like the casings so gibs
+            // hang frozen at slowmo 0 instead of settling on wall clock.
+            float dt = XonoticGodot.Game.Client.ClientRenderTime.ScaleDelta((float)delta);
+            if (dt <= 0f)
+                return; // paused — hold everything in place
             _age += dt;
             if (_age >= Lifetime)
             {

@@ -7,7 +7,7 @@ hypothesis (unverified unless marked CONFIRMED) → suggested first look → sta
 Convention reminders when picking one up:
 - Compare against **Xonotic Base** (original qcsrc) before deciding the fix — most of these
   are "port drifted from Base", not "design from scratch".
-- Prefix = authority (see CVARS.md); check the parity registry/specs under `planning/parity/`.
+- Prefix = authority (see ../docs/reference/CVARS.md); check the parity registry/specs under `planning/parity/`.
 - Anything touching angles/rotation across the sim↔render boundary → read
   **planning/COORDINATE_CONVENTIONS.md** first (see #7).
 - HUD fidelity work → **planning/HUD_PARITY_CONTRACT.md** + the `cl-*` specs under
@@ -571,7 +571,7 @@ nudge-out-of-solid; see #9), **#14** flag jitter (user-deferred).
   freezes the loopback ENet service — could in theory drop the local client on return. Both peers freeze together
   so sim-time-based timeouts don't advance, but if ENet times out on WALL time this may need a loopback-timeout
   bump. Fine for typical brief pauses; revisit only if a long-alt-tab disconnect is observed.
-- **FOLLOW-UP:** register `cl_autopause "1"` formally (CVARS.md) — currently read with an unset=ON fallback.
+- **FOLLOW-UP:** register `cl_autopause "1"` formally (../docs/reference/CVARS.md) — currently read with an unset=ON fallback.
 - **Request:** when the host is a **local listen server with no remote players connected**, pause the game
   (freeze the sim) whenever the player opens the in-game **menu**, the **console**, or **minimizes / loses
   window focus** — like a single-player pause. Resume on return. If ANY remote client is connected, do NOT
@@ -729,6 +729,356 @@ nudge-out-of-solid; see #9), **#14** flag jitter (user-deferred).
   (2) `Shell._Process` polls it per frame (headless-guarded) and feeds transitions into `SetFocused` — so a stale
   confine releases within one frame without needing an edge, and the #19 auto-pause now also treats a
   never-focused background launch as unfocused (game waits paused until you click in — consistent defaults).
+
+### 29. Taken/unavailable ground weapons missing the ghost-item dark tint — FIXED (needs playtest eyeball)
+- [x] **Status:** Implemented (branch `feature/cpuoptimization`) — build clean, ran live twice with 0 exceptions;
+  the LOOK needs a playtest confirm (walk over a weapon, check the leftover ghost is a dark translucent
+  silhouette; with `g_weapon_stay 1` an owned stay-weapon should tint reddish).
+- **Symptom:** when a weapon item on the ground is taken / not available (the weapons-stay "ghost"
+  state), the port's render effect is wrong — no dark tint is applied where Base clearly darkens
+  the ghosted item.
+- **CONFIRMED root cause:** the port applied only the ghost ALPHA (`cl_ghost_items` 0.45,
+  `DriveItemGhostFx`) and never the COLORMOD. Base `ItemDraw` (client/items/items.qc:182-186) sets
+  `colormod = glowmod = cl_ghost_items_color` — and the shipped default `'-1 -1 -1'` is a REAL
+  negative colormod (DP clamps the multiply at 0 → near-BLACK), NOT a "no tint" sentinel ('0 0 0'
+  is the leave-unchanged value, per the cfg description + DP's only-copy-non-zero-colormod rule).
+  So stock Base renders taken items as dark translucent silhouettes; the port rendered them as
+  full-color translucent. Same gap for the weapon-stay tint (`cl_weapon_stay_color '2 0.5 0.5'`,
+  alpha-only before). Both the research agent AND the parity registry rows had mis-read
+  '-1 -1 -1' as "no tint" — registry corrected.
+- **FIX:** `ClientWorld.SetTreeColormod` — per-SURFACE override materials
+  (`SetSurfaceOverrideMaterial`) using cached tinted DUPLICATES of the shared surface materials
+  (albedo+emission premultiplied by `max(colormod,0)`; emission covers QC's glowmod-same-vector),
+  keyed by (material, tint) so shared/cached AssetSystem materials are never mutated; identity
+  clears the overrides. Change-gated like `SetTreeTransparency` (one walk per state change).
+  Wired: `DriveItemGhostFx` → `cl_ghost_items_color`, `DriveItemStayFx` → `cl_weapon_stay_color`,
+  available/restore branches → identity clear. Known limits (documented in the registry):
+  vehicle-hud item tint still unported; ShaderMaterial item surfaces stay untinted (alpha-only).
+
+### 30. Client-side animations ignore pause/slowmo — FIXED (needs playtest: pause + `slowmo 0.3`)
+- [x] **Status:** Implemented (branch `feature/cpuoptimization`) — build + 2953 tests green, headless smoke
+  clean. Verify: pause a solo game (menu/console/alt-tab) → viewmodel sway/clips, casings, gibs, particles,
+  flashes, item bob, player animations ALL freeze; `slowmo 0.3` in console → everything at 30% speed.
+- **BASE truth (verified in DP source):** `CL_Frame` advances the ONE client clock by
+  `clframetime *= cl.movevars_timescale` and `clframetime = 0` while paused (cl_main.c:2857/2872);
+  CSQC `time` is refreshed from it every frame (csprogs.c:252) — so ALL CSQC animation (item bob,
+  frame lerps, particles, viewmodel) slows/freezes in lockstep for free.
+- **PORT gap:** the sim + `Api.Clock.Time` consumers already scaled (item bob/spin, damage text,
+  beams, HUD), but every WALL-CLOCK animation driver ran unscaled Godot deltas: ClientWorld's
+  central anim/pose/csqc-hooks drive, ViewModel (sway/switch/flash/recoil + both self-advancing
+  clip players), ShellCasings + ModelGibs `_PhysicsProcess`, SpawnPointParticles pulse,
+  MapParticleEmitters (Godot self-processing nodes), FaithfulParticleBackend's `_clientTime`,
+  EffectSystem's FxLight fades.
+- **FIX:** new `ClientRenderTime` static (game/client/ClientRenderTime.cs) — `NetGame._Process`
+  publishes its per-frame `ResolveTimeScale()` (the same replicated slowmo that scales input
+  cadence, #19) and every driver above multiplies its delta by it (map emitters drive
+  `SpeedScale` instead — they're self-processing Godot nodes). Reset to 1 on `Shutdown` so a
+  paused teardown can't freeze the menu/next match (mirrors the #19 slowmo restore). The faithful
+  particle clock keeps its wall-clock SOURCE (the documented freeze/leak guard) — only its STEP
+  is scaled; paused = same-time `Update()` no-op, nothing ages, nothing leaks.
+- **Known residuals (documented):** modern-mode GPU particles (`cl_particles_modern` non-default,
+  unverified mode) + projectile-trail Godot nodes not speed-scaled; audio deliberately unscaled
+  (DP doesn't timescale sound envelopes).
+
+### 31. Weapon-switch animation plays when the switch is impossible — FIXED (needs playtest)
+- [x] **Status:** Implemented (branch `feature/cpuoptimization`) — build + 2953 tests green. Verify: with only
+  one usable weapon, press next/prev/group keys → NO lower/raise animation, just the "unavailable" denial
+  sound; with a second usable weapon, switching still lowers instantly on the keypress.
+- **Symptom:** trying to switch weapons with no other weapon available (e.g. others have no ammo)
+  still plays the viewmodel switch animation. In Base nothing switches — you just hear the
+  "can't fire / impossible" denial sound.
+- **CONFIRMED root cause:** the SERVER side was already faithful (audited end to end:
+  `Inventory.SwitchWeaponWithComplain` leaves `SwitchWeaponId` untouched on a denied
+  `ClientHasWeapon` — exactly Base `W_SwitchWeapon`/selection.qc:274 — so the weapon state machine
+  never raises/drops, and the denial plays SND UNAVAILABLE like Base). The phantom animation was
+  pure CLIENT-side: `NetGame.RunBoundCommand` played the keypress-predicted holster
+  (`_viewModel.PlayHolster()`) on EVERY weapon-select impulse, unconditionally; the 0.45s
+  grace-recover then raised the gun back — reading exactly as a switch animation. Same prediction
+  family as #21/#24.
+- **FIX:** `NetGame.SwitchCouldSucceedNow(imp)` gates the predicted holster — mirrors the server
+  check with the same shared logic (`Inventory.ClientHasWeapon`, complain:false = silent):
+  group keys (1..9, 14) test their impulse group; by-id (230+) tests the exact weapon PLUS its
+  group when `cl_weapon_switch_fallback_to_impulse` is on (mirrors `ByIdHandle`); next/prev/last/
+  best test "any other usable weapon" (best/last can rarely over-predict — the grace recovers).
+  Pure remote client (no `LocalServerPlayer`): keeps the old predict-always behavior — the same
+  graceful-degradation policy as the #24 ammo gate.
+
+### 32. Remote players: wrong/missing animations + weapon held too high — FIXED (needs playtest)
+- [x] **Status:** Implemented + probe-verified live (branch `feature/cpuoptimization`); build + 2953 tests +
+  headless smoke green. Verify in playtest: remote players run/strafe/jump/crouch with real leg cycles, shoot/
+  pain torso overlays play, and the held weapon sits in the RIGHT HAND through all of it.
+- **Symptom:** enemy/remote players don't appear to play animations / strike the correct pose;
+  the weapon they hold renders too HIGH, not where their hands are.
+- **CONFIRMED root cause (live `[dbg32]` probe):** the whole animation pipeline was healthy —
+  velocity/onground/ducked networked ✓, locomotion selection correct ✓, `legsTime` advancing ✓,
+  weapon bone resolved (`bip01 r hand`) with a live marker ✓ — but **every clip resolved to
+  framegroup 0**: stock Xonotic player IQMs define clips via NAMELESS `.framegroups` lines
+  (probe: 31 groups, all `Name=''`), so `BuildClipTable`'s keyword match never hit and every
+  Pick fell back to `groups[0]` = **DIE1**. Every remote player was permanently posed/playing
+  the death animation regardless of movement — "no animation / wrong pose", AND the held weapon
+  rode the hand bone of a DEATH pose (twisted high across the chest) — the SAME root explains
+  the weapon-height complaint. Base never hits this because DP auto-names unnamed framegroups
+  `groupified_<i>_anim` and `animdecide.qh`'s REGISTER_ANIMATION framenames match those — i.e.
+  Base's contract is the SLOT INDEX (die1=0, die2=1, draw=2, duck=3, duckwalk=4, duckjump=5,
+  duckidle=6, idle=7, jump=8, pain1/2=9/10, shoot=11, taunt=12, run=13, runbackwards=14,
+  strafeleft/right=15/16, dead1/2=17/18, forwardright/left=19/20, backright/left=21/22,
+  melee=23, duckwalk-dirs=24..30).
+- **FIX:** `BuildClipTable` now resolves by the Base slot INDEX when the groups are unnamed
+  (named sets keep the keyword path for community models with real anim names), including
+  Base's `animfixfps` fallback pairs (forwardright→straferight, melee→shoot, duckwalk-dirs→
+  duckwalk, pain2→pain1, die2→die1, duckjump→jump). Post-fix probe: idle@143+41, run@400+20,
+  strafes@442/@463, diagonals@488/@509 — distinct real ranges; torso actions overlay (upper=2/3/4
+  seen live); hand-marker positions sane. Dying/dead legs play DIE1 whose non-loop end holds the
+  corpse pose (matches Base's DEAD1 hold).
+- **Watch on re-test:** (a) any model whose `.framegroups` count ≠ 31 leans on the fallback
+  pairs — glance at non-stock models if any; (b) the weapon should now track the hand through
+  run/jump/shoot — if it still floats on SOME models, suspect that model's BoneWeapon metadata
+  (sidecars), not this path; (c) chase-cam-from-inside haze seen during verification is a
+  separate chase-distance quirk, not this bug.
+
+### 33. Verify bot difficulty (skill) actually applies — VERIFIED WORKING (code audit; live A/B optional)
+- [x] **Status:** Closed by a full-chain code audit (2026-07-05) — skill DOES apply in menu-started games.
+- **The chain (all verified live):** menu difficulty → `MatchConfig.BotSkill` (SingleplayerScreen /
+  CreateGameScreen / campaign) → `NetGame.ConfigureListenServer(_botSkill)` → writes the `skill`
+  cvar when specified (NetGame.cs:734) → `BotPopulation.SpawnBot` seeds `Player.BotSkill` from
+  `Cvars.Skill` + a per-frame resync loop mirrors QC bot.qc:725-736 (a live `skill` change
+  re-seeds every brain) → consumed per-bot in ~10 places matching Base's formulas: think interval
+  (`min(14/(skill+14),1)`), aim-error cone (`1−0.1·skill`), aim-lead blend (`skill·0.1`), fire
+  deviation (`(10−skill)·0.3`), fire aggression, dodge scaling (`0.5+skill·0.1`), strafe-flip
+  timing, bunnyhop gate, reload discipline (skill<2/<5 gates), skill>6 escape moves.
+- **The one caveat (BY DESIGN):** a bare CLI `--host <map> --bots N` leaves `_botSkill = -1`
+  (the cvar-persistence sentinel) → the `skill` cvar is NOT written → bots inherit whatever
+  config.cfg / the last menu game left. Only affects automation runs, not menu play.
+- **Not ported (uniform bots, not broken skill):** bots.txt per-bot skill OFFSETS
+  (bot_aimskill/moveskill/… columns) default 0 — every bot shares the global skill instead of
+  per-personality variance. Cosmetic-depth gap; note if bots feel "samey".
+- **If it still FEELS flat:** run a menu A/B (skill 1 vs 10, same map/bots) — expect visibly
+  slower reactions + wide misses at 1 vs near-instant tracking at 10. If those two feel alike
+  in-game, reopen with that observation (then the suspect is a consumer formula, not the chain).
+
+### 34. Enemy-held weapon still positioned wrong after #32 — too HIGH, "aligned to their view"
+- [ ] **Status:** Not started (round 6 — #32 improved the body animations; the gun position remains wrong).
+- **Symptom:** remote players' held weapon renders too high — reads as if it's aligned to their VIEW
+  (eye height / view pitch) rather than sitting in their hands.
+- **Leading hypothesis (from the #32 probe):** the hand marker itself is healthy (`bip01 r hand`
+  resolved, live positions), so suspect the ATTACH path: `ViewEntityRenderer.EnsureAttached` may
+  run while the player model is still the streaming placeholder (TagWeaponMarker null → falls back
+  to entity root / RenderRoot) and never RE-ATTACH once the real skeleton lands — leaving the
+  weapon at its NETWORKED wepent origin, which IS the view position ("aligned to their view").
+- **Verify against Base:** `CL_ExteriorWeaponentity_Think` (weaponsystem.qc) — exterior weapon =
+  `v_<weapon>.md3` attached to `tag_weapon` (gettagindex) else `"bip01 r hand"` setattachment;
+  check whether stock player IQMs carry a dedicated `tag_weapon` bone the port should PREFER over
+  the raw hand joint (offset/orientation authored for the gun).
+
+### 35. Bots shoot teammates in team games + typing spare + chat bubble — FIXED (needs playtest)
+- [x] **Status:** Implemented (branch `feature/cpuoptimization`) — build + 2953 tests + CTF smoke green.
+  Verify: (a) CTF bots never aim at teammates; (b) start typing in front of an enemy bot — it holds
+  fire; (c) a typing player shows the chat bubble sprite over their head on every client.
+- **(a) CONFIRMED root cause — the `teamplay` CVAR was never written anywhere.** The port's
+  `BotBrain.ShouldAttack` faithfully mirrors Base `bot_shouldattack` (team gate included) — but its
+  team gate reads `Cvars.Teamplay` = the **`teamplay` cvar**, and NOTHING in the port ever set it
+  (the #27 work set only the `GameScores.Teamplay` static at GameWorld boot). So the gate was
+  silently non-team in every gametype → CTF bots treated same-team players as valid targets.
+  Second casualty found: warmup's `teamplay_lockonrestart` gate (also reads `Cvars.Teamplay`) was
+  dead. **FIX:** GameWorld boot now mirrors the gametype onto the real cvar
+  (`Services.Cvars.Set("teamplay", ...)`, like Base `InitGameplayMode`); cvar registered
+  (runtime, never archived). The FFA pants-team trap is unaffected: in DM `teamplay` stays 0 and
+  Base's own same-team fall-through applies (bots still fight everyone).
+- **(b) Typing spare:** Base `bot_shouldattack` (aim.qc:120) spares `PHYS_INPUT_BUTTON_CHAT`
+  targets unless `bot_typefrag` — the port's predicate omitted it entirely. Added (reads the live
+  `Entity.ButtonChat` input mirror — the same field the monster typefrag spare already reads);
+  `bot_typefrag` registered (Base default 0 = spare).
+- **(c) Chat bubble:** entirely unimplemented (the typing state was networked and used for
+  typefrag scoring, but nothing rendered). Ported `UpdateChatBubble`/`ChatBubbleThink`
+  (client.qc:1350-1397) as `GameWorld.UpdateChatBubble` in the per-client PreThink slot: while a
+  live player types, a `models/misc/chatbubble.spr` entity (asset ships in the pk3dir) follows at
+  `origin + '0 0 15' + maxs_z`; freed on stop/death/spectate + on disconnect (no orphans). A plain
+  networked entity → visible on every client, including remote games.
+
+### 36. Weapon textures lack color / detail textures wrong + weapon animations incorrect
+- [ ] **Status:** Not started (round 6).
+- **Symptom:** most weapon textures look wrong — lacking color, and the detail textures don't
+  appear to be applied correctly; weapon ANIMATIONS are also definitely not playing correctly.
+- **Two suspected halves:**
+  (a) RENDER: Base weapon materials (dpreflectcube/reflect, _norm/_gloss/_glow stages, colormapped
+  panels?) vs the port's material build for `v_*`/`h_*` models — find what stage(s) drop the color/
+  detail; (b) ANIMATION: weapon md3/iqm clips — Base `weaponsystem.qc` uses FIXED frame slots
+  (fire1=0, fire2=1, idle=2, reload=3 via `CL_WeaponEntity_SetModel`) — the port may be
+  name-matching nameless framegroups again, the exact #32 class of bug (see
+  [[player-anim-framegroups-slot-index]]).
+
+### 37. Decals: render through walls/particles + don't wrap like DP — FIXED (needs playtest)
+- [x] **Status:** Implemented (`20bed1c`) — build + 2953 tests green. Verify: shoot walls near corners
+  (marks conform, no streaks, nothing floating), check marks are never visible from the far side, and
+  blood splats land ON surfaces.
+- **CONFIRMED root causes (the DecalSplats architecture itself was already DP-faithful —
+  Sutherland–Hodgman clipping of the real render triangles, multiplicative blend, depth-tested):**
+  1. **Per-miss flat-quad fallback:** `DecalSplats.Splat` emitted an UNCLIPPED flat quad whenever
+     the triangle clip found nothing — a mark floating in space, poking through the corner it
+     failed to conform to = the through-wall decals AND the corner streaks. Now: fallbacks only
+     when a geometry SOURCE is missing entirely; a clip miss on a real map = no mark (DP).
+  2. **Last live legacy caller:** blood splats still went through the Godot `Decal` PROJECTION BOX
+     (`Decals.SpawnProjected`) — projection volumes paint through thin geometry inside their box
+     and smear across corners. Rerouted through `Splats.SplatPoint` (CL_SpawnDecalParticleForPoint)
+     with the removal-color complement + DP's staintex/blood-band atlas cells.
+  3. **`cl_decals` master toggle dead** (2026-06-14 audit) — wired (unset = on; engine cvar).
+- **Deferred (registry-worthy, low impact):** `cl_decals_fadetime`/`r_drawdecals_drawdistance`
+  cvar wiring; decals on dynamic models (`cl_decals_models`, Base default 0 anyway).
+
+### 38. Electro + Blaster PRIMARY projectiles look flat — FIXED (needs playtest)
+- [x] **Status:** Implemented (`32ac05c`) — build + 2953 tests green. Verify: blaster/electro bolts glow
+  (bright additive core, visible in dark rooms), electro explosions brighter.
+- **CONFIRMED root cause (live material probe):** the bolt models load fine (magic-dispatched
+  `.mdl`→MD3; surface shaders `laser/electro_projectile_core|long` resolve; `blendfunc add` +
+  `autosprite` both compile) — but the compiled Add materials stayed at Godot's default
+  **PerPixel SHADED** mode: scene lighting multiplies the texture BEFORE the add, so in a dim room
+  the additive contribution is near-black → a flat dark blob. Q3 additive stages are UNLIT
+  self-luminous adds — `ApplyBlend` + `ApplyBaseBlend` now set Unshaded for Add (and Filter, which
+  multiplies the already-lit framebuffer). Also brightens every dim additive map/FX surface.
+- **Residual (documented):** `deformVertexes autosprite2` (the "long" streak quad) approximated as
+  a full camera billboard — Godot StandardMaterial3D has no axial billboard; a custom-shader axial
+  roll is a follow-up if the streak orientation still reads wrong.
+
+### r8 addendum — #36 weapon appearance v2 + the fire-animation trigger (both re-reported, both FIXED)
+- [x] **Appearance "too shiny / seeing through geometry" (screenshots 18:42):** caused by the r7 cubemap
+  binding — the reflect-masked panels (electronew_reflect: 5% bright) mirrored the sky at FULL strength
+  as an always-on EMISSION add; bright sky-colored patches read as HOLES through the gun + chrome. The
+  deeper DP truth: `dpreflectcube` only evaluates inside DP's RTLIGHT shader permutations, and stock
+  Xonotic ships realtime world lighting OFF — the term is near-invisible in Base. **Fix:** cubemap left
+  deliberately UNBOUND (documented in `AssetSystem.DefaultReflectCubemap`); the skin shader's restrained
+  no-cubemap sheen (mild metal, diffuse never killed) is the faithful default. Verified: electro on dance
+  shows its real tan body, no mirror patches.
+- [x] **Weapon fire animation never played (muzzle flash fine):** the networked `ViewmodelFrame` selector
+  is deliberately not consumed on a LISTEN HOST ("the host path owns it") — but the host path
+  (`UpdateViewModelReloadAnim`) only ever derived RELOAD, so the local player's fire clip had NO trigger
+  at all. **Fix:** the host derives the per-shot fire edge from the live slot's ATTACK_FINISHED bump
+  (every shot pushes it forward — Base `weapon_thinkf(WFRAME_FIRE1)` restarts per shot) → new
+  `ViewModel.PlayFireClip()`, which REWINDS an already-playing fire clip (Godot `Play()` doesn't restart)
+  so sustained rapid fire re-triggers visibly. Remote-client note: the int-selector path still only
+  rising-edge-triggers (a machinegun burst plays fire once for a SPECTATOR) — needs a shot counter in the
+  wepent block; deferred.
+
+### r9/r9b addendum — fire anims + see-through weapons re-reported (HAGAR + DEVASTATOR screenshots); all FIXED
+- [x] **Fire anims STILL dead after r8 — three deeper roots (`ea2a6f3`) + one trap (`b082c30`):**
+  (1) invisible-hand IQM weapons (shotgun/uzi/nex/arc…) DISCARDED the animated h_ rig and rendered the
+  static v_ model at a baked offset — structurally nothing could animate; the equip now renders the LIVE
+  rig with the v_ gun on a `BoneAttachment3D` at the animated `weapon` bone (Base
+  `setattachment(weaponchild, this, "weapon")` — the fire clip pumps the BONE, the gun rides it).
+  (2) The DPM rigs (h_electro/h_crylink/h_rl/h_gl/h_hagar) named their nameless framegroups `anim_0..3` —
+  the r7 slot fix covered IqmBuilder only; DpmBuilder now shares the fire/fire2/idle/reload slot contract.
+  (3) The v_ models attached to the rig are themselves skeletal IQMs with ZERO animations and bring an
+  EMPTY AnimationPlayer — `FindChild`'s first match handed ViewModel the empty one; new
+  `FindAnimationPlayerWithClips` prefers the clip-carrying player. **Chain PROBE-VERIFIED** end to end via
+  a scripted-fire camera-trace run (injected attack buttons): per-shot AttackFinished edge →
+  `PlayFireClip -> 'fire' | anims: fire,fire2,idle,reload`.
+- [x] **See-through weapon geometry (user screenshots = the HAGAR and the DEVASTATOR — both DPM rigs):**
+  DPM triangles are wound OPPOSITE to the IQM/MD3 convention relative to Godot's `cull_back` — every DPM
+  weapon rendered INSIDE-OUT (front faces culled, interiors visible): the devastator's hollow mid-body,
+  the hagar's chrome-ish interior glints, the electro's white patches — one bug, three looks. DpmBuilder
+  now emits each triangle as (0,2,1). Capture-verified: solid devastator, readable side decal. (The r9b
+  commit message misattributed the hagar screenshot as "mortar" — the mortar/h_gl is the same DPM family
+  and carries the same fix, but the pictured gun was the hagar.)
+  **WATCH next playtest:** the flip affects ALL DPM models (monsters included) — anything that previously
+  looked right was silently compensating; eyeball a monster if one shows up.
+- [x] **Team tint (progress confirmed by user — "now I can see colors"):** `LocalShownamesTeam` returns the
+  NUM_TEAM color CODE (blue=13) where `ModelTint.TeamColor` wants the colormap nibble (1..4) — the #8
+  code-vs-nibble trap; blue guns never tinted. Normalized via the now-public
+  `ClientWorld.NormalizeTeamColormap` at the viewmodel glow site.
+
+### 39. Electro explosion FX — plumbing VERIFIED WIRED; look re-judge after #38
+- [~] **Status:** Investigated (round 7) — the suspected gaps DON'T exist: effectinfo
+  `lightradius/lightcolor/lightradiusfade` rows ARE parsed (EffectInfoParser) and spawned as pooled
+  OmniLight3D flashes (EffectSystem.SpawnInfoLight — electro impact 250qu, combo 400qu, blue HDR
+  color); the flying bolt's 90qu blue dlight rides `TrailLightFor(TR_NEXUIZPLASMA)`
+  (ProjectileRenderer.BuildLight); additive particles use exact premultiplied math; scene glow is
+  enabled. The dominant LOOK bug was #38's shaded-additive (the explosion's additive sprites dimmed
+  the same way). **Re-judge after the round-8 playtest**; if still off, the ranked candidates are:
+  OmniLight falloff curve vs DP dlight falloff, the Energy normalization (`min(8,maxc)`), and the
+  scene glow HDR threshold (1.0) — each a cheap A/B, deliberately not changed blind.
+
+### 40. Hagar fire animation never stops after firing — FIXED (needs playtest)
+- [x] **Status:** Implemented (r12). Verify: hold hagar fire, release → the pump animation stops (drops to idle);
+  other weapons unchanged.
+- **CONFIRMED root cause:** the hagar's fire clip is authored **loop=1** (`h_hagar.iqm.framegroups`; the
+  other DPM rigs' fire rows are loop=0) — and the port's only fire→idle transition was the end-of-clip
+  recovery (`!IsPlaying()` → PlayIdle), which a LOOPING clip never reaches. Base never waits for clip end:
+  its weapon state machine re-asserts WFRAME_IDLE explicitly when the attack window closes (w_ready →
+  weapon_thinkf).
+- **FIX:** the listen-host anim driver calls the new `ViewModel.StopLoopingFire()` once the slot's
+  ATTACK_FINISHED expires with no new shot — no-op unless the CURRENT clip is a looping fire/fire2.
+
+### 41. Weapons look dull — the port lacked DP's lightgrid MODEL lighting — STAGE 1 SHIPPED (viewmodel)
+- [~] **Status:** Stage 1 implemented (r12): the Q3 BSP **lightgrid** (lump 15) is now parsed
+  (`LightGridData`, dims from the world bounds like DP `Mod_Q3BSP_LoadLightGrid`, trilinear `Sample` like
+  `Mod_Q3BSP_LightPoint`; real-asset test on stormkeep) and the VIEWMODEL is modulated by the sample at the
+  camera each frame (`(ambient + 0.5·directed)/128`, floor 0.25 / cap 1.6, epsilon-gated, identity when a map
+  ships no grid). Verify: the gun brightens in bright yards, dims in dark corridors, tints under colored light.
+- **CONFIRMED root cause:** DP lights EVERY model from the baked lightgrid at the entity origin — the port lit
+  everything with one global "Sun" DirectionalLight + flat 0.6 sky ambient, so guns (and all models) read
+  gray/flat indoors regardless of the map's baked lighting.
+- **Follow-ups (documented, not yet done):** (a) players/items/monsters — same sample at each entity origin
+  (drive `ModelTint` colormod or a per-entity light); (b) the directed term as a real directional light
+  (direction bytes are already decoded); (c) plain StandardMaterial3D weapon surfaces ignore the instance
+  colormod (skin-shader surfaces only) — most weapon bodies are skin-shader, rest follow with (a)'s mechanism.
+
+### 42. Mortar/weapons still bland vs Base — DP-formula grid shading + gamma response + sight anim — FIXED (needs playtest)
+- [x] **Status:** Implemented (r15) — experiments **B, C, D + A-behind-a-cvar** from
+  `planning/weapon-render-pipeline-comparison-2026-07-05.md`. Verify: the gun shows directional
+  light-and-shade that CHANGES as you move through the map (bright yards pop, dark corridors dim, colored
+  light tints), colored glints track the map lighting, and the mortar's sight cycles its 3 frames and
+  pulses its blink. `set r_model_light_gamma 0` should visibly flatten the gun (A/B look comparison).
+- **What changed (screenshot-verified: shading structure + specular glint + gamma-0 flattens; no shader errors):**
+  - **B — real grid shading:** `PlayerSkinShader` gained a `grid_lit` instance-uniform branch reproducing
+    DP's `MODE_LIGHTDIRECTION` per pixel: `tex×ambient + tex×diffuse×max(0,N·L) +
+    gloss.rgb×diffuse×pow(max(0,N·H), 1+32·gloss.a) + glow` from the lightgrid sample (`grid_ambient` /
+    `grid_diffuse` / `grid_dir` pushed by `NetGame.UpdateViewModelLightgrid` → `ViewModel.SetGridLight` →
+    `ModelTint.ApplyGridLight`). EMISSION-only output (scene lights can't double-light); the 6.0-energy
+    ViewFill is hidden while grid-lit; muzzle flash pops via a decaying warm ambient boost (DP's dlight
+    lights the viewmodel — the grid branch can't see the OmniLight). No grid on the map → the old PBR+fill.
+  - **C — colored DP specular:** the `gloss.rgb × directed × pow(N·H, 1+32·gloss.a)` term above (Blinn
+    half-vector against the BAKED direction, no N·L gate — DP has none).
+  - **A — gamma-faithful response (cvar `r_model_light_gamma`):** DP multiplies light onto
+    GAMMA-encoded texels (vid_sRGB 0, no tonemap) → display scales LINEARLY with light. The shader
+    re-encodes the texel gamma, multiplies there, clamps (DP's framebuffer saturates), and pre-decodes so
+    Linear tonemap + sRGB encode round-trips it. 0 = plain linear multiply (visibly flatter — confirmed).
+    Global shader param registered/polled by `WorldTint`; scale knob `r_model_light_scale` (default 1 =
+    DP's absolute 1/128 — the r13 "self-calibrating average" normalization was a crutch for the linear
+    response and is gone). **Default flipped to 0 in r15: Bryan preferred the linear look in the live
+    A/B ("I think it looks better with r_model_light_gamma 0 — leave the feature in though").**
+  - **D — sight animation:** `ShaderCompiler.NeedsAnimatedShader` now triggers on multi-frame `animMap`
+    and `rgbGen wave` (the sight stage has neither tcMod nor deform — it previously compiled STATIC, frozen
+    on frame 1 with no blink). The generated stage shader cycles `int(TIME*fps) % N` over per-frame
+    samplers and emits the Q3 waveform (`sin/square/triangle/sawtooth/inversesawtooth`, clamped 0..1;
+    `rgbGen const` too). Parser pinned by new `AnimMap_MortarSightStage_ParsesFramesFpsAndWave`.
+- **Follow-ups (unchanged from #41):** players/items/monsters via the same `ApplyGridLight` mechanism;
+  plain StandardMaterial3D surfaces still ignore grid light (skin-shader surfaces only).
+
+### 43. Player PROFILE color (FFA) never applies — only team color did; weapons + bodies — FIXED (needs playtest)
+- [x] **Status:** Implemented (r15). Verify (FFA): pick shirt/pants in Multiplayer ▸ Profile → your gun's
+  `_shirt`-mask panels tint your shirt color and its glow takes the pants color; bots' bodies AND their
+  held guns show their own colors; everything still team-colors correctly in teamplay. Verified by
+  capture: `--cvar _cl_color 212` → blue shirt panels on the mortar viewmodel.
+- **CONFIRMED root cause — the packed `clientcolors` never left the server.** Base applies the colormap
+  palette UNCONDITIONALLY (viewmodel: `e.colormap = 256 + entcs_GetClientColors(...)`, view.qc:317;
+  exterior gun: `colormap = owner.colormap`, weaponsystem.qc:180; teamplay just forces clientcolors to
+  `17*teamcode` server-side). The port: (1) humans never sent `_cl_color` (the `color` client command +
+  `SV_ChangeTeam` sink existed server-side with ZERO callers — only bots set colors); (2) the entity wire
+  carried only the TEAM byte (`Colormap`); (3) every render sink was `hasTeam ? team : Black`.
+- **FIX (full chain):**
+  - Wire: new `EntityField.Colors` (bit 25, byte) = packed `16*shirt+pants`; `ServerNet` stamps it from
+    `Player.ClientColors`; `ClientEntityView` → `Entity.Colors`. Codec pinned by
+    `ClientColors_RoundTrip_Through_The_Delta_Codec`.
+  - Client push: `NetGame.PushLocalPlayerColor` (change-gated per frame) — listen host applies via
+    `Teamplay.ChangeTeam` (QC SV_ChangeTeam: FFA-only recolor), pure client sends `color <n>`.
+  - Render: `ResolveForcedColormap` returns `1024 + Colors` when unforced (full palette paints — QC form);
+    `ModelTint.ApplyColormap` decodes packed maps (shirt+pants nibbles + pants glow);
+    `ViewEntityRenderer` tints the held gun from the OWNER's resolved colormap (change-gated, re-applied
+    on rebuild); viewmodel: `UpdateViewModelColors` = pants/shirt palette + `weaponentity_glowmod`
+    pants-glow fallback (vortex `wr_glow` charge override kept), watched-player aware (spectator-correct).
+- **Note (user-visible, not a bug):** the "invisible names are not allowed → Player#1" warning during
+  verification is the QC-faithful name check — `~/XonData/config.cfg` had `seta _cl_name "^x06b"` (a color
+  tag only, no visible chars: the profile name editor's color chip inserts `^xRGB` into the name box).
+  Type an actual name after picking the color.
 
 ---
 
