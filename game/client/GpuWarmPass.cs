@@ -5,7 +5,7 @@ using Godot;
 namespace XonoticGodot.Game.Client;
 
 /// <summary>
-/// The offscreen GPU pipeline warm pass (PERFORMANCE_REPORT.md §1.1 Plan A2). Godot compiles a material's
+/// The offscreen GPU pipeline warm pass (planning/PERFORMANCE_REPORT.md §1.1 Plan A2). Godot compiles a material's
 /// shader + render pipeline lazily on its FIRST draw — so the first rocket / explosion / gib / projectile of a
 /// match hitches while the GPU stalls compiling. This parents one hidden instance of every runtime-created
 /// material family into a tiny isolated 64×64 <see cref="SubViewport"/> (its OWN <c>World3D</c>, so nothing

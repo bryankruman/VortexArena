@@ -1,7 +1,7 @@
 name: Release
 
 # Build the full release matrix and publish downloadable "fat" zips (binary + Godot runtime + all Xonotic
-# data) to GitHub Releases. See planning/decisions/ADR-0014-ci-packaging-distribution.md and RELEASING.md.
+# data) to GitHub Releases. See planning/decisions/ADR-0014-ci-packaging-distribution.md and docs/RELEASING.md.
 #
 # Trigger:
 #   - push a tag `vX.Y.Z`  → builds all targets and PUBLISHES a GitHub Release with the zips attached.

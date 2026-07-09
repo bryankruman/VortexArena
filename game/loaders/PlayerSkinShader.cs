@@ -25,7 +25,7 @@ namespace XonoticGodot.Game.Loaders;
 /// </summary>
 public static class PlayerSkinShader
 {
-    // C2 STANDING RULE (godot#105750 / PERFORMANCE_REPORT.md C2): the uniform names below are
+    // C2 STANDING RULE (godot#105750 / planning/PERFORMANCE_REPORT.md C2): the uniform names below are
     // `static readonly StringName`, not `const string`. Godot's *ShaderParameter / GlobalShaderParameter APIs
     // take a StringName, so a string literal there mints a StringName allocation per call — a GC treadmill if it
     // ever lands in a per-frame path. NEVER pass a string literal to a StringName/NodePath Godot API from a hot

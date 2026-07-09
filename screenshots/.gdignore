@@ -1,4 +1,4 @@
-# Visual-capture output (--screenshot; see RUNNING.md "Visual capture"). Tell the
+# Visual-capture output (--screenshot; see docs/RUNNING.md "Visual capture"). Tell the
 # Godot editor to skip this tree so it doesn't generate *.import sidecars for every
 # captured PNG. Captures are git-ignored; only this .gdignore is tracked so a fresh
 # checkout already has the folder primed.
