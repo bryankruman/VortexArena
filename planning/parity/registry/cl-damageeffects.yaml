@@ -175,7 +175,7 @@ features:
       - "Victims shot with rockets/fire weapons never show the lingering damage_<weapon> particle effect attached to the nearest bone — a clearly visible Base combat cue (burning players)."
       - "The Effects settings dialog exposes 'Damage effects: Disabled/Skeletal/All' but the cvar has zero consumers in game/client — a dead setting."
     verification:
-      - { kind: code, ref: "grep cl_damageeffect over src/ game/ tests/: only DialogSettingsEffects.cs (writer), CVARS.md, and the 2026-06-14 graphics audit (which already flagged it dead)", result: fail }
+      - { kind: code, ref: "grep cl_damageeffect over src/ game/ tests/: only DialogSettingsEffects.cs (writer), docs/reference/CVARS.md, and the 2026-06-14 graphics audit (which already flagged it dead)", result: fail }
     confidence: high
     notes: "Depends on a per-hit damage event reaching the client with deathtype + hit origin (row net.sv_broadcast) or an equivalent server-side emission at the victim. The damage_* effectinfo blocks themselves are catalog content owned by fx-effectinfo."
 

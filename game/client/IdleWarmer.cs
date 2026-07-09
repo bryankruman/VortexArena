@@ -6,7 +6,7 @@ using Godot;
 namespace XonoticGodot.Game.Client;
 
 /// <summary>
-/// Idle-time asset warm queue (PERFORMANCE_REPORT.md §5 S3). After the loading screen drops, the eager precache
+/// Idle-time asset warm queue (planning/PERFORMANCE_REPORT.md §5 S3). After the loading screen drops, the eager precache
 /// (A3) has warmed the combat essentials — weapons, weapon sounds, the local + default player models — but the
 /// long tail (announcer lines, item-pickup cues, the other stock player models, gib variants) is still cold and
 /// would hitch on first use. This drains a low-priority work queue on a small per-frame millisecond budget so

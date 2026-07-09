@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# perf-run — one-command perf capture + report (bash twin of perf-run.ps1; see PERF-DEBUGGING.md).
+# perf-run — one-command perf capture + report (bash twin of perf-run.ps1; see docs/PERF-DEBUGGING.md).
 # Usage: perf-run.sh <label> <secs> [extra --cvar flags...]
 #   perf-run.sh baseline 35
 #   perf-run.sh pvs_off  35 --cvar r_pvs_cull 0

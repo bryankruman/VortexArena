@@ -261,7 +261,7 @@ nex_impact ring, muzzle flash pop).
 
 ## Validation checklist (after each task)
 1. `dotnet build XonoticGodot.csproj` + `dotnet test tests/XonoticGodot.Tests` (from Windows dotnet,
-   per RUNNING.md/memory).
+   per ../docs/RUNNING.md/memory).
 2. `--fx-demo` screenshots: explosion + impact + (new) trail demo; boot log still prints
    `[EffectSystem] effectinfo: 301 effects`.
 3. A/B against stock: run native Xonotic (RUNNING-xonotic.md) same map/spot, compare: vortex shot
