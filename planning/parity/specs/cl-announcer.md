@@ -96,7 +96,7 @@ The announcer is the client subsystem that (a) drives the pre-match / per-round 
 
 **Intended divergences:**
 - **Server-side announcer.** The whole timing/decision layer runs on the server and is broadcast, because the port has no CSQC announcer timer. Documented at `AnnouncerController` class summary + `GameWorld:616-625`.
-- **`cl_announcer_maptime` is read from the server's global config store** rather than per-client, a consequence of the global broadcast. Documented in `CVARS.md:128`. The menu mode *values* (0/1/5/3) are faithful to Base.
+- **`cl_announcer_maptime` is read from the server's global config store** rather than per-client, a consequence of the global broadcast. Documented in `../../../docs/reference/CVARS.md:128`. The menu mode *values* (0/1/5/3) are faithful to Base.
 
 **Verifier correction (2026-06-22):** an earlier draft flagged the menu's "5 min" → `cl_announcer_maptime 5` as a bug (claiming Base's 5-min mode is value 2). This is FALSE. Base's shipped audio-settings slider (`menu/xonotic/dialog_settings_audio.qc:168`) uses `addRange(1, 5, 4)` whose third argument is the **step**, not a count (`menu/item/mixedslider.qc:MixedSlider_addRange`), so it yields exactly the values {1, 5}; "5 min" is literally value 5 in Base, and the port matches. The `>=2` gate means any value ≥2 reads as "5-min on", so 5 is both correct and canonical. The maptime feature row is therefore `logic/values: faithful` with only the server-global read scope diverging (intended).
 

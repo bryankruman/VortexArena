@@ -1,0 +1,25 @@
+# UW-0009 — Merge "teamplay: merge commands `join` and `selectteam` (plus minor tweaks, fixes)"
+
+- **Source:** `data@c4818595f6c4`
+- **Kind:** qc-gameplay
+- **Base symbols touched:** `ClientCommand_join`, `ClientCommand_selectteam`, `CMD_REQUEST_COMMAND`, `joinAllowed`, `queuePlayer`, `ClientKill_TeamChange`, `NOTIF_ONE_ONLY`, `TEAMCHANGE_ALREADYBEST`, `TEAMCHANGE_SAME`, `TEAMCHANGE_STRONGERTEAM`, `Team_ColorToTeam`, `bot_setnameandstuff`, `TeamBalance_CheckAllowedTeams`, `TeamBalance_GetTeamCounts`, `TeamBalance_FindBestTeams`, `TeamBalance_CompareTeamsInternal`, `.clientkill_nexttime`, `bots_would_leave`
+- **Port-worthiness:** high  ·  **Effort:** M
+- **Decision:** pending
+
+## What it does / how it works
+Merges two upstream commands (`join` and `selectteam`) into a single `join` command that accepts an optional team argument. The `selectteam` command is retained as a deprecated alias for backward compatibility. Updates the join command to accept team color names (red/blue/yellow/pink/auto) as a direct argument instead of requiring a separate `selectteam` call. Also updates notification messages (TEAMCHANGE_ALREADYBEST) to be team-specific via MULTITEAM_ macros, adds a nospam gate to prevent duplicate notifications when using legacy selectteam+join sequences, reorders notification definitions for consistency, and fixes a bot-balance-initialization bug in bot.qc where TeamBalance_ calls were unconditionally called outside the teamplay gate. Touches: qcsrc/server/command/cmd.qc (ClientCommand_join/selectteam merge), qcsrc/server/clientkill.qc (nospam notification logic, clientkill_nexttime field moved to .qh), qcsrc/common/notifications/all.inc (TEAMCHANGE_ALREADYBEST multiteam), qcsrc/common/teams.qh (Team_ColorToTeam auto/empty handling), qcsrc/server/teamplay.qc (bot deduction loop refactor, skill-aware best-team gate for real clients), qcsrc/server/bot/default/bot.qc (TeamBalance scope fix), menu UI aliases/color tweaks (commands.cfg, dialog_teamselect.qc, others).
+
+## Portability
+Primarily qc-gameplay (server-side join/team-selection logic). Minor data-cfg (notification messages, commands.cfg aliases, menu colors). **Core logic:** The consolidation of join+selectteam into a single command with optional team argument is a gameplay-level refactor that affects how players queue/join and how spam is managed on legacy clients. **Key port challenge:** Our C# port currently has separate `join` and team-selection logic in `ClientManager.cs` and `Commands.cs`; the merge requires consolidating the argument parsing, the nospam gate logic (`clientkill_nexttime`), and the multi-team notification dispatch. The MULTITEAM_ macro expansion (per-team message variants) requires our notification system to support it.
+
+## Completeness (upstream)
+Fully merged to master. Includes tests implied by the issue closure (#3031). Non-trivial code churn across 18 files with clear intent: a cleanup pass rather than a hotfix. The diff is complete and coherent (no TODOs, no stubs).
+
+## Quality
+Good. The merge is a genuine refactor, not a hack. It consolidates UI confusion (join vs selectteam was a UX pain point: two commands with overlapping intent), removes a workaround (-666 team sentinel), adds a nospam field to prevent duplicate notifications on legacy clients, and fixes a real bug (bot sizing conditional moved into the teamplay gate). The notification reordering is cosmetic but improves readability. One minor code-smell: the `clientkill_nexttime` field name carries legacy baggage (originally `KillIndicator_Think` timing), but it's reused here for join-spam throttling—not incorrect, just an odd choice. The git log message is terse but the MR #1610 likely has more detail.
+
+## Roadmap / design alignment
+Serves **Vortex Arena**: the game has separate join/team-selection UI. This refactor streamlines the command interface (players can now do `join red` in one call instead of `selectteam red; join`). The nospam logic is a usability fix for players who spam the old two-step. **Potential conflict:** None identified. Our port has no `intended_divergence` around join/selectteam; we intentionally omitted forced teams and queue (per the parity spec), but this commit doesn't force us to implement those. The bot-sizing fix is pure correctness—a regression in Base that we should adopt if we port the bot logic.
+
+## Recommendation
+**Port this.** It is a genuine improvement (UX + correctness) that aligns with Vortex Arena's goals. The scope is clear: merge join/selectteam commands, wire nospam logic, update notifications. The bot-sizing fix should be adopted independently if we port bot logic. Start with a design doc to map our current join/team command structure and confirm where the optional argument goes, then implement the port in a series: (1) argument parsing + join logic, (2) nospam field, (3) notification multiteam support. Assign to a single dev to avoid rebasing churn. Not urgent (playable without it) but high-quality (reduces complexity, improves correctness).

@@ -9,7 +9,7 @@ namespace XonoticGodot.Game;
 /// to a PNG, and quits the tree.
 ///
 /// Run WINDOWED — a <c>--headless</c> run uses the dummy renderer and the capture comes out blank. With this an
-/// agent (or CI) can produce a real frame of the running game and actually inspect it. See RUNNING.md
+/// agent (or CI) can produce a real frame of the running game and actually inspect it. See docs/RUNNING.md
 /// "Visual capture".
 /// </summary>
 public partial class ScreenshotHook : Node
