@@ -19,6 +19,9 @@ import yaml
 ROOT = Path(__file__).resolve().parents[1]
 YAML_PATH = ROOT / 'planning' / 'upstream-watch' / 'LEDGER.yaml'
 HTML_PATH = ROOT / 'planning' / 'upstream-watch' / 'LEDGER.html'
+# Deep-dive docs are markdown; link them to the GitHub blob view (renders md) so the links
+# work from the Pages site and from a locally-opened LEDGER.html alike.
+GITHUB_BLOB = 'https://github.com/bryankruman/VortexArena/blob/main/planning/upstream-watch/'
 
 REL = {'high': ('🟢', 'High'), 'medium': ('🟡', 'Medium'), 'low': ('🟠', 'Low'), 'none': ('🔴', 'None')}
 DEC = {'pending': ('⏳', 'Pending'), 'port': ('✅', 'Port'), 'adapt': ('🔧', 'Adapt'),
@@ -49,13 +52,14 @@ def render_row(e):
     src = html.escape(e.get('source', ''))
     url = e.get('url')
     src_html = f'<a href="{html.escape(url)}" target="_blank" rel="noopener"><code>{src}</code></a>' if url else f'<code>{src}</code>'
-    uw_cell = f'<a href="{html.escape(e["deep_dive"])}" target="_blank" rel="noopener">{uw}</a>' if e.get('deep_dive') else uw
+    dd_url = html.escape(GITHUB_BLOB + e['deep_dive']) if e.get('deep_dive') else None
+    uw_cell = f'<a href="{dd_url}" target="_blank" rel="noopener">{uw}</a>' if dd_url else uw
 
     meta = [src_html, kind]
     if effort:
         meta.append(f'effort {effort}')
-    if e.get('deep_dive'):
-        meta.append(f'<a href="{html.escape(e["deep_dive"])}" target="_blank" rel="noopener">deep dive</a>')
+    if dd_url:
+        meta.append(f'<a href="{dd_url}" target="_blank" rel="noopener">deep dive</a>')
     meta_html = ' · '.join(meta)
 
     extra = ''
