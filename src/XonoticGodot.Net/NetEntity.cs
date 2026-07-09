@@ -140,6 +140,14 @@ public enum EntityField : uint
     // phase, so VehicleView took the next free bit 24 — both producers/consumers parse via the named EntityField bit,
     // not a hardcoded ordinal, so the shift is transparent.)
     VehicleView = 1 << 24,
+
+    // [r15 #43] the QC entcs clientcolors slice (ent_cs.qc ENTCS_PROP(COLORS) → .clientcolors): a player's packed
+    // 16*shirt+pants palette colors — the FFA profile color (_cl_color) or the team-forced 17*teamcode. Drives the
+    // _shirt/_pants mask tint + glowmod on the player model AND their weapon models (Base: viewmodel colormap =
+    // 256+c in view.qc:317, exterior gun colormap = owner's in weaponsystem.qc:180). Distinct from Colormap, which
+    // this port's wire uses as the TEAM byte (shownames/radar compares) — repurposing it would break team logic.
+    // 0 = colorless (bit stays clear, costs nothing; client falls back to the team path). Bit 25, verified free.
+    Colors = 1 << 25,
 }
 
 /// <summary>
@@ -163,6 +171,7 @@ public struct NetEntityState
     public Vector3 Velocity;
     public int Effects;          // EF_* render flags bitfield
     public int Colormap;         // player colors (top/bottom) or team tint
+    public int Colors;           // [r15 #43] packed 16*shirt+pants clientcolors (0 = colorless, bit stays clear)
     public int Health;           // for nameplates / the owner HUD (0 when not applicable)
     public int Armor;            // [T68] QC entcs RES_ARMOR slice — the shownames teammate status bar (0 when N/A)
 
@@ -305,6 +314,7 @@ public struct NetEntityState
         if (baseline.Velocity != current.Velocity) m |= EntityField.Velocity;
         if (baseline.Effects != current.Effects) m |= EntityField.Effects;
         if (baseline.Colormap != current.Colormap) m |= EntityField.Colormap;
+        if (baseline.Colors != current.Colors) m |= EntityField.Colors;
         if (baseline.Health != current.Health) m |= EntityField.Health;
         if (baseline.Armor != current.Armor) m |= EntityField.Armor;
         if (baseline.Alpha != current.Alpha) m |= EntityField.Alpha;
@@ -399,6 +409,7 @@ public static class EntityStateCodec
         if ((mask & EntityField.Velocity) != 0) w.WriteVector(current.Velocity, NetPrecision.Low);
         if ((mask & EntityField.Effects) != 0) w.WriteLong(current.Effects);
         if ((mask & EntityField.Colormap) != 0) w.WriteByte(current.Colormap & 0xFF);
+        if ((mask & EntityField.Colors) != 0) w.WriteByte(current.Colors & 0xFF);
         if ((mask & EntityField.Health) != 0) w.WriteShort(current.Health);
         if ((mask & EntityField.Armor) != 0) w.WriteShort(current.Armor);
         if ((mask & EntityField.Alpha) != 0) w.WriteByte(current.Alpha & 0xFF); // 0 = opaque; 1..254 = alpha/255; 255 = hidden (-1)
@@ -487,6 +498,7 @@ public static class EntityStateCodec
         if ((mask & EntityField.Velocity) != 0) s.Velocity = r.ReadVector(NetPrecision.Low);
         if ((mask & EntityField.Effects) != 0) s.Effects = r.ReadLong();
         if ((mask & EntityField.Colormap) != 0) s.Colormap = r.ReadByte();
+        if ((mask & EntityField.Colors) != 0) s.Colors = r.ReadByte();
         if ((mask & EntityField.Health) != 0) s.Health = r.ReadShort();
         if ((mask & EntityField.Armor) != 0) s.Armor = r.ReadShort();
         if ((mask & EntityField.Alpha) != 0) s.Alpha = r.ReadByte();

@@ -135,7 +135,7 @@ the ammo-panel bonus-nade icon. The held-nade charge fraction (`NADE_TIMER`) is 
 - **BUT the throw input is dead.** `InputCommand.InputButtons` (`src/XonoticGodot.Net/InputCommand.cs:11`) has **no
   nade/offhand/hook/weapon_drop bit** — only Attack/Jump/Attack2/Zoom/Crouch/Use. `Entity.OffhandFirePressed` and
   `Entity.NadeAltButton` are **read** by `NadesMutator.OnPlayerPreThink` but **assigned nowhere** in `src/` (verified by
-  grep — same dead-input failure as the offhand hook, TODO.md T11). `NadeThrow.CheckThrow` (the weapon_drop path) has
+  grep — same dead-input failure as the offhand hook, ../../TODO.md T11). `NadeThrow.CheckThrow` (the weapon_drop path) has
   **no caller** (NadesMutator deliberately does not subscribe `ForbidThrowCurrentWeapon`). So in a real match a player
   **can never prime or throw a nade**: `OffhandThink` is called every tick with `keyPressed=false`, so it never primes.
 - Consequence: every downstream behavior (charge, toss, all 11 booms, pickup, shoot-down, orbs, freeze/heal/etc.) is

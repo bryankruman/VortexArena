@@ -53,7 +53,11 @@ public sealed class SkinFile
     /// </summary>
     public static bool IsNoDraw(string replacement) =>
         string.Equals(replacement, "common/nodraw", StringComparison.OrdinalIgnoreCase) ||
-        string.Equals(replacement, "textures/common/nodraw", StringComparison.OrdinalIgnoreCase);
+        string.Equals(replacement, "textures/common/nodraw", StringComparison.OrdinalIgnoreCase) ||
+        // The bare form: the invisible-hand weapon rigs' skeleton plane carries the raw mesh material name
+        // "nodraw" (h_shotgun/h_uzi/… 'Plane'). DP hides it by name; unhidden it rendered as an untextured
+        // black quad that swung into view on the landing dip (playtest r11's "black triangle").
+        string.Equals(replacement, "nodraw", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Parses one <c>.skin</c> file's text.

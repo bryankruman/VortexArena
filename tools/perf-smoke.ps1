@@ -1,4 +1,4 @@
-# perf-smoke - the pre-merge perf regression check (see PERF-DEBUGGING.md).
+# perf-smoke - the pre-merge perf regression check (see docs/PERF-DEBUGGING.md).
 #
 #   tools\perf-smoke.ps1                 # headless benches only (~1 min, no window)
 #   tools\perf-smoke.ps1 -Live           # + a 30s release-export capture diffed vs the checked-in baseline

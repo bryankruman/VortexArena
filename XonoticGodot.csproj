@@ -7,12 +7,12 @@
     <TargetFramework>net8.0</TargetFramework>
     <EnableDynamicLoading>true</EnableDynamicLoading>
     <RootNamespace>XonoticGodot</RootNamespace>
-    <!-- C1: pin the GC flavor explicitly so it isn't default-dependent (PERFORMANCE_REPORT.md C1).
+    <!-- C1: pin the GC flavor explicitly so it isn't default-dependent (planning/PERFORMANCE_REPORT.md C1).
          Workstation (ServerGarbageCollection=false) + concurrent — short, non-blocking, background collections,
          the right trade for the interactive client's render loop. Both values ARE the .NET default for a client
          app, so pinning them changes nothing today; it documents intent and guards a future default shift. Do
          NOT flip ServerGarbageCollection true without profiling — it trades client frame-pauses for dedicated
-         throughput (see PERFORMANCE_REPORT.md §7). LatencyMode (SustainedLowLatency) is set at boot in Main.cs. -->
+         throughput (see planning/PERFORMANCE_REPORT.md §7). LatencyMode (SustainedLowLatency) is set at boot in Main.cs. -->
     <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
     <ServerGarbageCollection>false</ServerGarbageCollection>
     <!-- C3 Tier-1: the StringApiAnalyzer (XG0001) bans the never-used string-keyed Godot APIs that mint a
@@ -25,7 +25,7 @@
        tier-0 JIT hitch the first time it runs mid-game. Gated to the release-export configuration (Godot's
        ExportRelease, a RID-targeted `dotnet publish` — R2R needs a RID), so the editor/Debug build and the
        tests are unaffected. Tiered compilation stays ON: R2R images are tier-0 quality and tiering re-JITs hot
-       methods to tier-1 in the background, so DON'T disable it globally (PERFORMANCE_REPORT.md A5/A1.4). -->
+       methods to tier-1 in the background, so DON'T disable it globally (planning/PERFORMANCE_REPORT.md A5/A1.4). -->
   <PropertyGroup Condition="'$(Configuration)' == 'ExportRelease'">
     <PublishReadyToRun>true</PublishReadyToRun>
   </PropertyGroup>

@@ -409,7 +409,7 @@ features:
       - { name: "off-axis snap guard", base: "x!=0 && y!=0 && x!=y", port: "ax!=0 && ay!=0 && ax!=ay (Race.cs:1004)", match: true }
       - { name: "pure-axis threshold", base: "x >= 2*y / y >= 2*x", port: "ax >= 2*ay / ay >= 2*ax (Race.cs:1008/1014)", match: true }
       - { name: "race_movetime accumulator", base: "frac += dt; f=floor(frac); frac-=f; count+=f; movetime=frac+count", port: "same (Race.cs:974-978)", match: true }
-      - { name: "cl_movecliptokeyboard", base: "stuffed to 2 (FixClientCvars)", port: "set to 2 globally at activation (Race.cs:540) — but the cvar has NO reader in src/ or game/ (not in CVARS.md), so the client input clip is still not forced", match: false }
+      - { name: "cl_movecliptokeyboard", base: "stuffed to 2 (FixClientCvars)", port: "set to 2 globally at activation (Race.cs:540) — but the cvar has NO reader in src/ or game/ (not in docs/reference/CVARS.md), so the client input clip is still not forced", match: false }
     status:
       logic: faithful
       values: faithful
@@ -420,7 +420,7 @@ features:
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "cl_movecliptokeyboard is now SET to 2 at activation (Race.cs:540, the FixClientCvars stuffcmd analogue) but NOTHING reads it — no consumer in src/ or game/ (and it is not in CVARS.md), so the client input clip is still not actually forced. The write is live but its effect is dead; the server-side octant snap remains the only authority. Residual gap unchanged in observable behavior."
+      - "cl_movecliptokeyboard is now SET to 2 at activation (Race.cs:540, the FixClientCvars stuffcmd analogue) but NOTHING reads it — no consumer in src/ or game/ (and it is not in docs/reference/CVARS.md), so the client input clip is still not actually forced. The write is live but its effect is dead; the server-side octant snap remains the only authority. Residual gap unchanged in observable behavior."
       - "disableclientprediction=2 during the freeze has no port mechanism (documented cross-boundary)."
     verification:
       - { kind: code, ref: "Race.Activate registers OnPlayerPhysics on the global MutatorHooks.PlayerPhysics chain (Race.cs:491-492, the same seam CTS uses); OnPlayerPhysics (Race.cs:965-1028) runs all 3 QC slices: race_movetime accumulator (974-978), race_penalty freeze (981-996), M_SQRT1_2 octant snap (998-1027) — guard + thresholds + sqrt1_2 match sv_race.qc:128-197. This wave added Cvars.Set(cl_movecliptokeyboard,2) at Race.cs:540 but grep finds no reader of that cvar anywhere in src/ or game/.", result: pass }

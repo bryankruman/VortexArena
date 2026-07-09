@@ -1,11 +1,11 @@
-# CI for the XonoticGodot port (T33 — see planning/decisions/ADR-0014-ci-packaging-distribution.md).
+﻿# CI for the XonoticGodot port (T33 â€” see planning/decisions/ADR-0014-ci-packaging-distribution.md).
 #
 # Topology:
-#   test       — always: restore + run the full xUnit suite (no Godot, no assets; the ~18 real-data
+#   test       â€” always: restore + run the full xUnit suite (no Godot, no assets; the ~18 real-data
 #                test classes self-skip without assets/data, so CI green proves LESS than a local
-#                `ci/ci.sh` run with assets mounted — that stays the authoritative gate).
-#   build-host — always: compile the Godot host project (XonoticGodot.csproj) from a clean clone with
-#                NO Godot editor installed — proves the Godot.NET.Sdk/GodotSharp 4.6.3 restore works
+#                `ci/ci.sh` run with assets mounted â€” that stays the authoritative gate).
+#   build-host â€” always: compile the Godot host project (XonoticGodot.csproj) from a clean clone with
+#                NO Godot editor installed â€” proves the Godot.NET.Sdk/GodotSharp 4.6.3 restore works
 #                purely from nuget.org.
 #   launcher   — always: build + test the launcher app (launcher/ — ADR-0015; plain .NET, no Godot).
 # Export + packaging + GitHub Releases live in a SEPARATE workflow (.github/workflows/release.yml),
@@ -14,7 +14,7 @@
 #
 # The one repo-specific gotcha: nuget.config adds the Windows dev machine's Godot editor nupkgs folder
 # as a package source ("godot-editor"). On a Linux runner that path doesn't exist and NuGet hard-fails
-# on a missing local source — and the MSBuild SDK resolver for `Sdk="Godot.NET.Sdk/4.6.3"` reads the
+# on a missing local source â€” and the MSBuild SDK resolver for `Sdk="Godot.NET.Sdk/4.6.3"` reads the
 # same config. Every job therefore removes that source FIRST. Godot.NET.Sdk 4.6.3 / GodotSharp 4.6.3
 # are published on nuget.org (verified 2026-06), so everything restores from there.
 
@@ -39,9 +39,9 @@ jobs:
     name: Tests (libraries, no Godot)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "9.0.x" # global.json: 8.0.0 + rollForward latestMajor (matches the dev machine)
 
@@ -59,7 +59,7 @@ jobs:
           --results-directory TestResults
 
       - name: Upload test results
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         if: always()
         with:
           name: test-results
@@ -69,9 +69,9 @@ jobs:
     name: Build Godot host (nuget.org SDK restore)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: "9.0.x"
 

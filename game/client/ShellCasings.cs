@@ -247,7 +247,11 @@ public sealed partial class ShellCasings : Node3D
 
         public override void _PhysicsProcess(double delta)
         {
-            float dt = (float)delta;
+            // #30 slowmo/pause: the casing ballistic sim is Base CSQC (cl.time-driven) — scale by the client
+            // render-time factor so casings freeze mid-air at slowmo 0 and tumble slow at fractional slowmo.
+            float dt = XonoticGodot.Game.Client.ClientRenderTime.ScaleDelta((float)delta);
+            if (dt <= 0f)
+                return; // paused — hold age, position and sound state exactly where they are
             _age += dt;
             if (_age >= Lifetime)
             {

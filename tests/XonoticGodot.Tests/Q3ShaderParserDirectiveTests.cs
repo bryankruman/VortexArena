@@ -120,6 +120,41 @@ public class Q3ShaderParserDirectiveTests
     }
 
     [Fact]
+    public void AnimMap_MortarSightStage_ParsesFramesFpsAndWave()
+    {
+        // Pin the EXACT Base scripts/gl.shader grenadelauncher_sight stage (playtest r14 D): a 3-frame
+        // animMap at 1 fps plus the rgbGen sawtooth blink. ShaderCompiler.NeedsAnimatedShader keys the
+        // animated (cycling + pulsing) path off Frames.Length > 1 and the Wave — this is the data contract.
+        ShaderStage s = StageOf(
+            "animMap 1 textures/glsight01.tga textures/glsight02.tga textures/glsight03.tga\n" +
+            "blendFunc GL_ONE GL_ONE\n" +
+            "rgbGen wave sawtooth 0 1 0 10");
+        Assert.NotNull(s.AnimMap);
+        Assert.Equal(1f, s.AnimMap!.Fps);
+        Assert.False(s.AnimMap.Clamp);
+        Assert.Equal(
+            new[] { "textures/glsight01.tga", "textures/glsight02.tga", "textures/glsight03.tga" },
+            s.AnimMap.Frames);
+        Assert.Equal(ColorGenType.Wave, s.RgbGen!.Type);
+        Assert.Equal(WaveFunc.Sawtooth, s.RgbGen.Wave!.Func);
+        Assert.Equal(0f, s.RgbGen.Wave.Base);
+        Assert.Equal(1f, s.RgbGen.Wave.Amplitude);
+        Assert.Equal(0f, s.RgbGen.Wave.Phase);
+        Assert.Equal(10f, s.RgbGen.Wave.Frequency);
+        Assert.Equal(BlendMode.Add, s.BlendMode);
+    }
+
+    [Fact]
+    public void AnimClampMap_SetsClampFlag()
+    {
+        ShaderStage s = StageOf("animClampMap 4 a.tga b.tga");
+        Assert.NotNull(s.AnimMap);
+        Assert.True(s.AnimMap!.Clamp);
+        Assert.Equal(4f, s.AnimMap.Fps);
+        Assert.Equal(2, s.AnimMap.Frames.Length);
+    }
+
+    [Fact]
     public void TcModScroll_AndStretch_Parse()
     {
         ShaderStage s = StageOf("map x.tga\ntcMod scroll 0.1 -0.2\ntcMod stretch sin 0.8 0.1 0 0.5");

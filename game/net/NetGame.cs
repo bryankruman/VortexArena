@@ -339,7 +339,7 @@ public sealed partial class NetGame : Node3D
 
     // Per-frame (variable-dt) input mode — cl_movement_perframe (DP-style: one command per rendered frame stamped
     // with the real frame dt, the server drains all pending commands that tick). DEFAULT 1 (on, user-approved per
-    // PERFORMANCE_REPORT.md B2); `set cl_movement_perframe 0` = the legacy fixed 1/72 s cadence above (kept for
+    // planning/PERFORMANCE_REPORT.md B2); `set cl_movement_perframe 0` = the legacy fixed 1/72 s cadence above (kept for
     // parity testing). Read live from the shared cvar store each frame so it A/B-toggles in-session.
     private bool _perFrameInput;
     // The DeltaTime stamped onto the next sampled InputCommand. Always the fixed TicRate now — BOTH input modes
@@ -1830,11 +1830,16 @@ public sealed partial class NetGame : Node3D
         bool hidden = id < 0 || id >= XonoticGodot.Common.Gameplay.Weapons.Count
             || _client.Health <= 0 || _view.ChaseActive || _client.MatchIntermission;
 
-        // Team colormap + per-weapon glowmod (Base viewmodel_draw 302-321): tint the held gun to the local
-        // player's team color and glow with it. Applied every frame (cheap — SetTeamGlow early-returns when the
-        // color is unchanged) so a mid-match team swap / charge change repaints. Resolved from the SAME local-team
-        // source the shownames/scoreboard use (listen-server Player.Team, else the networked scoreboard row).
-        UpdateViewModelTeamGlow();
+        // [#43] Push the local profile color (_cl_color) to the server: listen host applies it directly
+        // (QC SV_ChangeTeam — FFA-only recolor), a pure client sends the `color` command. Change-gated.
+        PushLocalPlayerColor();
+
+        // Player colormap + per-weapon glowmod (Base viewmodel_draw 302-321): tint the held gun to the local
+        // player's packed shirt/pants colors — the FFA profile color, or the team color in teamplay (the server
+        // forces clientcolors there) — and glow with the pants palette / wr_glow. Applied every frame (cheap —
+        // SetPlayerColors early-returns when the color is unchanged) so a mid-match team swap / recolor / charge
+        // change repaints.
+        UpdateViewModelColors();
 
         // Reload animation (Base wframe WFRAME_RELOAD → anim_reload). The port does not network the wframe temp
         // entity, but the reload state IS observable from the already-networked clip counter: clip_load == -1 is the
@@ -1846,6 +1851,11 @@ public sealed partial class NetGame : Node3D
         // already host-derived, but a pure client / a spectatee has no LocalServerPlayer slot — so drive the local
         // viewmodel's fire/raise/drop/reload clip from the networked WepentView.ViewmodelFrame selector instead.
         UpdateViewModelAnimFromNet();
+
+        // (#41) Lightgrid model light: DP lights every model from the BSP lightgrid at the entity origin
+        // (Mod_Q3BSP_LightPoint) — the port lit everything with one global sun + flat ambient, so guns read
+        // dull/gray indoors. Sample the grid at the camera and modulate the viewmodel's skin-shader tint.
+        UpdateViewModelLightgrid();
 
         // Per-weapon wr_viewmodel override (Base viewmodel_draw 324-327: newname = wep.wr_viewmodel(wep, this)).
         // Only Tuba overrides it, swapping its v_ model by the currently played instrument (tuba/akordeon/
@@ -1886,30 +1896,39 @@ public sealed partial class NetGame : Node3D
     /// <summary>
     /// Resolve + push the held view-model's team colormap tint + glowmod (Base <c>viewmodel_draw</c> 302-321 →
     /// <c>weaponentity_glowmod</c>, all.qh:402). The glow is the per-weapon <c>wr_glow</c> override (Vortex /
-    /// Overkill-Nex charge glow) when the weapon supplies one, else the team's palette color
-    /// (<c>colormapPaletteColor(c &amp; 0x0F, true)</c> — what <see cref="ModelTint.TeamColor"/> resolves). FFA / no
-    /// team leaves the gun untinted with its native glow. Local team comes from the same source the shownames /
-    /// scoreboard use (<see cref="LocalShownamesTeam"/>). Cheap to call every frame — <see cref="ViewModel.SetTeamGlow"/>
-    /// early-returns when nothing changed.
+    /// Overkill-Nex charge glow) when the weapon supplies one, else the pants palette color
+    /// (<c>colormapPaletteColor(c &amp; 0x0F, true)</c>). [#43] The colors are the watched player's packed
+    /// <c>clientcolors</c> — Base <c>entcs_GetClientColors(current_player)</c>: the FFA profile color, or the
+    /// team color in teamplay (the server forces clientcolors to <c>17*teamcode</c> there, so team display falls
+    /// out with no special case). Colorless (never networked / no player) leaves the gun untinted with its
+    /// native glow. Cheap to call every frame — <see cref="ViewModel.SetPlayerColors"/> early-returns when
+    /// nothing changed.
     /// </summary>
-    private void UpdateViewModelTeamGlow()
+    private void UpdateViewModelColors()
     {
         if (_viewModel is null || !GodotObject.IsInstanceValid(_viewModel))
             return;
 
-        int team = LocalShownamesTeam();             // 1=red 2=blue 3=yellow 4=pink, 0/None = FFA
-        Color teamColor = XonoticGodot.Game.Client.ModelTint.TeamColor(team, out bool hasTeam);
-        if (!hasTeam)
+        int colors = LocalViewedClientColors();
+        if (colors == 0)
         {
-            _viewModel.SetTeamGlow(XonoticGodot.Game.Client.ModelTint.White,
-                XonoticGodot.Game.Client.ModelTint.White, false);
+            _viewModel.SetPlayerColors(XonoticGodot.Game.Client.ModelTint.White,
+                XonoticGodot.Game.Client.ModelTint.Black, XonoticGodot.Game.Client.ModelTint.Black, false);
             return;
         }
 
-        // Per-weapon wr_glow override: Vortex (and Overkill-Nex) glow with the charge level, fading from the team
-        // color (vortex_glowcolor: f*colors*0.3 below animlimit, +f*colors*0.7 above). Default weapons return
-        // '0 0 0' → fall back to the team palette color (weaponentity_glowmod's `if (!g) g = palette`).
-        Color glow = teamColor;
+        float paletteTime = XonoticGodot.Common.Services.Api.Services?.Clock?.Time ?? 0f;
+        (float sr, float sg, float sb) = XonoticGodot.Engine.Simulation.CsqcModelAppearance.ColormapPaletteColor(
+            (colors >> 4) & 0x0F, isPants: false, paletteTime);
+        (float pr, float pg, float pb) = XonoticGodot.Engine.Simulation.CsqcModelAppearance.ColormapPaletteColor(
+            colors & 0x0F, isPants: true, paletteTime);
+        var shirt = new Color(sr, sg, sb);
+        var pants = new Color(pr, pg, pb);
+
+        // Per-weapon wr_glow override: Vortex (and Overkill-Nex) glow with the charge level, fading from the
+        // player's colors (vortex_glowcolor: f*colors*0.3 below animlimit, +f*colors*0.7 above). Default weapons
+        // return '0 0 0' → fall back to the pants palette color (weaponentity_glowmod's `if (!g) g = palette`).
+        Color glow = pants;
         int wid = _client?.ActiveWeaponId ?? -1;
         if (wid >= 0 && wid < XonoticGodot.Common.Gameplay.Weapons.Count)
         {
@@ -1938,15 +1957,67 @@ public sealed partial class NetGame : Node3D
 
                 if (charge is { } c)
                 {
-                    glow = VortexGlowColor(teamColor, Mathf.Max(0.25f, c));
+                    glow = VortexGlowColor(pants, Mathf.Max(0.25f, c));
                     if (glow.R + glow.G + glow.B <= 0.001f)
-                        glow = teamColor; // charge disabled → fall back to team color
+                        glow = pants; // charge disabled → fall back to the pants palette color
                 }
             }
         }
 
-        _viewModel.SetTeamGlow(glow, teamColor, true);
+        _viewModel.SetPlayerColors(glow, shirt, pants, true);
     }
+
+    /// <summary>
+    /// [#43] The packed <c>clientcolors</c> of the player this client is LOOKING THROUGH (Base
+    /// <c>entcs_GetClientColors(current_player)</c>): the listen host reads its live slot, a pure client /
+    /// a followed spectatee reads the watched player's networked <see cref="XonoticGodot.Net.NetEntityState.Colors"/>.
+    /// 0 = no colors resolved.
+    /// </summary>
+    private int LocalViewedClientColors()
+    {
+        int specNet = _client?.SpectatingNetId ?? 0;
+        if (LocalServerPlayer is { } p && specNet == 0)
+            return p.ClientColors & 0xFF;
+        int watched = specNet != 0 ? specNet : (_client?.LocalNetId ?? 0);
+        if (watched != 0 && _client != null && _client.TryGetRemoteState(watched, out var rs))
+            return rs.Colors & 0xFF;
+        return 0;
+    }
+
+    /// <summary>
+    /// [#43] Push the local profile color (<c>_cl_color</c>, packed <c>16*shirt+pants</c> — what the
+    /// multiplayer-profile palette grids edit) to the server, Base's engine-side color userinfo: the listen
+    /// host applies it directly through <c>SV_ChangeTeam</c> (<see cref="XonoticGodot.Server.Teamplay.ChangeTeam"/>
+    /// — a NO-OP in teamplay, where the team owns the colors), a pure client sends the <c>color</c> client
+    /// command (same server sink). Change-gated so it costs one cvar read per frame; an unset/0 cvar pushes
+    /// nothing (keeps the colorless default look rather than forcing white/white).
+    /// </summary>
+    private void PushLocalPlayerColor()
+    {
+        string s = MenuState.Cvars.GetString("_cl_color");
+        int want = string.IsNullOrWhiteSpace(s) ? 0 : (int)MenuState.Cvars.GetFloat("_cl_color") & 0xFF;
+        if (want == _lastPushedClColor)
+            return;
+        if (want == 0 && _lastPushedClColor == int.MinValue)
+        {
+            _lastPushedClColor = 0; // never chosen — leave the server default alone
+            return;
+        }
+
+        if (_serverWorld is { } w && LocalServerPlayer is { } p)
+        {
+            w.Teamplay.ChangeTeam(p, want); // QC SV_ChangeTeam: recolors in FFA, ignored in teamplay
+            _lastPushedClColor = want;
+        }
+        else if (_client is { Accepted: true } c)
+        {
+            c.SendStringCommand($"color {want}");
+            _lastPushedClColor = want;
+        }
+        // Neither ready yet (connecting) → try again next frame.
+    }
+
+    private int _lastPushedClColor = int.MinValue;
 
     /// <summary>
     /// Drive the first-person reload animation from the networked clip state — the port's stand-in for Base's
@@ -1968,10 +2039,66 @@ public sealed partial class NetGame : Node3D
             WeaponSlotState st = p.WeaponState(new WeaponSlot(0));
             // clip_load == -1 = QC reload-in-progress sentinel; clip_size>0 guards non-reloadable weapons (clip 0).
             reloading = st.ClipSize > 0 && st.ClipLoad < 0;
+
+            // (playtest r8 #3) FIRE clip, listen-host path: the networked ViewmodelFrame selector is deliberately
+            // NOT consumed on a listen host (UpdateViewModelAnimFromNet returns early — "the host path owns it"),
+            // but this host path only ever derived RELOAD, so the local player's fire animation NEVER triggered
+            // (the muzzle flash is the separate predicted path). Base restarts the clip per shot
+            // (weapon_thinkf(WFRAME_FIRE1) on every attack) — the faithful per-shot edge on the live slot is the
+            // ATTACK_FINISHED bump: every shot pushes it forward. An int-frame rising edge can't re-trigger
+            // during sustained fire; the AttackFinished VALUE change can.
+            float af = st.AttackFinished;
+            if (!reloading && af > _viewmodelLastAttackFinished && _serverWorld is { } sw && af > (float)sw.Time)
+                _viewModel.PlayFireClip();
+            else if (_serverWorld is { } sw2 && af <= (float)sw2.Time)
+                // Attack window closed (refire expired, no new shot): re-assert idle like Base's weapon state
+                // machine does explicitly (w_ready → weapon_thinkf(WFRAME_IDLE)). Needed because SOME fire
+                // clips are authored LOOPING (h_hagar fire loop=1) — the end-of-clip idle recovery never
+                // triggers on those and the gun pumped forever after the last rocket (playtest r12).
+                _viewModel.StopLoopingFire();
+            _viewmodelLastAttackFinished = af;
         }
         if (reloading && !_viewmodelReloading)
             _viewModel.PlayReload();
         _viewmodelReloading = reloading;
+    }
+
+    /// <summary>Last seen slot-0 ATTACK_FINISHED — the per-shot fire-anim edge for the listen host (see
+    /// <see cref="UpdateViewModelReloadAnim"/>). Reset on equip is unnecessary: a stale higher value only
+    /// suppresses until the first shot pushes past it.</summary>
+    private float _viewmodelLastAttackFinished;
+
+    /// <summary>
+    /// (#41, upgraded r14 B/C) Sample the map's baked lightgrid at the camera and drive the viewmodel's
+    /// DP-style grid shading — Mod_Q3BSP_LightPoint samples per entity; the viewmodel is what the player
+    /// stares at, so it goes first (players/items are the documented follow-up). The full sample is pushed
+    /// (ambient RGB + directed RGB + the baked light DIRECTION) and the skin shader reproduces DP's
+    /// MODE_LIGHTDIRECTION formula per pixel — position-varying colored shading structure instead of the
+    /// r13 flat modulate. Scale is DP's ABSOLUTE 1/128 (Mod_Q3BSP_LightPoint <c>stylescale</c>: grid byte
+    /// 128 = 1.0, above overbrightens — with the r_model_light_gamma response this reads like DP, where
+    /// the r13 self-calibrating normalization was a crutch for the linear pipeline compressing it), tunable
+    /// via <c>r_model_light_scale</c>. No grid on the map → the PBR + fill-light fallback.
+    /// </summary>
+    private void UpdateViewModelLightgrid()
+    {
+        if (_viewModel is null || !GodotObject.IsInstanceValid(_viewModel))
+            return;
+        XonoticGodot.Formats.Bsp.LightGridData? grid = _bsp?.LightGrid;
+        if (grid is null || _camera is null || !GodotObject.IsInstanceValid(_camera))
+        {
+            _viewModel.SetGridLight(false, Vector3.One, Vector3.Zero, Vector3.Up);
+            return;
+        }
+        System.Numerics.Vector3 eye = Coords.ToQuake(_camera.GlobalPosition);
+        grid.Sample(eye, out System.Numerics.Vector3 amb, out System.Numerics.Vector3 dir, out System.Numerics.Vector3 dirn);
+        string scaleCvar = MenuState.Cvars.GetString("r_model_light_scale");
+        float userScale = string.IsNullOrWhiteSpace(scaleCvar) ? 1f : MenuState.Cvars.GetFloat("r_model_light_scale");
+        float scale = (userScale <= 0f ? 1f : userScale) / 128f;
+        var ambient = new Vector3(amb.X, amb.Y, amb.Z) * scale;
+        var diffuse = new Vector3(dir.X, dir.Y, dir.Z) * scale;
+        // The sample direction is QUAKE axes; the shader wants GODOT world axes (it view-transforms per pixel).
+        Vector3 dirG = dirn.LengthSquared() > 1e-6f ? Coords.ToGodot(dirn).Normalized() : Vector3.Up;
+        _viewModel.SetGridLight(true, ambient, diffuse, dirG);
     }
 
     /// <summary>
@@ -2577,6 +2704,9 @@ public sealed partial class NetGame : Node3D
             _serverWorld.Services.Cvars.Set("slowmo", _localPauseSlowmo);
             _localPauseSlowmo = null;
         }
+        // #30: same guard for the published client render-time scale — a teardown mid-pause/slowmo must not
+        // leave the menu / the next match's visuals frozen at the old factor.
+        XonoticGodot.Game.Client.ClientRenderTime.Scale = 1f;
 
         if (_client is not null)
         {
@@ -2645,7 +2775,7 @@ public sealed partial class NetGame : Node3D
     private bool _netClockSmoothCv = true; // cl_netclock_smooth: gradual render-clock creep vs hard rebase (#2)
     private bool _netInputTraceCv;         // net_input_trace: dormant net input→movement pipeline diagnostic (see _Process)
     private int _netTraceTick;             // throttle counter for the net_input_trace log
-    private bool _hitchHoldCv = true;      // cl_movement_hitch_hold: Fix B post-hitch stall-aware reconcile (see TROUBLESHOOTING.md)
+    private bool _hitchHoldCv = true;      // cl_movement_hitch_hold: Fix B post-hitch stall-aware reconcile (see docs/TROUBLESHOOTING.md)
     private bool _immediateButtonsCv = true; // cl_netimmediatebuttons: send fire/jump/impulse immediately past the rate gate (DP)
 
     private void EnsureProcessCvarCache()
@@ -2710,6 +2840,11 @@ public sealed partial class NetGame : Node3D
         // NOTE: the server is still driven by the RAW dt below (it scales internally via TimeScale) — only the
         // client accumulators are pre-scaled here.
         float slowmo = ResolveTimeScale();
+        // #30: publish the factor for every client-side visual animation driver (viewmodel sway/clips, casings,
+        // gibs, entity/player animators, ambient emitters, faithful particles) — the port of DP scaling cl.time
+        // (which ALL CSQC animation reads) by movevars_timescale, so a slowmo/paused sim slows/freezes the
+        // client visuals in lockstep instead of leaving them running on wall clock.
+        XonoticGodot.Game.Client.ClientRenderTime.Scale = slowmo;
 
         // Arm the predicted-warpzone budget: ONE predicted crossing per render frame, across every reconcile
         // replay chain this frame runs (see TriggerTouch.PredictedWarpBudget — kills the replay round-trip
@@ -2889,7 +3024,7 @@ public sealed partial class NetGame : Node3D
         // GC / heavy map streaming) so the reconciler HOLDS a moderate post-stall correction instead of snapping the
         // camera back (see ClientNet.HandleSnapshot). Gated by a cvar because it's defensive, not the cause of any
         // observed bug (the spawn-stutter was the ENet throttle) — `set cl_movement_hitch_hold 0` disables it.
-        // Rationale + risks: TROUBLESHOOTING.md.
+        // Rationale + risks: docs/TROUBLESHOOTING.md.
         _client.RecentHitch = _hitchHoldCv && dt > HitchFrameSeconds;
         _client.Poll();
 
@@ -2980,7 +3115,7 @@ public sealed partial class NetGame : Node3D
             // drained into a movement batch; enet throttle (0..32 — gates UNRELIABLE sends, a low value silently
             // drops input) / loss / rtt; pred vs srvOrg = predicted vs authoritative origin (a widening gap = the
             // predictor running ahead of a starved/lagging server); recon = reconcile error (a steady nonzero is a
-            // rubberband). Reading guide + failure signatures: NET-DEBUGGING.md. Fully off when the cvar is 0
+            // rubberband). Reading guide + failure signatures: docs/NET-DEBUGGING.md. Fully off when the cvar is 0
             // (the counters it reads are single increments on the hot path — negligible — so they stay always-on).
             if (_netInputTraceCv && (_netTraceTick++ & 15) == 0)
             {
@@ -5397,8 +5532,11 @@ public sealed partial class NetGame : Node3D
             // Instant local feedback: begin lowering the gun the moment a weapon-SELECT key is pressed, so the
             // switch starts visibly the same frame instead of waiting for the server round-trip (EquipNetworkedWeapon
             // then raises the new gun when the change confirms). Only weapon-select impulses (group/next/prev/last/
-            // best/by-id) — NOT drop (17) or reload (20). Auto-recovers if the server denies the switch.
-            if (IsWeaponSwitchImpulse(imp) && _viewModel is not null && GodotObject.IsInstanceValid(_viewModel))
+            // best/by-id) — NOT drop (17) or reload (20) — and only when the switch could actually succeed
+            // (SwitchCouldSucceedNow, playtest #31): Base plays NO animation on a denied switch, just the
+            // "weapons/unavailable" sound. Auto-recovers if the server still denies (pure-client fallback).
+            if (IsWeaponSwitchImpulse(imp) && SwitchCouldSucceedNow(imp)
+                && _viewModel is not null && GodotObject.IsInstanceValid(_viewModel))
                 _viewModel.PlayHolster();
             return;
         }
@@ -5448,6 +5586,64 @@ public sealed partial class NetGame : Node3D
     /// </summary>
     private static bool IsWeaponSwitchImpulse(int imp)
         => (imp >= 1 && imp <= 14) || (imp >= 230 && imp <= 253);
+
+    /// <summary>
+    /// Whether a weapon-select impulse could actually change the weapon — the gate for the keypress-predicted
+    /// holster (playtest #31). Base plays NO switch animation on a denied switch: <c>W_SwitchWeapon</c> leaves
+    /// <c>m_switchweapon</c> untouched when <c>client_hasweapon(…, andammo, complain)</c> fails (selection.qc:274),
+    /// so the weaponsystem state machine never raises/drops — you only hear the "weapons/unavailable" denial
+    /// (which the port's server path already plays). The old predict-always holster lowered the gun on EVERY
+    /// select press and recovered on the grace timer — a phantom switch animation when nothing could switch.
+    /// Mirrors the server check with the same shared logic (<see cref="Inventory.ClientHasWeapon"/>,
+    /// complain: false = silent): group keys test their impulse group, by-id tests the exact weapon (plus its
+    /// group when <c>cl_weapon_switch_fallback_to_impulse</c> is on, matching <c>ByIdHandle</c>), next/prev/last/
+    /// best test for any other usable weapon ("last"/"best" can rarely still deny with this true — e.g. best ==
+    /// current — a small over-predict the holster grace recovers). Pure remote client (no
+    /// <see cref="LocalServerPlayer"/>): keep the old predict-always behavior — the same graceful-degradation
+    /// policy as the fire-prediction ammo gate (<see cref="HasAmmoNow"/>).
+    /// </summary>
+    private bool SwitchCouldSucceedNow(int imp)
+    {
+        if (LocalServerPlayer is not { } p || _client is null)
+            return true;
+        int currentId = _client.ActiveWeaponId;
+
+        if (imp >= 230) // weapon_byid_N — exact target known
+        {
+            Weapon? w = WeaponOrder.WeaponByIdIndex(imp - 230);
+            if (w is null)
+                return false; // out of range → QC WEP_Null no-op, nothing to animate
+            if (w.RegistryId != currentId && Inventory.ClientHasWeapon(p, w, andAmmo: true, complain: false))
+                return true;
+            bool fallback = Api.Services is not null
+                && Api.Cvars.GetFloat("cl_weapon_switch_fallback_to_impulse") != 0f;
+            return fallback && AnyOtherUsableWeapon(p, currentId, w.Impulse);
+        }
+
+        if (imp >= 1 && imp <= 9)
+            return AnyOtherUsableWeapon(p, currentId, imp);   // weapon_group_1..9
+        if (imp == 14)
+            return AnyOtherUsableWeapon(p, currentId, 0);     // weapon_group_0
+        return AnyOtherUsableWeapon(p, currentId, group: -1); // next/prev/last/best (10..13)
+    }
+
+    /// <summary>A usable (owned + ammo, QC <c>client_hasweapon</c>) weapon other than the current one exists —
+    /// optionally restricted to one impulse group (<paramref name="group"/> &lt; 0 = any).</summary>
+    private static bool AnyOtherUsableWeapon(Player p, int currentId, int group)
+    {
+        System.Collections.Generic.IReadOnlyList<Weapon> all = Weapons.All;
+        for (int i = 0; i < all.Count; i++)
+        {
+            Weapon w = all[i];
+            if (w.RegistryId == currentId)
+                continue;
+            if (group >= 0 && w.Impulse != group)
+                continue;
+            if (Inventory.ClientHasWeapon(p, w, andAmmo: true, complain: false))
+                return true;
+        }
+        return false;
+    }
 
     /// <summary>The live look sensitivity (DP `sensitivity` cvar) folded with the base feel — the value the
     /// input-settings dialog writes. Falls back to the previous hardcoded feel when the cvar is unset.</summary>

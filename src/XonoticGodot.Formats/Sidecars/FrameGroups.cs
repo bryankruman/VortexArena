@@ -57,7 +57,13 @@ public static class FrameGroups
     ///   <item><c>fps</c> defaults to 20, <c>loop</c> defaults to true; both optional.</item>
     ///   <item>A 5th token, if present, is the clip name. Any further tokens are ignored (DP "eats" them).</item>
     ///   <item><c>//</c> begins a comment that runs to end of line (DP's <c>COM_ParseToken_Simple</c> behavior);
-    ///         this is how Xonotic annotates each clip. <c>/* */</c> is NOT a comment in this format.</item>
+    ///         this is how Xonotic annotates each clip.</item>
+    ///   <item><c>/* */</c> block comments ARE stripped, and a line whose first token is not a number is
+    ///         skipped: the DP-generated DPM weapon sidecars (h_rl/h_gl/h_electro/…) open with a
+    ///         <c>/* Generated framegroups file … */</c> prose header. The old strict-line reading parsed those
+    ///         prose lines as data — two junk groups (whose 5th words, "h_rl"/"simulate", became clip NAMES)
+    ///         that shifted the real fire/fire2/idle/reload slots to indexes 2..5 and defeated the nameless
+    ///         4-slot weapon contract: no DPM viewmodel ever animated (playtest r11).</item>
     ///   <item>Blank lines are ignored.</item>
     /// </list>
     /// Note: DP clamps <c>firstframe</c>/<c>framecount</c> against the owning model's pose count at store time.
@@ -70,6 +76,8 @@ public static class FrameGroups
         if (string.IsNullOrEmpty(text))
             return result;
 
+        text = StripBlockComments(text);
+
         foreach (string rawLine in SplitLines(text))
         {
             string line = StripComment(rawLine).Trim();
@@ -79,6 +87,12 @@ public static class FrameGroups
             string[] tok = line.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries);
             // REQUIRED: firstframe + framecount. A lone first number is an incomplete line -> skip.
             if (tok.Length < 2)
+                continue;
+
+            // A data row starts with a NUMBER. Prose (a stray header line outside a /* */ block) is skipped
+            // instead of atoi-ing to zeros and minting a phantom group.
+            char c0 = tok[0][0];
+            if (c0 != '-' && (c0 < '0' || c0 > '9'))
                 continue;
 
             int firstFrame = ParseInt(tok[0]);
@@ -105,11 +119,33 @@ public static class FrameGroups
         return result;
     }
 
-    /// <summary>Removes a trailing <c>//</c> line comment (the only comment style this format supports).</summary>
+    /// <summary>Removes a trailing <c>//</c> line comment.</summary>
     private static string StripComment(string line)
     {
         int idx = line.IndexOf("//", StringComparison.Ordinal);
         return idx < 0 ? line : line.Substring(0, idx);
+    }
+
+    /// <summary>Removes <c>/* … */</c> block comments (the DP-generated DPM sidecars' prose header). An
+    /// unterminated block runs to end of text, like C.</summary>
+    private static string StripBlockComments(string text)
+    {
+        int open = text.IndexOf("/*", StringComparison.Ordinal);
+        if (open < 0)
+            return text;
+        var sb = new System.Text.StringBuilder(text.Length);
+        int pos = 0;
+        while (open >= 0)
+        {
+            sb.Append(text, pos, open - pos);
+            int close = text.IndexOf("*/", open + 2, StringComparison.Ordinal);
+            if (close < 0)
+                return sb.ToString(); // unterminated → drop the rest
+            pos = close + 2;
+            open = text.IndexOf("/*", pos, StringComparison.Ordinal);
+        }
+        sb.Append(text, pos, text.Length - pos);
+        return sb.ToString();
     }
 
     private static IEnumerable<string> SplitLines(string text)

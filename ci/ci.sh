@@ -70,7 +70,7 @@ step "build + test the launcher (launcher/)"
 dotnet build "$ROOT/launcher/XonoticGodot.Launcher.Tests/XonoticGodot.Launcher.Tests.csproj" -c Debug --nologo
 dotnet test  "$ROOT/launcher/XonoticGodot.Launcher.Tests/XonoticGodot.Launcher.Tests.csproj" -c Debug --no-build --nologo
 
-# ── 4. headless boot smoke (RUNNING.md 'Run headless') ────────────────────────
+# ── 4. headless boot smoke (docs/RUNNING.md 'Run headless') ────────────────────────
 if $do_smoke; then
     if [ -x "$GODOT" ] || [ -f "$GODOT" ]; then
         step "headless smoke (--quit-after 200)"
@@ -82,7 +82,7 @@ if $do_smoke; then
         [ "${hard_errors:-1}" -eq 0 ] || { echo "--- $log ---"; tail -40 "$log"; fail "headless smoke had $hard_errors hard error(s)"; }
         rm -f "$log"
 
-        # Dedicated-server smoke (RUNNING.md 'Dedicated server'): the headless listen server must load the
+        # Dedicated-server smoke (docs/RUNNING.md 'Dedicated server'): the headless listen server must load the
         # map, fill bots (waypoints load on the first frame with bots), and accept the self-connect — this
         # exact path regressed silently once (a FramePostDraw await that never fires headless). Needs assets.
         if [ -d "$ROOT/assets/data" ]; then
@@ -111,7 +111,7 @@ fi
 
 # ── 5. Visual QA (headless assertions only) ───────────────────────────────────
 # T5 (Wave A5). Godot's headless renderer (dummy_video) renders NOTHING, so NO rendered-frame / pixel
-# correctness can run in CI — see tools/visual-qa.sh + RUNNING.md "Visual QA" for the WINDOWED manual half.
+# correctness can run in CI — see tools/visual-qa.sh + docs/RUNNING.md "Visual QA" for the WINDOWED manual half.
 # What CI *can* assert is structural: every stock map parses with renderable+collidable geometry, every model
 # loads with a valid bone parent-chain; IQM models are additionally validated for a non-singular bind pose (unit
 # bind quat + non-zero scales), while DPM and MD3 deliberately PERMIT singular/non-unit-scale content per the
@@ -125,7 +125,7 @@ dotnet test "$ROOT/tests/XonoticGodot.Tests/XonoticGodot.Tests.csproj" -c Debug 
     --filter "FullyQualifiedName~VisualQa" > "$vqa_log" 2>&1 || { cat "$vqa_log"; rm -f "$vqa_log"; fail "Visual QA headless assertions failed"; }
 grep -E "Passed!|Failed!|Passed:|Failed:|Skipped:|Total tests" "$vqa_log" || true
 if [ -d "$ROOT/assets/data" ]; then
-    echo "Visual QA (headless): asserted load + structure for every stock map/model/shader; pixel correctness is the WINDOWED tools/visual-qa.sh checklist (RUNNING.md)."
+    echo "Visual QA (headless): asserted load + structure for every stock map/model/shader; pixel correctness is the WINDOWED tools/visual-qa.sh checklist (docs/RUNNING.md)."
 else
     echo "NOTE: assets/data missing — VisualQa theories self-skipped (run download-assets.sh for the full map/model/shader sweep)."
 fi

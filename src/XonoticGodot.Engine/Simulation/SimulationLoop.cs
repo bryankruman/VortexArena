@@ -251,15 +251,12 @@ public sealed class SimulationLoop
         Time += FrameTime;
     }
 
-    private bool IsClient(Entity e)
-    {
-        if ((e.Flags & EntFlags.Client) != 0) return true;
-        // also treat anything in the Clients list as a client
-        var clients = Clients;
-        for (int i = 0; i < clients.Count; i++)
-            if (clients[i] == e) return true;
-        return false;
-    }
+    // Every entity in the Clients list carries EntFlags.Client — the flag is set with the list insert and cleared
+    // with the removal, both atomically in ClientManager (RegisterClient sets Flags|=Client then Clients.Add;
+    // Disconnect does Clients.Remove then Flags&=~Client, in one synchronous method with no tick between). So the
+    // flag test alone is exact. The old fallback `Clients` scan ran O(clients) for EVERY non-client entity every
+    // tick (sim.integrate) and was provably dead — an in-Clients entity always passed the flag check first.
+    private bool IsClient(Entity e) => (e.Flags & EntFlags.Client) != 0;
 
     // =============================================================================================
     // SV_RunThink (sv_phys.c:1015) — fire the entity's think when due; allow multiple thinks/frame.

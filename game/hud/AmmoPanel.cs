@@ -120,6 +120,47 @@ public partial class AmmoPanel : HudPanel
         return active is not null ? WeaponHud.AmmoType(active) : ResourceType.None;
     }
 
+    // (R5) Change-gate: the drawn output is a pure function of the ammo pool counts, the active pool, the
+    // infinite-ammo flag, onlycurrent, the alive (hide_ondeath) state, the scoreboard fade alpha, and the panel
+    // size. Snapshot those (all cheap, no canvas work) and skip the per-frame DrawPanel re-record when unchanged.
+    private int _lShells = -1, _lBullets = -1, _lRockets = -1, _lCells = -1, _lFuel = -1, _lCurrent = -2, _lAlpha = -1, _lW = -1, _lH = -1;
+    private bool _lInfinite, _lOnlyCurrent, _lAlive;
+
+    public override bool NeedsRedraw()
+    {
+        if (Player is null) return false;
+        bool alive = Player.GetResource(ResourceType.Health) > 0f;
+        if (!alive)
+        {
+            // hide_ondeath draws nothing; redraw once on the alive→dead edge to clear the last frame, then idle.
+            if (_lAlive) { _lAlive = false; return true; }
+            return false;
+        }
+
+        int shells = AmmoInt(ResourceType.Shells), bullets = AmmoInt(ResourceType.Bullets),
+            rockets = AmmoInt(ResourceType.Rockets), cells = AmmoInt(ResourceType.Cells), fuel = AmmoInt(ResourceType.Fuel);
+        int current = (int)ActiveAmmoType();
+        bool infinite = Player.UnlimitedAmmo;
+        bool onlyCurrent = OnlyCurrent || CvarBool("onlycurrent");
+        int alpha = (int)(LiveFgAlpha * 255f);
+        int w = (int)Size2.X, h = (int)Size2.Y;
+
+        if (alive == _lAlive && shells == _lShells && bullets == _lBullets && rockets == _lRockets
+            && cells == _lCells && fuel == _lFuel && current == _lCurrent && infinite == _lInfinite
+            && onlyCurrent == _lOnlyCurrent && alpha == _lAlpha && w == _lW && h == _lH)
+            return false;
+
+        _lAlive = alive; _lShells = shells; _lBullets = bullets; _lRockets = rockets; _lCells = cells; _lFuel = fuel;
+        _lCurrent = current; _lInfinite = infinite; _lOnlyCurrent = onlyCurrent; _lAlpha = alpha; _lW = w; _lH = h;
+        return true;
+    }
+
+    private int AmmoInt(ResourceType res)
+    {
+        float raw = Player!.GetResource(res);
+        return float.IsFinite(raw) ? Mathf.RoundToInt(raw) : 0;
+    }
+
     protected override void DrawPanel()
     {
         if (Player is null) return;

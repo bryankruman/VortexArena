@@ -65,8 +65,35 @@ internal readonly struct ViewModelEquip
             // Rig classified full-model but failed to build — fall through to the v_ path as a last resort.
         }
 
-        // INVISIBLE-HAND (IQM rigs with a weapon bone) OR a missing/unbuildable rig: render the v_ model,
-        // attached to the rig's weapon-attach bone (position-only — see WeaponAttachTransform).
+        // INVISIBLE-HAND (IQM rigs with a weapon bone): render the h_ RIG ITSELF (its only mesh is a nodraw
+        // plane — a pure animated skeleton) and ride the v_ visual model on the LIVE `weapon` bone via a
+        // BoneAttachment3D — Base's setattachment(weaponchild, this, "weapon"): the rig's fire/reload/idle
+        // clips animate the BONE, and the static v_ gun pumps with it. (playtest r9: the old path baked the
+        // bone REST into a static offset and DISCARDED the rig, so no viewmodel animation could ever play for
+        // these weapons — the fire clip had nothing to move.)
+        if (invisibleHand == true)
+        {
+            Node3D? rig = assets.LoadModel(hPath);
+            if (rig is not null)
+            {
+                Skeleton3D? skel = IqmBuilder.FindSkeleton(rig);
+                int bone = skel?.FindBone("weapon") ?? -1;
+                if (bone < 0) bone = skel?.FindBone("tag_weapon") ?? -1;
+                Node3D? vModel = skel is not null && bone >= 0 ? assets.LoadModel(vModelPath) : null;
+                if (skel is not null && bone >= 0 && vModel is not null)
+                {
+                    var att = new BoneAttachment3D { Name = "weapon_attach", BoneName = skel.GetBoneName(bone) };
+                    skel.AddChild(att);
+                    att.AddChild(vModel); // identity local: the bone pose IS the gun pose (bind rotation is identity on these rigs)
+                    return new ViewModelEquip { Model = rig, Attach = Transform3D.Identity, IsHandRig = true };
+                }
+                rig.QueueFree(); // no usable skeleton/bone — legacy static-offset fallback below
+            }
+        }
+
+        // Missing/unbuildable rig (or the live-rig wiring above found no bone): render the v_ model at the
+        // rig's weapon-attach bone REST (position-only — see WeaponAttachTransform). Static, no fire anim —
+        // the legacy degraded path.
         Node3D? built = assets.LoadModel(vModelPath);
         Transform3D attach = WeaponAttachTransform(assets, vModelPath);
         return new ViewModelEquip { Model = built, Attach = attach, IsHandRig = false };

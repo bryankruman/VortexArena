@@ -1,7 +1,7 @@
 # Console Variables (cvars) — inventory & conventions
 
 > **This document is regenerated, not hand-maintained.** The full inventory at the
-> bottom is produced by [`tools/find-cvars.py`](tools/find-cvars.py), a source
+> bottom is produced by [`tools/find-cvars.py`](../../tools/find-cvars.py), a source
 > scanner. Regenerate the whole "Full inventory" section with:
 >
 > ```sh
@@ -19,8 +19,8 @@
 As of the last run: **2208 distinct cvars**. The count is high because the weapon /
 monster / turret / vehicle **balance** corpus (`g_balance_*`, `g_monsters_*`, …) is
 read by the gameplay code as string literals (e.g.
-[`Vortex.cs`](src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs),
-[`Arc.cs`](src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs)) — those reads are
+[`Vortex.cs`](../../src/XonoticGodot.Common/Gameplay/Weapons/Vortex.cs),
+[`Arc.cs`](../../src/XonoticGodot.Common/Gameplay/Weapons/Arc.cs)) — those reads are
 counted even though most of those cvars are never `Register()`-ed in C# (their
 values come from the shipped `.cfg` tree).
 
@@ -28,18 +28,18 @@ values come from the shipped `.cfg` tree).
 
 There is **no single registry**. Defaults are stamped from several places, and most
 cvars are merely *read* through one facade (`Api.Cvars` / the `Cvars.*` helpers →
-`ICvarService`, [Services.cs](src/XonoticGodot.Common/Services/Services.cs)):
+`ICvarService`, [Services.cs](../../src/XonoticGodot.Common/Services/Services.cs)):
 
 | Site | What it registers |
 |---|---|
-| [`Cvars.Defaults`](src/XonoticGodot.Server/Cvars.cs) (`new("name", …)` table) | core server / match / bot / item defaults |
-| [`ParticleCvars`](src/XonoticGodot.Engine/Particles/ParticleCvars.cs) + [`ClientSettings`](game/menu/framework/ClientSettings.cs) | particle, video, audio, and stock engine-client cvars |
+| [`Cvars.Defaults`](../../src/XonoticGodot.Server/Cvars.cs) (`new("name", …)` table) | core server / match / bot / item defaults |
+| [`ParticleCvars`](../../src/XonoticGodot.Engine/Particles/ParticleCvars.cs) + [`ClientSettings`](../../game/menu/framework/ClientSettings.cs) | particle, video, audio, and stock engine-client cvars |
 | ~30 per-subsystem `RegisterDefaults` | every HUD panel, `crosshair_*`, vignette, reticle, chat, frame-profiler, … |
 | read-only (no registration) | the balance corpus + many `sv_*` movement tunables — values come from `.cfg` or `MovementParameters` fallbacks |
 
 **1498 of the 2208 are read but never registered in C#.** Most are intentional (the
 balance corpus and the per-tick `sv_*` movement tunables, whose single source of
-truth is [`MovementParameters.FromCvars`](src/XonoticGodot.Common/Physics/MovementParameters.cs)
+truth is [`MovementParameters.FromCvars`](../../src/XonoticGodot.Common/Physics/MovementParameters.cs)
 fallbacks + the shipped cfgs). `--show-rejects` and the "read but never registered"
 list in the text report are the audit tools for finding genuinely *invisible* ones.
 
@@ -102,19 +102,19 @@ are both normal; see [Cross-boundary cvars](#cross-boundary-cvars).
 
 Cvars cross the client/server line through two deliberate mechanisms:
 
-- **`sv_*` physics flows DOWN.** [`MovementParameters.FromCvars`](src/XonoticGodot.Common/Physics/MovementParameters.cs)
+- **`sv_*` physics flows DOWN.** [`MovementParameters.FromCvars`](../../src/XonoticGodot.Common/Physics/MovementParameters.cs)
   reads ~45 `sv_*` movement cvars and runs on **both** the authoritative server tick
   *and* the client's prediction replay. The server's live values are replicated to
   the client each snapshot via
-  [`MoveVarsBlock`](src/XonoticGodot.Net/MoveVarsBlock.cs) (`MovementCvars` is the
+  [`MoveVarsBlock`](../../src/XonoticGodot.Net/MoveVarsBlock.cs) (`MovementCvars` is the
   wire list), so the client predicts with identical inputs. The StrafeHUD
-  ([`StrafeHudPanel.cs`](game/hud/StrafeHudPanel.cs)) reads the same set to draw its
+  ([`StrafeHudPanel.cs`](../../game/hud/StrafeHudPanel.cs)) reads the same set to draw its
   guide. Server-authoritative; client mirrors a replicated copy.
 - **`cl_*` preferences flow UP.** The `sentcvar` system
-  ([`Commands.cs`](src/XonoticGodot.Server/Commands.cs)) lets a client push an
+  ([`Commands.cs`](../../src/XonoticGodot.Server/Commands.cs)) lets a client push an
   **allowlisted** `cl_*` cvar to the server, stored **per-client** (never the world
   store — privilege separation, see
-  [`CvarReplicationTests`](tests/XonoticGodot.Tests/CvarReplicationTests.cs)). The
+  [`CvarReplicationTests`](../../tests/XonoticGodot.Tests/CvarReplicationTests.cs)). The
   allowlist is `cl_weaponpriority`(`0`–`9`), `cl_autoswitch`(`_cts`), `cl_noantilag`,
   `cl_physics`, `cl_movement_track_canjump`, `cl_jetpack_jump`, plus the
   `notification_<CHOICE>` set. Client-authoritative; server reads a replicated copy.
@@ -148,7 +148,7 @@ not violations:
 
 **Genuine fix candidate**
 - **`cl_announcer_maptime`** is read from the server's **global** store
-  ([`GameWorld.cs`](src/XonoticGodot.Server/GameWorld.cs)) via `Cvars.FloatOr`, unlike
+  ([`GameWorld.cs`](../../src/XonoticGodot.Server/GameWorld.cs)) via `Cvars.FloatOr`, unlike
   every other `cl_*` the server consumes (which go per-client through `sentcvar`).
   Either route it per-client, or — if the server truly owns the announcement cadence
   — it shouldn't wear a `cl_` prefix.
@@ -188,7 +188,7 @@ not violations:
   individually listed below (the scanner expands `snd_channel{N}volume` → `0..9` as a
   convenience):
   - `g_physics_<set>_<var>` — physics-preset overrides (e.g. `g_physics_cpma_maxspeed`),
-    built in [`PhysicsPreset`](src/XonoticGodot.Common/Physics/PhysicsPreset.cs).
+    built in [`PhysicsPreset`](../../src/XonoticGodot.Common/Physics/PhysicsPreset.cs).
   - `notification_<CHOICE>` — one per kill-message choice.
 - **Scope buckets** used for the cross-boundary signal: `client` =
   `game/client|hud|menu|console`; `server` = `src/.Server`; `shared` =
@@ -200,7 +200,7 @@ not violations:
 ## Full inventory
 
 <!-- BEGIN GENERATED: python tools/find-cvars.py --markdown -->
-_Generated by `python tools/find-cvars.py` - 2785 distinct cvars._
+_Generated by `python tools/find-cvars.py` - 2788 distinct cvars._
 
 ### `g_` (1700)
 
@@ -2294,7 +2294,7 @@ _Generated by `python tools/find-cvars.py` - 2785 distinct cvars._
 - `snd_staticvolume`
 - `snd_swapstereo`
 
-### `r` (45)
+### `r` (47)
 
 - `r_ambient`  _( unregistered )_
 - `r_bloom`  _( unregistered )_
@@ -2314,6 +2314,8 @@ _Generated by `python tools/find-cvars.py` - 2785 distinct cvars._
 - `r_hdr_scenebrightness`  _( unregistered )_
 - `r_map_tint`
 - `r_map_tint_strength`
+- `r_model_light_gamma`
+- `r_model_light_scale`
 - `r_motionblur`  _( unregistered )_
 - `r_occlusion_cull`
 - `r_pvs_cull`
@@ -2729,7 +2731,7 @@ _Generated by `python tools/find-cvars.py` - 2785 distinct cvars._
 - `sv_worldauthor`  _( unregistered )_
 - `sv_worldmessage`  _( unregistered )_
 
-### `cl` (262)
+### `cl` (263)
 
 - `cl_allow_uid2name`  _( unregistered, cross-boundary )_
 - `cl_allow_uidranking`  _( unregistered )_
@@ -2972,6 +2974,7 @@ _Generated by `python tools/find-cvars.py` - 2785 distinct cvars._
 - `cl_voice_directional`  _( unregistered )_
 - `cl_voice_directional_taunt_attenuation`  _( unregistered )_
 - `cl_weapon_stay_alpha`  _( unregistered )_
+- `cl_weapon_stay_color`  _( unregistered )_
 - `cl_weapon_switch_fallback_to_impulse`  _( unregistered )_
 - `cl_weapon_switch_reload`  _( unregistered )_
 - `cl_weaponimpulsemode`  _( unregistered, cross-boundary )_
