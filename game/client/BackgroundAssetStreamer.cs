@@ -8,7 +8,7 @@ using XonoticGodot.Common.Diagnostics;
 namespace XonoticGodot.Game.Client;
 
 /// <summary>
-/// Background asset streaming pipeline (PERFORMANCE_REPORT.md §5 S1). Turns a synchronous cold asset load (a
+/// Background asset streaming pipeline (planning/PERFORMANCE_REPORT.md §5 S1). Turns a synchronous cold asset load (a
 /// 30–300 ms main-thread stall to read + parse + decode + GPU-upload) into a two-phase async job: the pure-C#
 /// OFF-THREAD phase (VFS read + format parse + image decode — none of it touches Godot's RenderingServer) runs
 /// on a small dedicated worker lane (see the lane note below), and the MAIN-THREAD phase (turning the parsed

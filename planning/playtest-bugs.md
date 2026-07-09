@@ -7,7 +7,7 @@ hypothesis (unverified unless marked CONFIRMED) → suggested first look → sta
 Convention reminders when picking one up:
 - Compare against **Xonotic Base** (original qcsrc) before deciding the fix — most of these
   are "port drifted from Base", not "design from scratch".
-- Prefix = authority (see CVARS.md); check the parity registry/specs under `planning/parity/`.
+- Prefix = authority (see ../docs/reference/CVARS.md); check the parity registry/specs under `planning/parity/`.
 - Anything touching angles/rotation across the sim↔render boundary → read
   **planning/COORDINATE_CONVENTIONS.md** first (see #7).
 - HUD fidelity work → **planning/HUD_PARITY_CONTRACT.md** + the `cl-*` specs under
@@ -571,7 +571,7 @@ nudge-out-of-solid; see #9), **#14** flag jitter (user-deferred).
   freezes the loopback ENet service — could in theory drop the local client on return. Both peers freeze together
   so sim-time-based timeouts don't advance, but if ENet times out on WALL time this may need a loopback-timeout
   bump. Fine for typical brief pauses; revisit only if a long-alt-tab disconnect is observed.
-- **FOLLOW-UP:** register `cl_autopause "1"` formally (CVARS.md) — currently read with an unset=ON fallback.
+- **FOLLOW-UP:** register `cl_autopause "1"` formally (../docs/reference/CVARS.md) — currently read with an unset=ON fallback.
 - **Request:** when the host is a **local listen server with no remote players connected**, pause the game
   (freeze the sim) whenever the player opens the in-game **menu**, the **console**, or **minimizes / loses
   window focus** — like a single-player pause. Resume on return. If ANY remote client is connected, do NOT

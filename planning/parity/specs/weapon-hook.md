@@ -164,5 +164,5 @@ After pulling, recompute `hook_start`/`hook_end` and set SendFlags so CSQC redra
 - **Not runtime-verified:** actual reel motion / pull feel in a live match; the on-screen spike vs Base rope appearance.
 
 ## Open questions
-- Is the offhand `+hook` button ever intended to be wired into `InputButtons`, or is the offhand hook deliberately deferred? (Determines whether the instahook/campaign-special hook is playable at all — same missing input wire as nade-throw, TODO.md T11.)
+- Is the offhand `+hook` button ever intended to be wired into `InputButtons`, or is the offhand hook deliberately deferred? (Determines whether the instahook/campaign-special hook is playable at all — same missing input wire as nade-throw, ../../TODO.md T11.)
 - Does the port intend to add the tarzan rubber-band reel (the Base default feel) or ship the simpler constant-speed reel as a deliberate divergence?

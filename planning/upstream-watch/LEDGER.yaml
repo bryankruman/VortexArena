@@ -1,0 +1,2102 @@
+# Upstream Watch — Ledger (source of truth)
+#
+# One entry per triaged upstream contribution. This YAML is the machine-readable
+# source; the human-facing view is LEDGER.html (regenerate with:
+#   python tools/upstream-ledger-html.py).
+# See README.md for the process, rubric, id scheme, and vocabularies.
+#
+#   uw         permanent id (UW-####), never reused. Ids are non-contiguous:
+#              Transifex/translation autosync commits are filtered out.
+#   relevance  auditor's port-worthiness: high | medium | low | none
+#   decision   pending | port | adapt | ported | defer | reject | n/a   (Bryan's call)
+#   source     dedup key: data@<sha> / dp@<sha> (commit) or repo:branch@<tip> (branch/MR)
+#
+# 101 entries; 17 translation rows dropped.
+
+- uw: UW-0002
+  title: ''
+  headline: 'Comprehensive visual effects upgrade: (1) Enhanced effectinfo.txt catalog with 480+ lines of tuning — color/alpha/size/light adjustments to projectile/explosion/field effects plus new particle blocks for vampire_fx, vengeance_fx, magnet_fx, swapper, teleport, hmg, seeker_explode, tag_impact, tr_tag effects.'
+  summary: 'Comprehensive visual effects upgrade: (1) Enhanced effectinfo.txt catalog with 480+ lines of tuning — color/alpha/size/light adjustments to projectile/explosion/field effects plus new particle blocks for vampire_fx, vengeance_fx, magnet_fx, swapper, teleport, hmg, seeker_explode, tag_impact, tr_tag effects. (2) Refactored effect networking protocol in qcsrc/common/effects/all.qc to add alpha/fade parameters (SF_EFF_ALPHA_MIN/MAX/FADE flags), improving particle transparency control. (3) Improved client-side effect rendering in qcsrc/client/csqcmodel_hooks.qc with EF_SPEED support (foot particle trails during movement, speed-scaled alpha), player-alpha scaling for EF_FLAME/EF_SHOCK/EF_STARDUST, and cleaned-up model-flag-to-trail mapping. (4) Projectile trail assignments in qcsrc/client/weapons/projectile.qc with compatibility fallbacks for renamed seeker variants (SEEKER_FLAC, SEEKER_MISSILE, SEEKER_TAG). (5) Buff/nade QC updates adding effect emissions to inferno, vampire, vengeance, magnet, swapper, medic, resistance, ammo buffs and ammo/heal/ice/darkness nades. Base symbols touched: effectinfo.txt, common/effects/{all.qc, all.qh, effectinfo.inc}, qcsrc/client/{csqcmodel_hooks.qc, weapons/projectile.qc}, qcsrc/common/mutators/mutator/{buffs,nades}/**/*.qc.'
+  recommendation: 'Port this, but in two stages: (1) Land the effectinfo.txt catalog + client rendering refactor + buff/nade QC emission updates as a parity-aligned visual polish pass (high priority). (2) Defer the EF_SPEED feature (foot particle trails) until we verify the player model rig has foot_L/foot_R tags and adapts Godot Particle3D.Modulate alpha scaling. The protocol extension (alpha/fade flags) is safe and should go with stage 1 since it''s backward-compat. Cite this merge in TODO.md as UW-0002 (Improve and add some buff/nade/powerup/other effects). Update parity registry: fx-effectinfo.catalog.file (last_audited bump, 9043→~9375 lines if the catalog expanded), mutator-buffs (add vampire_fx/magnet_fx/vengeance_fx emission rows if needed), mutator-nades (bump last_audited). EF_SPEED implementation is tracked separately as fx-status-effects.speed.visual-feedback (stage 2).'
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data@bd23b99c357b
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/commit/bd23b99c357b604fad5e3578ff2ca5993365fd37
+  base_symbols:
+  - effectinfo.txt
+  - qcsrc/common/effects/all.qc
+  - qcsrc/common/effects/all.qh
+  - qcsrc/common/effects/effectinfo.inc
+  - qcsrc/client/csqcmodel_hooks.qc
+  - qcsrc/client/weapons/projectile.qc
+  - particles/particlefont.tga
+  - qcsrc/common/mutators/mutator/buffs/buff/inferno.qc
+  - qcsrc/common/mutators/mutator/buffs/buff/vampire.qc
+  - qcsrc/common/mutators/mutator/buffs/buff/vengeance.qc
+  - qcsrc/common/mutators/mutator/buffs/buff/magnet.qc
+  - qcsrc/common/mutators/mutator/buffs/buff/swapper.qc
+  - qcsrc/common/mutators/mutator/buffs/buff/medic.qc
+  - qcsrc/common/mutators/mutator/buffs/buff/resistance.qc
+  - qcsrc/common/mutators/mutator/buffs/buff/ammo.qc
+  - qcsrc/common/mutators/mutator/buffs/sv_buffs.qc
+  - qcsrc/common/mutators/mutator/buffs/sv_buffs.qh
+  - qcsrc/common/mutators/mutator/nades/nade/ammo.qc
+  - qcsrc/common/mutators/mutator/nades/nade/heal.qc
+  - qcsrc/common/mutators/mutator/nades/nade/ice.qc
+  - qcsrc/common/mutators/mutator/nades/nade/darkness.qc
+  - qcsrc/common/mutators/mutator/nades/net.qc
+  - qcsrc/common/mutators/mutator/nades/net.qh
+  - qcsrc/common/mutators/mutator/nades/sv_nades.qc
+  - qcsrc/common/util.qh
+  - qcsrc/common/constants.qh
+  deep_dive: items/UW-0002-improve-buff-nade-powerup-effects.md
+- uw: UW-0003
+  title: ''
+  headline: Refactor GetPlayerLimit() to return a guaranteed-valid player cap (0 to maxclients) instead of the upstream convention of 0 meaning "unlimited".
+  summary: 'Refactor GetPlayerLimit() to return a guaranteed-valid player cap (0 to maxclients) instead of the upstream convention of 0 meaning "unlimited". Simplifies callsites by removing conditional checks. Separates intermission handling (skips mutator hooks during map voting). Changes affect bot_fixcount (Duel), join logic (nJoinAllowed), map-size checks (MapHasRightSize), and warmup init (GameplayMode_DelayedInit). Base symbols: qcsrc/server/{client,bot/default/bot,intermission,world}.qc::GetPlayerLimit/bot_fixcount/nJoinAllowed/MapHasRightSize/GameplayMode_DelayedInit.'
+  recommendation: Worth revisiting post-Duel when Vortex Arena's config model and gametype-specific limit handling mature. The refactor simplifies the code significantly and is low-risk, but it addresses a complexity level (g_maxplayers cvar, map_maxplayers, mutator hooks) that Vortex doesn't yet fully exercise. When Vortex adopts broader gametype-specific limits (e.g., a future game mode with hard player caps), adopt this refactor's pattern to keep GetPlayerLimit returns guaranteed-valid. For now, defer; no blocking issue, just not on the critical path.
+  relevance: medium
+  decision: defer
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data@b41f74a3fbca
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/commit/b41f74a3fbca1e045d1175a1902526ed74b1b32c
+  base_symbols:
+  - qcsrc/server/client.qc::GetPlayerLimit
+  - qcsrc/server/client.qc::nJoinAllowed
+  - qcsrc/server/bot/default/bot.qc::bot_fixcount
+  - qcsrc/server/intermission.qc::MapHasRightSize
+  - qcsrc/server/world.qc::GameplayMode_DelayedInit
+  deep_dive: null
+- uw: UW-0006
+  title: ''
+  headline: Refactors forced-team system to apply g_forced_team_* cvar changes immediately (without map restart) by converting the connect-time one-shot Player_DetermineForcedTeam() into a per-check Player_GetForcedTeamIndex() query.
+  summary: 'Refactors forced-team system to apply g_forced_team_* cvar changes immediately (without map restart) by converting the connect-time one-shot Player_DetermineForcedTeam() into a per-check Player_GetForcedTeamIndex() query. Separates internal forced-team (minigame spectators) from cvar-driven forcing so they don''t clobber. Improves notifications: removes generic TEAMCHANGE_NOTALLOWED, adds team-specific TEAMCHANGE_FORCEDTEAM and JOIN_PREVENT_FORCEDSPEC, renames CENTER_JOIN_PREVENT to CENTER_JOIN_PREVENT_MAXPLAYERS. Updates joinAllowed() and ClientCommand_join to query forced-team status at decision time. Simplifies admin moveplayer path (no longer temporarily clears forced-team). Affected files: qcsrc/server/teamplay.qc (90 line simplification), qcsrc/server/teamplay.qh (comment), qcsrc/server/client.qc (removes connect-time call), qcsrc/server/command/cmd.qc (reorders forced-team check before imbalance gate), qcsrc/server/command/sv_cmd.qc (removes forced-team save/restore), notifications.cfg + qcsrc/common/notifications/all.inc (new/renamed notification IDs). Base symbols: Player_DetermineForcedTeam (removed), Player_GetForcedTeamIndex (changed from simple accessor to full logic), Player_HasRealForcedTeam (now calls GetForcedTeamIndex), joinAllowed, ClientCommand_join, TeamBalance_CheckAllowedTeams, TeamBalance_JoinBestTeam, MoveToTeam (simplified).'
+  recommendation: 'Accept for porting. The logic is sound and the UX improvement is valuable. Adaptation needed: ensure the port''s forced-team field/query plumbing (currently Player_DetermineForcedTeam + storage in team_forced) is refactored to call the query-on-demand pattern at each join/team-change decision point (joinAllowed, CmdJoin, etc.). The port already has the cvars registered (Cvars.cs:176-180) and force-spectate blocking (ClientManager.cs:348), so the main work is threading GetForcedTeamIndex() through the join gates and updating notification IDs. Verify: (1) force-spectate status is checked in both joinAllowed and CmdJoin paths, (2) notification routed correctly when forced to a team vs spectator, (3) the internal forced-team (minigame-set team_forced field) is NOT clobbered by cvar-based forcing (should early-out in GetForcedTeamIndex if player.team_forced != TEAM_FORCE_DEFAULT). Low risk: this is a refactor of existing plumbing, not new machinery.'
+  relevance: high
+  decision: adapt
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data@8b01119db3eb
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/commit/8b01119db3eb7ea51225600324be5412855627a5
+  base_symbols:
+  - Player_DetermineForcedTeam
+  - Player_GetForcedTeamIndex
+  - Player_HasRealForcedTeam
+  - joinAllowed
+  - ClientCommand_join
+  - TeamBalance_CheckAllowedTeams
+  - TeamBalance_JoinBestTeam
+  deep_dive: null
+- uw: UW-0007
+  title: ''
+  headline: 'Fixes issue #3029: clears REVIVE_PROGRESS stat on map/round reset.'
+  summary: 'Fixes issue #3029: clears REVIVE_PROGRESS stat on map/round reset. In reset_map_players, after calling PutClientInServer to respawn each player, the hook now explicitly sets STAT(REVIVE_PROGRESS, it) = 0 to prevent stale revive-progress HUD indicators from persisting if a round ends while a player is frozen and being revived. Base file: qcsrc/common/gametypes/gametype/freezetag/sv_freezetag.qc line 585 (MUTATOR_HOOKFUNCTION ft reset_map_players).'
+  recommendation: Port as-is (adapt only if needed for C# idiom). The fix directly addresses a player-visible bug (stale progress indicator) that would appear in Vortex Arena's freeze-tag mode. Verify that FreezeTag.OnRoundStart or reset path clears ReviveProgress on all player FrozenState entries (currently Frozen.Clear() removes entries, but if a player respawn can happen without removing from Frozen, stale ReviveProgress could persist — though the current code looks correct, this is a minimal audit point). If the roster also syncs ReviveProgress via NetEntityState.ReviveProgress, ensure that mirror is reset as well.
+  relevance: high
+  decision: port
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data@aa34f6a669b6
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/commit/aa34f6a669b6d8667e2137424c30880ce51a6d2d
+  base_symbols:
+  - STAT(REVIVE_PROGRESS)
+  - MUTATOR_HOOKFUNCTION(ft, reset_map_players)
+  - qcsrc/common/gametypes/gametype/freezetag/sv_freezetag.qc
+  deep_dive: null
+- uw: UW-0008
+  title: ''
+  headline: 'Consolidates spectator-transition and player-elimination logic: unifies team-change + kill-command kill paths (removes KillPlayerForTeamChange wrapper), introduces INFINITY damage sentinel, moves spec-notification sends into central GiveFragsForKill hook (fixes missing centerprints in CTS/Race/LMS), redefines frag-status constants (FRAGS_PLAYER 0→-1, adds FRAGS_PLAYER_OUT_OF_GAME -669), removes dead ClientKill_Now/Player_ChangeTeamKill mutator hooks, adds Freezetag double-kill safety gate.'
+  summary: 'Consolidates spectator-transition and player-elimination logic: unifies team-change + kill-command kill paths (removes KillPlayerForTeamChange wrapper), introduces INFINITY damage sentinel, moves spec-notification sends into central GiveFragsForKill hook (fixes missing centerprints in CTS/Race/LMS), redefines frag-status constants (FRAGS_PLAYER 0→-1, adds FRAGS_PLAYER_OUT_OF_GAME -669), removes dead ClientKill_Now/Player_ChangeTeamKill mutator hooks, adds Freezetag double-kill safety gate. Touches qcsrc/{common/constants.qh, server/{damage.qc,teamplay.qc,clientkill.qc}, common/gametypes/{lms,cts,race,freezetag}/sv_*.qc, client/view.qc}.'
+  recommendation: 'Recommended for port after three audits: (1) verify no Vortex Arena code relies on `!player.frags` to detect initialization (registry suggests safe; LMS/CTS/Race use class-level state); (2) test INFINITY damage sentinel in damage pipeline (team-change kills, kill-command, ensure floating-point infinity is handled gracefully); (3) grep port for subscribers to removed hooks ClientKill_Now and Player_ChangeTeamKill (likely none, per registry). Once cleared, porting is mechanical: apply constant changes, consolidate gametype MakePlayerObserver hooks to remove manual frags assignments, unify team-change kill path, wire INFINITY sentinel. Should close multiple parity registry liveness gaps (spec notifications, teamplay unification).'
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data@bad2e6d34ef3
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/commit/bad2e6d34ef38d2800c6ab1c56f6c53ba16cbf7b
+  base_symbols:
+  - FRAGS_PLAYER
+  - FRAGS_PLAYER_OUT_OF_GAME
+  - FRAGS_SPECTATOR
+  - FRAGS_PLAYER_NONSOLID
+  - Damage (deathtype handling)
+  - SetPlayerTeam
+  - KillPlayerForTeamChange (removed)
+  - ClientKill_Now (removed)
+  - MakePlayerObserver hooks (CTS/Race/LMS/Freezetag)
+  - GiveFragsForKill
+  - ClientKill_Now mutator hook (removed)
+  - Player_ChangeTeamKill mutator hook (removed)
+  - INFINITY constant
+  deep_dive: items/UW-0008-fix-spec-notification-kill-team-change.md
+- uw: UW-0009
+  title: ''
+  headline: Merges two upstream commands (`join` and `selectteam`) into a single `join` command that accepts an optional team argument.
+  summary: 'Merges two upstream commands (`join` and `selectteam`) into a single `join` command that accepts an optional team argument. The `selectteam` command is retained as a deprecated alias for backward compatibility. Updates the join command to accept team color names (red/blue/yellow/pink/auto) as a direct argument instead of requiring a separate `selectteam` call. Also updates notification messages (TEAMCHANGE_ALREADYBEST) to be team-specific via MULTITEAM_ macros, adds a nospam gate to prevent duplicate notifications when using legacy selectteam+join sequences, reorders notification definitions for consistency, and fixes a bot-balance-initialization bug in bot.qc where TeamBalance_ calls were unconditionally called outside the teamplay gate. Touches: qcsrc/server/command/cmd.qc (ClientCommand_join/selectteam merge), qcsrc/server/clientkill.qc (nospam notification logic, clientkill_nexttime field moved to .qh), qcsrc/common/notifications/all.inc (TEAMCHANGE_ALREADYBEST multiteam), qcsrc/common/teams.qh (Team_ColorToTeam auto/empty handling), qcsrc/server/teamplay.qc (bot deduction loop refactor, skill-aware best-team gate for real clients), qcsrc/server/bot/default/bot.qc (TeamBalance scope fix), menu UI aliases/color tweaks (commands.cfg, dialog_teamselect.qc, others).'
+  recommendation: '**Port this.** It is a genuine improvement (UX + correctness) that aligns with Vortex Arena''s goals. The scope is clear: merge join/selectteam commands, wire nospam logic, update notifications. The bot-sizing fix should be adopted independently if we port bot logic. Start with a design doc to map our current join/team command structure and confirm where the optional argument goes, then implement the port in a series: (1) argument parsing + join logic, (2) nospam field, (3) notification multiteam support. Assign to a single dev to avoid rebasing churn. Not urgent (playable without it) but high-quality (reduces complexity, improves correctness).'
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data@c4818595f6c4
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/commit/c4818595f6c4dc7a8df7d050fce22b305e85b35d
+  base_symbols:
+  - ClientCommand_join
+  - ClientCommand_selectteam
+  - CMD_REQUEST_COMMAND
+  - joinAllowed
+  - queuePlayer
+  - ClientKill_TeamChange
+  - NOTIF_ONE_ONLY
+  - TEAMCHANGE_ALREADYBEST
+  - TEAMCHANGE_SAME
+  - TEAMCHANGE_STRONGERTEAM
+  - Team_ColorToTeam
+  - bot_setnameandstuff
+  - TeamBalance_CheckAllowedTeams
+  - TeamBalance_GetTeamCounts
+  - TeamBalance_FindBestTeams
+  - TeamBalance_CompareTeamsInternal
+  - .clientkill_nexttime
+  - bots_would_leave
+  deep_dive: items/UW-0009-merge-join-selectteam-commands.md
+- uw: UW-0014
+  title: ''
+  headline: Fix typos and clarify cheat command usage messages in qcsrc/server/cheats.qc.
+  summary: Fix typos and clarify cheat command usage messages in qcsrc/server/cheats.qc. Wraps 'sv_cheats 1; restart;' in square brackets across 6 usage strings to indicate optionality; fixes extra ')' typo in penalty command; removes redundant comment; adds ^3 color code to trailparticles for consistency.
+  recommendation: Accept as-is. Mechanical port to our src/XonoticGodot.Server/Cheats/ subsystem. Low risk, immediate integration.
+  relevance: high
+  decision: port
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data@3d9eee1f4a8e
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/commit/3d9eee1f4a8e5aac03de85b114aaafbf0f5e27be
+  base_symbols:
+  - qcsrc/server/cheats.qc
+  deep_dive: null
+- uw: UW-0015
+  title: ''
+  headline: 'Bug fix: `cmd trailparticles` and `cmd make` cheat commands, plus Arc beam code, were calling W_SetupShot without first running makevectors(), causing them to shoot along a stale v_forward vector instead of the player''s crosshair aim.'
+  summary: 'Bug fix: `cmd trailparticles` and `cmd make` cheat commands, plus Arc beam code, were calling W_SetupShot without first running makevectors(), causing them to shoot along a stale v_forward vector instead of the player''s crosshair aim. The fix adds makevectors(v_angle) before the three W_SetupShot calls. Two files touched: arc.qc (comment clarification on line 276) and cheats.qc (two makevectors lines added before trailparticles and make cheat handlers). Base symbols: W_Arc_Beam_Think, CheatCommand (trailparticles + make cases).'
+  recommendation: 'This fix is already implicitly ported by the port''s architecture (AimTrace uses fresh AngleVectors calls, no stale globals). No code change needed. For the ledger: mark as n/a with note ''Architectural closure: port''s AngleVectors/AimTrace pattern sidesteps the stale v_forward bug upstream had to patch. No porting action required, but value-add to document in Arc/Cheats design docs as an example of how C# avoids global-state hazards.'''
+  relevance: low
+  decision: n/a
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data@e93519ef2522
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/commit/e93519ef252227e2416c0bbf200c9472ed6fa0a8
+  base_symbols: []
+  deep_dive: null
+- uw: UW-0018
+  title: ''
+  headline: Single-line fix to WarpZone_FindRadius's simple (non-warpzone) path to exclude warpzone_refsys entities, matching the behavior of the full recursive path.
+  summary: Single-line fix to WarpZone_FindRadius's simple (non-warpzone) path to exclude warpzone_refsys entities, matching the behavior of the full recursive path. The issue was introduced when MR !1598 (commit 39dcdfa87) enabled the fast-path; the fast path removes bad entities but did not include the warpzone_refsys exclusion, creating a divergence. The fix adds the classname check to the simple_findradius loop (qcsrc/lib/warpzone/common.qc line 674) to ensure warpzone reference-system entities are never included in splash-radius queries, maintaining correctness across both code paths.
+  recommendation: Accept and port. This is a correctness fix to prevent warpzone reference entities from polluting splash-radius queries in the optimized path. The issue only manifests when the fast path is taken (no warpzones in the search box), so it would be silent in most maps but cause subtle bugs in edge cases (e.g., a refsys touching the blast radius in a contrived setup). The port surface (FindRadiusWarpzone in WarpzoneRadiusQuery.cs:445 IsBadEntity logic) should mirror this exclusion when/if the simple-path fast-path optimization is ported. Current parity registry notes FindRadiusWarpzone already implements a partial is_pure blacklist (Solid.Not + empty classname); adding an explicit warpzone_refsys classname guard aligns with Base and closes a latent portal-physics bug. No dependencies; low effort; no test needed (regression is silent, covered by existing warpzone combat tests).
+  relevance: medium
+  decision: port
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data@78feed32d659
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/commit/78feed32d6597633860e16909aac991c3cb1ae4b
+  base_symbols:
+  - qcsrc/lib/warpzone/common.qc:WarpZone_FindRadius
+  - warpzone_refsys classname
+  - WarpZoneLib_BadEntity
+  deep_dive: null
+- uw: UW-0019
+  title: ''
+  headline: Fix uninitialized warpzone transform/shift fields in WarpZone_FindRadius.
+  summary: Fix uninitialized warpzone transform/shift fields in WarpZone_FindRadius. The function reuses entity pointers across calls; after MR !1598's radius-search optimization, the per-entity warpzone_transform and warpzone_shift fields were no longer cleared between searches, leaving stale cross-portal transform data from a prior blast that could cause mispredicted splash zones on subsequent radius queries. The fix explicitly resets those fields (via WarpZone_Accumulator_Clear) on each entity found, matching the expected initialization. A hash update confirms this behavioral correction and documents the regression.
+  recommendation: No action required. Upstream QC fix; port's WarpzoneRadiusQuery already exhibits the correct semantics (fresh per-hit transform, no reuse). Archive in ledger as architectural divergence confirmed safe.
+  relevance: low
+  decision: n/a
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data@11c824df8
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/commit/11c824df8437cbf0172b5fca2b3a7b66736fdc50
+  base_symbols:
+  - qcsrc/lib/warpzone/common.qc::WarpZone_FindRadius
+  - qcsrc/lib/warpzone/common.qc::WarpZone_Accumulator_Clear
+  deep_dive: null
+- uw: UW-0021
+  title: ''
+  headline: 'Comprehensive mapvoting refactor: moves mapvoting subsystem from `qcsrc/server/` to `qcsrc/common/` (shared between client/server), extracting networking code to `net.qc`, adding a shared base header `mapvoting.qh`, replacing the 0.5s impulse-polling delay with antispam rate-limiting, improving gametype-title layout, fixing gametype vote stutter, cleaning up code (const → non-const for certain vars, improved formatting), and marking winning map/gametype with bold text.'
+  summary: 'Comprehensive mapvoting refactor: moves mapvoting subsystem from `qcsrc/server/` to `qcsrc/common/` (shared between client/server), extracting networking code to `net.qc`, adding a shared base header `mapvoting.qh`, replacing the 0.5s impulse-polling delay with antispam rate-limiting, improving gametype-title layout, fixing gametype vote stutter, cleaning up code (const → non-const for certain vars, improved formatting), and marking winning map/gametype with bold text. Touches files: `qcsrc/server/mapvoting.{qc,qh}` (deleted), `qcsrc/common/mapvoting/{_mod.inc,_mod.qh,cl_mapvoting.{qc,qh},mapvoting.qh,net.{qc,qh},sv_mapvoting.{qc,qh}}` (added/refactored), plus all client/server includes that reference the old location. Base symbols: `MapVote_*`, `GameTypeVote_*`, `ENT_CLIENT_MAPVOTE`, `TE_CSQC_PICTURE`, antispam rate-limit integration.'
+  recommendation: 'Accept for analysis. This is a real gameplay UX improvement (antispam responsiveness + stutter fix + visual polish) affecting a subsystem we''ve already ported substantially. Recommend a focused deep-dive doc (UW-0021-mapvoting-improvements.md) to: (1) detail the antispam method and trace how it fits our C# impulse-dispatch (CastVote / Commands.DispatchImpulse), (2) verify the gametype-vote stutter fix applies to our panel render flow, (3) assess effort to backport the bold-winner display, and (4) decide if the antispam cadence should influence our MapVoting.cs rate-limiting tuning. Link to parity registry unit sv-mapvoting.gametype_vote (logic now improved by antispam) and sv-mapvoting.cast.vote (responsiveness direct win).'
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data@56297a31eed7
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/commit/56297a31eed79f751535158cb5bec4c2f2486aa4
+  base_symbols: []
+  deep_dive: items/UW-0021-mapvoting-improvements-networking-antispam.md
+- uw: UW-0022
+  title: ''
+  headline: Consolidates Magnet buff config (single range value replaces dual item/buff ranges), replaces box-overlap pickup with WarpZone_FindRadius (adds line-of-sight requirement), explicitly excludes buffs.
+  summary: Consolidates Magnet buff config (single range value replaces dual item/buff ranges), replaces box-overlap pickup with WarpZone_FindRadius (adds line-of-sight requirement), explicitly excludes buffs. Touches mutators.cfg and magnet.qc/qh.
+  recommendation: Port as-is. Merged, well-reviewed upstream work; direct C# port to item-pickup subsystem. Update config consolidation and wire WarpZone_FindRadius equivalent into Godot's spatial query. Update parity registry if Magnet is already tracked; if not, add as new tracked buff-subsystem behavior.
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data@148661e90de5
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/commit/148661e90de51c0ad8e5fb40a076bd60d14a4a9d
+  base_symbols:
+  - autocvar_g_buffs_magnet_range_item
+  - autocvar_g_buffs_magnet_range_buff
+  - autocvar_g_buffs_magnet_range
+  - g_buffs_magnet_time
+  deep_dive: null
+- uw: UW-0023
+  title: ''
+  headline: Fixes turret team-handling bugs by introducing TURRET_TEAM constant (256) to replace FLOAT_MAX magic value, adds TURRET_SAME_TEAM/TURRET_DIFF_TEAM macros for cleaner team comparisons, moves teamradar_color initialization to prevent override-on-team-change, adds type safety (int vs float for ReadByte), and gates firing during game_starttime/game_stopped.
+  summary: Fixes turret team-handling bugs by introducing TURRET_TEAM constant (256) to replace FLOAT_MAX magic value, adds TURRET_SAME_TEAM/TURRET_DIFF_TEAM macros for cleaner team comparisons, moves teamradar_color initialization to prevent override-on-team-change, adds type safety (int vs float for ReadByte), and gates firing during game_starttime/game_stopped. Touches qcsrc/common/turrets/{sv_turrets.qc, sv_turrets.qh, turret.qh, cl_turrets.qc}, qcsrc/common/gametypes/gametype/assault/sv_assault.qc, qcsrc/common/turrets/turret/hk_weapon.qc, qcsrc/common/teams.qh.
+  recommendation: Accept and port. Adopt TURRET_TEAM=256 constant in C# port, migrate TurretSpawn.cs:60 from float.MaxValue to explicit constant, add game-state check to firing gate, and apply team-comparison macros to TurretAI.cs logic paths. Small effort, high correctness gain. Update parity/registry/turret-framework.yaml to note the baseline moved past current pin for team handling.
+  relevance: high
+  decision: port
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data@f99e6994e774
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/commit/f99e6994e77486decaf139bc1b46bfc39383982a
+  base_symbols:
+  - turret_initialize
+  - turret_firecheck
+  - turret_damage
+  - turret_validate_target
+  - TURRET_TEAM
+  - TURRET_SAME_TEAM
+  - TURRET_DIFF_TEAM
+  - TurretSpawn (assault mutator)
+  - hk_is_valid_target
+  deep_dive: null
+- uw: UW-0024
+  title: ''
+  headline: Hash-bump CI commit (e5601e7) fixes two collision-detection regressions in QC caused by !1131's removal of legacy Quake bbox expansion.
+  summary: 'Hash-bump CI commit (e5601e7) fixes two collision-detection regressions in QC caused by !1131''s removal of legacy Quake bbox expansion. Two symmetric AABB overlap-check fixes: (1) touchexplode mutator PlayerPreThink adds epsilon padding to detect player collisions (+/- 1 unit); (2) fire_damagepersec/Fire_ApplyDamage applies same padding for player-to-player napalm fire transfer. Both are qcsrc-gameplay layer, directly affecting multiplayer mutators and fire mechanics. Hash change represents altered gameplay determinism in sv_game test.'
+  recommendation: Port immediately. The regression fix (collision epsilon padding) must be applied to both the TouchExplodeMutator.OnPlayerPreThink overlap check (src/XonoticGodot.Common/Gameplay/Mutators/TouchExplodeMutator.cs:99 boxesoverlap call) and the Fire_ApplyDamage equivalent in the fire-transfer path. Verify sv_game determinism test passes locally post-port (same epsilon 1-unit padding used in Base). Cite UW-0024 in commit message.
+  relevance: high
+  decision: port
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data@a4e005f4c879
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/commit/a4e005f4c879c36f1ca3079befe8373327b34b66
+  base_symbols:
+  - qcsrc/common/mutators/mutator/touchexplode/sv_touchexplode.qc:37
+  - qcsrc/server/damage.qc:1098
+  deep_dive: null
+- uw: UW-0025
+  title: ''
+  headline: 'Code style cleanup: reformats minigame macros (FIELD/MSLE) and function definitions for consistency and readability.'
+  summary: 'Code style cleanup: reformats minigame macros (FIELD/MSLE) and function definitions for consistency and readability. Touches three files in the minigames framework: cl_minigames.qc (ReadString_Zoned definition, read-side FIELD/MSLE macros), minigame/all.qh (MINIGAME_SIMPLELINKED_ENTITIES table expanded to multi-line), and sv_minigames.qc (send-side FIELD/MSLE macros). Changes are purely stylistic — adds whitespace, normalizes spacing around parameters, breaks long macro definitions across lines. No semantic changes to macro expansion, no functional behavior modification.'
+  recommendation: Reject. This is purely stylistic cleanup of Base QC code that is not part of the Vortex Arena port. The minigame framework is already fully reimplemented in C#, and QC source files are not shipped or used in the port. The changes do not affect behavior, do not expose bugs, and carry no actionable spec or design insight for the C# implementation. It is upstream-only churn. Adding this to the parity registry as a divergence would only clutter the ledger without actionable value.
+  relevance: none
+  decision: reject
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data@536f3c888a58
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/commit/536f3c888a580773c94c1bbecf5ba7d2b6b6cfc9
+  base_symbols:
+  - qcsrc/common/minigames/cl_minigames.qc:FIELD
+  - qcsrc/common/minigames/cl_minigames.qc:MSLE
+  - qcsrc/common/minigames/cl_minigames.qc:ReadString_Zoned
+  - qcsrc/common/minigames/minigame/all.qh:MINIGAME_SIMPLELINKED_ENTITIES
+  - qcsrc/common/minigames/sv_minigames.qc:FIELD
+  - qcsrc/common/minigames/sv_minigames.qc:MSLE
+  deep_dive: null
+- uw: UW-0026
+  title: ''
+  headline: 'Cleanup and style fixes to func_rain/func_snow spawnfuncs: removes redundant braces around single-statement if blocks, replaces explicit min/max clamping with the bound() builtin function, and normalizes conditional/block indentation.'
+  summary: 'Cleanup and style fixes to func_rain/func_snow spawnfuncs: removes redundant braces around single-statement if blocks, replaces explicit min/max clamping with the bound() builtin function, and normalizes conditional/block indentation. Touches spawnfunc(func_rain), spawnfunc(func_snow), Draw_RainSnow, and NET_HANDLE(ENT_CLIENT_RAINSNOW) in common/mapobjects/func/rainsnow.qc. Zero logic changes; pure refactoring.'
+  recommendation: 'Port as-is. Apply the three minimal changes to RainSnow.cs: (1) Replace the three-line min/max clamp (lines 59-62) with QMath.Bound(1f, this_.ParticleCount, 65535f); (2) Update spacing/style in DrawCount if it drifted (low priority — the function signature is already modern). No new test needed; existing MusicSystemTests.cs exercises the spawn path. The changes are cosmetic but align our port with upstream''s cleaned-up idioms and reduce maintenance friction if similar patterns come up in future upstream changes.'
+  relevance: medium
+  decision: port
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data@9afc8baf958b
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/commit/9afc8baf958ba3b994121da44693ef635ca1bf99
+  base_symbols:
+  - spawnfunc(func_rain)
+  - spawnfunc(func_snow)
+  - Draw_RainSnow
+  - NET_HANDLE(ENT_CLIENT_RAINSNOW)
+  deep_dive: null
+- uw: UW-0027
+  title: ''
+  headline: Moves the computation of particle density parameters (effbox_min, effbox_max, mysize, mycount) inside the boxesoverlap early-out check in Draw_RainSnow.
+  summary: 'Moves the computation of particle density parameters (effbox_min, effbox_max, mysize, mycount) inside the boxesoverlap early-out check in Draw_RainSnow. This avoids unnecessary vector calculations and density computations when the player is outside the rain/snow volume''s view distance, improving performance on maps with weather volumes. Touches: qcsrc/common/mapobjects/func/rainsnow.qc (Draw_RainSnow function, lines 101-119).'
+  recommendation: No action required. The optimization is already embodied in Vortex Arena's WeatherSystem.UpdateVolume, which only computes DrawCount and particle emission when the volume intersects the view frustum. Porting this to qcsrc would be redundant since we don't ship qcsrc; this is a confirmatory signal that our architecture choices (early-out based on spatial overlap, lazy density computation) were sound. Close as n/a — upstream implementation detail that doesn't flow into the port.
+  relevance: low
+  decision: n/a
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data@3fbe746c02e0
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/commit/3fbe746c02e0bd0cfbbfeae81c8b2f17ed315452
+  base_symbols:
+  - rainsnow.qc:Draw_RainSnow
+  - rainsnow.qc:effbox_min
+  - rainsnow.qc:effbox_max
+  - rainsnow.qc:mysize
+  - rainsnow.qc:mycount
+  deep_dive: null
+- uw: UW-0028
+  title: ''
+  headline: Restores 1-unit bounding-box margin to boxesoverlap checks in touchexplode mutator (PlayerPreThink) and napalm fire-transfer (Fire_ApplyDamage), which broke when upstream MR !1131 removed legacy engine bbox expansion.
+  summary: 'Restores 1-unit bounding-box margin to boxesoverlap checks in touchexplode mutator (PlayerPreThink) and napalm fire-transfer (Fire_ApplyDamage), which broke when upstream MR !1131 removed legacy engine bbox expansion. Both features rely on precise bbox overlap; the fix applies manual margin expansion (absmin-1, absmax+1) at the QC level to restore pre-MR behavior. Addresses regressions: touchexplode mutator not triggering, player-to-player napalm fire spreading not working.'
+  recommendation: 'Port as-is: apply the 1-unit bbox-margin expansion to TouchExplodeMutator.BoxesOverlap (line 136-139) and StatusEffects.BoxesOverlap fire-transfer path (line 537-541). No adaptation needed; the numeric adjustment is language-independent. This is a straightforward, low-risk adoption of upstream''s collision-detection fix.'
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data@e5601e7ceed3
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/commit/e5601e7ceed3f15a82ab387d2aa949d5fafe518d
+  base_symbols:
+  - common/mutators/mutator/touchexplode/sv_touchexplode.qc:37
+  - server/damage.qc:1098
+  - boxesoverlap
+  deep_dive: null
+- uw: UW-0030
+  title: ''
+  headline: Five interlocking QuakeC optimizations merged into data@8a677c236a69.
+  summary: 'Five interlocking QuakeC optimizations merged into data@8a677c236a69. (1) Electro & Hook: damage-over-time (DOT) blast spread over `duration` seconds now ticks every 0.0625s (1/16 frame) instead of every physics tick, reducing network spam and CPU. Unified code between W_Electro_ExplodeComboThink and W_Hook_ExplodeThink; old per-entity temp fields (dmg, dmg_edge, dmg_radius, dmg_force) replaced by time-based delta calculation (dmg_last, teleport_time). (2) Fireball & Napalm: laser-play (scorch) loop optimized: squared-distance comparisons (vlen2) skip expensive sqrt except for the final winner''s weight, reusing last_dist to avoid recalc. (3) Hook bomb secondary damage interval raised 0.05s→0.0625s for consistency. (4) WarpZone_FindRadius fast-path: when no warpzones touch the query radius, use plain findradius + inline LOS filter instead of full recursive warpzone walk—huge perf win on non-warpzone maps (the common case). Removed NearestPointOnBox duplicate (reused NearestPointOnBoundingBox). (5) Weapon firing gate: removed allow-on-move-frames code path (LordHavoc comment), fire only on server frames (frametime-gated), reducing redundant fire calls. Impacts: Electro, Hook, Fireball (primary laser + secondary firemine scorch), Napalm nade, WarpZone radius queries. Base symbols: W_Electro_ExplodeComboThink, W_Hook_ExplodeThink, W_Fireball_LaserPlay, napalm_damage, WarpZone_FindRadius, PlayerThink weapon-fire gate, const ELECTRO_COMBO_OVERTIME_DELAY, HOOK_SECONDARY_DELAY.'
+  recommendation: Accept and port. All five optimizations are mature (merged, tested on upstream master), algorithmically sound, and cleanly map to the C# weapon/warpzone code already ported. No balance changes, no design dependencies. Link the ported commit(s) back to the UW id and parity registry (Electro, Hook, Fireball units). This is a free perf win that keeps Vortex Arena aligned with upstream gameplay tuning. Estimate 1–2 days porting + regression testing (DOT timing replay, laser scorch LOS, WarpZone predicate coverage).
+  relevance: high
+  decision: port
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data@8a677c236a69
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/commit/8a677c236a6939058881a6c35c89e34b63e4ab1a
+  base_symbols: []
+  deep_dive: null
+- uw: UW-0032
+  title: ''
+  headline: Add cl_hook_mutator_* aliases that fire when specific mutators (InstaGib, Hook, Jetpack, Overkill) activate, executing before cl_hook_gamestart_* hooks.
+  summary: Add cl_hook_mutator_* aliases that fire when specific mutators (InstaGib, Hook, Jetpack, Overkill) activate, executing before cl_hook_gamestart_* hooks. Refactors build_mutator_list() to detect first CSQC call and invoke the hook chain, removes redundant cl_overkill.qc CSQC stub that only set a temp cvar. This is a config-layer client-side scripting extensibility point — allows user configs to bind custom behavior to mutator activation.
+  recommendation: Do not port. The code implements a config-alias hook system that depends on infrastructure (DarkPlaces localcmd, user-editable .cfg files, alias registration) that does not exist in Godot. While the feature is sound for upstream, our client architecture uses compiled C# gameplay events, not cfg-based scripting. A future user-facing client plugin system might take this upstream design as reference, but the QC code itself is not reusable. Removing cl_overkill.qc is a side-effect cleanup already done on our side (overkill initialization in C#). The hook definitions in gametypes-client.cfg are Xonotic-specific config and not part of our gameplay model.
+  relevance: low
+  decision: reject
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data@a14f79f1719b
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/commit/a14f79f1719b15a579c84b68e9e4b20b575ca816
+  base_symbols:
+  - qcsrc/client/main.qc (net_handle_ServerWelcome, Gametype_Init)
+  - qcsrc/common/util.qc (build_mutator_list, renamed from translate_modifications)
+  - qcsrc/common/mutators/mutator/overkill/_mod.qc/qh (cl_overkill.qc/.qh removed)
+  - gametypes-client.cfg (alias definitions)
+  deep_dive: null
+- uw: UW-0033
+  title: ''
+  headline: Fixes T.A.G.
+  summary: 'Fixes T.A.G. Seeker projectiles to respect g_projectiles_interact cvar by applying the standard PROJECTILE_MAKETRIGGER pattern. Previously the weapon set missile.solid = SOLID_BBOX directly; now it uses PROJECTILE_MAKETRIGGER which sets solid = SOLID_CORPSE (allowing players to pass through projectiles), applies the correct dphitcontentsmask for world/body/corpse collision, and conditionally gates inter-projectile collisions via clipgroup based on the g_projectiles_interact setting. Affects three projectile types: homing missiles (W_Seeker_Fire_Missile), FLAC bolts (W_Seeker_Fire_Flac), and tag darts (W_Seeker_Fire_Tag). Base files touched: qcsrc/common/weapons/weapon/seeker.qc (3 fire functions). Touched: .gitlab-ci.yml (sv_game hash bump only).'
+  recommendation: Port the fix. Replace all three `missile.Solid = Solid.BBox;` assignments in Seeker.cs (FireMissile line ~209, FireFlac line ~359, FireTag line ~434) with `Projectiles.MakeTrigger(missile);` calls placed AFTER the MutatorHooks.EditProjectile block (matching the Base ordering). The Flac secondary also needs PROJECTILE_TOUCH(this, toucher) in ExplodeFlac's touch handler to ensure warpzone and interaction checks run before detonation (Base seeker.qc:242-244). This brings Seeker in line with all other weapons' projectile setup, fixes the player-pass-through bug, and activates the g_projectiles_interact cvar control that was dormant due to the SOLID_BBOX misuse.
+  relevance: high
+  decision: port
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data@729015d1cf54
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/commit/729015d1cf54c32a5684a6635f7db579245498e8
+  base_symbols:
+  - W_Seeker_Fire_Missile
+  - W_Seeker_Fire_Flac
+  - W_Seeker_Fire_Tag
+  - W_Seeker_Flac_Touch
+  - PROJECTILE_MAKETRIGGER
+  deep_dive: items/UW-0033-seeker-projectile-interact.md
+- uw: UW-0037
+  title: ''
+  headline: Implements a debug_box visual debugging feature for QuakeC gameplay code.
+  summary: 'Implements a debug_box visual debugging feature for QuakeC gameplay code. Adds a client-side 3D box drawing system (CSQC) with server-side networked entities, allowing developers to visualize collision boxes, telefrag volumes, and waypoint boxes during testing. Touches: qcsrc/common/debug.qh (main implementation), qcsrc/server/cheats.qc (new cmd bbox cheat command), qcsrc/server/race.qc (test visualization for race checkpoints), qcsrc/common/mapobjects/teleporters.qh (telefrag volume debugging). Branch includes 4 commits: core implementation, race checkpoint visualization test, and polish to allow border-only drawing mode.'
+  recommendation: Port as-is. No adaptation needed. This is foundational debugging infrastructure that will accelerate future porting work and reduce debugging friction. The implementation is self-contained, zero dependencies on gameplay systems, and zero risk of regression. Recommend merging before major collision/physics work where visualizing volumes is critical. The race checkpoint visualization test can be kept as an example of the feature.
+  relevance: high
+  decision: port
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data:terencehill/debug_box_test@cb8be00163be
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/tree/terencehill/debug_box_test
+  base_symbols:
+  - debug_box()
+  - DrawFace()
+  - debug_box_draw()
+  - ENT_CLIENT_BOX
+  - cmd bbox
+  - SVQC debug_box_send()
+  deep_dive: null
+- uw: UW-0038
+  title: ''
+  headline: 'Two-commit branch: (1) CTS warmup disable (new ReadLevelCvars mutator hook sets warmup_stage=0); (2) .defi defrag-format mapinfo fallback (recognize CTS on .defi files even without explicit ''style'' key).'
+  summary: 'Two-commit branch: (1) CTS warmup disable (new ReadLevelCvars mutator hook sets warmup_stage=0); (2) .defi defrag-format mapinfo fallback (recognize CTS on .defi files even without explicit ''style'' key). Touches sv_cts.qc (new hook) and common/mapinfo.qc (_MapInfo_ParseArena fallback branch). The warmup disable is a small, clear fix. The .defi fallback extends our incomplete .arena/.defi parsing subsystem, which the parity registry documents as unported.'
+  recommendation: 'Split decision recommended: (1) Port the warmup disable as-is (high-value, low-risk qc-gameplay fix). (2) Defer the .defi fallback pending a decision on defrag-map support scope — either adopt it as part of a full .arena/.defi subsystem port (requires intentional_divergence entry in mapinfo.yaml), or reject it and keep mapinfo parsing as server-unimplemented (current state, consistent with parity divergence). The warmup disable is non-controversial; the .defi parsing expansion requires scope alignment.'
+  relevance: medium
+  decision: adapt
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:bones_was_here/cts@acbd316f74c5
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1624
+  base_symbols:
+  - qcsrc/common/gametypes/gametype/cts/sv_cts.qc:MUTATOR_HOOKFUNCTION(cts, ReadLevelCvars)
+  - qcsrc/common/mapinfo.qc:_MapInfo_ParseArena (isdefi branch)
+  deep_dive: null
+- uw: UW-0039
+  title: ''
+  headline: Optimizes the telefrag detection loop in TDEATHLOOP macro by replacing findradius()+boxesoverlap with findbox().
+  summary: 'Optimizes the telefrag detection loop in TDEATHLOOP macro by replacing findradius()+boxesoverlap with findbox(). The prior code computed an incorrect radius (max of vector lengths to deathmin/deathmax, not the actual box extent), then filtered exhaustively with boxesoverlap for each entity in that larger sphere. The fix switches to direct box-spatial query findbox(deathmin, deathmax), eliminating both the wrong-radius calculation and the post-filter overhead. Touches: qcsrc/common/mapobjects/teleporters.qh:TDEATHLOOP macro (lines 43-56). Base symbols: findbox(), TDEATHLOOP, deathmin/deathmax, BoxesOverlap check.'
+  recommendation: 'Direct port recommended. Replace the radius+findradius+boxesoverlap sequence at Teleporters.cs:520/528/532 with a single Api.Entities.FindInBox(deathMin, deathMax) call. No behavior change, pure perf win on the hot path. Update registry row teleporters.core.telefrag to note the fix (values: faithful stays faithful, but the performance regression from wrong-radius elimination is a live win).'
+  relevance: medium
+  decision: port
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data:terencehill/telefrag_performance_fix@b6e02fe32ae7
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1623
+  base_symbols:
+  - TDEATHLOOP
+  - findbox
+  - findradius
+  - BoxesOverlap
+  - deathradius
+  deep_dive: null
+- uw: UW-0040
+  title: ''
+  headline: 13-commit series optimizing warpzone library.
+  summary: '13-commit series optimizing warpzone library. Core innovation: WarpZone_SearchInRadius, a callback-driven radius search replacing WarpZone_FindRadius. New signature (org, radius, nomonsters, bool(*)(entity) cond) lets callers express per-site filter logic (magnet, swapper, napalm, crylink, devastator, CTF pass) inline rather than post-loop. Secondary wins: forwarding-function macros (Accumulator_Add, RefSys_Add), WarpZone_TraceLine_ThroughZone macro, vlen/vlen2 perf opts (sqrt(vlen2/vlen2) not vlen/vlen), and cleanups across teleporters/antilag/campcheck/weapons. Test hash bumped (sv_game determinism verified).'
+  recommendation: 'This is high-value, mechanical porting work. The callback pattern is already embedded in our WarpzoneRadiusQuery.cs (WarpZone_FindRadius_cond_callback_t equivalent already exists as Func&lt;Entity,bool&gt;). Schedule as the first commit in the next warpzone/collision subsystem wave — it''s a foundation for later optimizations and costs 2-3 hours (mostly find-and-replace in src/XonoticGodot.Common/Gameplay/Warpzone/ + the 6 callsite rewrites). Risk: low (self-contained, no netcode/physics, no new failure modes).'
+  relevance: high
+  decision: port
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:k9er/warpzone-findradius@d9cc00f95c98
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1617
+  base_symbols:
+  - qcsrc/lib/warpzone/common.qc
+  - qcsrc/lib/warpzone/common.qh
+  - qcsrc/common/gametypes/gametype/ctf/sv_ctf.qc
+  - qcsrc/common/mutators/mutator/buffs/buff/magnet.qc
+  - qcsrc/common/mutators/mutator/buffs/buff/swapper.qc
+  - qcsrc/common/mutators/mutator/nades/nade/napalm.qc
+  - qcsrc/common/weapons/weapon/crylink.qc
+  - qcsrc/common/weapons/weapon/devastator.qc
+  - qcsrc/server/antilag.qc
+  deep_dive: null
+- uw: UW-0041
+  title: ''
+  headline: Changes `weapons_most()` in qcsrc/server/world.qc to include unblocked new-toy weapons when g_new_toys is enabled.
+  summary: Changes `weapons_most()` in qcsrc/server/world.qc to include unblocked new-toy weapons when g_new_toys is enabled. The "most weapons arena" mode uses weapons_most() to populate its weapon pool; this change ensures that when g_new_toys=1, the five new-toy weapons (Seeker, Mine Layer, HLAC, Rifle, Arc) are included in the arena set. The diff rewrites the filter predicate from requiring WEP_FLAG_NORMAL while excluding WEP_FLAG_MUTATORBLOCKED, to excluding WEP_FLAG_HIDDEN|WEP_FLAG_SUPERWEAPON and including weapons that have EITHER WEP_FLAG_NORMAL OR cvar("g_new_toys").
+  recommendation: Port is worthwhile if the port has a weapons_most() equivalent (or similar arena-pool builder). Given the parity doc for weaponarena_random notes a gap—"The port lacks the base `g_weaponarena` → `start_weapons`/`g_weaponarena_weapons` expansion (`weapons_all`/`weapons_most`/`weapons_devall`/weapon-list parse)"—this change can only apply once that expansion is ported. If weapons_most() is already live in the port, the logic fix (adding new-toy gating) is a mechanical follow-up. If the arena expansion is still unported, defer this UW pending the arena base logic.
+  relevance: medium
+  decision: pending
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data:bones_was_here/most_available@58fe693a7892
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1622
+  base_symbols:
+  - qcsrc/server/world.qc::weapons_most
+  - WEP_FLAG_NORMAL
+  - WEP_FLAG_MUTATORBLOCKED
+  - WEP_FLAG_HIDDEN
+  - WEP_FLAG_SUPERWEAPON
+  deep_dive: null
+- uw: UW-0042
+  title: ''
+  headline: '21 commits implementing/fixing Q3 map entity behavior: func_plat/door CRUSH spawnflag (instant-kill, no auto-reverse), wait=-1 immediate return, model2 displacement key, trigger_multiple/hurt/relay/delay Q3 spawnflags, new func_timer/trigger_timer entities, door trap kill credits (player attribution), damage-per-tick frequency fixes, player sound system simplification (removed voice/player split).'
+  summary: '21 commits implementing/fixing Q3 map entity behavior: func_plat/door CRUSH spawnflag (instant-kill, no auto-reverse), wait=-1 immediate return, model2 displacement key, trigger_multiple/hurt/relay/delay Q3 spawnflags, new func_timer/trigger_timer entities, door trap kill credits (player attribution), damage-per-tick frequency fixes, player sound system simplification (removed voice/player split). Touches movers (door, plat, bobbing, pendulum, button, train, rotating), triggers (multiple, hurt, relay, delay, impulse, jumppads, viewloc), targets (speaker, speed, kill), and core subs/platforms/defs.'
+  recommendation: Port. High gameplay impact (Q3 CRUSH, wait=-1, trap credits, new timers); clean implementation; narrow scope (mapobjects only); no netcode/determinism risk; integrates with live q3compat architecture. Recommend porting all 21 commits as a group (coherent feature set). Cross-reference parity registry rows mapobject-movers-platforms, mapobject-triggers, mapobject-target when updating (some behavior may advance effective baseline for those units).
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:bones_was_here/q3_mapents@898b323857e3
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1615
+  base_symbols:
+  - func_door
+  - func_plat
+  - func_bobbing
+  - func_pendulum
+  - func_button
+  - func_train
+  - func_rotating
+  - trigger_multiple
+  - trigger_hurt
+  - trigger_relay
+  - trigger_delay
+  - trigger_always
+  - func_timer
+  - target_speaker
+  - platforms.qc
+  - subs.qc
+  - defs.qh
+  deep_dive: items/UW-0042-q3-mapents-fixes-timers.md
+- uw: UW-0043
+  title: ''
+  headline: Removes Q3DF checkpoint entities that lack a targetname and can't be triggered; adds loop-detection to SUB_UseTargets and defrag_waypointsprites to prevent infinite recursion and warn mappers.
+  summary: 'Removes Q3DF checkpoint entities that lack a targetname and can''t be triggered; adds loop-detection to SUB_UseTargets and defrag_waypointsprites to prevent infinite recursion and warn mappers. Replaces hardcoded recursion limits (420-level stack-overflow guard) with a loopdetector bitfield on entities. Touches qcsrc/common/mapobjects/triggers.qc (SUB_UseTargets_Ex, adds loopdetector field + logic), triggers.qh (loopdetector decl, removes unused SUB_DontUseTargets), and qcsrc/server/race.qc (defrag_waypointsprites recursion → loop-check, target_checkpoint_setup validation + entity filter). Base symbols: SUB_UseTargets_Ex, defrag_waypointsprites, trigger_race_checkpoint_verify, target_checkpoint_setup, .loopdetector field.'
+  recommendation: 'Port this. It''s a small, high-quality robustness fix that improves map compatibility and moves us closer to Base on a subsystem (Race checkpoint spawning + SUB_UseTargets) we already carry. No risk, high signal: upstream approved it, and it directly addresses a class of hard-to-debug map load errors (infinite recursion in trigger chains). Suggested next step: verify the parity registry race.checkpoint.entities entry and add a note that the defrag loop-detection is now in scope (currently listed as a gap, now fixed by this MR).'
+  relevance: medium
+  decision: pending
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data:bones_was_here/target_checkpoint@361da817edeb
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1618
+  base_symbols:
+  - SUB_UseTargets_Ex
+  - defrag_waypointsprites
+  - trigger_race_checkpoint_verify
+  - target_checkpoint_setup
+  - .loopdetector
+  deep_dive: null
+- uw: UW-0044
+  title: ''
+  headline: 42-commit refactoring of warpzone (teleporter/portal) subsystem infrastructure.
+  summary: '42-commit refactoring of warpzone (teleporter/portal) subsystem infrastructure. Core changes: (1) new WarpZone_SearchInRadius(org, radius, nomonsters, callback) replaces WarpZone_FindRadius, filtering entities by condition immediately for O(n) speedup; (2) callback support added to WarpZone_TraceBox/TraceLine tracing; (3) repeated code patterns converted to macros (WarpZone_RefSys_Add/AddInverse); (4) gameplay fixes: CTF flag passing, Nexball safe-pass tracking, projectile seeking, turret/monster attacks, movement mutators now correctly apply warpzone transforms using WarpZone_UnTransformOrigin; (5) new FL_STATICOWNER flag prevents disowning static projectiles after teleport; (6) vector operation optimizations (vdist) and code style normalization. Touched files: qcsrc/lib/warpzone/{common.qc,common.qh}, qcsrc/common/gametypes/gametype/{ctf,nexball}/*, qcsrc/common/weapons/{fireball,crylink,seeker,devastator,arc,hook,vaporizer,shotgun,electro}.qc, qcsrc/common/mutators/mutator/{nades,dodging,walljump,sandbox,buffs,overkill}/*, qcsrc/common/monsters/monster/{golem,mage,spider,wyvern}.qc, qcsrc/common/turrets/*.qc, qcsrc/server/{weapons/tracing.qc,antilag.qc,client.qc,items/items.qc,cheats.qc,portals.qc}. Base symbols: WarpZone_TraceBox_ThroughZone, WarpZone_SearchInRadius, WarpZone_TraceLine_ThroughZone, WarpZone_RefSys_Add, WarpZone_RefSys_AddInverse, WarpZone_UnTransformOrigin, FL_STATICOWNER.'
+  recommendation: Strong port candidate. Warpzone system is a core Vortex Arena subsystem affecting CTF, Nexball, monster/turret attacks, and any map with teleporters. This branch fixes correctness bugs (e.g., CTF flag passing near portals failing to apply inverse transforms) and optimizes entity search (callback filtering prevents redundant O(n²) work on large FindRadius results). Cost is moderate (42 commits, but pattern is repetitive); risk is low (bugfixes + cleanups, no new engine contracts). Recommend Bryan accept as `port` unless integration testing surfaces unexpected Godot-specific issues with the callback mechanism or RefSys composition order.
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:k9er/warpzone-interactions@a1090558abb1
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1620
+  base_symbols:
+  - WarpZone_TraceBox_ThroughZone
+  - WarpZone_SearchInRadius
+  - WarpZone_TraceLine_ThroughZone
+  - WarpZone_RefSys_Add
+  - WarpZone_RefSys_AddInverse
+  - WarpZone_UnTransformOrigin
+  - FL_STATICOWNER
+  - te_csqc_trace_callback
+  - WarpZone_FindRadius_cond_callback_t
+  deep_dive: items/UW-0044-warpzone-interactions-refactor.md
+- uw: UW-0045
+  title: ''
+  headline: Replace "nan" string sentinel with -1 for disabled jump speed caps across all physics profiles and update PlayerJump() conditionals from !isnan() to >= 0 checks.
+  summary: 'Replace "nan" string sentinel with -1 for disabled jump speed caps across all physics profiles and update PlayerJump() conditionals from !isnan() to >= 0 checks. Affects 32 files (physics.cfg variants, player.qc, xonotic-server.cfg). Base symbols: qcsrc/common/physics/player.qc (PHYS_JUMPSPEEDCAP_MIN/MAX, PlayerJump logic).'
+  recommendation: Strong candidate for port. Low-risk, high-quality fix to jump capping logic we actively use. -1 sentinel is more portable than "nan" across platforms/runtimes. Minimal C# translation effort (one conditional pattern update + cvar defaults). If porting physics subsystem, include this.
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data:Mario/jumpspeedcap_fix@12e789f30f76
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/tree/Mario/jumpspeedcap_fix
+  base_symbols:
+  - qcsrc/common/physics/player.qc
+  - physics.cfg
+  - xonotic-server.cfg
+  deep_dive: null
+- uw: UW-0046
+  title: ''
+  headline: Comprehensive Invasion mode refactor and monster AI improvements.
+  summary: 'Comprehensive Invasion mode refactor and monster AI improvements. Unifies three Invasion modes into round-based only; adds player elimination system, HUD monster count, loot/skill scaling, spawnpoint flying/swimming filters. Monster AI: fixes warpzone-aware aiming/targeting via WarpZone_RefSys_TransformOrigin in monster_makevectors and Monster_FindTarget; refactors state machine (MONSTER_STATE_NORMAL/NOMOVE/LEAP); simplifies Monster_Attack_Melee signature; adds turn rate tuning (g_monsters_turnrate). Per-monster: Mage health 400→150 + passive heal logic, Wyvern melee attack + health 150→350, Zombie/Golem/Spider attack timing via Monster_Delay chains. Balance: round time 120s→600s, monster counts scale by player count, individual damage/speed tuning.'
+  recommendation: 'Port requires parity doc for warpzone transforms (WarpZone_RefSys_TransformOrigin), state machine (MONSTER_STATE_*), Invasion elimination/loot/skill systems. Key blocking: C# coordinate transform semantics for monster aiming. High priority — warpzone aiming fix solves broken AI on warpzone maps.'
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:Mario/monster_updates@33edc21c46d8
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1608
+  base_symbols:
+  - qcsrc/common/gametypes/gametype/invasion/sv_invasion.qc
+  - qcsrc/common/monsters/sv_monsters.qc
+  - qcsrc/common/monsters/monster/mage.qc
+  - qcsrc/common/monsters/monster/wyvern.qc
+  deep_dive: items/UW-0046-invasion-monster-warpzone-balance.md
+- uw: UW-0047
+  title: ''
+  headline: 'Upstream merges 22 commits adding three major feature groups to the Seeker weapon: (1) Tag guidability — secondary fire (tag dart) can now be laser-guided like Devastator rockets via new W_GuideProjectile helper extracted into qcsrc/server/weapons/common.qc (implements cosine-steering solver for smooth turnrate-limited trajectory toward crosshair); (2) Tag damage — tags deal impact damage on touch (new g_balance_seeker_tag_damage cvar, default 0, + tag_guiderate/guidedelay/guidegoal/guideratedelay balance parameters); (3) Effects overhaul — 18 commits refining particle behavior across Seeker, buffs, nades, and generic effects (new Seeker explosion/trail FX, Buff icon FX for Magnet/Vengeance/Swapper/Vampire, refined alpha-blending for player effects, new tag-strike spark at tag_touch).'
+  summary: 'Upstream merges 22 commits adding three major feature groups to the Seeker weapon: (1) Tag guidability — secondary fire (tag dart) can now be laser-guided like Devastator rockets via new W_GuideProjectile helper extracted into qcsrc/server/weapons/common.qc (implements cosine-steering solver for smooth turnrate-limited trajectory toward crosshair); (2) Tag damage — tags deal impact damage on touch (new g_balance_seeker_tag_damage cvar, default 0, + tag_guiderate/guidedelay/guidegoal/guideratedelay balance parameters); (3) Effects overhaul — 18 commits refining particle behavior across Seeker, buffs, nades, and generic effects (new Seeker explosion/trail FX, Buff icon FX for Magnet/Vengeance/Swapper/Vampire, refined alpha-blending for player effects, new tag-strike spark at tag_touch). Base symbols: W_Seeker_Tag_Think (new, guidance state), W_Seeker_Tag_Delete (new, lifecycle), W_GuideProjectile (extracted from Devastator, shared), W_SteerProjectileTo (shared solver), W_Seeker_Fire_Tag (extended with guiderate branching), bal-wep-xonotic.cfg (6 new tag_* params), effectinfo.txt (extensive particle additions/tweaks).'
+  recommendation: 'Accept (propose: port). The tag guidance feature is a natural extension of the Seeker''s identity and reuses the shared W_GuideProjectile framework from Devastator, lowering porting risk. Recommend prioritizing tag guidance + damage (core gameplay) over effects bulk-port; effects can be iterated in a follow-up pass once guidance is live. Verify that tag_guiderate=0 default preserves stock balance for users who do not opt in. Tag guidance should be gated behind a gameplay feature flag during development (e.g., ExperimentalSeekerGuide) to allow iterative balance tuning independent of the main 0.0.1 release cycle.'
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:k9er/seeker@f66037d92985
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/tree/k9er/seeker
+  base_symbols:
+  - qcsrc/common/weapons/weapon/seeker.qc
+  - qcsrc/common/weapons/weapon/devastator.qc
+  - qcsrc/server/weapons/common.qc
+  - bal-wep-xonotic.cfg
+  - qcsrc/common/effects/effectinfo.inc
+  - qcsrc/client/csqcmodel_hooks.qc
+  - effectinfo.txt
+  - qcsrc/common/weapons/all.qc
+  - qcsrc/common/weapons/all.qh
+  deep_dive: items/UW-0047-seeker-tag-guidance-effects-refactor.md
+- uw: UW-0048
+  title: ''
+  headline: Refactored mutators dialog from flat hardcoded layout to modular registry-driven architecture.
+  summary: 'Refactored mutators dialog from flat hardcoded layout to modular registry-driven architecture. Four commits: (1) Clean up Settings Game code; (2) Remake dialog with XonoticMutatorTab base class, MenuMutatorSource data source, per-mutator ui_*.qc/.qh files (bloodloss, buffs, cloaked, instagib, invincibleproj, jetpack, nades, nix, overkill, pinata, powerups, rocketflying, touchexplode, vampire); refactor dialog_multiplayer_create_mutators to use tabs and registry; remove weaponarenacheckbox.qc; add mutatortab.qc/qh; add skin theme colors; (3) Improve mutator enable conditions, add SetWeaponArena/SetWeaponStay/SetWeaponOverride hooks, prevent incompatible mutator pairs; (4) Add Buffs replace powerups string for clarity when both are enabled.'
+  recommendation: This is a substantive UI/infrastructure improvement that decouples mutator behavior from menu layout. The registry-driven pattern and per-mutator describe/canEnable hooks could inform how we organize our C# menu mutator panel. Port decision is Bryan's; SVQC changes are non-controversial and low-risk. Consider a deep-dive to map the per-mutator UI patterns to Godot equivalents before committing.
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:k9er/new-mutator-dialog@2accdf057be4
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1532
+  base_symbols:
+  - qcsrc/menu/xonotic/dialog_multiplayer_create_mutators.qc
+  - qcsrc/menu/xonotic/dialog_multiplayer_create_mutators.qh
+  - qcsrc/menu/xonotic/mutatortab.qc
+  - qcsrc/menu/xonotic/mutatortab.qh
+  - qcsrc/common/mutators/mutator/*/ui_*.qc
+  - qcsrc/common/mutators/mutator/*/ui_*.qh
+  - qcsrc/server/mutators/events.qh
+  - qcsrc/server/world.qc
+  - gfx/menu/*/skinvalues.txt
+  - xonotic-client.cfg
+  deep_dive: items/UW-0048-mutators-dialog-remake.md
+- uw: UW-0049
+  title: ''
+  headline: Server-gated buff auto-replace (add g_buffs_autoreplace cvar, default 0 disabled) + relocate dynamic light to carrier-held buff model only (reduce visual clutter on spawned items) + disable buff waypoints by default (g_buffs_waypoint_distance 0).
+  summary: 'Server-gated buff auto-replace (add g_buffs_autoreplace cvar, default 0 disabled) + relocate dynamic light to carrier-held buff model only (reduce visual clutter on spawned items) + disable buff waypoints by default (g_buffs_waypoint_distance 0). Three quality-of-life presentation/UX fixes addressing accidental replacements, map visual clutter, and HUD waypoint spam on team arena maps with dense buff spawns. Base symbols: sv_buffs.qc buff_Touch/buffs_BuffModel_Spawn/_Update/buff_Customize/buff_Init, sv_buffs.qh autocvar_g_buffs_autoreplace, mutators.cfg cvar defaults.'
+  recommendation: 'Port the server-side autoreplace gate (g_buffs_autoreplace cvar + AND in BuffTouch). Verify the dynamic light + waypoint relocation are already live in C# (they are — BuffsMutator.cs controls buff rendering directly). Update parity row buffs.item.touch_pickup with a note that g_buffs_autoreplace now also gates autoreplace server-side (mirrors line 224 of QC: `if (autocvar_g_buffs_autoreplace && CS_CVAR(toucher).cvar_cl_buffs_autoreplace && heldbuff != thebuff)`).'
+  relevance: high
+  decision: adapt
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data:bones_was_here/buffs_misc@0ce2f65e1
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1612
+  base_symbols:
+  - buff_Touch
+  - buffs_BuffModel_Spawn
+  - buffs_BuffModel_Update
+  - buff_Customize
+  - buff_Init
+  - autocvar_g_buffs_autoreplace
+  deep_dive: null
+- uw: UW-0050
+  title: ''
+  headline: Redesigns the machinegun with 60% faster sustained primary fire (0.1→0.0625s refire) and tighter accuracy (spread_add 0.012→0.0075, spread_decay 0.048→0.0768).
+  summary: 'Redesigns the machinegun with 60% faster sustained primary fire (0.1→0.0625s refire) and tighter accuracy (spread_add 0.012→0.0075, spread_decay 0.048→0.0768). Burst secondary enlarged 3→5 rounds at 28% faster cycle (0.045/0.4375s refire pair) to keep total burst damage constant despite lower primary DPS. Crouch modifier dropped 1→0.5 to make crouching meaningful without redundating the burst. Xonotic balance adjusted; Nexuiz25 gains three missing cvar definitions (spread_crouchmod, spread_min, sustained_refire). Touches: bal-wep-xonotic.cfg (14 insertions, 11 deletions), bal-wep-nexuiz25.cfg (3 insertions).'
+  recommendation: Strong candidate for port. Merged upstream, clean implementation, trivial to adopt (5-10 min to update balance.yaml / config), high gameplay relevance, zero regression risk (underlying fire logic already validated). Recommend Bryan review the design intent (faster/easier primary vs harder/faster burst) and decide if it aligns with Vortex Arena's intended feel — if yes, this is a green-light accept.
+  relevance: high
+  decision: pending
+  kind: data-cfg
+  effort: S
+  repo: data
+  source: data:bones_was_here/mg@f303494ba1be
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/tree/bones_was_here/mg
+  base_symbols:
+  - bal-wep-xonotic.cfg (g_balance_machinegun_*)
+  - bal-wep-nexuiz25.cfg (g_balance_machinegun_*)
+  deep_dive: null
+- uw: UW-0051
+  title: ''
+  headline: Complete rewrite of player movement physics across 20 commits (1166+645- qcsrc lines).
+  summary: 'Complete rewrite of player movement physics across 20 commits (1166+645- qcsrc lines). Implements full CPMA support and fixes known bugs: core velocity clipping upgraded to id tech 3, ground detection rewritten (frametime-independent jumping), water physics completely rewritten (separate accel/friction/flags/swimscale), Q3 and CPMA step-up behaviors (3 switchable modes), CPMA double jumps with prediction (step/ramp/headbang/teleport), Q3 skimming with gravity fix, Q3-derived unsticking, sloping ground-plane handling, slick/footstep optimizations. Removes legacy step code and standalone doublejump mutator. Touches physics-player (core accel/friction/jump, 19 tracking features), physics-movetypes (clipping/flymove, 13 features), and all preset configs.'
+  recommendation: Port. This is upstream consolidation of physics work proven non-regressive, extending the port's already-live physics fidelity into higher-skill modes (CPMA, Q3 skimming, double-jumps). The 20 commits are surgical, well-organized, and internally coherent. No porting friction expected beyond routine c#-ification. Propose scoping as part of Wave-N advanced-physics pass once Wave M (current) stabilizes; link parity registry rows (physics-player, physics-movetypes) to track extended baseline. Golden-trace tests for each new mode (CPMA step variants, water, crouch, skimming) should be added to the ported test suite (existing MovementParityTests infrastructure already covers Q1/Warsow/base Xonotic).
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:bones_was_here/ilikephysics4@582a369000d7
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1579
+  base_symbols:
+  - qcsrc/common/physics/player.qc
+  - qcsrc/common/physics/player.qh
+  - qcsrc/common/physics/movetypes/movetypes.qc
+  - qcsrc/common/physics/movetypes/movetypes.qh
+  - qcsrc/common/physics/movetypes/walk.qc
+  - qcsrc/common/physics/movetypes/step.qc
+  - qcsrc/common/stats.qh
+  - physics.cfg
+  - physicsCPMA.cfg
+  - physicsQ3.cfg
+  - qcsrc/ecs/systems/physics.qc
+  - qcsrc/common/mapobjects/teleporters.qc
+  - qcsrc/common/mapobjects/func/plat.qc
+  - qcsrc/common/mapobjects/func/button.qc
+  deep_dive: items/UW-0051-physics-cpma-complete-rewrite.md
+- uw: UW-0052
+  title: ''
+  headline: 'Performance optimizations for weapon damage calculations: WarpZone_FindRadius fast-path (skip expensive warpzone transforms when no warpzones in radius); squared-distance comparisons in Fireball/Napalm LaserPlay (avoid repeated sqrt); frame-decoupled damage ticks for Electro combo and Hook secondary (0.0625s intervals instead of per-frame); server-frame-only weapon firing gate; entity field cleanup.'
+  summary: 'Performance optimizations for weapon damage calculations: WarpZone_FindRadius fast-path (skip expensive warpzone transforms when no warpzones in radius); squared-distance comparisons in Fireball/Napalm LaserPlay (avoid repeated sqrt); frame-decoupled damage ticks for Electro combo and Hook secondary (0.0625s intervals instead of per-frame); server-frame-only weapon firing gate; entity field cleanup. Base symbols: qcsrc/lib/warpzone/common.qc/.qh, qcsrc/common/weapons/weapon/{electro,hook,fireball}.qc/.qh, qcsrc/common/mutators/mutator/nades/nade/napalm.qc/.qh, qcsrc/server/client.qc, qcsrc/server/bot/default/navigation.qh.'
+  recommendation: 'Port, with caveat: drop debug test commit (d87946b07) and verify WarpZone test harness logging is disabled in the final merge. The 9 core optimization commits are sound and improve both performance and determinism for hot-path weapon damage. When porting, mirror tick-rate constants (ELECTRO_COMBO_OVERTIME_DELAY, HOOK_SECONDARY_DELAY) and squared-distance logic in weapon damage codepaths. Add parity registry rows for Electro/Hook tick-rate changes and Fireball/Napalm optimization once ported.'
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:terencehill/weapon_attack_optimizations_TEST@d87946b0741f
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/tree/terencehill/weapon_attack_optimizations_TEST
+  base_symbols:
+  - WarpZone_FindRadius
+  - W_Electro_ExplodeComboThink
+  - W_Hook_ExplodeThink
+  - W_Fireball_LaserPlay
+  - napalm_damage
+  - ELECTRO_COMBO_OVERTIME_DELAY
+  - HOOK_SECONDARY_DELAY
+  - vlen2
+  deep_dive: items/UW-0052-weapon-attack-optimizations.md
+- uw: UW-0053
+  title: ''
+  headline: Replaces 6 teamshoot voice clip OGG files across marine, robot, specop, carni-lycan, and pyria-skadi player models to remove outdated slang.
+  summary: Replaces 6 teamshoot voice clip OGG files across marine, robot, specop, carni-lycan, and pyria-skadi player models to remove outdated slang. Pure binary asset replacement with no code or config changes. Merged upstream (commit 78de180a9, May 24 2026).
+  recommendation: Accept eventually for release polish, but defer to a post-alpha asset-sync pass. Audio assets are low-risk and portable, but not critical to core gameplay foundation. Bundle with other asset updates when planned.
+  relevance: low
+  decision: defer
+  kind: asset
+  effort: S
+  repo: data
+  source: data:Mario/teamshoot_cleanup@78de180a9cd4
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1607
+  base_symbols:
+  - sound/player/marine/coms/teamshoot3.ogg
+  - sound/player/marine/coms/teamshoot4.ogg
+  - sound/player/robot/coms/teamshoot3.ogg
+  - sound/player/specop/coms/teamshoot2.ogg
+  - sound/player/carni-lycan/coms/teamshoot3.ogg
+  - sound/player/pyria-skadi/coms/teamshoot2.ogg
+  deep_dive: null
+- uw: UW-0054
+  title: ''
+  headline: 'Three merged features: (1) New powerup models (strength/invincible/invisibility/speed relics via relic_powerup.md3 + skins, replacing legacy buff models); updated powerup item definitions to use shared relic model with skin indices instead of individual models; new powerup HUD icons.'
+  summary: 'Three merged features: (1) New powerup models (strength/invincible/invisibility/speed relics via relic_powerup.md3 + skins, replacing legacy buff models); updated powerup item definitions to use shared relic model with skin indices instead of individual models; new powerup HUD icons. (2) Enhanced CTF announcer with team-relative audio + new notifications for pickup/return events (relative team/enemy/you perspective), plus new team-scores announcer. Adds ~30 OGG audio files and modifies ctf_Handle_Pickup/ctf_Handle_Return logic. (3) Minigame busy indicator converted from IQM to sprite format with symlink. Touches: qcsrc/common/mutators/mutator/powerups/**, qcsrc/common/gamemodes/gamemode/ctf/sv_ctf.qc, qcsrc/common/notifications/all.inc, qcsrc/common/models/all.inc, notifications.cfg, shader files, models/relics/**, sound/announcer/**.
+
+
+    Base symbols: Powerup classes (StrengthItem, ShieldItem, SpeedItem, InvisibilityItem, PowerupStatusEffect variants), ctf_Handle_Pickup(), ctf_Handle_Return(), ctf_CheckFlagReturn(), MULTITEAM_ANNCE macro, MODEL() macro.'
+  recommendation: 'Recommend as a port candidate. The powerup model consolidation simplifies our item layer and improves visual consistency; the CTF announcer enhances competitiveness. Split into two work items: (1) Powerup model + item attribute updates (S — pure config), (2) CTF announcer + audio (M — requires audio asset pipeline setup and notification routing). Minigame sprite (already in base contrib 1/3) is trivial bonus if sprite loader is ready. Verify audio asset format support before committing; if not yet ported, defer minigame sprite until loader is available, or use legacy IQM as fallback.'
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:pending-release@61523510029f
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/tree/pending-release
+  base_symbols:
+  - StrengthItem
+  - ShieldItem
+  - SpeedItem
+  - InvisibilityItem
+  - PowerupStatusEffect
+  - ctf_Handle_Pickup
+  - ctf_Handle_Return
+  - ctf_CheckFlagReturn
+  - MULTITEAM_ANNCE
+  - MODEL
+  deep_dive: items/UW-0054-powerup-models-ctf-audio-minigame.md
+- uw: UW-0055
+  title: ''
+  headline: 'Comprehensive CTS/speedrun enhancements: new server-side strafe efficiency calculator (qcsrc/server/strafe.qc) that measures player strafing quality during race runs; four new scoreboard scoring fields (SP_CTS_STRAFE, SP_CTS_STARTSPEED, SP_CTS_AVGSPEED, SP_CTS_TOPSPEED) tracked per-player per-run; scoreboard UI updates to display these stats; and extensive strafehud client cvar refactoring (all ~115 hud_panel_strafehud_* cvars converted to AUTOCVAR_SAVE for persistent client storage).'
+  summary: 'Comprehensive CTS/speedrun enhancements: new server-side strafe efficiency calculator (qcsrc/server/strafe.qc) that measures player strafing quality during race runs; four new scoreboard scoring fields (SP_CTS_STRAFE, SP_CTS_STARTSPEED, SP_CTS_AVGSPEED, SP_CTS_TOPSPEED) tracked per-player per-run; scoreboard UI updates to display these stats; and extensive strafehud client cvar refactoring (all ~115 hud_panel_strafehud_* cvars converted to AUTOCVAR_SAVE for persistent client storage). Also includes balance config tweaks (crylink swap_attacks default, xdf spreadtype) and gameplay-supporting changes (RANKINGS_CNT increased 99→512, maplist rebuild command). Core files touched: qcsrc/server/strafe.qc (new), qcsrc/server/strafe.qh (new), qcsrc/server/race.qc/race.qh (enhanced tracking), qcsrc/common/scores.qh (new CTS score fields), qcsrc/client/hud/panel/scoreboard.qc (new stat rendering), qcsrc/client/hud/panel/strafehud.qh (cvar migration), bal-wep-*.cfg (weapon balance), qcsrc/common/gametypes/gametype/cts/sv_cts.qc (PlayerPhysics hook for stat accumulation), qcsrc/server/main.qc (RANKINGS_CNT read), qcsrc/common/stats.qh (Q3COMPAT_JUMPPADS stat).'
+  recommendation: 'Port. The strafe efficiency calculator and CTS stat fields are straightforward QC-to-C# ports with direct gameplay impact (ranked stat tracking is expected in speedruns). The strafehud cvar refactoring is mechanical and low-risk. Recommend pairing the strafe.qc port with an existing QC physics porter (already familiar with player movement, friction, air-acceleration logic) to ensure the calculation accuracy is byte-faithful. The scoreboard rendering and race.qc integration hooks can be handled by any C# developer. Estimated timeline: 2–3 days. Accept with the understanding that CTS is a tracked parity unit (see planning/parity/registry/cts.yaml) and the strafe stats should be added to the CTS feature ledger once ported (new unit: cts.stats.strafe_efficiency or merged into cts.score.rules as an extended-fields note).'
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:morosophos/server-current4@99df3a3c2
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/tree/morosophos/server-current4
+  base_symbols:
+  - qcsrc/server/strafe.qc:calculate_strafe_efficiency
+  - qcsrc/server/strafe.qh:.strafe_efficiency_*
+  - qcsrc/common/scores.qh:SP_CTS_STRAFE/STARTSPEED/AVGSPEED/TOPSPEED
+  - qcsrc/server/race.qc:race_avgspeed*/race_topspeed*
+  - qcsrc/common/gametypes/gametype/cts/sv_cts.qc:MUTATOR_HOOKFUNCTION(cts,PlayerPhysics)
+  - qcsrc/client/hud/panel/scoreboard.qc:Label_getInfo/Scoreboard_GetField
+  - qcsrc/client/hud/panel/strafehud.qh:AUTOCVAR_SAVE*
+  - qcsrc/common/constants.qh:RANKINGS_CNT
+  - bal-wep-*.cfg:g_balance_crylink_*
+  - qcsrc/common/command/generic.qc:GenericCommand_maplist case rebuild
+  deep_dive: items/UW-0055-cts-strafe-stats-strafehud.md
+- uw: UW-0056
+  title: ''
+  headline: Implements a 2D directional hit indicator that displays a visual arrow on screen when the player takes damage, pointing toward the damage source.
+  summary: Implements a 2D directional hit indicator that displays a visual arrow on screen when the player takes damage, pointing toward the damage source. Feature is enabled by default (cvar cl_hit_indicator) with extensive customization options (color, fade time, scale, text display). Refactors Damage_DamageInfo() to separate force magnitude from direction vector for better hit indication accuracy. Adds attacker entity reference to ENT_CLIENT_DAMAGEINFO network protocol. Includes specialized support for Arc beam and Shotgun melee impact display.
+  recommendation: 'Recommend port. The feature is high-value UX (directional hit feedback is expected in modern competitive shooters), fully upstream-stabilized, and low-risk to integrate. The Damage_DamageInfo refactor (force/dir split) is a genuine improvement that simplifies our C# damage system and reduces precision loss in network encoding. Port effort is M: decode attacker in client damage receiver (trivial), implement bounded hit indicator state machine (straightforward), and hook into view HUD render (existing pattern). No security/determinism/netcode implications. Cross-check with parity registry cl-damageeffects.net.sv_broadcast (already marked intended_divergence=true, so this addition to the protocol is within scope) and mutator-damagetext (which shares visual real estate, no conflict).'
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:terencehill/hit_indicator_v3@7d028f705fe8
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/tree/terencehill/hit_indicator_v3
+  base_symbols:
+  - qcsrc/client/view.qc:HitIndicatorUpdate,HitIndicatorShow
+  - qcsrc/client/player_skeleton.qc/qh:skeleton .species field
+  - qcsrc/common/effects/qc/damageeffects.qc:Damage_DamageInfo
+  - qcsrc/common/effects/qc/damageeffects.qc:Damage_DamageInfo_Apply
+  - qcsrc/common/effects/qc/damageeffects.qc:NET_HANDLE(ENT_CLIENT_DAMAGEINFO)
+  - qcsrc/common/mutators/mutator/waypoints/waypointsprites.qc:drawspritearrow
+  - qcsrc/server/weapons/tracing.qc:FireRailgunBullet,fireBullet_falloff
+  - qcsrc/server/damage.qc:RadiusDamageForSource
+  deep_dive: null
+- uw: UW-0057
+  title: ''
+  headline: 'Weapon attack optimizations: (1) Electro combo explode-over-time refactored from per-tick to 0.05s discrete damage ticks with fractional damage accumulation (ELECTRO_COMBO_OVERTIME_DELAY constant); (2) Hook secondary (grappling hook secondary fire) refactored similarly with 0.05s ticks (HOOK_SECONDARY_DELAY); removes intermediate `.dmg`/`.dmg_edge`/`.dmg_radius`/`.dmg_force` entity fields in favor of direct cvar reads, with `.dmg_last` tracking the fractional remainder; (3) Server-frame weapon firing restriction: uncommented `if(frametime)` gate in PlayerThink loop (was commented "allow firing on move frames"), so weapons only fire once per physics frame instead of per input frame — fixes attack spam on high tickrate; (4) WarpZone_FindRadius fast-path diagnostic test: commented-out fast-path code enabled with debug logging to compare native findradius() results vs WarpZone_FindRadius_Recurse() to catch divergences.'
+  summary: 'Weapon attack optimizations: (1) Electro combo explode-over-time refactored from per-tick to 0.05s discrete damage ticks with fractional damage accumulation (ELECTRO_COMBO_OVERTIME_DELAY constant); (2) Hook secondary (grappling hook secondary fire) refactored similarly with 0.05s ticks (HOOK_SECONDARY_DELAY); removes intermediate `.dmg`/`.dmg_edge`/`.dmg_radius`/`.dmg_force` entity fields in favor of direct cvar reads, with `.dmg_last` tracking the fractional remainder; (3) Server-frame weapon firing restriction: uncommented `if(frametime)` gate in PlayerThink loop (was commented "allow firing on move frames"), so weapons only fire once per physics frame instead of per input frame — fixes attack spam on high tickrate; (4) WarpZone_FindRadius fast-path diagnostic test: commented-out fast-path code enabled with debug logging to compare native findradius() results vs WarpZone_FindRadius_Recurse() to catch divergences. Base symbols: qcsrc/common/weapons/weapon/electro.qc (W_Electro_ExplodeComboThink, W_Electro_Orb_ExplodeOverTime); qcsrc/common/weapons/weapon/hook.qc (W_Hook_ExplodeThink, W_Hook_Explode2); qcsrc/lib/warpzone/common.qc (WarpZone_FindRadius); qcsrc/server/client.qc (PlayerThink); qcsrc/server/bot/default/navigation.qh (entity field for bot danger detection).'
+  recommendation: Defer. Incomplete + stale (3mo) + debug code + no MR. Targets xonotic server spam, not Vortex. Await upstream MR review, WarpZone test split/finalization, and master merge. If stable, revisit in next parity wave to evaluate Electro combo overtime port and server-frame firing semantics vs deterministic fixed-timestep.
+  relevance: low
+  decision: defer
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:terencehill/weapon_attack_optimizations_test@b1f4589a25a9
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/tree/terencehill/weapon_attack_optimizations_test
+  base_symbols:
+  - qcsrc/common/weapons/weapon/electro.qc:W_Electro_ExplodeComboThink
+  - qcsrc/common/weapons/weapon/electro.qc:W_Electro_Orb_ExplodeOverTime
+  - qcsrc/common/weapons/weapon/electro.qh:.dmg_last
+  - qcsrc/common/weapons/weapon/hook.qc:W_Hook_ExplodeThink
+  - qcsrc/common/weapons/weapon/hook.qc:W_Hook_Explode2
+  - qcsrc/common/weapons/weapon/hook.qh:dmg-related fields
+  - qcsrc/lib/warpzone/common.qc:WarpZone_FindRadius
+  - qcsrc/server/client.qc:PlayerThink
+  - qcsrc/server/bot/default/navigation.qh:.dmg
+  deep_dive: items/UW-0057-weapon-attack-optimizations-test.md
+- uw: UW-0058
+  title: ''
+  headline: Refactors network serialization to use explicit WriteSignedByte/ReadSignedByte macros (replacing ambiguous WriteChar/ReadChar), fixes WriteShort/ReadShort to use symmetric signed arithmetic, adds WriteInt24_t/ReadInt24_t, and converts 20 callsites across scores, votes, mapvoting, animations, sound, and tuba.
+  summary: Refactors network serialization to use explicit WriteSignedByte/ReadSignedByte macros (replacing ambiguous WriteChar/ReadChar), fixes WriteShort/ReadShort to use symmetric signed arithmetic, adds WriteInt24_t/ReadInt24_t, and converts 20 callsites across scores, votes, mapvoting, animations, sound, and tuba. Prevents future serialization bugs by hiding old builtins behind DO_NOT_USE guards. Touches qcsrc/lib/net.qh (core infra), qcsrc/client/main.qc, qcsrc/client/mapvoting.qc, qcsrc/common/{csqcmodel_settings.qh, effects/qc/globalsound.qc, ent_cs.qc}, qcsrc/common/weapons/weapon/tuba.qc, qcsrc/server/{command/vote.qc, mapvoting.qc, scores.qc}, qcsrc/dpdefs/{csprogsdefs,menudefs,post,progsdefs}.qh.
+  recommendation: The Godot C# netcode layer will have its own serialization API, but must replicate the sign/range semantics and value table from this branch. This defines the network format spec (WriteShort/ReadShort symmetry, signed byte ranges, 24-bit support). Port as a protocol spec to a parity registry row; implement the C# equivalent idiomatically.
+  relevance: high
+  decision: adapt
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data:terencehill/misc_stuff@3ee28d7e6aa8
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/tree/terencehill/misc_stuff
+  base_symbols:
+  - WriteSignedByte
+  - ReadSignedByte
+  - WriteInt24_t
+  - ReadInt24_t
+  - WriteShort
+  - ReadShort
+  - WriteChar (deprecated)
+  - ReadChar (deprecated)
+  deep_dive: items/UW-0058-network-serialization-signed-bytes.md
+- uw: UW-0059
+  title: ''
+  headline: Refactor extracts duplicate player-state initialization logic (jump-held, onground, onslick detection) from strafehud.qc and physics.qc into a shared macro STRAFEHUD_INIT_SOME_VARS() in strafehud.qh.
+  summary: Refactor extracts duplicate player-state initialization logic (jump-held, onground, onslick detection) from strafehud.qc and physics.qc into a shared macro STRAFEHUD_INIT_SOME_VARS() in strafehud.qh. Touches qcsrc/client/hud/panel/{strafehud.qc, strafehud.qh, physics.qc}; no behavior change, pure code deduplication.
+  recommendation: Accept and port. This is a pure maintenance improvement with zero behavioral risk. The port should adopt the refactor to align its strafehud/physics HUD layer with upstream structure, improving future backport ease. In C#, implement as a static utility method or inline pattern. Small enough to merge in a single commit alongside other HUD cleanup, or standalone if bundled with a strafehud feature gate.
+  relevance: high
+  decision: port
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data:terencehill/strafehud_code_cleanup@2c81978c1
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/tree/terencehill/strafehud_code_cleanup
+  base_symbols:
+  - qcsrc/client/hud/panel/strafehud.qc
+  - qcsrc/client/hud/panel/strafehud.qh
+  - qcsrc/client/hud/panel/physics.qc
+  - StrafeHUD_DetermineJumpHeld
+  - StrafeHUD_DetermineOnGround
+  - StrafeHUD_DetermineOnSlick
+  - STRAFEHUD_INIT_SOME_VARS
+  deep_dive: null
+- uw: UW-0060
+  title: ''
+  headline: 'Adjusts four client-side visual feedback cvars: reduces HUD shake amplitude (0.2→0.075), increases spawn zoom speed (1→2.5), dampens landing view swing (0.05→0.03), and slows fall-bounce cycle (3→5).'
+  summary: 'Adjusts four client-side visual feedback cvars: reduces HUD shake amplitude (0.2→0.075), increases spawn zoom speed (1→2.5), dampens landing view swing (0.05→0.03), and slows fall-bounce cycle (3→5). Pure cosmetic feel tuning in _hud_common.cfg and xonotic-client.cfg; no gameplay or netcode impact.'
+  recommendation: Wait for MR to land on master and finalize. Cosmetic cvar tuning is low-priority until core gameplay and feel framework are stable. Trivial to port later if Vortex Arena's playtesting aligns with Xonotic's feel preferences; easy to diverge if we prefer different tuning. Defer to post-MVP phase.
+  relevance: low
+  decision: defer
+  kind: data-cfg
+  effort: S
+  repo: data
+  source: data:k9er/defaults@d95e66a7813c
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1593
+  base_symbols:
+  - _hud_common.cfg
+  - xonotic-client.cfg
+  deep_dive: null
+- uw: UW-0061
+  title: ''
+  headline: Adds `hud_panel_scoreboard_minimal` cvar to enable a compact scoreboard layout that merges team tables, hides redundant headers, and combines accuracy/item stats into one panel.
+  summary: Adds `hud_panel_scoreboard_minimal` cvar to enable a compact scoreboard layout that merges team tables, hides redundant headers, and combines accuracy/item stats into one panel. Refactors player icon code to use set-count tracking instead of ad-hoc array checks. Adds deathscoreboard flag to ShowRankings hook so mutators can suppress rankings when player is dead (Duel mode exemption shows full scoreboard). Updates CTF/CTS/Race mutator callbacks to handle new hook signature. Touches qcsrc/client/hud/panel/scoreboard.qc (main logic), scoreboard.qh, vote.qc, events.qh, gametype mutator callbacks, and HUD config files.
+  recommendation: 'Port if VA has mobile/compact UI roadmap near-term; defer to post-launch UI polish if desktop 1080p+ is primary target. Technical risk is LOW (isolated to client scoreboard rendering, no netcode/physics). Mechanical work to adapt: refactor layout/drawing logic to Godot, update CTF/CTS/Race mutator callbacks with deathscoreboard parameter. Estimated effort: 1–2 developer-days for full port + testing. No known regressions.'
+  relevance: medium
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:k9er/scoreboard-improvements@63ad661d8615
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1584
+  base_symbols:
+  - Scoreboard_MakeTable
+  - Scoreboard_GetName
+  - Scoreboard_DrawItem
+  - Scoreboard_FixColumnWidth
+  - Scoreboard_AccuracyStats_Draw
+  - Scoreboard_ItemStats_Draw
+  - Scoreboard_AccuracyAndItemStats_Draw
+  - Scoreboard_Rankings_Draw
+  - Scoreboard_Draw
+  - Scoreboard_Fraglimit_Draw
+  - Scoreboard_WouldDraw
+  - autocvar_hud_panel_scoreboard_minimal
+  - MUTATOR_HOOKABLE(ShowRankings, EV_ShowRankings)
+  deep_dive: null
+- uw: UW-0062
+  title: ''
+  headline: CPMA/Q3 physics rewrite (double-jumps, Q3 stepup, ground/water/velocity-clip rewrite) + CTS strafe-efficiency & per-run race stats; bundles UW-0051+UW-0055
+  summary: CPMA/Q3 physics rewrite (double-jumps, Q3 stepup, ground/water/velocity-clip rewrite) + CTS strafe-efficiency & per-run race stats; bundles UW-0051+UW-0055
+  recommendation: Port in 2 phases (physics then strafe/race stats); OVERLAPS active strafe-parity work — reconcile first
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: L
+  repo: data
+  source: data:morosophos/server-ilikephysics4@ba4fcb77dd6f
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/tree/morosophos/server-ilikephysics4
+  base_symbols: []
+  deep_dive: items/UW-0062-cpma-physics-cts-strafe-stats.md
+- uw: UW-0063
+  title: ''
+  headline: 2D directional hit indicator HUD element (arrow pointing to attacker when player takes damage).
+  summary: '2D directional hit indicator HUD element (arrow pointing to attacker when player takes damage). Renders up to 10 concurrent indicators around screen center, fading over 1.5s, sized by damage amount. Fully configurable: fade time, alpha, radius, color, optional damage text overlay. Integrates with damage-text mutator (extends wire to include attacker entity, adjusts server visibility tier). Refactors drawspritearrow() rendering to support base_alpha distinction, scale parameters, inversion, and border toggle — backwards-compatible, benefits waypoint system. Base symbols: HitIndicatorUpdate/Show, drawspritearrow (signature), write_damagetext (wire), xonotic-client.cfg cvars.'
+  recommendation: 'Strong candidate for porting. Quality is solid, alignment is clear, effort is moderate. Adds real user-facing feedback value. If porting: follow DamageTextLayer HUD pattern, map drawspritearrow params to Godot polygon drawing, integrate entcs tracking with damage-text pipeline, add to parity registry under cl-view or new hud-feedback unit. If deferring: note in WISHLIST for future HUD infrastructure phase.'
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:terencehill/hit_indicator_v2@36feda8d4fb5
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1262
+  base_symbols:
+  - qcsrc/client/view.qc:HitIndicatorUpdate
+  - qcsrc/client/view.qc:HitIndicatorShow
+  - qcsrc/client/view.qh:autocvar_cl_hit_indicator*
+  - qcsrc/common/mutators/mutator/damagetext/sv_damagetext.qc:write_damagetext
+  - qcsrc/common/mutators/mutator/waypoints/waypointsprites.qc:drawspritearrow
+  - xonotic-client.cfg:cl_hit_indicator*
+  deep_dive: items/UW-0063-hud-hit-indicator.md
+- uw: UW-0064
+  title: ''
+  headline: Refactors modicon HUD panel animations and networking across 9 game modes (CTF, Domination, Keepaway, Keyhunt, LMS, Nexball, TKA, CA/FT, Survival) plus new Onslaught modicons.
+  summary: Refactors modicon HUD panel animations and networking across 9 game modes (CTF, Domination, Keepaway, Keyhunt, LMS, Nexball, TKA, CA/FT, Survival) plus new Onslaught modicons. Replaces per-stat networking (OBJECTIVE_STATUS, REDALIVE/BLUEALIVE, DOM_PPS_*, TKA_BALLSTATUS) with gametype-specific NET_HANDLE entities (e.g., ENT_CLIENT_CTF_FLAGSTATUSES). Adds animation toggle hud_panel_modicons_animations cvar with blink/expand effects. Consolidates drawing into HUD_Mod_TableWithAR_Draw() and HUD_Mod_EliminatedPlayers_DrawItem() helpers. Removes unused server/teamplay.qc getters/setters. 15 commits, 1991 insertions, 1407 deletions.
+  recommendation: Prioritize for porting after core gameplay modes (CTF, Domination) are netcode-ready. Assign to netcode owner for NET_HANDLE mapping audit. Refer to parity registry for any existing modicons/stat tracking units that may need updates post-port. The stat removal (OBJECTIVE_STATUS, etc.) is a breaking change for any third-party gametype code—flag in TODO.md if ported.
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:k9er/modicons-and-networking@dbbc6e74bab8
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1582
+  base_symbols:
+  - qcsrc/common/stats.qh (removes OBJECTIVE_STATUS, REDALIVE/BLUEALIVE/YELLOWALIVE/PINKALIVE, DOM_PPS_*, TKA_BALLSTATUS)
+  - qcsrc/common/net_linked.qh (adds SF_ELIMPLAYERS_* flags)
+  - qcsrc/client/hud/panel/modicons.qh (adds autocvar_hud_panel_modicons_animations, HUD_Mod_TableWithAR_Draw, HUD_Mod_EliminatedPlayers_DrawItem, HUD_Mod_SmoothlyUpdateCachedValue)
+  - qcsrc/server/teamplay.qc/qh (removes team getter/setter helpers)
+  - 'Per-gametype: ctf/cl_ctf.qc (NET_HANDLE ENT_CLIENT_CTF_FLAGSTATUSES), domination, keepaway, keyhunt, lms, nexball, tka, clanarena/freezetag, survival, onslaught (new modicons)'
+  deep_dive: items/UW-0064-modicons-panels-networking-refactor.md
+- uw: UW-0065
+  title: ''
+  headline: 8-commit series fixing and improving monster attack logic, team handling, and damage function signatures across monsters and weapons.
+  summary: '8-commit series fixing and improving monster attack logic, team handling, and damage function signatures across monsters and weapons. Monster changes: fixes argument passing to damage functions (RadiusDamage calls swap NULL to this for proper inflictor tracking in golem/mage/spider/wyvern); adds defensive checks (IS_DEAD, health>0, MONSTER_IS_ENEMY) to monster damage handlers and spell loops; introduces MONSTERS_TEAMED and MONSTER_IS_ENEMY macros to centralize team logic, replacing scattered DIFF_TEAM/SAME_TEAM checks. Weapon changes: fixes bot-aim warpzone interactions by replacing simple vdist distance checks with WarpZone_FindRadius loops in devastator/electro/rifle/shotgun/machinegun/overkill/tuba/porto; refactors devastator remote-detonation safety logic (clearer timer vs proximity branches); fixes shotgun slap ammo gate (check &lt; cost, not &lt;= 0); simplifies phaser weapon firing timing; updates vaporizer to RadiusDamageForSource signature. All changes maintain Base gameplay fidelity and improve correctness in edge cases (warpzone targeting, team-aware monster attacks, damage propagation).'
+  recommendation: Port and adapt. The monster team macros should be ported to MonsterAI.cs as utility methods (e.g., IsTeamMonster, IsEnemyTarget) for clarity in the C# context. Warpzone loop patterns should be retrofitted into existing weapon bot-aim code (Devastator.WeaponAimBot, Electro.WeaponAimBot, etc.); this is a high-confidence mechanical port. Damage argument fixes are straightforward (swap RadiusDamage calls to RadiusDamageForSource or equivalent in the Godot damage system). Recommend reviewing the committed test hash to ensure no regressions in monster behavior.
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:k9er/wep-turret-monster-fixes@678a2f4b28d2
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/tree/k9er/wep-turret-monster-fixes
+  base_symbols:
+  - Monster_ValidTarget
+  - MONSTER_IS_ENEMY
+  - MONSTERS_TEAMED
+  - M_Golem_Attack_Lightning_Explode
+  - M_Mage_Attack_Push
+  - M_Spider_Attack_Web_Explode
+  - M_Wyvern_Attack_Fireball_Explode
+  - M_Zombie_Attack
+  - monster_setupcolors
+  - monster_changeteam
+  - W_Devastator_RemoteExplode
+  - W_Electro_CheckAttack
+  - W_Fireball_Firemine_Think
+  - W_MachineGun_Attack_Burst
+  - W_Porto_Fail
+  - W_Shotgun_Attack
+  - W_Tuba
+  - W_Vaporizer_Attack
+  - W_RocketMinsta_Explosion
+  - RadiusDamage
+  - RadiusDamageForSource
+  - WarpZone_FindRadius
+  deep_dive: null
+- uw: UW-0066
+  title: ''
+  headline: 'Upstream polishing of cvar metadata and naming across 6 commits: standardize gametype cvar names to g_* prefix, rename KeyHunt cvars to g_kh*, capitalize all cvar descriptions (2,242 lines), add g_balance_* descriptions (1,550 lines), add vehicle cvar descriptions, and rename gamemodes-client.cfg to gametypes-client.cfg.'
+  summary: 'Upstream polishing of cvar metadata and naming across 6 commits: standardize gametype cvar names to g_* prefix, rename KeyHunt cvars to g_kh*, capitalize all cvar descriptions (2,242 lines), add g_balance_* descriptions (1,550 lines), add vehicle cvar descriptions, and rename gamemodes-client.cfg to gametypes-client.cfg. All changes are configuration metadata; no gameplay logic or protocol changes. Touches: balance-*.cfg, gametypes-*.cfg, vehicles.cfg, qcsrc/common/gametypes/**/*.qc, qcsrc/common/gametypes/**/*.qh.'
+  recommendation: Defer until cvar exposure / gametype naming is decided for Vortex Arena. The cvar naming consistency (especially g_kh_* and gametype-prefix alignment) will be valuable when rebuilding those subsystems in C#, but the mechanical descriptions and file renames are lower priority. No urgent gameplay impact; resurface this when implementing the balance/gametype configuration system in the port.
+  relevance: medium
+  decision: defer
+  kind: data-cfg
+  effort: S
+  repo: data
+  source: data:k9er/no-custom-cvar@8e02889178ac
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/tree/k9er/no-custom-cvar
+  base_symbols:
+  - gametypes-client.cfg
+  - gametypes-server.cfg
+  - vehicles.cfg
+  - qcsrc/common/gametypes/gametype/*/
+  - qcsrc/common/gametypes/gametype/*/*
+  - g_balance_*
+  - g_kh_*
+  deep_dive: null
+- uw: UW-0068
+  title: ''
+  headline: Adds client-side visual checkpoint outlines for race/CTS modes.
+  summary: 'Adds client-side visual checkpoint outlines for race/CTS modes. Upstream adds ~280 lines of new QC in outline.qc/outline.qh with: (1) a server-side outline entity spawner (Outline_Spawn, triggered on each trigger_race_checkpoint + q3-style target_checkpoint) that sends bounding-box data over the network, (2) client-side rendering code (outline_draw) drawing a 12-edge wireframe box around each checkpoint using R_BeginPolygon, with customizable width/color/fill via cvars (cl_race_checkpoint_outline, _width, _color, _fill), (3) a server cvar gate (sv_race_checkpoint_outline, default 1) to disable the feature wholesale, (4) includes a temporary DarkPlaces workaround (ONE_MINUS_EPSILON = 0.999999940395355224609375) for an alpha transparency bug in DP polygon drawing. Base files touched: qcsrc/common/gametypes/gametype/race/ (_mod.inc, _mod.qh, outline.qc, outline.qh), qcsrc/server/race.qc (defrag_waypointsprites + spawnfunc trigger_race_checkpoint call sites), xonotic-{client,server}.cfg (4 cvars). Symbols: Outline_Spawn, outline_draw, ENT_CLIENT_RACE_OUTLINE network entity, CORNER_MASK_* constants, FACE_*_AXIS orientation enums.'
+  recommendation: 'A clean, low-risk visualization feature with straightforward portability. Server-side plumbing trivial; client-side rendering is pure QC math. Godot port is a modest Mesh-gen task or a simple DebugDraw overlay. Gameplay-neutral (races play identically without it). Recommend: submit to Bryan for decision. If ported, the effort is S and the divergence risk is zero. Not a blocker, but a nice-to-have for race UX and demo visibility.'
+  relevance: medium
+  decision: pending
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data:Juhu/race_checkpoint_outlines@d30562e91f8e
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1556
+  base_symbols:
+  - qcsrc/common/gametypes/gametype/race/outline.qc:Outline_Spawn
+  - qcsrc/common/gametypes/gametype/race/outline.qc:outline_draw
+  - qcsrc/common/gametypes/gametype/race/outline.qc:outline_drawline
+  - qcsrc/common/gametypes/gametype/race/outline.qc:outline_drawfill
+  - qcsrc/common/gametypes/gametype/race/outline.qc:outline_send
+  - qcsrc/common/gametypes/gametype/race/outline.qh:autocvar_sv_race_checkpoint_outline
+  - qcsrc/common/gametypes/gametype/race/outline.qh:autocvar_cl_race_checkpoint_outline*
+  - qcsrc/server/race.qc:defrag_waypointsprites
+  - qcsrc/server/race.qc:spawnfunc(trigger_race_checkpoint)
+  deep_dive: null
+- uw: UW-0069
+  title: ''
+  headline: Changes g_duel_not_dm_maps default from 0 to 1 in gametypes-server.cfg, making DM-only maps excluded from Duel's map list by default (opt-out instead of opt-in).
+  summary: Changes g_duel_not_dm_maps default from 0 to 1 in gametypes-server.cfg, making DM-only maps excluded from Duel's map list by default (opt-out instead of opt-in). Also clarifies cvar description. The port's MapInfoBackend.ApplyForcedGametypes already implements the full logic; this is a straightforward default-value update aligned with upstream's UX improvement for duel map selection.
+  recommendation: Accept and port. Mirror the default value change (1 instead of 0) and description clarification in XonoticGodot's config/menu layer (likely one-line in gametypes-server.cfg + verification that ForceDuelOnDmMaps default propagates correctly). Low friction, high alignment. Update the duel.mapsupport.gating parity unit to note the default value shift if tracked as a tracked constant.
+  relevance: medium
+  decision: port
+  kind: data-cfg
+  effort: S
+  repo: data
+  source: data:bones_was_here/g_duel_not_dm_maps@a9767741d74f
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1343
+  base_symbols:
+  - gametypes-server.cfg::g_duel_not_dm_maps (default value)
+  - gametypes-server.cfg::g_duel_not_dm_maps (description)
+  deep_dive: null
+- uw: UW-0070
+  title: ''
+  headline: '5-commit series improving monster subsystem: introduces MONSTER_IS_ENEMY and MONSTERS_TEAMED macros that centralize self/owner/team attack-legality logic, fixing bugs where monsters could attack themselves or their owners in teamed modes.'
+  summary: '5-commit series improving monster subsystem: introduces MONSTER_IS_ENEMY and MONSTERS_TEAMED macros that centralize self/owner/team attack-legality logic, fixing bugs where monsters could attack themselves or their owners in teamed modes. Refactors Monster_Attack_Melee damage calls from spawn-temp-entity to RadiusDamageForSource with explicit parameters. Adds VM ifdefs for proper GAMEQC/SVQC compilation gating. Adopts consistent code formatting (4-space indentation, brace style), aligns constants to BIT() notation, normalizes include paths. Touches Monster_ValidTarget, FindTarget, monster_makevectors, and all five monster Attack implementations (Golem, Mage, Spider, Wyvern, Zombie).'
+  recommendation: 'This is real, well-reasoned gameplay improvement upstream. The MONSTER_IS_ENEMY macro fix is a win (even though our ValidTarget is already faithful). However, direct porting is not urgent: (1) our parity audit confirms the behavior is already correct in the port, (2) the damage refactoring targets DP internals we''ve replaced, (3) formatting/constants are polish. Recommend: triage as medium-worth, pending decision. If accepted, a task would be to verify our current ValidTarget/FindTarget/makevectors against this reference and spot-check for any team-awareness gaps the macro exposes in other attack paths (Golem_Attack_Lightning_Damage, etc.). Create a parity registry note linking this branch as validation of our existing team-aware gates.'
+  relevance: medium
+  decision: pending
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data:k9er/monster-fixes-and-cleanup@0b70cf658d5c
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/tree/k9er/monster-fixes-and-cleanup
+  base_symbols:
+  - qcsrc/common/monsters/sv_monsters.qc:Monster_ValidTarget
+  - qcsrc/common/monsters/sv_monsters.qc:Monster_FindTarget
+  - qcsrc/common/monsters/sv_monsters.qc:monster_makevectors
+  - qcsrc/common/monsters/sv_monsters.qh:MONSTER_IS_ENEMY
+  - qcsrc/common/monsters/sv_monsters.qh:MONSTERS_TEAMED
+  - qcsrc/common/monsters/monster.qh:Monster
+  - qcsrc/common/monsters/monster/golem.qc:M_Golem_Attack
+  deep_dive: null
+- uw: UW-0071
+  title: ''
+  headline: Introduces a lightweight "core" Overkill variant (`g_overkill 1`) that can be enabled via the mutators dialog, separate from the full Overkill mod (enabled by config).
+  summary: Introduces a lightweight "core" Overkill variant (`g_overkill 1`) that can be enabled via the mutators dialog, separate from the full Overkill mod (enabled by config). Core has no custom models/physics/nades/dodging. Adds server→client `modname` protocol field; Overkill mutator activation decoupled from `g_mod_balance` check; conditional mod-name reporting; UI checkbox added to mutators menu.
+  recommendation: 'Port this. It unlocks menu-driven Overkill selection for our already-ported OverkillMutator, removing a prior blocker (required full config load). The protocol change (modname field) is minimal and mirrors the upstream spec. Adaptation note: ensure our netcode serializes/deserializes modname alongside version/map on ServerWelcome (trivial string field add). The UI menu work is a future polish; core gameplay ports first.'
+  relevance: high
+  decision: port
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:terencehill/overkill-core@99fde21bd464
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/tree/terencehill/overkill-core
+  base_symbols:
+  - net_handle_ServerWelcome
+  - REGISTER_MUTATOR(ok)
+  - SetModname hook
+  - BuildMutatorsString hook
+  - BuildMutatorsPrettyString hook
+  - checkCompatibility_newtoys
+  - build_mutator_list
+  deep_dive: items/UW-0071-overkill-core-variant.md
+- uw: UW-0072
+  title: ''
+  headline: Moves fuel display from HealthArmor panel to Ammo panel, making it display alongside ammo/weapons.
+  summary: 'Moves fuel display from HealthArmor panel to Ammo panel, making it display alongside ammo/weapons. Four commits: (1) core relocation with unhiding RES_FUEL; (2) conditional fuel display based on hook/jetpack consumption (adds HOOK_FUEL stat); (3) fixes onlycurrent layout; (4) adds optional always-show mode. Touches ammo.qc/qh, healtharmor.qc/qh, weapons.qc, server/world.qc, stats.qh, resources/all.inc, hook/sv_hook.qc, menu dialogs, and 7 HUD config files.'
+  recommendation: Port as-is. No blockers, no conflicts with our design. Already-ported panels (ammo/healtharmor) provide a clean foundation. The conditional fuel-consumption logic (HOOK_FUEL stat) should be cross-checked against our jetpack implementation to ensure parity on when fuel is consumed, but this is routine porting work, not a risk. Create a parity registry amendment row (or amend cl-hud.panel.ammo and cl-hud.panel.healtharmor to reflect the new consolidated layout) once ported. Assign effort M, owner triage on priority (not a blocker for release, nice-to-have UX).
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:terencehill/fuel_on_ammo_panel@87667d0ed179
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1345
+  base_symbols:
+  - qcsrc/client/hud/panel/ammo.qc
+  - qcsrc/client/hud/panel/ammo.qh
+  - qcsrc/client/hud/panel/healtharmor.qc
+  - qcsrc/client/hud/panel/healtharmor.qh
+  - qcsrc/client/hud/panel/weapons.qc
+  - qcsrc/server/world.qc
+  - qcsrc/common/stats.qh
+  - qcsrc/common/resources/all.inc
+  - qcsrc/common/mutators/mutator/hook/sv_hook.qc
+  - qcsrc/menu/xonotic/dialog_hudpanel_ammo.qc
+  - qcsrc/menu/xonotic/dialog_hudpanel_ammo.qh
+  deep_dive: items/UW-0072-fuel_on_ammo_panel.md
+- uw: UW-0073
+  title: ''
+  headline: Hides unavailable ammo type cells in the HUD ammo panel based on gamemode restrictions (Weapon Arena, Melee Only, Instagib).
+  summary: Hides unavailable ammo type cells in the HUD ammo panel based on gamemode restrictions (Weapon Arena, Melee Only, Instagib). Introduces Resource.m_hidden flag, refactors ammo panel to dynamically count visible ammo types, and transmits weapon arena availability from server to client. Four commits spanning client HUD rendering (qcsrc/client/hud/panel/ammo.qc), weapon arena tracking (qcsrc/client/view.qc), server transmission (qcsrc/server/client.qc), and mutator-specific client-side hiding (qcsrc/common/mutators/mutator/{instagib,melee_only}/cl_*.qc).
+  recommendation: Port candidate. Real gameplay/UX improvement for restricted-arsenal modes. Moderate port effort (HUD refactor + mutator client integrations + weapon arena sync). No technical blockers identified. Bryan's call on scheduling priority.
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:terencehill/ammo_panel_hide_unavailable@4298b12ef8e9
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/tree/terencehill/ammo_panel_hide_unavailable
+  base_symbols:
+  - Resource.m_hidden
+  - qcsrc/client/hud/panel/ammo.qc::DrawAmmoItem
+  - qcsrc/client/hud/panel/ammo.qc::HUD_Ammo
+  - qcsrc/client/view.qc::CSQC_UpdateView
+  - qcsrc/server/client.qc::ClientConnect
+  - qcsrc/common/mutators/mutator/instagib/cl_instagib.qc::REGISTER_MUTATOR
+  - qcsrc/common/mutators/mutator/melee_only/cl_melee_only.qc::REGISTER_MUTATOR
+  - _cl_weaponarena_weapons
+  deep_dive: items/UW-0073-ammo-panel-hide-unavailable.md
+- uw: UW-0074
+  title: ''
+  headline: Pauses the warmup countdown while a vote is active, preventing last-second vote abuse during game startup.
+  summary: Pauses the warmup countdown while a vote is active, preventing last-second vote abuse during game startup. Increments game_starttime by RESTART_COUNTDOWN when a vote begins (VoteCommand_call, VoteCommand_master) and by frametime each frame during active vote + warmup (VoteThink). Touches qcsrc/server/command/vote.qc; modifies VoteThink, VoteCommand_call, VoteCommand_master; uses game_starttime, warmup_stage, RESTART_COUNTDOWN, vote_endtime.
+  recommendation: Wait for upstream finalization. The Draft MR indicates design/community feedback is still in motion. Once merged to master, elevate to 'port' and add to TODO.md. If upstream rejects or significantly rewrites, revisit. Low-risk port candidate once upstream stabilizes; recommend accepting in next triage cycle if merged.
+  relevance: medium
+  decision: pending
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data:k9er/vote-pause-warmup@82ed21a74f26
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1515
+  base_symbols:
+  - VoteThink
+  - VoteCommand_call
+  - VoteCommand_master
+  - game_starttime
+  - warmup_stage
+  - RESTART_COUNTDOWN
+  - vote_endtime
+  deep_dive: null
+- uw: UW-0075
+  title: ''
+  headline: New votable command `rebalanceplayer <player_id>` that swaps the given player with the worst-performing player (by score-per-alive-time) on the opposite team.
+  summary: 'New votable command `rebalanceplayer <player_id>` that swaps the given player with the worst-performing player (by score-per-alive-time) on the opposite team. Works only in 2-team matches during play. Can be deferred to map-end in round-based modes (CA, FreezeTag). Includes quickmenu, vote parsing, gamemode hooks. Base symbols: server/teamplay.qh (TEAM_CHANGE_* enum consolidation), server/teamplay.qc (SetPlayerTeam/MoveToTeam add autobalancebots param), server/command/sv_cmd.qc (new GameCommand_rebalanceplayer), server/command/vote.qc (parse + defer), quickmenu.qc (UI), clanarena/freezetag (hooks), commands.cfg (alias + whitelist).'
+  recommendation: Port. Low-risk, high-value. Complements existing team-admin suite without changing core gameplay. Refactors autobalancebots parameter (good even if unused elsewhere). Add feature row to sv-commands-votes parity registry when ported.
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data:terencehill/rebalanceplayer@5c98b53bbe41
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1512
+  base_symbols:
+  - server/teamplay.qh
+  - server/teamplay.qc
+  - server/command/sv_cmd.qc
+  - server/command/sv_cmd.qh
+  - server/command/vote.qc
+  - qcsrc/client/hud/panel/quickmenu.qc
+  - qcsrc/common/gamemodes/gamemode/clanarena/sv_clanarena.qc
+  - qcsrc/common/gamemodes/gamemode/freezetag/sv_freezetag.qc
+  - commands.cfg
+  deep_dive: null
+- uw: UW-0076
+  title: ''
+  headline: Optimizes weapon impulse allocation by allowing Overkill weapons (okmachinegun, oknex, okshotgun) to reuse impulse numbers from their non-Overkill counterparts (2/3/7), reducing total impulse consumption from 24+ weapons.
+  summary: 'Optimizes weapon impulse allocation by allowing Overkill weapons (okmachinegun, oknex, okshotgun) to reuse impulse numbers from their non-Overkill counterparts (2/3/7), reducing total impulse consumption from 24+ weapons. Introduces m_unique_impulse field, a Weapon_from_impulse() lookup, and refactors impulse-alias generation to prioritize mutator-blocked weapons. Restores Ball Stealer (Nexball) by removing the overly-broad filter. Base symbols: qcsrc/common/weapons/all.qh (.int m_unique_impulse, Weapon_from_impulse(), STATIC_INIT register_weapons_done), overkill/*.qh weapon defs, qcsrc/server/impulse.qc weapon_byid_handle().'
+  recommendation: 'Adopt the upstream change by adding m_unique_impulse to Weapon and populating it in weapon registration (equivalent to the QuakeC init in all.qh). This unblocks future weapon additions and fixes the Ball Stealer regression without risk. Estimated effort: under 1 hour. Cross-check the port''s WeaponOrder.WeaponByIdIndex to ensure it reads the new field when looking up weapons by impulse (it should, if it uses Weapon_from_impulse logic or similar).'
+  relevance: high
+  decision: port
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data:terencehill/overkill_weapon_aliases@0e26c9b585e9
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1497
+  base_symbols:
+  - qcsrc/common/weapons/all.qh:m_unique_impulse
+  - qcsrc/common/weapons/all.qh:Weapon_from_impulse
+  - qcsrc/common/weapons/all.qh:STATIC_INIT(register_weapons_done)
+  - qcsrc/common/mutators/mutator/overkill/okmachinegun.qh:impulse
+  - qcsrc/common/mutators/mutator/overkill/oknex.qh:impulse
+  - qcsrc/common/mutators/mutator/overkill/okshotgun.qh:impulse
+  - qcsrc/server/impulse.qc:weapon_byid_handle
+  deep_dive: null
+- uw: UW-0077
+  title: ''
+  headline: Changes the default value of cl_dodging from 0 to 1 in mutators.cfg, enabling dodging on the client by default.
+  summary: 'Changes the default value of cl_dodging from 0 to 1 in mutators.cfg, enabling dodging on the client by default. When sv_dodging_clientselect is enabled on a server, this allows clients to opt in to dodging via the cl_dodging cvar. Additionally updates the sv_dodging_clientselect documentation to clarify it enables per-client enable/disable rather than implying dodging is off by default. Base symbols touched: mutators.cfg (cl_dodging, sv_dodging_clientselect cvars).'
+  recommendation: Port as-is. Upstream's rationale (accessibility for new players) directly serves Vortex Arena's onboarding story. The port's dodging mechanic is already live and fully faithful (parity registered); this merely changes the default client opt-in from 0 to 1. No tests, no integration complexity. Update the corresponding game/net/config or settings file where Vortex Arena defines cl_dodging (check CVARS.md:2805 reference) and apply the same comment fix to sv_dodging_clientselect documentation.
+  relevance: medium
+  decision: port
+  kind: data-cfg
+  effort: S
+  repo: data
+  source: data:bones_was_here/cl_dodging@cf3acbacdeac
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1496
+  base_symbols:
+  - mutators.cfg:cl_dodging
+  - mutators.cfg:sv_dodging_clientselect
+  deep_dive: null
+- uw: UW-0078
+  title: ''
+  headline: 'Two waypoint bug fixes: (1) Add bounds validation in waypoint_loadall to reject malformed mins/maxs and prevent #2919 crash on soylent_ctf_reloaded_v1r1.'
+  summary: 'Two waypoint bug fixes: (1) Add bounds validation in waypoint_loadall to reject malformed mins/maxs and prevent #2919 crash on soylent_ctf_reloaded_v1r1. (2) Improve jump pad destination waypoint placement by testing for collision when bot has horizontal velocity, moving the waypoint 1qu away from obstacle perpendicular to velocity instead of using fixed position. Also fixes missing e.velocity assignment in jump pad cost computation. Base files touched: qcsrc/server/bot/default/waypoints.qc (waypoint_spawn, waypoint_loadall, waypoint_spawnforteleporter), qcsrc/common/mapobjects/trigger/jumppads.qc (trigger_push_test).'
+  recommendation: 'Both fixes are small, high-quality improvements to already-ported bot navigation subsystem. Fix #1 (bounds validation) is a straightforward port to Waypoint.cs:LoadFromText. Fix #2 (collision-aware teleporter waypoint) requires verifying whether our GenerateFromEntities teleporter branch (Waypoint.cs:462-472, currently partial) mirrors the collision logic; if not, it''s an adapt task (add collision test). Recommend port / adapt pending Bryan''s assessment of the teleporter placement logic gap.'
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data:terencehill/bot_waypoint_fixes@50acf2582a2d
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1492
+  base_symbols:
+  - waypoint_loadall
+  - waypoint_spawn
+  - waypoint_spawnforteleporter
+  - trigger_push_test
+  - GenerateFromEntities
+  - LoadFromText
+  deep_dive: null
+- uw: UW-0079
+  title: ''
+  headline: Rounds single-point waypoint positions to nearest 0.0 or 0.5 decimal during spawn to ensure deterministic save/load round-trips (Base's vtos writes 1 decimal place).
+  summary: Rounds single-point waypoint positions to nearest 0.0 or 0.5 decimal during spawn to ensure deterministic save/load round-trips (Base's vtos writes 1 decimal place). Cleans up collision-check padding on point waypoints (removes ±1 qu offsets, uses exact PL_*_CONST bounds). Touches waypoint_spawn in qcsrc/server/bot/default/waypoints.qc (lines 455-485). Maps to Vortex Arena's Waypoint.cs:node_model, which saves/loads with identical 1-decimal precision.
+  recommendation: 'Port with faithful translation to C#. Apply the rounding logic to Waypoint.Spawn (src/XonoticGodot.Server/Bot/Waypoint.cs, constructor or ForMap entry point). The collision-check cleanup (exact bounds vs padded) can be bundled in the same port commit or split if Bryan prefers. Test vector: spawn a point waypoint at (123.456, 789.789, 100.234), save, reload, verify all three components round to .0 or .5 and position is stable across cycles. This is a determinism fix for a subsystem we track and already ported; the change is small, low-risk, and directly prevents a reopen of position-drift bugs.'
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data:terencehill/bot_waypoint_pos@2f2ac42ff1d2
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1490
+  base_symbols:
+  - qcsrc/server/bot/default/waypoints.qc:waypoint_spawn
+  - qcsrc/server/bot/api.qh:PL_CROUCH_MIN_CONST
+  - qcsrc/server/bot/api.qh:PL_CROUCH_MAX_CONST
+  - qcsrc/server/bot/api.qh:PL_MIN_CONST
+  - qcsrc/server/bot/api.qh:PL_MAX_CONST
+  deep_dive: null
+- uw: UW-0080
+  title: ''
+  headline: 'Adds configurable option to display offhand weapons (grenades, hook, blaster) in the weapon HUD panel with three modes: disabled (0), prepend to list (1), append to list (2, default).'
+  summary: 'Adds configurable option to display offhand weapons (grenades, hook, blaster) in the weapon HUD panel with three modes: disabled (0), prepend to list (1), append to list (2, default). Major refactor of HUD drawing system with new Weapons_GetOffhands() and Weapons_DrawWeaponOrOffhand() functions. Introduces stats NADE_BONUS_ONLY and NADE_OFFHAND_TYPE. Offhands rendered at 80% scale for visual distinction. Includes menu UI control and config defaults.'
+  recommendation: Recommend porting. Feature has solid implementation, addresses player UX needs, and fits well within Vortex Arena's scope. The HUD refactoring improves code organization. Requires medium effort to adapt QC drawing calls to Godot UI layer and test layout responsiveness. No blockers identified. Suitable for inclusion in the weapon HUD subsystem port roadmap once the base HUD infrastructure is established in C#/Godot.
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:k9er/offhands-in-wep-hud@8119a280dfd3
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1404
+  base_symbols:
+  - 'qcsrc/client/hud/panel/weapons.qc: Weapons_Draw, Weapons_DrawWeaponOrOffhand (new), Weapons_GetOffhands (new), Weapons_Fade'
+  - 'qcsrc/client/hud/panel/weapons.qh: function signatures, autocvar_hud_panel_weapons_offhand (new)'
+  - 'qcsrc/common/mutators/mutator/nades/cl_nades.qc: nades_GetColor (extracted), DrawAmmoNades'
+  - 'qcsrc/common/mutators/mutator/nades/sv_nades.qc: nade_prime, MUTATOR_HOOKFUNCTION PlayerPreThink'
+  - 'qcsrc/common/stats.qh: NADE_BONUS_ONLY (new), NADE_OFFHAND_TYPE (new)'
+  - 'qcsrc/menu/xonotic/dialog_hudpanel_weapons.qc: UI slider control added'
+  deep_dive: items/UW-0080-offhand-weapons-hud-option.md
+- uw: UW-0081
+  title: ''
+  headline: Refactors respawn-ghost spawning from the respawn() function to the death handler (PlayerDamage) and renames SpawnGhost() to TransmuteToGhost().
+  summary: 'Refactors respawn-ghost spawning from the respawn() function to the death handler (PlayerDamage) and renames SpawnGhost() to TransmuteToGhost(). The original logic triggered when a player respawned—immediately fade the corpse, then optionally spawn a floating ghost. The refactor moves ghost-spawning to the moment of death (when autocvar_g_respawn_ghosts=1), creating a death ghost via CopyBody() that floats away, while the corpse itself always fades immediately. CopyBody() now returns the cloned entity pointer. Touches: qcsrc/server/client.qc (respawn path simplified), qcsrc/server/player.qc (TransmuteToGhost new func, CopyBody signature change), qcsrc/server/player.qh (function declarations), qcsrc/common/gamemodes/gamemode/ctf/sv_ctf.qc (flag damagedbycontents cleanup), xonotic-server.cfg + xonotic-client.cfg (cvar descriptions reworded for "death ghost" phrasing), .gitlab-ci.yml (hash bump for the test build). Base symbols: respawn, CopyBody, TransmuteToGhost (new), PlayerDamage, ctf_FlagSetup.'
+  recommendation: 'Recommend **port**: this is a low-effort, high-confidence semantic improvement to an existing visual effect that aligns with Vortex Arena''s death-event architecture. No new dependencies, no netcode, no gameplay values. CopyBody''s return-type change is a minor API enhancement. The config rewording is cosmetic. Upstream has merged and shipped it with no reported issues. The only reason not to port is if Vortex Arena has intentionally diverged on ghost timing (unlikely, since the parity registry already has the client-side ghost rendering). Effort S, risk minimal — worth fitting into the next dev cycle. **Decision is Bryan''s** because it touches player-visible behavior (death moment), but I see no blocking concern.'
+  relevance: medium
+  decision: pending
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data:drjaska/gib-ghost@b865cfe32e69
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1219
+  base_symbols:
+  - qcsrc/server/client.qc:respawn
+  - qcsrc/server/player.qc:CopyBody
+  - qcsrc/server/player.qc:TransmuteToGhost
+  - qcsrc/server/player.qc:PlayerDamage
+  - qcsrc/common/gamemodes/gamemode/ctf/sv_ctf.qc:ctf_FlagSetup
+  deep_dive: null
+- uw: UW-0082
+  title: ''
+  headline: Adds client-side cl_gentle_voices cvar to enable alternative (gentler) player voiceline variants.
+  summary: 'Adds client-side cl_gentle_voices cvar to enable alternative (gentler) player voiceline variants. Extends .sounds manifest format from 3 to 4 columns (file / count / taunt-count / gentle-count). GlobalSound_sample() checks cl_gentle_voices at runtime to select the gentle variant path if available. LoadPlayerSounds() / PrecachePlayerSounds() upgraded to parse the new 4th column with backwards-compatible warnings on old 3-column manifests. All 21 sound/player/*.sounds files updated to add the 4th column (currently set to 0, infrastructure ready). Base files: globalsound.qc (core sample logic), globalsound.qh (cvar decl), xonotic-client.cfg (cvar init), sound/player/*.sounds (manifest format).'
+  recommendation: 'READY for port. Zero technical blockers; path is clear. Small effort (S) makes it a good backlog-filler. Accessibility alignment and opt-in design carry positive signal. Recommend: Bryan assesses priority (low-urgency cosmetic vs. roadmap slot) and issues Decision. When ported, update parity/registry/fx-sounds.yaml to note the gentle-variant infrastructure (new feature row, backend=merged, frontend=ported). Link from Vortex Arena TODO.md as ''UW-0082: Add cl_gentle_voices support'' with sub-tasks: (1) C# port of manifest loader + GlobalSound.PlayerSoundSample, (2) .sounds file manifest update, (3) client UI cvar register.'
+  relevance: medium
+  decision: pending
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data:drjaska/cl_gentle_voices@db277288fc89
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1283
+  base_symbols:
+  - qcsrc/common/effects/qc/globalsound.qc:GlobalSound_sample
+  - qcsrc/common/effects/qc/globalsound.qc:PrecachePlayerSounds
+  - qcsrc/common/effects/qc/globalsound.qc:LoadPlayerSounds
+  - qcsrc/common/effects/qc/globalsound.qh:autocvar_cl_gentle_voices
+  - sound/player/default.sounds (+ 20 others)
+  - xonotic-client.cfg
+  deep_dive: items/UW-0082-cl-gentle-voices.md
+- uw: UW-0083
+  title: ''
+  headline: Fixes a race condition where observer view angles fail to persist when a spectator becomes an observer due to the spectated player disconnecting.
+  summary: 'Fixes a race condition where observer view angles fail to persist when a spectator becomes an observer due to the spectated player disconnecting. The issue occurs because PutObserverInServer() sets angles from the spawnpoint, but physics code executing earlier in the same frame (during PlayerPreThink) reverts them. The fix caches the target spawnpoint in a new .entity angles_ent field and re-applies angles+fixangle from that cached spawnpoint in the PlayerFrame observer block after all physics has run. Base files touched: qcsrc/server/client.qc (PutObserverInServer ~line 287-290, PlayerFrame ~3043-3050). New field: .entity angles_ent.'
+  recommendation: Recommend port. The fix addresses a real playability bug (broken spectator camera angles on disconnect) in an observer-only code path. Effort is minimal (S), risk is low (isolated, no determinism impact, no hot paths), and the behavior is correctness-focused, not cosmetic. Once ported to Vortex Arena's PutObserverInServer and player frame logic, this should close a known gap in sv-client-lifecycle parity. Bryan's decision required only if gameplay impact or design rationale differs from upstream assumptions.
+  relevance: medium
+  decision: pending
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data:terencehill/observer_angles_fix@0fd42ce58971
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1360
+  base_symbols:
+  - qcsrc/server/client.qc:PutObserverInServer
+  - qcsrc/server/client.qc:PlayerFrame
+  - qcsrc/server/client.qc:angles_ent
+  deep_dive: null
+- uw: UW-0084
+  title: ''
+  headline: Adds a **forfeit confirmation dialog** (XonoticForfeitDialog) triggered when a player presses F3 during an active match.
+  summary: 'Adds a **forfeit confirmation dialog** (XonoticForfeitDialog) triggered when a player presses F3 during an active match. The dialog asks "observe and forfeit?" with Yes/No + "Never ask again" checkbox. Refactors the spectate command server-side (ClientCommand_spectate in cmd.qc) to check an argv(2) forfeit_ask flag and show the dialog if the player is in-game (warmth guard). Extends mutator hooks with MUT_SPECCMD_RETURN_FORFEIT so CA/Survival can also enforce forfeit confirmation. Recleans F3 keybinding + observer-switch logic (secondary-fire now toggles spectator↔observer camera mode); HUD messages updated to reflect new bindings. Backward-compatible: auto-migrates old F3→spec binds to F3→spec_forfeit on first load. The dialog UX pattern prevents accidental match forfeiture.'
+  recommendation: '**Port — subject to menu UI porting strategy.** This is a high-value QoL feature addressing a real pain point (accidental forfeit). The server-side logic (spectate gate + mutator hook extension) is clean and fully compatible with our existing CmdSpectate impl. The blocking item is porting the menu dialog UI from QC XonoticForfeitDialog class to C#/Godot (MessageBoxes or ConfirmationDialog pattern). Once a C# dialog UI is available, integrate via: (1) extend Commands.cs CmdSpectate to accept a forfeit_ask parameter (similar to Base argv(2)==1 check), (2) call the dialog when forfeit_ask && !warmup_stage && player is in-game, (3) port the MUT_SPECCMD_RETURN_FORFEIT hook enum extension to our mutator event system, (4) wire CA.OnSpectateCommand and Survival to return it when appropriate. No parity registry work needed — this is upstream feature adoption, not a prior-mapped behavior. Estimate: S/M for server logic + variable effort for UI (depends on existing dialog/UI framework in Godot port). Risk: low — isolated to spectate flow, no netcode/physics impact."'
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:terencehill/forfeit_dialog@d2ca2e2675a5
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1359
+  base_symbols:
+  - commands.cfg
+  - binds-xonotic.cfg
+  - qcsrc/server/command/cmd.qc (ClientCommand_spectate)
+  - qcsrc/common/gamemodes/gamemode/clanarena/sv_clanarena.qc
+  - qcsrc/common/gamemodes/gamemode/survival/sv_survival.qc
+  - qcsrc/menu/xonotic/dialog_forfeit.qc/.qh (new)
+  - qcsrc/common/mutators/events.qh (MUT_SPECCMD_RETURN_FORFEIT)
+  deep_dive: items/UW-0084-forfeit-confirmation-dialog.md
+- uw: UW-0085
+  title: ''
+  headline: Two-commit branch fixing forced-reload logic and division-by-zero crashes in the MachineGun weapon.
+  summary: 'Two-commit branch fixing forced-reload logic and division-by-zero crashes in the MachineGun weapon. (1) Commit dfd868790 fixes a logic error where wr_think''s forced-reload gate uses `max(sustained_ammo, first_ammo)` instead of `min(...)`, causing the reload gate to trigger incorrectly on nonstandard ammo configs. (2) Commit 9c6103ab4 hardens two division hazards: burst_fraction calculation (ammo_available / burst_ammo) and burst_ammo_per_shot (burst_ammo / burst) now guard against zero divisors. Both affect qcsrc/common/weapons/weapon/machinegun.qc; base_symbols: MachineGun wr_think (reload gate), wr_checkammo2, wr_reload.'
+  recommendation: 'Port both commits. The fixes align with the existing Machinegun.cs defensiveness (guards already present at lines 120, 168, 491–492), so this is confirming/hardening existing safety checks. Commit 1 (logic fix) is a one-liner correction to ReloadingAmmoMin logic — verify line 505 of Machinegun.cs matches the intended min(min(sustained, first), burst) nesting. Commit 2 (div-zero guards) is already partially mirrored in the port (line 168 guards burst_ammo) but line 491–492 (wr_checkammo2 burst_ammo_per_shot) should also be guarded to match commit 2''s pattern. Effort: 2–3 lines added to WrThink and/or CheckAmmoSecondary to harden burst and burst_ammo divisors. No new subsystems; no regression risk. Flag as adapt (not port) because the port has slightly different division-check placement (C# zero-check patterns differ from QC) and line 120 already uses ReloadingAmmoMin(), which is the core fix — the adaptation is confirming that method''s logic is correct.'
+  relevance: medium
+  decision: adapt
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data:drjaska/mgreload@9c6103ab444b
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1349
+  base_symbols:
+  - MachineGun.wr_think
+  - MachineGun.wr_checkammo2
+  - MachineGun.wr_reload
+  - W_MachineGun_Attack_Burst
+  - burst_fraction
+  - burst_ammo_per_shot
+  deep_dive: null
+- uw: UW-0087
+  title: ''
+  headline: Migrate from r_water to r_water_cameraentitiesonly cvar to prevent warpzones (portals) from accidentally enabling full water reflections.
+  summary: 'Migrate from r_water to r_water_cameraentitiesonly cvar to prevent warpzones (portals) from accidentally enabling full water reflections. Changes config presets (effects-*.cfg), menu binding (qcsrc/menu), and config-version bump. Upstream issue: old r_water mode reflected all water surfaces; new mode restricts reflection to camera entities only.'
+  recommendation: Do not port. The cvar change addresses a warpzone-water interaction in a feature (water reflections) Vortex Arena does not yet implement. Porting it is dead code until the reflection rendering subsystem exists. Mark in parity/intended_divergence as "water reflection is unimplemented; config stubs will be added when the feature lands" if desired, or simply defer until Phase 6+ graphics work.
+  relevance: none
+  decision: reject
+  kind: data-cfg
+  effort: S
+  repo: data
+  source: data:divVerent/r_water_cameraentitiesonly@49768da986e9
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1299
+  base_symbols:
+  - config_update.cfg
+  - effects-high/low/med/normal/omg/ultimate/ultra.cfg
+  - qcsrc/menu/xonotic/dialog_settings_effects.qc
+  - xonotic-client.cfg
+  - r_water
+  - r_water_cameraentitiesonly
+  deep_dive: null
+- uw: UW-0088
+  title: ''
+  headline: Refactors weapon model/sound/shader/HUD filenames from engine codenames (nex→vortex, rl→devastator, gl→mortar, uzi→machinegun, laser→blaster, minstanex→vaporizer, campingrifle→rifle) to user-facing names.
+  summary: 'Refactors weapon model/sound/shader/HUD filenames from engine codenames (nex→vortex, rl→devastator, gl→mortar, uzi→machinegun, laser→blaster, minstanex→vaporizer, campingrifle→rifle) to user-facing names. Updates qcsrc/common/weapons/weapon/*.qh, qcsrc/common/models/all.inc, qcsrc/common/sounds/all.inc, shader scripts (scripts/*.shader), and asset paths (gfx/, models/weapons/, sound/). Mechanical rename across 152 files; includes follow-up fixes (Vortex crosshair ring, okrpc name sync). Base symbols touched: MDL_* enums in qcsrc/common/models/all.inc, SOUND_* in qcsrc/common/sounds/all.inc, Weapon class mdl/m_name/w_crosshair attrs in qcsrc/common/weapons/weapon/*.qh.'
+  recommendation: 'The refactoring is mechanically sound and would clean up Vortex Arena''s asset paths if adopted. However, the upstream branch is stale (18+ months, not merged, incomplete per author). Recommend deferring until: (a) upstream merges a completed version, or (b) Vortex Arena explicitly prioritizes asset-path clarity. If deferred, flag for quarterly re-review (e.g., when upstream-watch re-scans for new master commits from this author or tags a new xonotic-data release).'
+  relevance: medium
+  decision: defer
+  kind: asset
+  effort: S
+  repo: data
+  source: data:LegendaryGuard/rename_weapon_filenames@ac8d297feb9e
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1116
+  base_symbols:
+  - qcsrc/common/models/all.inc (MDL_*)
+  - qcsrc/common/sounds/all.inc (SOUND_*)
+  - qcsrc/common/weapons/weapon/*.qh (mdl, w_crosshair, model2 attrs)
+  - qcsrc/common/mutators/mutator/overkill/okrpc.qh
+  - qcsrc/client/hud/crosshair.qc
+  deep_dive: null
+- uw: UW-0089
+  title: ''
+  headline: 'Implements Freeze Tag lives system: players spawn with configurable lives (g_freezetag_frozen_lives, default 2) that decrement per freeze; reaching 0 triggers elimination.'
+  summary: 'Implements Freeze Tag lives system: players spawn with configurable lives (g_freezetag_frozen_lives, default 2) that decrement per freeze; reaching 0 triggers elimination. Late joiners spawn at team''s current minimum lives to prevent rejoin exploits. Adds spectator-control cvar (g_freezetag_spectate_enemies: -1=locked, 0=teamonly, 1=free) with new SpectateSet/Next/Prev hooks. Includes CENTER_FREEZETAG_LIVES_REMAINING notification and multiple edge-case fixes (team-switch mid-round, self-kill message gating, blocked spawn when any player eliminated). Base files: qcsrc/common/gamemodes/gamemode/freezetag/sv_freezetag.qc (~400 LOC across multiple hooks), gamemodes-server.cfg, notifications.cfg, qcsrc/common/notifications/all.inc, qcsrc/server/world.qc, ruleset-XPM.cfg.'
+  recommendation: 'Solid implementation of a real FT gameplay feature with clean code and good edge-case handling. No engine changes or protocol additions. Moderate complexity due to player lifecycle + new spectator hooks + lives-field tracking. Risk is moderate: lives decrement must respect warmup state, team-switch handling is complex, ForbidSpawn gates all spawns when any player eliminated. Port effort is M, straightforward refactoring into FreezeTag.cs. Decision needed: does Vortex Arena want the lives system in FT? Once decided (port/defer/reject), the work is clear.'
+  relevance: medium
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:terencehill/_freezetag_lives@70cd14a8af78
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1257
+  base_symbols:
+  - qcsrc/common/gamemodes/gamemode/freezetag/sv_freezetag.qc:freezetag_Get_Start_Lives
+  - qcsrc/common/gamemodes/gamemode/freezetag/sv_freezetag.qc:ft_lowest_lives
+  - qcsrc/common/gamemodes/gamemode/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, ForbidSpawn)
+  - qcsrc/common/gamemodes/gamemode/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, MakePlayerObserver)
+  - qcsrc/common/gamemodes/gamemode/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, PlayerDies)
+  - qcsrc/common/gamemodes/gamemode/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, PlayerSpawn)
+  - qcsrc/common/gamemodes/gamemode/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, PutClientInServer)
+  - qcsrc/common/gamemodes/gamemode/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, SpectateSet)
+  - qcsrc/common/gamemodes/gamemode/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, SpectateNext)
+  - qcsrc/common/gamemodes/gamemode/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, SpectatePrev)
+  - qcsrc/common/gamemodes/gamemode/freezetag/sv_freezetag.qc:MUTATOR_HOOKFUNCTION(ft, Bot_FixCount)
+  - qcsrc/common/gamemodes/gamemode/freezetag/sv_freezetag.qc:FT_SpectateNext
+  - gamemodes-server.cfg:g_freezetag_frozen_lives
+  - gamemodes-server.cfg:g_freezetag_spectate_enemies
+  - notifications.cfg:CENTER_FREEZETAG_LIVES_REMAINING
+  - qcsrc/common/notifications/all.inc:MSG_CENTER_NOTIF(FREEZETAG_LIVES_REMAINING)
+  deep_dive: items/UW-0089-ft-lives-system.md
+- uw: UW-0090
+  title: ''
+  headline: 'Killers Spawn Faster mutator: dynamically adjusts respawn delays based on player kills (−12.5% per frag) and deaths (+25% per death), clamped to 0.25x–4.0x multiplier.'
+  summary: 'Killers Spawn Faster mutator: dynamically adjusts respawn delays based on player kills (−12.5% per frag) and deaths (+25% per death), clamped to 0.25x–4.0x multiplier. Rewards skilled play with faster respawns, penalizes dying. Refactors CalculateRespawnTime hook to accept sdelay as inout parameter, allowing mutators to modify it post-calculation. Adds three exclusive-order hook markers to clanarena/lms/survival for compatibility.'
+  recommendation: Port as-is. Feature is polished, well-tested upstream, and directly applicable. Respawn-hook changes are safe (zero behavioral change, just reordering). Recommend adding a parity registry unit for killers_spawn_faster behavior once ported.
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:divVerent/killers-spawn-faster@df7308cda84d
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1203
+  base_symbols:
+  - qcsrc/common/mutators/mutator/killers_spawn_faster/
+  - qcsrc/server/client.qc
+  - qcsrc/server/mutators/events.qh
+  - qcsrc/server/scores.qc
+  - qcsrc/menu/xonotic/dialog_multiplayer_create_mutators.qc
+  - mutators.cfg
+  deep_dive: items/UW-0090-killers-spawn-faster.md
+- uw: UW-0091
+  title: ''
+  headline: Fixes profile menu Apply button to correctly stage pending changes before sending server commands.
+  summary: 'Fixes profile menu Apply button to correctly stage pending changes before sending server commands. Series introduces menu-local cvar mirrors (_menu_cl_name/color/skin/model) that hold edits; Apply button syncs them into real cvars only on press. Adds XonoticProfileTab_draw() logic to detect out-of-sync state and refresh UI when values change from console. Affects: dialog_multiplayer_profile.qc (fill+draw methods, attributes for button/model refs), colorbutton.qc (signature extended with cvar param), colorpicker.qc (mousePress enables button), playermodel.qc (cvar-parameterized load/save). Adds MENU_CVAR_* defines, COLOR_BUTTONS_COUNT=15, xonotic-client.cfg staging vars.'
+  recommendation: 'Worth porting. This is a root-cause fix for documented menu dysfunction (parity spec: "Apply inert"). Scope is scoped to profile tab, changes are incremental and well-factored. Port should: (1) Replicate cvar-staging pattern in C# (menu-local state mirrors real cvars), (2) Wire color/model picker events to disable apply button, (3) Add draw-frame sync to detect console changes. Update parity registry to note Apply button now live. No known conflicts or regressions. Medium effort justified by unblocking known gap.'
+  relevance: medium
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:ColdSpirit/profileapplyfix@8fdd45f567b1
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/958
+  base_symbols:
+  - dialog_multiplayer_profile.qc
+  - colorbutton.qc
+  - colorpicker.qc
+  - playermodel.qc
+  - xonotic-client.cfg
+  deep_dive: null
+- uw: UW-0092
+  title: ''
+  headline: Comprehensive medal system for player achievements.
+  summary: Comprehensive medal system for player achievements. Implements 18 medal types (airshot, assist, capture, damage, defense, electrobitch, excellent, firstblood, headshot, humiliation, impressive, perfect, telefrag, yoda, and kill streaks 3/5/10/15) with server-side scoring via new SP_MEDAL_* columns, client centerprint/scoreboard display, and gamemode/weapon hooks for CTF assists/captures, Clan Arena perfect rounds, Freezetag solo/assist wins, headshots, airshots, and kill streaks. Adds MSG_MEDAL notification class, 18 TGA medal icons, and GIVE_MEDAL macro.
+  recommendation: 'Port as-is (or with adapt phase for C#/Godot idioms if needed). The feature is near-production-ready upstream; the upstream TODOs (commented Accuracy/Defense logic) are deliberate balance choices, not incomplete work. Vortex Arena should adopt all 18 medal types for parity. C# migration is straightforward: GIVE_MEDAL becomes a static helper, notification dispatch uses existing Notifications.Send(MSG_MEDAL, ...) pattern, and HUD drawing maps to Godot canvas/shader equivalents. The asset pack (18 TGAs) is ready to import. Priority: medium-high (gameplay feature, not blocking, good ROI on effort).'
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:z411/medals@74239c6b1dc2
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1212
+  base_symbols:
+  - centerprint_Medal()
+  - Scoreboard_MedalStats_Draw()
+  - GIVE_MEDAL macro
+  - MSG_MEDAL notification type
+  - SP_MEDAL_* score fields
+  - ca_LastPlayer()
+  - freezetag_LastPlayer()
+  - CTF_IS_NEAR macro
+  - Obituary_WeaponDeath(attacker param)
+  - MSG_MEDAL_NOTIF macro
+  - Create_Notification_Entity_Medal()
+  deep_dive: items/UW-0092-medals-system.md
+- uw: UW-0093
+  title: ''
+  headline: Fixes a bug where spectators who set a CTS/Race time could not have their stats submitted to XonStats.
+  summary: 'Fixes a bug where spectators who set a CTS/Race time could not have their stats submitted to XonStats. The fix applies three targeted changes: (1) introduces a `cts_isEliminated()` predicate to mark spectators with a ranked time as FRAGS_PLAYER_OUT_OF_GAME (matching LMS semantics); (2) calls `EliminatedPlayers_Init(cts_isEliminated)` on CTS initialization so the eliminated-status tracking entity receives updates; (3) sets `eliminatedPlayers.SendFlags |= 1` on both MakePlayerObserver and PutClientInServer transitions to resync the client-side scoreboard greying; (4) makes MakePlayerObserver return true to prevent `.frags` from being cleared by the engine (preserving the FRAGS_PLAYER_OUT_OF_GAME sentinel); and (5) updates an LMS comment to clarify the intent. Base files touched: `qcsrc/common/gamemodes/gamemode/cts/sv_cts.qc` (primary), `qcsrc/common/gamemodes/gamemode/lms/sv_lms.qc` (comment only).'
+  recommendation: Accept for porting. This is a targeted bug fix for CTS spectator-stats handling that has zero drift from our existing port patterns (ClanArena and FreezeTag already use EliminatedPlayers_Init). The cts.qc changes are 10 new lines (predicate + two hook sites + initialization). Both the logic and the delivery (small, focused, upstream-clean) make this a low-risk high-value port. Assign to Wave-X CTS tasks for integration (cross-check cts.lifecycle.prepare_player parity row).
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data:terencehill/cts_stats_fix@6401042f4434
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1004
+  base_symbols:
+  - cts_isEliminated
+  - EliminatedPlayers_Init
+  - MUTATOR_HOOKFUNCTION(cts, MakePlayerObserver)
+  - MUTATOR_HOOKFUNCTION(cts, PutClientInServer)
+  deep_dive: null
+- uw: UW-0094
+  title: ''
+  headline: Implements lead-change and match-score announcements across multiple gamemodes.
+  summary: 'Implements lead-change and match-score announcements across multiple gamemodes. The branch adds: (1) Lead-tracking infrastructure via Score_NewLeader() + WinningConditionHelper state variables (_winner_last, _winnerteam_last, _equality_one/_two) to detect leader changes. (2) New announcer notifications: LEAD_GAINED/LOST/TIED (for FFA), TEAM_LEADS_TEAM/ENEMY/TIED (for team play), TEAM_SCORES_TEAM/ENEMY (post-capture scores), TEAM_WINS (match victory), ROUND_TEAM_WIN/ROUND_OVER/ROUND_TIED/ALONE (CA-specific). (3) AnnounceNewLeader() and AnnounceScores(int tm) functions in world.qc that broadcast these notifications at lead changes or on team-score events. (4) Integration hooks in deathmatch.qc (dm_Scores_AnnounceLeads), duel.qc, tdm.qc enabling the lead announcer, and CTF caps triggering score announcements. (5) 21 binary announcer audio files (leads_red/blue/yellow/pink/enemy/team, wins_*, round_win_*, scores_*, round_over/tied, alone). (6) Three new config cvars (notification_ANNCE_LEAD_GAINED/LOST/TIED) at gentleness levels. Touches Base files: qcsrc/server/scores.qc/qh, qcsrc/server/world.qc, qcsrc/server/mutators/events.qh, qcsrc/common/gamemodes/gamemode/{deathmatch,duel,tdm,ctf}/sv_*.qc, qcsrc/common/notifications/all.inc, notifications.cfg, sound/announcer/default/*.ogg.'
+  recommendation: 'RECOMMENDED FOR PORTING once the upstream MR is merged or de-drafted. Implementation is sound; testing surface is narrow (lead-tracking + broadcast). Integration effort ~150 LOC C# (state tracking + mode hooks) + file copies. No netcode/determinism concerns. Suggest: (1) Monitor upstream MR for merge or blocking gates. (2) On acceptance, update parity/scoring + parity/cl-announcer with new ANNCE rows. (3) Verify no NotificationSystem changes needed. (4) Plan integration test coverage for lead-change edges (tie → lead → tie scenarios).'
+  relevance: high
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:z411/leadannce@8b76496ffab6
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1076
+  base_symbols:
+  - WinningConditionHelper
+  - WinningConditionHelper_winnerteam_last
+  - WinningConditionHelper_winner_last
+  - WinningConditionHelper_equality_one
+  - WinningConditionHelper_equality_two
+  - Score_NewLeader
+  - AnnounceNewLeader
+  - AnnounceScores
+  - Scores_AnnounceLeads
+  - ANNCE_LEAD_GAINED
+  - ANNCE_LEAD_LOST
+  - ANNCE_LEAD_TIED
+  deep_dive: items/UW-0094-lead-and-scores-announcing.md
+- uw: UW-0095
+  title: ''
+  headline: Reduces Hagar rocket weapon damage across all three upstream-maintained balance profiles (default/XDF/Mario).
+  summary: 'Reduces Hagar rocket weapon damage across all three upstream-maintained balance profiles (default/XDF/Mario). Primary direct damage 25→20, edge 12.5→10; secondary direct 35→25, edge 17.5→12.5. Targets ~100 burst DPS and 120 sustained DPS. Affects: bal-wep-xonotic.cfg, bal-wep-xdf.cfg, bal-wep-mario.cfg.'
+  recommendation: 'Ready to port if Bryan approves the upstream balance shift. Low effort (mechanical constant updates), straightforward to integrate into Vortex Arena''s Hagar.cs Configure() and the three active balance profiles. Risk: Hagar becomes strictly weaker; verify this aligns with Vortex Arena''s current balance goals. No logic/subsystem impact. Awaiting Bryan''s decision on whether to adopt this upstream nerf.'
+  relevance: medium
+  decision: pending
+  kind: data-cfg
+  effort: S
+  repo: data
+  source: data:drjaska/hagardamagenerf@cf0046af7cc3
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1057
+  base_symbols:
+  - bal-wep-xonotic.cfg:g_balance_hagar_primary_damage
+  - bal-wep-xonotic.cfg:g_balance_hagar_primary_edgedamage
+  - bal-wep-xonotic.cfg:g_balance_hagar_secondary_damage
+  - bal-wep-xonotic.cfg:g_balance_hagar_secondary_edgedamage
+  - bal-wep-xdf.cfg:g_balance_hagar_primary_damage
+  - bal-wep-xdf.cfg:g_balance_hagar_primary_edgedamage
+  - bal-wep-xdf.cfg:g_balance_hagar_secondary_damage
+  - bal-wep-xdf.cfg:g_balance_hagar_secondary_edgedamage
+  - bal-wep-mario.cfg:g_balance_hagar_primary_damage
+  - bal-wep-mario.cfg:g_balance_hagar_primary_edgedamage
+  - bal-wep-mario.cfg:g_balance_hagar_secondary_damage
+  - bal-wep-mario.cfg:g_balance_hagar_secondary_edgedamage
+  deep_dive: null
+- uw: UW-0096
+  title: ''
+  headline: Adds optional g_balance_damagepush_speedfactor_onlyself cvar to gate knockback scaling (damagepush_speedfactor projection) to self-inflicted damage only.
+  summary: Adds optional g_balance_damagepush_speedfactor_onlyself cvar to gate knockback scaling (damagepush_speedfactor projection) to self-inflicted damage only. When enabled, splash damage from other players bypasses the speed-limit calcpush and applies raw force. Removes client-side networking of speedfactor; gibs now unscaled. Touches damage.qc/damage.qh (authority logic), client.qc/main.qc (networking), damageeffects.qc (gib force), and 6 balance-*.cfg files (new cvar, default 0). Clean implementation with 7-commit history, but marked Draft upstream.
+  recommendation: 'Real gameplay value for balance tuning (weapon splash knockback can be server-configured per-mode). Implementation is stable and low-risk. Upstream Draft status suggests waiting 1-2 weeks for finalization before adopting, but the code is ready. Recommend: (a) if upstream merges soon, port immediately as a small follow-up; (b) if it stalls, consider porting from this branch directly during next wave. The parity registry will need a one-line addendum to damage-pipeline.knockback.calcpush noting the new branch condition, no structural changes."'
+  relevance: medium
+  decision: pending
+  kind: qc-gameplay
+  effort: S
+  repo: data
+  source: data:drjaska/self-dp_sf@868d143c2070
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1117
+  base_symbols:
+  - server/damage.qc:Damage
+  - server/damage.qh
+  - common/weapons/calculations.qc:damage_explosion_calcpush
+  - balance-*.cfg
+  deep_dive: null
+- uw: UW-0097
+  title: ''
+  headline: Draft refactoring converting small weapon utility functions into macros (W_FixWeaponOrder, W_NumberWeaponOrder, W_NameWeaponOrder, GetAmmoPicture, GetAmmoName, GetAmmoStat, GetAmmoItem) to reduce code duplication.
+  summary: 'Draft refactoring converting small weapon utility functions into macros (W_FixWeaponOrder, W_NumberWeaponOrder, W_NameWeaponOrder, GetAmmoPicture, GetAmmoName, GetAmmoStat, GetAmmoItem) to reduce code duplication. Also includes targeted weapon balance tweaks: Electro reload simplification, NIX blaster live-toggle, Mortar bot-aim deduplication, and comment/code cleanup. Touches qcsrc/common/weapons/{all.qc,weapon.qh}, qcsrc/common/weapons/weapon/{electro,mortar}.qc, client HUD panels, server items, and bot systems.'
+  recommendation: Defer this branch. It is a draft refactoring stalled since Dec 2022, bundling macro code-quality work (upstream-only churn) with isolated weapon balance fixes. The macro centralization does not port to C#/Godot. If weapon balance tweaks (Electro clip simplification, NIX blaster toggle, Mortar bot-aim) prove desirable, extract them as independent commits against a fresh master tip rather than merging this stale branch. Revisit only if drjaska lands this branch on upstream master and it becomes canonical.
+  relevance: low
+  decision: defer
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:drjaska/weapontodo@c0e7f2b2a54f
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1118
+  base_symbols:
+  - qcsrc/common/weapons/all.qc
+  - qcsrc/common/weapons/all.qh
+  - qcsrc/common/weapons/weapon.qh
+  - qcsrc/common/weapons/weapon/electro.qc
+  - qcsrc/common/weapons/weapon/mortar.qc
+  - qcsrc/common/mutators/mutator/nix/sv_nix.qc
+  - qcsrc/common/mapobjects/trigger/jumppads.qc
+  - qcsrc/common/notifications/all.qh
+  - qcsrc/client/hud/panel/ammo.qc
+  - qcsrc/client/hud/panel/weapons.qc
+  - qcsrc/server/items/items.qc
+  - qcsrc/server/bot/default/bot.qc
+  - qcsrc/server/chat.qc
+  - qcsrc/server/weapons/weaponsystem.qc
+  deep_dive: null
+- uw: UW-0098
+  title: ''
+  headline: Reduces Electro combo and secondary orb explosion radius from 150 to 100qu, tightening area-of-effect for both detonation types.
+  summary: Reduces Electro combo and secondary orb explosion radius from 150 to 100qu, tightening area-of-effect for both detonation types. Changes g_balance_electro_combo_radius and g_balance_electro_secondary_radius in bal-wep-xonotic.cfg.
+  recommendation: Hold this change until upstream merges to master; then re-triage as `port` (or evaluate against a Vortex Arena balance divergence policy, if one is established). The MR is open but not committed, and adopting draft upstream balance before acceptance creates churn risk.
+  relevance: medium
+  decision: defer
+  kind: data-cfg
+  effort: S
+  repo: data
+  source: data:drjaska/electroradiusnerf@d1722a1adc66
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1056
+  base_symbols:
+  - bal-wep-xonotic.cfg:g_balance_electro_combo_radius
+  - bal-wep-xonotic.cfg:g_balance_electro_secondary_radius
+  deep_dive: null
+- uw: UW-0099
+  title: ''
+  headline: 'Welcome dialog redesign that transforms the join experience: moves team-selection UI into the welcome dialog itself (auto-join + four team buttons + spectate, gated by _teams_available bitmask), shows server details (game type, player count, point/time limits, mods) alongside the MOTD, refactors makeTeamButton helpers into a shared util.qh for code reuse with dialog_teamselect.qc.'
+  summary: 'Welcome dialog redesign that transforms the join experience: moves team-selection UI into the welcome dialog itself (auto-join + four team buttons + spectate, gated by _teams_available bitmask), shows server details (game type, player count, point/time limits, mods) alongside the MOTD, refactors makeTeamButton helpers into a shared util.qh for code reuse with dialog_teamselect.qc. Touched files: qcsrc/menu/xonotic/dialog_welcome.{qc,qh}, qcsrc/menu/xonotic/dialog_teamselect.qc, qcsrc/menu/xonotic/util.{qc,qh}.'
+  recommendation: 'This is a UI/UX redesign proposal (menu gameplay layer) with real end-user impact: it consolidates the initial-join flow into a single dialog, reducing friction. The upstream branch is old (2022) and marked Draft, suggesting it was either deferred or abandoned upstream — check gitlab.com/xonotic/xonotic-data.pk3dir for the MR status. If the MR is closed/abandoned upstream, it may represent a rejected design choice. If still open/active, it''s a feature candidate. Vortex Arena''s port is intentionally simplified (minimal backend); adopting this requires commitment to the consolidated-welcome UX. Recommend: (1) verify upstream MR status; (2) if active/merged upstream in later commits, decide: *adapt* the C# DialogWelcome to include team UI and server info (extends existing port), or *defer* pending UX stability upstream. (3) If abandoned, *reject* with note that upstream did not converge on this design.'
+  relevance: medium
+  decision: pending
+  kind: qc-gameplay
+  effort: M
+  repo: data
+  source: data:z411/welcome_dialog@dbb2ada2da10
+  url: https://gitlab.com/xonotic/xonotic-data.pk3dir/-/merge_requests/1020
+  base_symbols:
+  - dialog_welcome.qc
+  - dialog_teamselect.qc
+  - util.qc
+  - makeTeamButton
+  - makeTeamButton_T
+  - _teams_available
+  - showNotify
+  - XonoticWelcomeDialog_fill
+  deep_dive: items/UW-0099-welcome-dialog-rehaul.md
+- uw: UW-0100
+  title: ''
+  headline: Stashes commented-out legacy Cbuf_Execute interpreter (102 lines, marked "pending major overhaul") in cmd.c; adds .theia to .gitignore; bumps SDL2 NuGet 2.30.2→2.32.8 (Windows MSVC only).
+  summary: Stashes commented-out legacy Cbuf_Execute interpreter (102 lines, marked "pending major overhaul") in cmd.c; adds .theia to .gitignore; bumps SDL2 NuGet 2.30.2→2.32.8 (Windows MSVC only). No active code changes — engine internals and build tooling only.
+  recommendation: Skip. This is internal DarkPlaces refactoring (stashed legacy code in a WIP branch) and Windows build-tool updates. Godot replaces the engine entirely; the commented-out code has zero impact on gameplay or the port. Log as n/a in the ledger with one-line summary.
+  relevance: none
+  decision: n/a
+  kind: dp-engine
+  effort: S
+  repo: dp
+  source: dp:dpmaster@5b08123f4d51
+  url: https://gitlab.com/xonotic/darkplaces/-/tree/dpmaster
+  base_symbols:
+  - darkplaces/cmd.c
+  - darkplaces/.gitignore
+  - darkplaces/packages.config
+  deep_dive: null
+- uw: UW-0101
+  title: ''
+  headline: Moves the `packet` console command (raw UDP packet sender with escape-sequence support) from client-only (cl_cmd.c) to shared scope (host.c), allowing server-side use for admin/debug packet crafting.
+  summary: 'Moves the `packet` console command (raw UDP packet sender with escape-sequence support) from client-only (cl_cmd.c) to shared scope (host.c), allowing server-side use for admin/debug packet crafting. Includes orthogonal fixes: Accept header for libcurl HTTP downloads, and shader-redef spam muting. Non-gameplay developer tooling only; affects no protocol contract or gameplay parity.'
+  recommendation: 'Not applicable to the port. The `packet` command is DP-specific developer tooling, not a gameplay or protocol contract. Vortex Arena has no need to mirror this feature from DP; if debugging packet-crafting is wanted, implement it independently in the Godot console layer. No dependency on upstream acceptance. Close ledger row with decision=n/a and note: "Developer tooling only; outside port scope. DP engine feature with no protocol/parity impact."'
+  relevance: none
+  decision: n/a
+  kind: dp-engine
+  effort: S
+  repo: dp
+  source: dp:Mario/shared_packet_command@0b65dfd40e11
+  url: https://gitlab.com/xonotic/darkplaces/-/tree/Mario/shared_packet_command
+  base_symbols:
+  - cl_cmd.c::CL_Packet_f (removed)
+  - host.c::Host_Packet_f (added)
+  - libcurl.c (Accept header)
+  - model_shared.c::Q3Shader_AddToHash (logging mute)
+  deep_dive: null
+- uw: UW-0102
+  title: ''
+  headline: Fixes VM_rint() to preserve input sign when rounding to zero, preventing unwanted negative-zero generation.
+  summary: 'Fixes VM_rint() to preserve input sign when rounding to zero, preventing unwanted negative-zero generation. Uses copysign() to ensure output zeros match input sign. Addresses Xonotic issue #276. Touches prvm_cmds.c::VM_rint (~20 lines).'
+  recommendation: Audit Vortex Arena's QuakeC rint() usage (grep qcsrc for rint calls in Base; check if our C# Math.Round or VM rint wrapper has the same negative-zero bug). If found in hot paths (movement, particles) or netcode determinism-critical code, port as-is. If our C# Math.Round already handles this correctly, close as n/a. Default to port if uncertain, since it's S-effort and a correctness fix.
+  relevance: medium
+  decision: pending
+  kind: dp-engine
+  effort: S
+  repo: dp
+  source: dp:divVerent/fix-rint@0406cf4cd038
+  url: https://gitlab.com/xonotic/darkplaces/-/tree/divVerent/fix-rint
+  base_symbols:
+  - prvm_cmds.c::VM_rint
+  deep_dive: null
+- uw: UW-0103
+  title: ''
+  headline: Fixes a bug in DarkPlaces cl_input.c where the v_flipped cvar (which negates yaw for flipped view) was not applied to turn left/right input handling, causing inverted/broken controls when v_flipped=1.
+  summary: 'Fixes a bug in DarkPlaces cl_input.c where the v_flipped cvar (which negates yaw for flipped view) was not applied to turn left/right input handling, causing inverted/broken controls when v_flipped=1. The fix multiplies the yaw deltas for in_left and in_right by (v_flipped.integer ? -1 : 1) in CL_AdjustAngles, so input controls are flipped consistently with the final view angle. Also cleans up spacing in three related angle-adjustment lines. Base symbols touched: CL_AdjustAngles (cl_input.c:431), in_left/in_right button handlers (cl_input.c:443-444).'
+  recommendation: 'Do not port. Rationale: v_flipped is not ported to Vortex Arena (client input and view are reimplemented in C# and Godot, not QuakeC + DP engine). This is a localized DP client-input bug fix with no gameplay impact outside the quirky v_flipped mode (which is a developer/accessibility feature, not a balance/mechanic change). The principle is sound (controls must track display transforms), but the implementation is DP-specific. If Xonotic ever ships a horizontal-mirror accessibility feature in Vortex Arena, the same principle would apply at the Godot input layer, but there is no v_flipped cvar to mirror.'
+  relevance: low
+  decision: n/a
+  kind: dp-engine
+  effort: S
+  repo: dp
+  source: dp:uchi/turn_v_flipped_fix@a449070246ce
+  url: https://gitlab.com/xonotic/darkplaces/-/merge_requests/167
+  base_symbols:
+  - CL_AdjustAngles
+  - in_left
+  - in_right
+  - v_flipped
+  deep_dive: null
+- uw: UW-0104
+  title: ''
+  headline: Adds in-game `renamedemo &lt;name&gt;` command to rename the currently recording demo on stop.
+  summary: 'Adds in-game `renamedemo &lt;name&gt;` command to rename the currently recording demo on stop. Implements a deferred-rename-on-close mechanism in the file system layer (FS_RenameOnClose): marks a qfile for rename when closed, sanitizes input (rejects relative paths, read-only files), and performs the rename in FS_Close(). Three commits: (1) FS layer primitives (FS_RenameOnClose, QFILE_FLAG_RENAME, fs.c/fs.h), (2) CL_RenameDemo_f console command (cl_demo.c, client.h), (3) Windows-portability fix (rename() error check). Base symbols touched: fs.c (FS_RenameOnClose, FS_Close), fs.h, cl_demo.c (CL_RenameDemo_f, CL_Demo_Init), client.h.'
+  recommendation: Port candidate for competitive/speedrun UX polish. Requires adaptation to Godot (wire RenameOnClose into DemoControl.OnMatchEnd or a new DemoRename hook, use Godot FileAccess for rename). Low risk; no collision with existing demo subsystem. Bryan decides priority within the racing/speedrun roadmap.
+  relevance: medium
+  decision: pending
+  kind: dp-engine
+  effort: S
+  repo: dp
+  source: dp:des/demo_renaming@b36fb446c471
+  url: https://gitlab.com/xonotic/darkplaces/-/merge_requests/158
+  base_symbols:
+  - FS_RenameOnClose
+  - FS_Close
+  - CL_RenameDemo_f
+  - CL_Demo_Init
+  - qfile_s
+  - QFILE_FLAG_RENAME
+  deep_dive: null
+- uw: UW-0105
+  title: ''
+  headline: 'Add SHIFT+TAB completion for player# references (e.g., #1 completes to player 1''s name).'
+  summary: 'Add SHIFT+TAB completion for player# references (e.g., #1 completes to player 1''s name). Extends console.c/keys.c tab-completion with SHIFT-aware routing, escape-sequence handling (Con_EscapeSpaces/Con_UnescapeSpaces), and only_pnumbers mode in Nicks_CompleteCountPossible matching #N patterns. Refactors GetMapList return type (qbool→size_t) for length tracking. All 6 commits landed on master, production-ready.'
+  recommendation: 'Defer until Vortex console roadmap clarifies player-reference support. If in scope (admin commands accepting kick #1), revisit for C# adaptation. If console remains gameplay-only, this is n/a. Porting requires re-architecting escape handling and nick matching to C# and testing against live net model.'
+  relevance: medium
+  decision: defer
+  kind: dp-engine
+  effort: M
+  repo: dp
+  source: dp:des/shifttab_completion@17dc694e160a
+  url: https://gitlab.com/xonotic/darkplaces/-/merge_requests/164
+  base_symbols:
+  - 'console.c: Con_CompleteCommandLine, Nicks_CompleteCountPossible'
+  - 'keys.c: Key_Parse_CommonKeys'
+  - 'common.c: COM_ParseToken_Console'
+  - 'qdefs.h: ISWHITESPACE_ANDNOTESCAPED'
+  deep_dive: null
+- uw: UW-0106
+  title: ''
+  headline: 'Tab-completion and console-argument parsing enhancements for DarkPlaces: adds escape-sequence support for spaces in arguments (via ISWHITESPACE_ANDNOTESCAPED macro in qdefs.h and COM_ParseToken_Console refactor), enables file/directory tab completion for which/ls/dir commands (new con_completion_which cvar + pattern matching), adds Con_UnescapeSpaces/Con_EscapeSpaces helpers, and improves ambiguity resolution when both files and directories match a pattern.'
+  summary: 'Tab-completion and console-argument parsing enhancements for DarkPlaces: adds escape-sequence support for spaces in arguments (via ISWHITESPACE_ANDNOTESCAPED macro in qdefs.h and COM_ParseToken_Console refactor), enables file/directory tab completion for which/ls/dir commands (new con_completion_which cvar + pattern matching), adds Con_UnescapeSpaces/Con_EscapeSpaces helpers, and improves ambiguity resolution when both files and directories match a pattern. Also includes code cleanup (indenting reduction, comment fixes). Base symbols: console.c:Con_CompleteCommandLine/GetMapList, common.c:COM_ParseToken_Console, qdefs.h:ISWHITESPACE_ANDNOTESCAPED, fs.c:FS_ListDirectory.'
+  recommendation: This is upstream-only polish on the DP console that doesn't port to our Godot+C# architecture. While tab-completion enhancements are nice QoL, they are not critical features and would require substantial adaptation (mapping DP console logic to Godot layer). If we decide to improve our console tab-completion (currently basic prefix-only in ConsoleCommands.Complete), it should be a native C# feature added directly to our overlay/commands, not a port from DP. Recommend deferring to a future session if file-path completion becomes a user-requested feature; file this in WISHLIST.md as a "nice-to-have — implement native directory tab completion in ConsoleOverlay" for later prioritization.
+  relevance: low
+  decision: reject
+  kind: dp-engine
+  effort: S
+  repo: dp
+  source: dp:bones_was_here/console2@f9d581eaa081
+  url: https://gitlab.com/xonotic/darkplaces/-/merge_requests/163
+  base_symbols:
+  - console.c:Con_CompleteCommandLine
+  - console.c:GetMapList
+  - console.c:Con_UnescapeSpaces
+  - console.c:Con_EscapeSpaces
+  - common.c:COM_ParseToken_Console
+  - qdefs.h:ISWHITESPACE_ANDNOTESCAPED
+  - fs.c:FS_ListDirectory
+  - console.h:GetMapList
+  deep_dive: null
+- uw: UW-0107
+  title: ''
+  headline: 'Draft MR: GLES2 robustness improvements to texture loading and driver selection.'
+  summary: 'Draft MR: GLES2 robustness improvements to texture loading and driver selection. Adds runtime checks to prevent loading DXT (unsupported in GLES2) and cubemaps when driver lacks support; fixes type correctness in gltexture_t.texturetype; removes driver-library selection logic (GLES2-only builds don''t use it); refactors build flags to use separate DP_GLES makefile variable. Touches: gl_rmain.c (r_texture_dds_load cvar), gl_textures.c (gltexture_t, R_SetupTexture, cubemap check), vid.h/vid_sdl.c/vid_shared.c (gl_info_driver cvar removal), makefile/makefile.inc (GLES2 build system).'
+  recommendation: Document as informational. Do not port now—we don't target GLES2/mobile. If Vortex Arena adds mobile support later, revisit this for the asset-format specs (DXT/cubemap behavior). Flag the type-safety fix (gltexturetype_t) as potentially worth taking independently if we ever touch texture code, but it's not critical.
+  relevance: low
+  decision: defer
+  kind: dp-engine
+  effort: S
+  repo: dp
+  source: dp:uis/gles2-again@055ea5876626
+  url: https://gitlab.com/xonotic/darkplaces/-/merge_requests/160
+  base_symbols:
+  - gl_rmain.c:r_texture_dds_load
+  - gl_textures.c:gltexture_t
+  - gl_textures.c:R_SetupTexture()
+  - vid.h:gl_info_driver
+  - vid_sdl.c:VID_InitModeGL()
+  - vid_shared.c:VID_Shared_Init()
+  deep_dive: null
+- uw: UW-0108
+  title: ''
+  headline: Four commits refactoring OpenGL state management for dithering and multisampling.
+  summary: 'Four commits refactoring OpenGL state management for dithering and multisampling. Removes redundant DrawQ_Start() call (noise), explicitly disables GL_MULTISAMPLE when not requested, and adds a user-controllable gl_dither cvar that applies dithering state post-render via qglEnable/qglDisable. Base symbols: cvar_t gl_dither, qglEnable, qglDisable, GL_DITHER, GL_MULTISAMPLE in cl_screen.c, gl_backend.c, render.h, vid_shared.c.'
+  recommendation: Do not port. This is DarkPlaces graphics backend state management (OpenGL calls) that we've entirely replaced with Godot's rendering system. The branch is also stale (2+ years, unmerged upstream). No gameplay, protocol, physics, or asset-format impact.
+  relevance: none
+  decision: n/a
+  kind: dp-engine
+  effort: S
+  repo: dp
+  source: dp:uis/multisample@9f99cd74451f
+  url: https://gitlab.com/xonotic/darkplaces/-/merge_requests/148
+  base_symbols:
+  - cvar_t gl_dither
+  - qglEnable
+  - qglDisable
+  - GL_DITHER
+  - GL_MULTISAMPLE
+  deep_dive: null
+- uw: UW-0109
+  title: ''
+  headline: 'Adds NetBSD platform support to DarkPlaces: renames hmac() to d_hmac() to avoid libc collision, extends Sys_FindExecutableName() sysctl path discovery for NetBSD''s MIB layout.'
+  summary: 'Adds NetBSD platform support to DarkPlaces: renames hmac() to d_hmac() to avoid libc collision, extends Sys_FindExecutableName() sysctl path discovery for NetBSD''s MIB layout. Touches hmac.c, hmac.h, sys_shared.c. Pure build portability, no gameplay/protocol changes.'
+  recommendation: Upstream infrastructure fix with zero VA impact. No port needed; DP build plumbing is replaced by Godot. Ledger-only entry; no deep-dive.
+  relevance: none
+  decision: n/a
+  kind: dp-engine
+  effort: S
+  repo: dp
+  source: dp:devnexen/sys_shared_update@baf81ffd6513
+  url: https://gitlab.com/xonotic/darkplaces/-/merge_requests/129
+  base_symbols:
+  - hmac()
+  - d_hmac()
+  - HMAC_MDFOUR_16BYTES
+  - HMAC_SHA256_32BYTES
+  - Sys_FindExecutableName()
+  deep_dive: null
+- uw: UW-0110
+  title: ''
+  headline: Adds m_cvar_changed(cvarName, oldValue, newValue) QC callback fired whenever a cvar changes, allowing the menu VM to react immediately to cvar updates.
+  summary: 'Adds m_cvar_changed(cvarName, oldValue, newValue) QC callback fired whenever a cvar changes, allowing the menu VM to react immediately to cvar updates. Modifies cvar.c:Cvar_SetQuick_Internal to invoke the callback post-change; declares the function in dpdefs/menudefs.qc and prvm_offsets.h. Base symbols: cvar.c, dpdefs/menudefs.qc, prvm_offsets.h.'
+  recommendation: Do not port. This is DarkPlaces engine code for the QC menu VM, which is an intended architectural divergence (we use Godot Controls + C# events, not QC). The underlying pattern (reactive cvar updates) is already solved in our port via CVar.Changed events in the C# layer. Porting would add dead engine code and duplicate the menu callback surface we've intentionally replaced.
+  relevance: none
+  decision: reject
+  kind: dp-engine
+  effort: S
+  repo: dp
+  source: dp:ColdSpirit/cvar_onchange@8e50ec7a85ad
+  url: https://gitlab.com/xonotic/darkplaces/-/merge_requests/126
+  base_symbols:
+  - cvar.c
+  - dpdefs/menudefs.qc
+  - prvm_offsets.h
+  deep_dive: null
+- uw: UW-0111
+  title: ''
+  headline: Generic recursive-descent parser framework (parser.c/h, token.c/h) + JSON implementation (json.c).
+  summary: Generic recursive-descent parser framework (parser.c/h, token.c/h) + JSON implementation (json.c). Adds qparser_state_t infrastructure, tokenizer abstraction, and qjson_type_t tree structure with linked-list nodes. C/C++ comment support, escape sequences, setjmp error handling. 16 commits; unfinished—missing consumer API, blank array/object support, and tests. Commit message explicitly lists TODOs.
+  recommendation: Reject. Out of scope (engine layer replaced by Godot), redundant (C#/.NET stdlib has mature JSON tooling), incomplete (self-admittedly WIP, no consumer API). Not applicable to Vortex Arena. Document in ledger; no followup needed.
+  relevance: none
+  decision: reject
+  kind: dp-engine
+  effort: M
+  repo: dp
+  source: dp:Cloudwalk/json@b1d582ec
+  url: https://gitlab.com/xonotic/darkplaces/-/merge_requests/118
+  base_symbols:
+  - host.c (Host_InitLocal)
+  - json.c (qjson_token_t, Json_Parse_*, qjson_type_t)
+  - parser.c (qparser_state_t, Parse_*, PARSE_ERR_*)
+  - token.c (Token_Next, Token_Newline)
+  - darkplaces-sdl2-vs2017/2019.vcxproj (build config)
+  - makefile.inc (compilation)
+  deep_dive: null
+- uw: UW-0112
+  title: ''
+  headline: Adds X11-only taskbar icon support for SDL2 video backend in DarkPlaces.
+  summary: Adds X11-only taskbar icon support for SDL2 video backend in DarkPlaces. Loads PNG icons via loadimagepixelsbgra() at window init and writes _NET_WM_ICON property. Uses SDL_syswm.h to access X11 display/window. Supports multi-resolution icon variants. No tests; marked Draft; abandoned 6+ years (never merged upstream).
+  recommendation: 'Reject outright. Out-of-scope: DarkPlaces-specific engine infrastructure (video backend) wholly replaced by Godot. Godot provides native window icon support via project settings; no custom C code needed. No gameplay, protocol, physics, or asset-format behavior to mirror. Stale WIP (6+ years, never merged upstream) adds no urgency.'
+  relevance: none
+  decision: reject
+  kind: dp-engine
+  effort: S
+  repo: dp
+  source: dp:Juhu/sdl2_taskbar_icon@e84aca4a44f4
+  url: https://gitlab.com/xonotic/darkplaces/-/merge_requests/76
+  base_symbols:
+  - 'vid_sdl.c: VID_InitModeGL()'
+  - loadimagepixelsbgra()
+  - SDL_GetWindowWMInfo()
+  - _NET_WM_ICON
+  deep_dive: null
+- uw: UW-0113
+  title: ''
+  headline: Temporary workaround for mouse input bug on SDL2 on Linux.
+  summary: Temporary workaround for mouse input bug on SDL2 on Linux. Adds three identical code blocks in `vid_sdl.c` (`Sys_SendKeyEvents` twice and `VID_Finish`) that disable mouse capture when the window is not active (!vid_activewindow) by calling VID_SetMouse(false, false, false). Intent is to prevent stray mouse events being captured when focus is lost. Branch is a 6-year-old (May 2020) draft/abandoned proposal; the actual upstream mouse fix has since gone into master via different mechanisms (commits 777e4425, e4147673 show mature solutions like vid_minimize_on_focus_loss and input capture release during loading).
+  recommendation: 'Reject. (1) **Superseded upstream**: Xonotic merged superior mouse-focus fixes (777e4425, e4147673) to master years after this branch was created. (2) **Not applicable to port**: Vortex Arena uses Godot''s input stack, not SDL or the DarkPlaces video subsystem — the entire file is replaced. (3) **Stale WIP**: 6-year-old draft branch with no MR activity; upstream moved on to better solutions. (4) **Design regression**: If we were to port any mouse-focus fix, we should mirror the cleaner upstream solution, not this temporary hack. **Ledger treatment**: one-line row, Decision=reject, no deep-dive doc needed (engine-internal, upstream-only churn, superseded).'
+  relevance: none
+  decision: reject
+  kind: dp-engine
+  effort: S
+  repo: dp
+  source: dp:Juhu/sdl_linux_mousefix@6933401b7290
+  url: https://gitlab.com/xonotic/darkplaces/-/merge_requests/74
+  base_symbols:
+  - vid_sdl.c:Sys_SendKeyEvents
+  - vid_sdl.c:VID_Finish
+  - vid_sdl.c:VID_SetMouse
+  deep_dive: null
+- uw: UW-0114
+  title: ''
+  headline: 'Refactors DarkPlaces water rendering: shader rewrite with Fresnel-based Fresnel equation, adds EyeDirection uniform, consolidates R_View_Update, improves matrix inversion (Simple→Full), adds player clipping cvar for reflection views, fixes particle loop guard, and preserves cvar autocvar bindings across re-registration.'
+  summary: 'Refactors DarkPlaces water rendering: shader rewrite with Fresnel-based Fresnel equation, adds EyeDirection uniform, consolidates R_View_Update, improves matrix inversion (Simple→Full), adds player clipping cvar for reflection views, fixes particle loop guard, and preserves cvar autocvar bindings across re-registration.'
+  recommendation: Do not port. This is DarkPlaces rendering cosmetics (shader + rendering pipeline) entirely replaced by Godot. No gameplay spec to mirror, no reusable logic, and branch is stale (2016, WIP). Water behavior (physics, content types) lives in qcsrc/server/g_subs.qc and data, not engine rendering. If water visual quality matters later, implement directly in Godot's material system, not via DP archaeology.
+  relevance: none
+  decision: reject
+  kind: dp-engine
+  effort: L
+  repo: dp
+  source: dp:Alduin_dev/watershader@e5f98e4c
+  url: https://gitlab.com/xonotic/darkplaces/-/merge_requests/29
+  base_symbols:
+  - gl_rmain.c:R_View_Update
+  - gl_rmain.c:R_Water_ProcessPlanes
+  - shader_glsl.h:MODE_WATER
+  - render.h:rsurface.localviewdirection
+  - cvar.c:Cvar_RegisterVariable
+  - cvar.h:cvar_t.globaldefindex
+  - cl_particles.c:CL_ParticleEffect_Fallback
+  deep_dive: null
+- uw: UW-0115
+  title: ''
+  headline: Adds SHA-256 support as alternative to MD4 for RCon authentication.
+  summary: Adds SHA-256 support as alternative to MD4 for RCon authentication. Introduces lonesha256 library (portable, CC0, endian-safe), rcon_secure_algorithm cvar, and protocol extensions for HMAC-SHA256 TIME/CHALLENGE variants alongside existing MD4. Includes server-side parser updates, client-side auth branching, and QC def documentation. Protocol is backward-compatible (MD4 default).
+  recommendation: Port when/if RCon is implemented in Vortex Arena. The change is minimal risk and adds cryptographic hardening. In the interim, retain this MR reference in planning docs as a protocol specification for future RCon implementation. No blockers; straightforward algorithm port if needed.
+  relevance: medium
+  decision: defer
+  kind: dp-engine
+  effort: S
+  repo: dp
+  source: dp:rcon-sha256@fork
+  url: https://gitlab.com/xonotic/darkplaces/-/merge_requests/168
+  base_symbols:
+  - cl_cmd.c:CL_Rcon_f
+  - netconn.c:NetConn_ClientParsePacket
+  - netconn.c:NetConn_ServerParsePacket
+  - netconn.c:hmac_sha256_time_matching
+  - netconn.c:hmac_sha256_challenge_matching
+  - console.c:rcon_secure_algorithm
+  - lonesha256.h
+  - lonesha256.c
+  - hmac.h:HMAC_SHA256_32BYTES
+  - makefile.inc:lonesha256.o
+  - dpdefs/csprogsdefs.qc
+  - dpdefs/dpextensions.qc
+  - dpdefs/menudefs.qc
+  deep_dive: null
+- uw: UW-0116
+  title: ''
+  headline: Modifies DarkPlaces loading-screen framerate throttle to call Sys_DirtyTime() ad-hoc instead of relying on host.realtime.
+  summary: 'Modifies DarkPlaces loading-screen framerate throttle to call Sys_DirtyTime() ad-hoc instead of relying on host.realtime. The issue: during asset-load phases (sounds, models), synchronous load functions block Sys_Frame from executing, so host.realtime freezes. The loading screen uses this stale value to throttle FPS via scr_loadingscreen_maxfps cvar, causing it to stop updating. The fix grabs the current wall-clock time directly via Sys_DirtyTime() each frame. Touches: cl_screen.c (line ~2250 in CL_UpdateScreen). Base symbols: CL_UpdateScreen, scr_loadingscreen_maxfps (cvar), Sys_DirtyTime (engine API).'
+  recommendation: 'Do not port. The fix solves a DarkPlaces engine-specific problem (synchronous asset loading blocking Sys_Frame, freezing host.realtime). Godot''s architecture does not have this race condition: the engine loop continues running asynchronously, and asset loading is either threaded or non-blocking. Our loading-screen implementation (if implemented as a feature) would use Godot''s independent timer/clock, not a port of cl_screen.c logic. Porting this would add complexity with no benefit. If a loading screen becomes a feature, design it from Godot-native primitives (e.g. Timer nodes, SceneTreeTimer).'
+  relevance: low
+  decision: reject
+  kind: dp-engine
+  effort: S
+  repo: dp
+  source: dp:cl_screen-use-sys_dirtytime@fork
+  url: https://gitlab.com/xonotic/darkplaces/-/merge_requests/166
+  base_symbols:
+  - CL_UpdateScreen
+  - scr_loadingscreen_maxfps
+  - Sys_DirtyTime
+  deep_dive: null
+- uw: UW-0117
+  title: ''
+  headline: Makes video playback (cin_*) functionality optional via CONFIG_VIDEO_PLAYBACK compile flag, paralleling the existing CONFIG_VIDEO_CAPTURE mechanism.
+  summary: 'Makes video playback (cin_*) functionality optional via CONFIG_VIDEO_PLAYBACK compile flag, paralleling the existing CONFIG_VIDEO_CAPTURE mechanism. Core change (37c0641f) wraps cl_video.h includes and CL_Video_* calls in six files (cl_main.c, cl_parse.c, cl_screen.c, gl_draw.c, gl_rmain.c, host.c, keys.c, prvm_cmds.c/h) with preprocessor guards, removes cl_video.o from the default build object list, and adds a makefile flag (default disabled initially, then enabled via cc646f1a). Base symbols touched: CL_Video_Init, CL_VideoStop, CL_DrawVideo, CL_Video_Frame, CL_Video_Shutdown, VM_cin_open, VM_cin_close, VM_cin_setstate, VM_cin_getstate, VM_cin_restart, VM_CL_videoplaying (prvm_cmds.c), and builtin menu/client builtins for cin_* and videoplaying() function.'
+  recommendation: '**Reject:** Video playback (cin_*) is not used anywhere in the Xonotic codebase (confirmed: zero grep matches in qcsrc/). The Vortex Arena port has no video playback on the roadmap (checked planning/TODO.md and parity registry — only T65 Video Capture exists, a different, unrelated system). DarkPlaces internals are generally n/a to the port (Godot replaces them), and this is a pure engine housekeeping change. The MR is 21 months stale with draft status and no upstream momentum. **Rationale:** Porting would add zero gameplay value, expands the engine-services facade (ADR-0009) surface for an unused subsystem, and creates maintenance debt (every future cin_* fix would require decision-making). Reject; if upstream ever does adopt this flag universally (i.e., marks CONFIG_VIDEO_CAPTURE/PLAYBACK as standard), revisit as part of a larger parity baseline refresh (T-quarterly-repin, ADR-0009 §3).'
+  relevance: none
+  decision: reject
+  kind: dp-engine
+  effort: S
+  repo: dp
+  source: dp:video_playback_optional@fork
+  url: https://gitlab.com/xonotic/darkplaces/-/merge_requests/97
+  base_symbols:
+  - CL_Video_Init
+  - CL_VideoStop
+  - CL_DrawVideo
+  - CL_Video_Frame
+  - CL_Video_Shutdown
+  - VM_cin_open
+  - VM_cin_close
+  - VM_cin_setstate
+  - VM_cin_getstate
+  - VM_cin_restart
+  - VM_CL_videoplaying
+  - cl_video.h
+  - cl_videoplaying
+  - CLVIDEO_*
+  - CONFIG_VIDEO_PLAYBACK
+  deep_dive: null
+- uw: UW-0118
+  title: ''
+  headline: Adds setmousepos(vector) builtin (#644) to QuakeC VM to allow CSQC and menu code to programmatically warp the mouse cursor.
+  summary: Adds setmousepos(vector) builtin (#644) to QuakeC VM to allow CSQC and menu code to programmatically warp the mouse cursor. Uses SDL_WarpMouseInWindow() on next input poll after converting from console space to window space. Includes guards for cursor mode and game state to prevent spurious warps.
+  recommendation: 'Reject as n/a: DarkPlaces input builtin with no applicability to Vortex Arena port. Engine layer entirely replaced by Godot C#. If menu UI ever needs mouse positioning, implement natively in C# using Input.WarpMouse(). Upstream contribution is stale (5+ year old draft) with minor quality issues; not a candidate for base-port tracking.'
+  relevance: none
+  decision: reject
+  kind: dp-engine
+  effort: S
+  repo: dp
+  source: dp:KrimZon/SetCursorPos-master@fork
+  url: https://gitlab.com/xonotic/darkplaces/-/merge_requests/105
+  base_symbols:
+  - clvm_cmds.c:VM_CL_setmousepos
+  - mvm_cmds.c:VM_M_setmousepos
+  - vid_sdl.c:IN_Move
+  - vid_shared.c:in_setmouse
+  - input.h:in_setmouse
+  deep_dive: null

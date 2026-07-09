@@ -58,7 +58,7 @@ The doublejump mutator lets a player jump **again** in the brief window when the
 Live caller chain: `GameWorld` boot → `MutatorActivation.Apply()` (`GameWorld.cs:511`) → `IsEnabled` (reads `sv_doublejump`) → `Add()` → `DoublejumpMutator.Hook()` subscribes → `MutatorHooks.PlayerJump.Call` fires from `PlayerPhysics.PlayerJump` ← `CheckPlayerJump` ← `PM_Main` physics step (server tick + client prediction).
 
 ## Parity assessment
-- **logic — faithful.** The tracebox, the `Fraction<1 && PlaneNormal.Z>0.7` gate, the grant, and the negative-dot velocity clip all match Base line-for-line. The consuming gate in `PlayerJump` correctly turns the grant into an allowed jump. This corrects the earlier T19 simplification (which treated `sv_doublejump` as an unconditional air-jump with no surface trace and no velocity clip); see TODO.md T51.
+- **logic — faithful.** The tracebox, the `Fraction<1 && PlaneNormal.Z>0.7` gate, the grant, and the negative-dot velocity clip all match Base line-for-line. The consuming gate in `PlayerJump` correctly turns the grant into an allowed jump. This corrects the earlier T19 simplification (which treated `sv_doublejump` as an unconditional air-jump with no surface trace and no velocity clip); see ../../TODO.md T51.
 - **values — faithful.** `0.01` trace offsets, `0.7` normal gate, and the default `sv_doublejump 0` all match. (Per-physics-preset overrides flow through the same `PhysicsPreset.OptionFor("sv_doublejump")` → `"doublejump"` mapping verified in `PhysicsPresetTests`.)
 - **timing — faithful.** Runs once per jump-press inside the per-tick physics step, same cadence as Base; no extra timers.
 - **presentation — na.** Pure movement-rules mutator; no model/anim/particle/HUD of its own.

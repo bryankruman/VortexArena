@@ -10,7 +10,7 @@ namespace XonoticGodot.Engine.Collision;
 /// (Base/darkplaces/world.c <c>World_LinkEdict_AreaGrid</c> / <c>World_EntitiesInBox</c>). The static-brush
 /// broadphase already has its own grid (<see cref="CollisionWorld.Query"/>); this is the missing half for the
 /// MOVING entities (players, projectiles, items, triggers) that traces, splash-radius queries, and the
-/// trigger-touch pass would otherwise scan as one flat O(n) list every call (PERFORMANCE_REPORT.md §4/D1).
+/// trigger-touch pass would otherwise scan as one flat O(n) list every call (planning/PERFORMANCE_REPORT.md §4/D1).
 ///
 /// <para><b>Representation.</b> A uniform XY hash-grid: each entity is linked into every <see cref="CellSize"/>-unit
 /// cell its world AABB (XY) overlaps (Z is not partitioned — the caller's precise box test handles it, exactly
