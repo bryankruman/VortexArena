@@ -1,0 +1,25 @@
+# UW-0055 — 
+
+- **Source:** `data:morosophos/server-current4@99df3a3c2`
+- **Kind:** qc-gameplay
+- **Base symbols touched:** `qcsrc/server/strafe.qc:calculate_strafe_efficiency`, `qcsrc/server/strafe.qh:.strafe_efficiency_*`, `qcsrc/common/scores.qh:SP_CTS_STRAFE/STARTSPEED/AVGSPEED/TOPSPEED`, `qcsrc/server/race.qc:race_avgspeed*/race_topspeed*`, `qcsrc/common/gametypes/gametype/cts/sv_cts.qc:MUTATOR_HOOKFUNCTION(cts,PlayerPhysics)`, `qcsrc/client/hud/panel/scoreboard.qc:Label_getInfo/Scoreboard_GetField`, `qcsrc/client/hud/panel/strafehud.qh:AUTOCVAR_SAVE*`, `qcsrc/common/constants.qh:RANKINGS_CNT`, `bal-wep-*.cfg:g_balance_crylink_*`, `qcsrc/common/command/generic.qc:GenericCommand_maplist case rebuild`
+- **Port-worthiness:** high  ·  **Effort:** M
+- **Decision:** pending
+
+## What it does / how it works
+Comprehensive CTS/speedrun enhancements: new server-side strafe efficiency calculator (qcsrc/server/strafe.qc) that measures player strafing quality during race runs; four new scoreboard scoring fields (SP_CTS_STRAFE, SP_CTS_STARTSPEED, SP_CTS_AVGSPEED, SP_CTS_TOPSPEED) tracked per-player per-run; scoreboard UI updates to display these stats; and extensive strafehud client cvar refactoring (all ~115 hud_panel_strafehud_* cvars converted to AUTOCVAR_SAVE for persistent client storage). Also includes balance config tweaks (crylink swap_attacks default, xdf spreadtype) and gameplay-supporting changes (RANKINGS_CNT increased 99→512, maplist rebuild command). Core files touched: qcsrc/server/strafe.qc (new), qcsrc/server/strafe.qh (new), qcsrc/server/race.qc/race.qh (enhanced tracking), qcsrc/common/scores.qh (new CTS score fields), qcsrc/client/hud/panel/scoreboard.qc (new stat rendering), qcsrc/client/hud/panel/strafehud.qh (cvar migration), bal-wep-*.cfg (weapon balance), qcsrc/common/gametypes/gametype/cts/sv_cts.qc (PlayerPhysics hook for stat accumulation), qcsrc/server/main.qc (RANKINGS_CNT read), qcsrc/common/stats.qh (Q3COMPAT_JUMPPADS stat).
+
+## Portability
+qc-gameplay + data-cfg. The core strafehud changes are QC constant+cvar declarations (direct port to C# settings); the strafe efficiency calculator is pure QC logic (moderate complexity, needs physics understanding but no engine hooks). The new race.qc stat-accumulation hooks slot into the existing PlayerPhysics path. Scoreboard field rendering is straightforward. Weapon cfg tweaks are mechanical value ports. Moderate complexity for high gameplay value.
+
+## Completeness (upstream)
+Merged to origin/master as of 2026-04-04 (tip commit is a merge back to master). The 239 non-merge commits show this is a mature, feature-complete branch with iterative refinement (many strafehud cosmetic/review-fix commits mixed with the core stat-tracking work). No WIP markers; the code is finished and peer-reviewed. Tests are mentioned in the parity docs (CtsSpawnTests.*) suggesting the port pathway is well-validated upstream.
+
+## Quality
+High. The strafe efficiency code is physics-grounded (uses PHYS_* constants, handles onground/swimming cases, incorporates friction). The cvar refactoring (AUTOCVAR_SAVE) is a widely-used idiom in QC. Scoreboard rendering logic is clean and follows existing patterns (color coding, unit conversion). The stat accumulators in PlayerPhysics are integrated into the existing hook chain, not bolted-on. Multiple bug-fix commits (friction handling, merge-fail recovery, quote escapes) show the work was reviewed and iterated. No obvious red flags.
+
+## Roadmap / design alignment
+High alignment with Vortex Arena. CTS is a confirmed port target (see planning/parity/registry/cts.yaml: 21 features tracked, many FIXED in recent waves). The strafe stats are a direct enhancement to the racing/speedrun experience, which is core Vortex Arena gameplay. The strafehud is a client-side feedback tool; persistent cvar storage (AUTOCVAR_SAVE) is a quality-of-life feature already expected in a Godot port. Weapon config tweaks (crylink balance) are orthogonal (not CTS-specific) and low-risk. No conflicts with intended divergences; this is upstream work that upstream has already merged, so there's no fork-maintenance cost on their side.
+
+## Recommendation
+Port. The strafe efficiency calculator and CTS stat fields are straightforward QC-to-C# ports with direct gameplay impact (ranked stat tracking is expected in speedruns). The strafehud cvar refactoring is mechanical and low-risk. Recommend pairing the strafe.qc port with an existing QC physics porter (already familiar with player movement, friction, air-acceleration logic) to ensure the calculation accuracy is byte-faithful. The scoreboard rendering and race.qc integration hooks can be handled by any C# developer. Estimated timeline: 2–3 days. Accept with the understanding that CTS is a tracked parity unit (see planning/parity/registry/cts.yaml) and the strafe stats should be added to the CTS feature ledger once ported (new unit: cts.stats.strafe_efficiency or merged into cts.score.rules as an extended-fields note).

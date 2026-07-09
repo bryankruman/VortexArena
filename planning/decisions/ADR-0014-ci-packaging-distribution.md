@@ -11,7 +11,7 @@ scripts that **`cd` to their own directory first** (`Base/xonotic-linux-sdl.sh`;
 script is a symlink that derives its mode from `$0`), updated via **rsync, not an installer**
 (`Base/Makefile:67-73`). The dedicated server is the **same host loop with the client gated off at
 boot** (`Base/darkplaces/host.c:437` — `cls.state = ca_dedicated`). There is no QuakeC source for
-any of this (TODO.md T33 notes) — CI/packaging design is constrained only by the port's own build
+any of this (../TODO.md T33 notes) — CI/packaging design is constrained only by the port's own build
 reality, plus ADR-0012 (desktop clients + headless dedicated server; web/mobile deferred).
 
 Build reality: the test suite + all `src/` libraries are plain `Microsoft.NET.Sdk` (no Godot);
@@ -38,7 +38,7 @@ flat-container API), so the older "the stable SDK isn't on public NuGet" comment
   stable — CI targets it by name.
 - **No assets in CI.** The asset tree is ~960 MB + multi-GB git clones; the ~18 real-data test
   classes already self-skip when `assets/data` is missing. **CI green therefore proves less than a
-  local run** — `ci/ci.sh` (which also runs the headless boot smoke from RUNNING.md, and the
+  local run** — `ci/ci.sh` (which also runs the headless boot smoke from ../../docs/RUNNING.md, and the
   real-data tests when assets are present) is the authoritative pre-push gate. A cache-warmed
   nightly real-data job is a deferred follow-up.
 - The export job is `continue-on-error` until it has actually succeeded once: the export path has
@@ -96,7 +96,7 @@ micro-optimizations. Three new bench-as-test harnesses live in `tests/XonoticGod
   (~2.3 MB/s gen0 churn), the top dedicated-server GC target (reported to the GameWorld owner).
 
 GC-mode flips (`ServerGarbageCollection` etc.) are **propose-only** pending `dotnet-counters`
-evidence from a live process (procedure documented in RUNNING.md).
+evidence from a live process (procedure documented in ../../docs/RUNNING.md).
 
 ## Cut list (deferred, with rationale)
 
@@ -125,7 +125,7 @@ evidence from a live process (procedure documented in RUNNING.md).
 
 The on-demand `export` job (CI artifacts only, binary-only) is superseded by a dedicated
 [`release.yml`](../../.github/workflows/release.yml) that builds the **full ADR-0012 client matrix** and
-**publishes downloadable zips to GitHub Releases** on `v*` tags. Operator guide: [RELEASING.md](../../RELEASING.md).
+**publishes downloadable zips to GitHub Releases** on `v*` tags. Operator guide: [RELEASING.md](../../docs/RELEASING.md).
 
 - **Targets (4):** added `linux-client` (preset.2) and `macos-client` (preset.3) alongside the original
   `windows-client` + `linux-dedicated`. The Linux desktop client was the gap — Linux was server-only.

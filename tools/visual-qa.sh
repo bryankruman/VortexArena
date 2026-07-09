@@ -5,12 +5,12 @@
 # material color (no magenta missing-texture), and on-screen bone pose.
 #
 # WHY THIS IS NOT IN ci.sh: Godot's headless renderer (dummy_video) renders NOTHING — the captured PNG comes
-# out blank (game/ScreenshotHook.cs, RUNNING.md "Visual capture"). So this MUST run WINDOWED (a real GPU /
+# out blank (game/ScreenshotHook.cs, docs/RUNNING.md "Visual capture"). So this MUST run WINDOWED (a real GPU /
 # display). ci.sh's "Visual QA (headless assertions only)" section runs the structural half (VisualQaTests);
-# THIS script produces the frames for the manual eye-check in RUNNING.md "Visual QA".
+# THIS script produces the frames for the manual eye-check in docs/RUNNING.md "Visual QA".
 #
 # The screenshots land in screenshots/ (git-ignored, carries a .gdignore so the editor skips them). Read each
-# PNG and run the RUNNING.md "Visual QA — windowed checklist" against it; diff against an upstream Darkplaces
+# PNG and run the docs/RUNNING.md "Visual QA — windowed checklist" against it; diff against an upstream Darkplaces
 # baseline if one has been collected.
 #
 # Usage:
@@ -32,7 +32,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GODOT="${GODOT:-/c/Program Files/Godot/Godot_v4.6.3-stable_mono_win64_console.exe}"
 OUT="$ROOT/screenshots"
 
-# The official maps shipped in xonotic-20230620-maps.pk3 (RUNNING.md "Gotchas → Maps"), verified against the
+# The official maps shipped in xonotic-20230620-maps.pk3 (docs/RUNNING.md "Gotchas → Maps"), verified against the
 # pk3's maps/*.bsp listing (the `--map` arg is a BARE map name — Shell resolves it to maps/<name>.bsp).
 # `_hudsetup` (the HUD-editor backdrop) is intentionally omitted; edit to taste — a map missing from the mounted
 # data just logs an empty/placeholder world for that one capture.
@@ -73,7 +73,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ ! -x "$GODOT" ] && [ ! -f "$GODOT" ]; then
-    echo "visual-qa.sh: Godot not found at '$GODOT' — set GODOT= to the mono console exe (see RUNNING.md)." >&2
+    echo "visual-qa.sh: Godot not found at '$GODOT' — set GODOT= to the mono console exe (see docs/RUNNING.md)." >&2
     exit 1
 fi
 if [ ! -d "$ROOT/assets/data" ]; then
@@ -119,4 +119,4 @@ fi
 
 echo
 echo "visual-qa.sh: captured $count frame(s) into $OUT"
-echo "Now run the RUNNING.md 'Visual QA — windowed checklist' against each PNG (Read the file to view it)."
+echo "Now run the docs/RUNNING.md 'Visual QA — windowed checklist' against each PNG (Read the file to view it)."

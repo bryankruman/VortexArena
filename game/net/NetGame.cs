@@ -340,7 +340,7 @@ public sealed partial class NetGame : Node3D
 
     // Per-frame (variable-dt) input mode — cl_movement_perframe (DP-style: one command per rendered frame stamped
     // with the real frame dt, the server drains all pending commands that tick). DEFAULT 1 (on, user-approved per
-    // PERFORMANCE_REPORT.md B2); `set cl_movement_perframe 0` = the legacy fixed 1/72 s cadence above (kept for
+    // planning/PERFORMANCE_REPORT.md B2); `set cl_movement_perframe 0` = the legacy fixed 1/72 s cadence above (kept for
     // parity testing). Read live from the shared cvar store each frame so it A/B-toggles in-session.
     private bool _perFrameInput;
     // The DeltaTime stamped onto the next sampled InputCommand. Always the fixed TicRate now — BOTH input modes
@@ -2786,7 +2786,7 @@ public sealed partial class NetGame : Node3D
     private bool _netClockSmoothCv = true; // cl_netclock_smooth: gradual render-clock creep vs hard rebase (#2)
     private bool _netInputTraceCv;         // net_input_trace: dormant net input→movement pipeline diagnostic (see _Process)
     private int _netTraceTick;             // throttle counter for the net_input_trace log
-    private bool _hitchHoldCv = true;      // cl_movement_hitch_hold: Fix B post-hitch stall-aware reconcile (see TROUBLESHOOTING.md)
+    private bool _hitchHoldCv = true;      // cl_movement_hitch_hold: Fix B post-hitch stall-aware reconcile (see docs/TROUBLESHOOTING.md)
     private bool _immediateButtonsCv = true; // cl_netimmediatebuttons: send fire/jump/impulse immediately past the rate gate (DP)
 
     private void EnsureProcessCvarCache()
@@ -3035,7 +3035,7 @@ public sealed partial class NetGame : Node3D
         // GC / heavy map streaming) so the reconciler HOLDS a moderate post-stall correction instead of snapping the
         // camera back (see ClientNet.HandleSnapshot). Gated by a cvar because it's defensive, not the cause of any
         // observed bug (the spawn-stutter was the ENet throttle) — `set cl_movement_hitch_hold 0` disables it.
-        // Rationale + risks: TROUBLESHOOTING.md.
+        // Rationale + risks: docs/TROUBLESHOOTING.md.
         _client.RecentHitch = _hitchHoldCv && dt > HitchFrameSeconds;
         _client.Poll();
 
@@ -3126,7 +3126,7 @@ public sealed partial class NetGame : Node3D
             // drained into a movement batch; enet throttle (0..32 — gates UNRELIABLE sends, a low value silently
             // drops input) / loss / rtt; pred vs srvOrg = predicted vs authoritative origin (a widening gap = the
             // predictor running ahead of a starved/lagging server); recon = reconcile error (a steady nonzero is a
-            // rubberband). Reading guide + failure signatures: NET-DEBUGGING.md. Fully off when the cvar is 0
+            // rubberband). Reading guide + failure signatures: docs/NET-DEBUGGING.md. Fully off when the cvar is 0
             // (the counters it reads are single increments on the hot path — negligible — so they stay always-on).
             if (_netInputTraceCv && (_netTraceTick++ & 15) == 0)
             {
