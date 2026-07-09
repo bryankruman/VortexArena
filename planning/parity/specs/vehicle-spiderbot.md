@@ -150,7 +150,7 @@ The whole chain is wired: spawnfunc registered → boardable via +use rising edg
 ServerNet.cs) → driven (seated input stashed on `vehicle.VehInput` each tick, GameWorld.cs:1052-1059;
 `vehicle.Think` pumped by the generic `SimulationLoop.RunThink` DP think scheduler) → mode-switch impulses routed
 (`Commands.cs:1324` before weapon impulses) → death/respawn via the descriptor `Death`. `VehicleRuntimeTests.cs`
-covers board, drive, projectile spawn, impulse set/cycle, and exit. (The TODO.md "orphaned / VehInput never
+covers board, drive, projectile spawn, impulse set/cycle, and exit. (The ../../TODO.md "orphaned / VehInput never
 written / dead code" note predates the T37 wave-a2 wiring and is now STALE.)
 
 ### Logic / values — largely faithful; a few divergences:

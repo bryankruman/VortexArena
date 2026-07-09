@@ -15,4 +15,4 @@ Both marker files (`.gdignore`, `README.md`) **are** tracked, so a fresh
 checkout already has the folder set up — just start dropping files in.
 
 Capture screenshots? Those have their own home: `../screenshots/` (also
-`.gdignore`'d). See `RUNNING.md` → *Visual capture*.
+`.gdignore`'d). See `../docs/RUNNING.md` → *Visual capture*.

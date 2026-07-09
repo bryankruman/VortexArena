@@ -104,4 +104,4 @@ a hitch must also exceed 1.8× the rolling median), `cl_frameprofiler_watchdog` 
 - `planning/cpu-fps-optimization-2026-06-16.md` — the ranked steady-state plan vs DarkPlaces (228→300).
 - `planning/engine-optimization-2026-06-15.md` — pipeline warm-pass internals.
 - `planning/perf-diagnosis-improvements-2026-07-02.md` — the audit that produced this playbook + tools.
-- `PERFORMANCE_REPORT.md` — the original (2026-06-10) mega-audit; mechanisms still valid, statuses stale.
+- `../planning/PERFORMANCE_REPORT.md` — the original (2026-06-10) mega-audit; mechanisms still valid, statuses stale.

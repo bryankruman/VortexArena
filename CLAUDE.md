@@ -1,7 +1,9 @@
-# XonoticGodot — agent notes
+# Vortex Arena — agent notes
 
-Godot 4 (.NET) port of Xonotic. Game host under `game/`, engine/gameplay libraries under `src/`,
-tests under `tests/`, design docs + postmortems under `planning/`.
+**Vortex Arena** is a fork of Xonotic, ported from QuakeC/DarkPlaces to Godot 4 (.NET). (The solution,
+`.csproj`, and C# namespaces still carry the original `XonoticGodot` codename — kept stable for now.)
+Game host under `game/`, engine/gameplay libraries under `src/`, tests under `tests/`, design docs +
+postmortems + trackers under `planning/`.
 
 ## Build & test
 
@@ -12,14 +14,14 @@ ci/ci.sh                                                          # the authorit
 ```
 
 Toolchain paths, launch flags (`--host <map> --bots N`, `--cvar`, `--quit-after-seconds`), headless
-smoke: **RUNNING.md**.
+smoke: **docs/RUNNING.md**.
 
 ## Where to look first
 
-- **Performance / hitching** → **PERF-DEBUGGING.md** (profiler, hitch classes, `tools/perf-run.ps1`,
+- **Performance / hitching** → **docs/PERF-DEBUGGING.md** (profiler, hitch classes, `tools/perf-run.ps1`,
   `tools/perf-report.py`). Measure before theorizing; capture on the release export, not Debug.
-- **Movement / netcode** → **TROUBLESHOOTING.md** + **NET-DEBUGGING.md** (`net_input_trace`).
-- **Cvars** → **CVARS.md** (regen: `python tools/find-cvars.py`). Prefix = authority, not reader.
+- **Movement / netcode** → **docs/TROUBLESHOOTING.md** + **docs/NET-DEBUGGING.md** (`net_input_trace`).
+- **Cvars** → **docs/reference/CVARS.md** (regen: `python tools/find-cvars.py`). Prefix = authority, not reader.
 - Past investigations → `planning/*.md` postmortems (verified, dated).
 
 ## House rules
