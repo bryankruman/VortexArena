@@ -165,7 +165,7 @@ window-independent resolution and is a §8 follow-up if needed.
   optional transcode. (See `demo-replay-and-spectator.md` §10 for the playback side of this dialog.)
 - `src/XonoticGodot.Server/DemoPlayback.cs` — expose a "playhead reached duration" signal/callback the capture hook
   consumes to end an unattended capture. (Already needed by replay UI to show "end of demo".)
-- `RUNNING.md` — document `--capture-video` next to `--screenshot` once it lands.
+- `../../docs/RUNNING.md` — document `--capture-video` next to `--screenshot` once it lands.
 
 The recording (`.xgd` demo writing) and playback live entirely in `demo-replay-and-spectator.md`; this spec owns only
 the **render-to-file** layer on top.

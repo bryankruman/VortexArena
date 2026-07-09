@@ -1,15 +1,16 @@
-# XonoticGodot — planning
+# Vortex Arena — planning
 
-**XonoticGodot** is the codename for the port of **Xonotic** from QuakeC-on-Darkplaces to **C#-on-Godot 4**.
+**Vortex Arena** is a fork of **Xonotic**, ported from QuakeC-on-DarkPlaces to **C#-on-Godot 4**.
+(`XonoticGodot` remains the internal solution/namespace codename from the port's origins.)
 
-This folder is the **architecture & decision archive** — the durable design context behind the port:
-the target architecture, the ADRs, the subsystem specs, and the working process. It turns the research in
-[`XONOTIC_GODOT_MIGRATION_REPORT.md`](../../XONOTIC_GODOT_MIGRATION_REPORT.md) (repo root) into
-actionable decisions and specifications.
+This folder is the **architecture & decision archive** — the durable design context behind the project:
+the target architecture, the ADRs, the subsystem specs, and the working process. Start with
+[`ARCHITECTURE.md`](ARCHITECTURE.md) for the system overview.
 
-> **Task tracking lives one level up, not here.** Active work is managed in
-> [`../TODO.md`](../TODO.md) (the single source of truth) and summarized in [`../README.md`](../README.md).
-> This folder is for *why* and *how it's designed*, not *what's left to do*.
+> **Task tracking lives alongside these docs.** Active work is managed in
+> [`TODO.md`](TODO.md) (the single source of truth), with [`FIXME.md`](FIXME.md) for bugs and
+> [`WISHLIST.md`](WISHLIST.md) for shelved ideas; the high-level state is summarized in
+> [`../README.md`](../README.md). The rest of this folder is for *why* and *how it's designed*.
 
 ## How to navigate
 
@@ -19,6 +20,8 @@ actionable decisions and specifications.
 | [`GLOSSARY.md`](GLOSSARY.md) | Shared vocabulary (Quake/QuakeC/Darkplaces/Godot terms). Read this second. |
 | [`RISK-REGISTER.md`](RISK-REGISTER.md) | Living list of risks, owners, status, and mitigations. |
 | [`OPEN-QUESTIONS.md`](OPEN-QUESTIONS.md) | Decisions that still need a human/stakeholder call. |
+| [`parity/`](parity/) | **Parity system** — how faithfully the port reproduces a *pinned* Base revision, and where it falls short. |
+| [`upstream-watch/`](upstream-watch/) | **Upstream watch** — the weekly routine tracking new original-Xonotic contributions (data + DarkPlaces) *since* the pin and deciding what to port. |
 | [`decisions/`](decisions/) | **Architecture Decision Records (ADRs)** — the important, hard-to-reverse decisions, one per file. |
 | [`specs/`](specs/) | Deep technical specs for each major subsystem (engine facade, assets, networking, determinism, entity model, modding). |
 | [`process/`](process/) | How we work: coding standards for the port, testing strategy, track ownership. |
@@ -44,4 +47,3 @@ rewrite with a "fidelity contract"** on the small load-bearing core (movement, c
 - ADRs are numbered and immutable once **Accepted**; supersede rather than edit.
 - Every spec links back to the relevant ADR(s) and to source files under
   `Base/data/xonotic-data.pk3dir/qcsrc/` (the QuakeC) or `Base/darkplaces/` (the reference engine).
-- "The report" = [`XONOTIC_GODOT_MIGRATION_REPORT.md`](../../XONOTIC_GODOT_MIGRATION_REPORT.md).

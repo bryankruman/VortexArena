@@ -1,4 +1,4 @@
-# XonoticGodot Performance Report — Hitching, Stutter, and Low-FPS Causes
+# Vortex Arena Performance Report — Hitching, Stutter, and Low-FPS Causes
 
 **Date:** 2026-06-10 · **Engine:** Godot 4.6.3 (Forward+) · **Runtime:** .NET 8 (default GC/JIT config)
 **Scope:** every mechanism found that can cause frame hitches, micro-stutter, or sustained low FPS, with concrete optimization plans, including parallelization strategies.
@@ -374,7 +374,7 @@ disproved (including §2.1's vsync hypothesis), and what it found to be the real
 - **Diagnostics tooling added** (all reusable): repeatable **`--cvar NAME VALUE`** boot flag
   (`Shell.ApplyCvarOverrides`, applied before `ClientSettings.ApplyAll`); a FrameProfiler **file sink** at
   `user://frameprofile.log` (superseded 2026-06-14 by the per-launch `~/XonData/logs/session-*.log` + `.csv`
-  background writer — see RUNNING.md) plus `rest` in the mode-2 line (windowed/exported runs detach stdout — read the file);
+  background writer — see ../docs/RUNNING.md) plus `rest` in the mode-2 line (windowed/exported runs detach stdout — read the file);
   a **`[video]` requested-vs-actual vsync log** in `ApplyVideo`; and a `cl_idle_warmup 0` A/B gate on the idle
   warm. **Bug fixed along the way:** `FrameProfiler.Mode()`/`HitchFloorMs()` read `Api.Cvars` (the listen-server's
   *private* store), but `cl_frameprofiler` is registered/set in `MenuState.Cvars` (the *shared* client store) — so
@@ -718,7 +718,7 @@ A hitch emits a rate-limited multi-line dump: `scopes:` (top 12, with KB), `gpu:
 the 7 before), `prev:` (8-frame run-up). `set cl_frameprofiler_dump 1` mid-play writes the whole ring to
 `user://frameprofile_ring.csv`. Overlay gained a `draws/pipe/pause` line. Event sites wired: streamer main-thread
 builds (named, with ms), GPU warm-pass completion, sim backlog drops, input-queue trims, faithful-particle
-capacity changes. Docs in RUNNING.md §Tricks.
+capacity changes. Docs in ../docs/RUNNING.md §Tricks.
 
 **Gotcha it exposed immediately:** Godot's `_Process` delta UNDER-REPORTS long stalls (a 746 ms `stream.build`
 scope inside a "51 ms" frame) — trust the scope table and events for stall magnitude, not the frame delta.

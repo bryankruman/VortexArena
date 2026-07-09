@@ -7,7 +7,7 @@ using Microsoft.CodeAnalysis.Operations;
 namespace XonoticGodot.SourceGen
 {
     /// <summary>
-    /// Roslyn analyzer enforcing the godot#105750 per-frame-allocation convention (PERFORMANCE_REPORT.md C3,
+    /// Roslyn analyzer enforcing the godot#105750 per-frame-allocation convention (planning/PERFORMANCE_REPORT.md C3,
     /// Tier 1). Godot's C# marshaling mints a managed allocation for many string-keyed engine APIs (a
     /// <c>StringName</c>/<c>NodePath</c>/<c>Godot.Collections.Array</c> per call) — invisible to a
     /// <c>new List&lt;&gt;</c>/<c>$"..."</c> grep and a GC treadmill at high framerate. This codebase is clean of
