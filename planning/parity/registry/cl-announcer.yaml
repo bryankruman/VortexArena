@@ -139,11 +139,11 @@ features:
       audio: na
       liveness: live
     intended_divergence: true
-    divergence_rationale: "Reading cl_announcer_maptime from the server's global config store (rather than per-client) is a consequence of running the announcer server-side and broadcasting globally. Documented in CVARS.md:128. The menu mode values themselves are faithful to Base."
+    divergence_rationale: "Reading cl_announcer_maptime from the server's global config store (rather than per-client) is a consequence of running the announcer server-side and broadcasting globally. Documented in docs/reference/CVARS.md:128. The menu mode values themselves are faithful to Base."
     gaps: []
     verification:
       - { kind: code, ref: "Base dialog_settings_audio.qc makeXonoticMixedSlider(cl_announcer_maptime); addRange(1,5,4) (step=4 => values {1,5}) + addText Disabled=0, Both=3 => modes {0,1,5,3}. Port DialogSettingsAudio.cs .Add(Disabled,0)(1 min,1)(5 min,5)(Both,3) — IDENTICAL.", result: pass }
-      - { kind: code, ref: "GameWorld.cs:625 Cvars.FloatOr(cl_announcer_maptime, 3) from server global store; CVARS.md:128", result: pass }
+      - { kind: code, ref: "GameWorld.cs:625 Cvars.FloatOr(cl_announcer_maptime, 3) from server global store; docs/reference/CVARS.md:128", result: pass }
     confidence: high
     notes: "Base's shipped audio-settings slider uses addRange(1,5,4) whose third arg is the STEP (mixedslider.qc MixedSlider_addRange) not a count, yielding values {1,5}; '5 min' is literally value 5 in Base, which the port matches. The >=2 gate makes any value >=2 behave as '5-min on'. Only the server-global read scope diverges (intended). Unchanged by Wave 5."
   - id: cl-announcer.voice.playback

@@ -1,0 +1,1309 @@
+<title>Xonotic Default Physics — Change History</title>
+<style>
+/*
+  Design:  Technical changelog for an arena FPS physics system.
+  Voice:   A veteran developer's annotated git log — precise, terse, no decoration for its own sake.
+
+  Palette:
+    ground   #07100e  near-black with the faintest green trace (radar screen)
+    surface  #0c1a16  card / table background
+    border   #162a24  hairline dividers
+    code     #6ec9bc  terminal phosphor — cvar names and values
+    hot      #df7b3c  Xonotic orange — commits, timestamps, deltas
+    text1    #bdd8d1  primary prose
+    text2    #4c7872  secondary / meta
+    text3    #2d5450  tertiary / labels
+    add      #4baa6b  added values (+)
+    rem      #c4a235  removed values (-)
+    info     #5a9fd4  informational callout
+
+  Type:
+    Headings / labels / data: system monospace stack (Cascadia Code, JetBrains Mono, Consolas)
+    Body prose: system-ui — humanist sans contrasts the cold data
+*/
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html {
+  background: #07100e;
+  color: #bdd8d1;
+  font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: 15px;
+  line-height: 1.72;
+}
+
+body {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 0 24px 120px;
+}
+
+/* ──────────────────────── HEADER ──────────────────────── */
+
+.page-head {
+  position: relative;
+  padding: 52px 0 42px;
+  border-bottom: 1px solid #162a24;
+  margin-bottom: 52px;
+  overflow: hidden;
+}
+
+/* Graph-paper grid — physics equations live on grids */
+.page-head::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(#162a24 1px, transparent 1px),
+    linear-gradient(90deg, #162a24 1px, transparent 1px);
+  background-size: 36px 36px;
+  mask-image: linear-gradient(to bottom, transparent 0%, rgba(0,0,0,0.55) 40%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, rgba(0,0,0,0.55) 40%, transparent 100%);
+  pointer-events: none;
+}
+
+.head-inner { position: relative; }
+
+.head-eyebrow {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.64rem;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: #df7b3c;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.head-eyebrow::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: #162a24;
+  max-width: 240px;
+}
+
+.head-title {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: clamp(1.45rem, 4vw, 2.1rem);
+  font-weight: 600;
+  line-height: 1.15;
+  letter-spacing: -0.03em;
+  color: #cee8e2;
+  text-wrap: balance;
+  margin-bottom: 20px;
+}
+
+.head-title .file-ref { color: #6ec9bc; font-weight: 400; }
+
+/* sv_gravity sparkline */
+.gravity-viz {
+  margin: 28px 0 24px;
+}
+
+.gravity-viz svg { overflow: visible; display: block; }
+
+.head-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 22px;
+}
+
+.meta-pill {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.64rem;
+  letter-spacing: 0.05em;
+  color: #4c7872;
+  background: #0a1410;
+  border: 1px solid #162a24;
+  padding: 4px 12px;
+  white-space: nowrap;
+}
+
+.meta-pill strong { color: #bdd8d1; font-weight: 500; }
+
+/* ──────────────────────── SECTIONS ──────────────────────── */
+
+.section { margin-bottom: 60px; }
+
+.section-heading {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #df7b3c;
+  margin-bottom: 22px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.section-heading::before { content: '//'; color: #2d5450; }
+
+/* ──────────────────────── TABLE ──────────────────────── */
+
+.table-container {
+  overflow-x: auto;
+  border: 1px solid #162a24;
+  margin-bottom: 14px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.79rem;
+}
+
+thead {
+  position: sticky;
+  top: 0;
+  background: #0c1a16;
+  z-index: 2;
+}
+
+thead th {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #2d5450;
+  padding: 10px 16px;
+  text-align: left;
+  border-bottom: 1px solid #162a24;
+  white-space: nowrap;
+}
+
+thead th:first-child { border-left: 2px solid #df7b3c; padding-left: 14px; }
+
+.group-row td {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.59rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #2d5450;
+  background: #090e0c;
+  padding: 5px 16px;
+  border-top: 1px solid #162a24;
+  border-bottom: 1px solid #162a24;
+}
+
+tbody tr { border-bottom: 1px solid #0f1e1b; }
+tbody tr:last-child { border-bottom: none; }
+tbody tr:hover { background: rgba(12,26,22,0.7); }
+
+td { padding: 8px 16px; vertical-align: middle; }
+td:first-child { border-left: 2px solid transparent; }
+
+.cvar-name {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  color: #6ec9bc;
+  font-size: 0.77rem;
+  white-space: nowrap;
+}
+
+.val {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.77rem;
+  white-space: nowrap;
+}
+
+.val-engine { color: #2d5450; }
+.val-xon    { color: #bdd8d1; }
+.val-same   { color: #4c7872; }
+
+.delta {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.63rem;
+  margin-left: 8px;
+}
+.delta-pos { color: #4baa6b; }
+.delta-neg { color: #c4a235; }
+
+.note-cell { font-size: 0.755rem; color: #4c7872; line-height: 1.55; }
+.note-cell strong { color: #8db8b2; font-weight: 500; }
+.note-cell code {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.84em;
+  color: #6ec9bc;
+  background: rgba(110,201,188,0.08);
+  padding: 1px 4px;
+}
+
+/* ──────────────────────── TIMELINE ──────────────────────── */
+
+.timeline { display: flex; flex-direction: column; position: relative; }
+
+.timeline::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 1px;
+  background: linear-gradient(to bottom, #162a24 95%, transparent 100%);
+}
+
+.era { padding: 0 0 46px 32px; position: relative; }
+.era:last-child { padding-bottom: 0; }
+
+.era::before {
+  content: '';
+  position: absolute;
+  left: -4px; top: 10px;
+  width: 9px; height: 9px;
+  background: #df7b3c;
+  box-shadow: 0 0 0 3px #07100e;
+}
+
+.era.major::before { background: #6ec9bc; }
+
+.era-stamp {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.64rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #df7b3c;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.era-hash { color: #2d5450; font-size: 0.62rem; }
+
+.era-title {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.96rem;
+  font-weight: 600;
+  color: #cee8e2;
+  line-height: 1.3;
+  margin-bottom: 12px;
+  text-wrap: balance;
+}
+
+.era-prose {
+  font-size: 0.875rem;
+  color: #8db8b2;
+  line-height: 1.68;
+  max-width: 64ch;
+  margin-bottom: 14px;
+}
+
+.era-prose code {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.84em;
+  color: #6ec9bc;
+  background: rgba(110,201,188,0.08);
+  padding: 1px 4px;
+}
+
+/* ── Commit card ── */
+.commits {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #162a24;
+  margin: 2px 0;
+}
+
+.commit {
+  display: grid;
+  grid-template-columns: 7ch 1fr;
+  border-bottom: 1px solid #0f1e1b;
+}
+
+.commit:last-child { border-bottom: none; }
+
+.commit-left {
+  padding: 10px 12px 10px 14px;
+  border-right: 1px solid #0f1e1b;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: #090e0c;
+}
+
+.commit-hash {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.65rem;
+  color: #2d5450;
+  letter-spacing: 0.03em;
+}
+
+.commit-date {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.64rem;
+  color: #df7b3c;
+  white-space: nowrap;
+}
+
+.commit-right {
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.commit-msg { font-size: 0.82rem; color: #8db8b2; line-height: 1.45; }
+.commit-msg strong { color: #bdd8d1; font-weight: 500; }
+
+.diff-block { margin-top: 3px; display: flex; flex-direction: column; gap: 2px; }
+
+.diff-line {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.72rem;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  line-height: 1.5;
+  flex-wrap: wrap;
+}
+
+.diff-pfx { width: 1ch; flex-shrink: 0; }
+.diff-pfx.p { color: #4baa6b; }
+.diff-pfx.m { color: #c4a235; }
+
+.diff-before { color: #c4a235; text-decoration: line-through; text-decoration-color: #c4a23550; }
+.diff-after  { color: #4baa6b; }
+.diff-arr    { color: #2d5450; font-size: 0.65rem; }
+.diff-note   { color: #2d5450; font-size: 0.65rem; margin-left: 4px; }
+
+/* Baseline block */
+.baseline-block {
+  border: 1px solid #162a24;
+  background: #090e0c;
+  padding: 14px 16px;
+}
+
+.baseline-heading {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #2d5450;
+  margin-bottom: 10px;
+}
+
+.baseline-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.76rem;
+}
+
+.br { display: flex; gap: 14px; align-items: baseline; }
+.br-name { color: #6ec9bc; }
+.br-val  { color: #4c7872; }
+.br-ann  { font-size: 0.65rem; color: #2d5450; }
+
+/* ──────────────────────── CALLOUTS ──────────────────────── */
+
+.callout {
+  display: flex; flex-direction: column; gap: 5px;
+  padding: 12px 16px 14px;
+  border-left: 2px solid;
+  background: #090e0c;
+  margin: 10px 0;
+}
+
+.callout-ok   { border-left-color: #4baa6b; }
+.callout-warn { border-left-color: #c4a235; }
+.callout-info { border-left-color: #5a9fd4; }
+
+.callout-tag {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #2d5450;
+}
+
+.callout-ok   .callout-tag { color: #4baa6b; }
+.callout-warn .callout-tag { color: #c4a235; }
+.callout-info .callout-tag { color: #5a9fd4; }
+
+.callout-body { font-size: 0.82rem; color: #4c7872; line-height: 1.65; }
+.callout-body code {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.84em;
+  color: #6ec9bc;
+  background: rgba(110,201,188,0.08);
+  padding: 1px 4px;
+}
+.callout-body strong { color: #8db8b2; font-weight: 500; }
+
+/* ──────────────────────── ARCH / PRE ──────────────────────── */
+
+.arch-card { border: 1px solid #162a24; margin-bottom: 10px; }
+
+.arch-label {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.59rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #2d5450;
+  background: #090e0c;
+  padding: 7px 16px;
+  border-bottom: 1px solid #162a24;
+}
+
+pre {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.76rem;
+  color: #4c7872;
+  line-height: 1.7;
+  padding: 14px 16px;
+  overflow-x: auto;
+}
+
+pre .t-acc  { color: #6ec9bc; }
+pre .t-file { color: #8db8b2; }
+pre .t-val  { color: #4baa6b; }
+pre .t-cmt  { color: #2d5450; }
+
+/* ──────────────────────── GAPS ──────────────────────── */
+
+.gap-list { display: flex; flex-direction: column; gap: 14px; }
+
+.gap-row { display: flex; gap: 14px; align-items: flex-start; }
+
+.gap-icon {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.72rem;
+  color: #c4a235;
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+
+.gap-body { font-size: 0.855rem; color: #4c7872; line-height: 1.65; max-width: 62ch; }
+.gap-body strong { color: #8db8b2; font-weight: 500; }
+.gap-body code {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.84em;
+  color: #6ec9bc;
+  background: rgba(110,201,188,0.08);
+  padding: 1px 4px;
+}
+
+/* ──────────────────────── SOURCES ──────────────────────── */
+
+.source-list { display: flex; flex-direction: column; gap: 10px; }
+
+.source-row { display: flex; gap: 12px; align-items: flex-start; }
+
+.source-kind {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.59rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border: 1px solid;
+  white-space: nowrap;
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+
+.source-kind.git     { color: #6ec9bc; border-color: #6ec9bc40; }
+.source-kind.primary { color: #df7b3c; border-color: #df7b3c40; }
+
+.source-text { font-size: 0.78rem; color: #4c7872; line-height: 1.55; word-break: break-all; }
+.source-text code {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.84em;
+  color: #6ec9bc;
+  background: rgba(110,201,188,0.08);
+  padding: 1px 4px;
+}
+
+/* ──────────────────────── MISC ──────────────────────── */
+
+hr { border: none; border-top: 1px solid #162a24; margin: 54px 0; }
+
+code {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.84em;
+  color: #6ec9bc;
+  background: rgba(110,201,188,0.08);
+  padding: 1px 5px;
+}
+
+a:focus-visible { outline: 2px solid #df7b3c; outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+@media (max-width: 560px) {
+  body { padding: 0 16px 80px; }
+  .commit { grid-template-columns: 1fr; }
+  .commit-left { border-right: none; border-bottom: 1px solid #0f1e1b; flex-direction: row; gap: 12px; }
+}
+</style>
+
+<header class="page-head">
+  <div class="head-inner">
+    <div class="head-eyebrow">physicsX.cfg &nbsp;·&nbsp; git-verified &nbsp;·&nbsp; xonotic-data.pk3dir &nbsp;·&nbsp; 2013–2025</div>
+
+    <h1 class="head-title">
+      Xonotic Default Physics<br>
+      <span class="file-ref">Change History</span>
+    </h1>
+
+    <!-- sv_gravity sparkline: the round trip 800→700→720→800 -->
+    <div class="gravity-viz" aria-label="sv_gravity history: 800 → 700 (Aug 2013) → 720 (Feb 2014) → 800 (Dec 2014 / 0.8.0)">
+      <svg width="320" height="58" viewBox="0 0 320 58" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <linearGradient id="gfill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#df7b3c" stop-opacity="0.35"/>
+            <stop offset="100%" stop-color="#df7b3c" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <!-- Grid -->
+        <line x1="0" y1="44" x2="320" y2="44" stroke="#162a24" stroke-width="1"/>
+        <!-- Area fill -->
+        <polygon points="0,10 100,38 210,32 300,10 300,44 0,44" fill="url(#gfill)"/>
+        <!-- Line -->
+        <polyline points="0,10 100,38 210,32 300,10" fill="none" stroke="#df7b3c" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+        <!-- Dots -->
+        <circle cx="0"   cy="10" r="3" fill="#df7b3c"/>
+        <circle cx="100" cy="38" r="3" fill="#df7b3c"/>
+        <circle cx="210" cy="32" r="3" fill="#df7b3c"/>
+        <circle cx="300" cy="10" r="4" fill="#6ec9bc"/>
+        <!-- Value labels -->
+        <text x="5"   y="8"  font-family="'Cascadia Code',monospace" font-size="8" fill="#4c7872">800</text>
+        <text x="105" y="36" font-family="'Cascadia Code',monospace" font-size="8" fill="#c4a235">700</text>
+        <text x="215" y="30" font-family="'Cascadia Code',monospace" font-size="8" fill="#c4a235">720</text>
+        <text x="275" y="8"  font-family="'Cascadia Code',monospace" font-size="8" fill="#6ec9bc">800</text>
+        <!-- Date labels -->
+        <text x="0"   y="54" font-family="'Cascadia Code',monospace" font-size="7" fill="#2d5450">Aug 2013</text>
+        <text x="75"  y="54" font-family="'Cascadia Code',monospace" font-size="7" fill="#2d5450">Feb 2014</text>
+        <text x="185" y="54" font-family="'Cascadia Code',monospace" font-size="7" fill="#2d5450">Dec 2014</text>
+        <text x="276" y="54" font-family="'Cascadia Code',monospace" font-size="7" fill="#4c7872">v0.8.0</text>
+        <!-- Label -->
+        <text x="0" y="-4" font-family="'Cascadia Code',monospace" font-size="7" fill="#2d5450" letter-spacing="0.1em">SV_GRAVITY</text>
+      </svg>
+    </div>
+
+    <div class="head-pills">
+      <span class="meta-pill">Source: <strong>local git log -p</strong></span>
+      <span class="meta-pill">Tags verified: <strong>0.8.0 · 0.8.1 · 0.8.2 · 0.8.5 · 0.8.6</strong></span>
+      <span class="meta-pill">Scope: <strong>physicsX.cfg — default preset only</strong></span>
+      <span class="meta-pill">Updated: <strong>2026-07-04</strong></span>
+    </div>
+  </div>
+</header>
+
+<!-- ──────────────────────────────────────────────────────── TABLE -->
+<section class="section">
+  <h2 class="section-heading">Complete physicsX.cfg values at xonotic-v0.8.0</h2>
+
+  <p style="font-size:0.84rem;color:#4c7872;margin-bottom:16px;max-width:64ch;line-height:1.65;">
+    Every cvar explicitly set in <code>physicsX.cfg</code> at the <code>xonotic-v0.8.0</code> tag,
+    confirmed with <code>git show xonotic-v0.8.0:physicsX.cfg</code>. The "Engine" column is the
+    DarkPlaces C-code <code>cvar_t</code> default that Xonotic overrides at startup.
+  </p>
+
+  <div class="table-container">
+    <table>
+      <thead>
+        <tr>
+          <th>Cvar</th>
+          <th>Engine default</th>
+          <th>Xonotic 0.8.0</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+
+        <tr class="group-row"><td colspan="4">Ground movement</td></tr>
+        <tr>
+          <td><span class="cvar-name">sv_gravity</span></td>
+          <td><span class="val val-engine">800</span></td>
+          <td><span class="val val-same">800</span></td>
+          <td class="note-cell">Identical to engine default. Visited 700, then 720 (2013–14) before being restored — see timeline.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_maxspeed</span></td>
+          <td><span class="val val-engine">320</span></td>
+          <td><span class="val val-xon">360<span class="delta delta-pos">+12.5%</span></span></td>
+          <td class="note-cell">Ground run speed. Nexuiz default was ~400 u/s.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_maxairspeed</span></td>
+          <td><span class="val val-engine">30</span></td>
+          <td><span class="val val-xon">360<span class="delta delta-pos">×12</span></span></td>
+          <td class="note-cell">Engine default of 30 effectively disables air techniques; Xonotic matches ground speed.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_stopspeed</span></td>
+          <td><span class="val val-engine">100</span></td>
+          <td><span class="val val-same">100</span></td>
+          <td class="note-cell">Speed threshold below which friction halts movement.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_friction</span></td>
+          <td><span class="val val-engine">4</span></td>
+          <td><span class="val val-xon">6<span class="delta delta-neg">+50%</span></span></td>
+          <td class="note-cell">Ground deceleration. Was 8 pre-2013; Samual reduced to 6 in Aug 2013.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">edgefriction</span></td>
+          <td><span class="val val-engine">2</span></td>
+          <td><span class="val val-xon">1</span></td>
+          <td class="note-cell">Friction multiplier near ledge edges.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_accelerate</span></td>
+          <td><span class="val val-engine">10</span></td>
+          <td><span class="val val-xon">15<span class="delta delta-pos">+50%</span></span></td>
+          <td class="note-cell">Ground acceleration rate toward sv_maxspeed.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_stepheight</span></td>
+          <td><span class="val val-engine">18</span></td>
+          <td><span class="val val-xon">31</span></td>
+          <td class="note-cell">Max step-up height in Quake Units. Was 26 pre-2013; Samual raised it Aug 2013. File comment: "just below 32, keeping things smooth without allowing 32qu steps."</td>
+        </tr>
+
+        <tr class="group-row"><td colspan="4">Jump</td></tr>
+        <tr>
+          <td><span class="cvar-name">sv_jumpvelocity</span></td>
+          <td><span class="val val-engine">270</span></td>
+          <td><span class="val val-xon">260</span></td>
+          <td class="note-cell">Jump impulse (u/s). File comment: "actually 266.6666 for 180bpm, but 260 is nicer to mappers." At 800g → 42.25 QU apex height; just clears a 112 QU corridor. Had been 245→248→260 between 2013–2014.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_doublejump</span></td>
+          <td><span class="val val-engine">0</span></td>
+          <td><span class="val val-same">0</span></td>
+          <td class="note-cell">Q2-style double jump; explicitly disabled.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_jumpspeedcap_min</span></td>
+          <td><span class="val val-engine">—</span></td>
+          <td><span class="val val-xon">""</span></td>
+          <td class="note-cell">Jump speed floor (empty = inactive). Changed to <code>"nan"</code> in Nov 2025 for float networking.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_jumpspeedcap_max</span></td>
+          <td><span class="val val-engine">—</span></td>
+          <td><span class="val val-xon">""</span></td>
+          <td class="note-cell">Jump speed ceiling (empty = inactive). Ditto Nov 2025.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_jumpspeedcap_max_disable_on_ramps</span></td>
+          <td><span class="val val-engine">0</span></td>
+          <td><span class="val val-xon">1</span></td>
+          <td class="note-cell">Disables the cap on ramps to preserve ramp-jump behaviour.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_friction_on_land</span></td>
+          <td><span class="val val-engine">—</span></td>
+          <td><span class="val val-same">0</span></td>
+          <td class="note-cell">Extra friction burst on landing; disabled.</td>
+        </tr>
+
+        <tr class="group-row"><td colspan="4">Water &amp; slick surfaces</td></tr>
+        <tr>
+          <td><span class="cvar-name">sv_wateraccelerate</span></td>
+          <td><span class="val val-engine">10</span></td>
+          <td><span class="val val-xon">−1</span></td>
+          <td class="note-cell">−1 inherits <code>sv_accelerate</code>.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_waterfriction</span></td>
+          <td><span class="val val-engine">4</span></td>
+          <td><span class="val val-xon">−1</span></td>
+          <td class="note-cell">−1 inherits <code>sv_friction</code>.</td>
+        </tr>
+
+        <tr class="group-row"><td colspan="4">Air acceleration</td></tr>
+        <tr>
+          <td><span class="cvar-name">sv_airaccelerate</span></td>
+          <td><span class="val val-engine">−1</span></td>
+          <td><span class="val val-xon">2</span></td>
+          <td class="note-cell">Engine −1 inherits <code>sv_accelerate</code>; Xonotic sets a small explicit value to constrain air control.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_airaccel_sideways_friction</span></td>
+          <td><span class="val val-engine">0</span></td>
+          <td><span class="val val-same">0</span></td>
+          <td class="note-cell">Friction when strafing sideways in air; no penalty.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_airaccel_qw</span></td>
+          <td><span class="val val-engine">1</span></td>
+          <td><span class="val val-xon">−0.8</span></td>
+          <td class="note-cell"><strong>Not 1 (not unchanged from engine).</strong> Negative value inverts QW acceleration character. Engine's 1 = full QW bunny accel. Xonotic's −0.8 suppresses it significantly.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_airaccel_qw_stretchfactor</span></td>
+          <td><span class="val val-engine">0</span></td>
+          <td><span class="val val-xon">2</span></td>
+          <td class="note-cell">Stretches the effective QW accel envelope.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_airstopaccelerate</span></td>
+          <td><span class="val val-engine">0</span></td>
+          <td><span class="val val-xon">3</span></td>
+          <td class="note-cell"><strong>Not 0 (not disabled).</strong> Separate deceleration rate when reversing direction in air.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_airstrafeaccelerate</span></td>
+          <td><span class="val val-engine">0</span></td>
+          <td><span class="val val-xon">18</span></td>
+          <td class="note-cell"><strong>Not 0 (not disabled).</strong> Was 24 pre-2013; Samual reduced it Aug 2013.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_maxairstrafespeed</span></td>
+          <td><span class="val val-engine">0</span></td>
+          <td><span class="val val-xon">100</span></td>
+          <td class="note-cell">Speed cap when strafing in air.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_airstrafeaccel_qw</span></td>
+          <td><span class="val val-engine">0</span></td>
+          <td><span class="val val-xon">−0.95</span></td>
+          <td class="note-cell">QW ratio for strafe acceleration; negative inverts direction.</td>
+        </tr>
+
+        <tr class="group-row"><td colspan="4">Air control (CPMA-style)</td></tr>
+        <tr>
+          <td><span class="cvar-name">sv_aircontrol</span></td>
+          <td><span class="val val-engine">0</span></td>
+          <td><span class="val val-xon">100</span></td>
+          <td class="note-cell">CPMA-style mid-air steering. Was 125 pre-2013; Samual reduced to 100 Aug 2013.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_aircontrol_penalty</span></td>
+          <td><span class="val val-engine">0</span></td>
+          <td><span class="val val-same">0</span></td>
+          <td class="note-cell">Speed penalty for using aircontrol. Was 180 pre-2013; Samual removed it Aug 2013.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_aircontrol_power</span></td>
+          <td><span class="val val-engine">2</span></td>
+          <td><span class="val val-same">2</span></td>
+          <td class="note-cell">Exponent for the aircontrol steering curve.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_airspeedlimit_nonqw</span></td>
+          <td><span class="val val-engine">—</span></td>
+          <td><span class="val val-xon">900</span></td>
+          <td class="note-cell">Soft speed cap for non-QW air movement. Was 800 pre-2013; Samual raised to 900 Aug 2013.</td>
+        </tr>
+
+        <tr class="group-row"><td colspan="4">Warsow-style bunny hop (disabled at default)</td></tr>
+        <tr>
+          <td><span class="cvar-name">sv_warsowbunny_turnaccel</span></td>
+          <td><span class="val val-engine">0</span></td>
+          <td><span class="val val-same">0</span></td>
+          <td class="note-cell">Warsow turn accel; 0 disables the entire subsystem.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_warsowbunny_accel</span></td>
+          <td><span class="val val-engine">0</span></td>
+          <td><span class="val val-xon">0.1593</span></td>
+          <td class="note-cell">Warsow accel multiplier — inert while <code>turnaccel=0</code>.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_warsowbunny_topspeed</span></td>
+          <td><span class="val val-engine">0</span></td>
+          <td><span class="val val-xon">925</span></td>
+          <td class="note-cell">Warsow max bunny speed — inert while <code>turnaccel=0</code>.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_warsowbunny_backtosideratio</span></td>
+          <td><span class="val val-engine">0</span></td>
+          <td><span class="val val-xon">0.8</span></td>
+          <td class="note-cell">Warsow back-to-side ratio — inert while <code>turnaccel=0</code>.</td>
+        </tr>
+
+        <tr class="group-row"><td colspan="4">Teleporter</td></tr>
+        <tr>
+          <td><span class="cvar-name">g_teleport_maxspeed</span></td>
+          <td><span class="val val-engine">—</span></td>
+          <td><span class="val val-same">0</span></td>
+          <td class="note-cell">Max speed preserved through a teleporter (0 = unlimited).</td>
+        </tr>
+
+        <tr class="group-row"><td colspan="4">Server-side: xonotic-server.cfg (not physicsX.cfg)</td></tr>
+        <tr>
+          <td><span class="cvar-name">sv_maxvelocity</span></td>
+          <td><span class="val val-engine">2000</span></td>
+          <td><span class="val val-xon">10⁹</span></td>
+          <td class="note-cell">Effectively uncaps total velocity. Remains in <code>xonotic-server.cfg</code>.</td>
+        </tr>
+        <tr>
+          <td><span class="cvar-name">sv_gameplayfix_q2airaccelerate</span></td>
+          <td><span class="val val-engine">0</span></td>
+          <td><span class="val val-xon">1</span></td>
+          <td class="note-cell">Enables Q2-style air acceleration formula. Remains in <code>xonotic-server.cfg</code>.</td>
+        </tr>
+
+      </tbody>
+    </table>
+  </div>
+
+  <div class="callout callout-warn">
+    <span class="callout-tag">Corrections from prior analysis</span>
+    <span class="callout-body">Three values in earlier summaries were wrong because they were derived without git access:
+      <code>sv_airaccel_qw</code> was listed as <code>1 (unchanged from engine)</code> — it is <strong>−0.8</strong>;
+      <code>sv_airstopaccelerate</code> as <code>0 (disabled)</code> — it is <strong>3</strong>;
+      <code>sv_airstrafeaccelerate</code> as <code>0 (disabled)</code> — it is <strong>18</strong>.
+      Additionally, ~14 cvars that physicsX.cfg explicitly sets were omitted entirely — all are present above.</span>
+  </div>
+</section>
+
+<hr>
+
+<!-- ──────────────────────────────────────────────────────── TIMELINE -->
+<section class="section">
+  <h2 class="section-heading">Commit timeline</h2>
+
+  <div class="timeline">
+
+    <!-- Baseline -->
+    <div class="era">
+      <div class="era-stamp">2011 – early 2013 <span class="era-hash">// baseline before Samual</span></div>
+      <div class="era-title">physicsX0.cfg → physicsX.cfg; XPM-derived defaults established</div>
+      <p class="era-prose">
+        Originally named <code>physicsX0.cfg</code>, the file was renamed to <code>physicsX.cfg</code>
+        on 2011-05-18, making it the default Xonotic preset. Values through early 2013, unchanged since the initial checkin from the Nexuiz SVN:
+      </p>
+      <div class="baseline-block">
+        <div class="baseline-heading">physicsX.cfg state, 2011 – Aug 2013</div>
+        <div class="baseline-inner">
+          <div class="br"><span class="br-name">sv_gravity</span><span class="br-val">800</span></div>
+          <div class="br"><span class="br-name">sv_friction</span><span class="br-val">8</span><span class="br-ann">// higher than current 6</span></div>
+          <div class="br"><span class="br-name">sv_stepheight</span><span class="br-val">26</span><span class="br-ann">// lower than current 31</span></div>
+          <div class="br"><span class="br-name">sv_jumpvelocity</span><span class="br-val">260</span></div>
+          <div class="br"><span class="br-name">sv_airstrafeaccelerate</span><span class="br-val">24</span><span class="br-ann">// higher than current 18</span></div>
+          <div class="br"><span class="br-name">sv_aircontrol</span><span class="br-val">125</span><span class="br-ann">// higher than current 100</span></div>
+          <div class="br"><span class="br-name">sv_aircontrol_penalty</span><span class="br-val">180</span><span class="br-ann">// removed by Samual</span></div>
+          <div class="br"><span class="br-name">sv_airspeedlimit_nonqw</span><span class="br-val">800</span><span class="br-ann">// lower than current 900</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Samual Aug 2013 -->
+    <div class="era major">
+      <div class="era-stamp">2013-08-15 <span class="era-hash">5a30545</span></div>
+      <div class="era-title">Samual's major overhaul — eight cvars changed in one commit</div>
+      <p class="era-prose">
+        Samual Lenks switches <code>physicsX.cfg</code> to the values from his personal preset
+        (<code>physicsSamual.cfg</code>). Commit message: "Switch my physics to be default for
+        testing purposes." This is the largest single set of changes in the file's history. Lower
+        gravity paired with a proportionally lower jump velocity preserves approximately the same
+        jump height; the friction reduction makes movement feel less sticky.
+      </p>
+      <div class="commits">
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">5a30545</span>
+            <span class="commit-date">2013-08-15</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Samual Lenks</strong> — "Switch my physics to be default for testing purposes"</div>
+            <div class="diff-block">
+              <div class="diff-line"><span class="diff-pfx m">−</span><span class="diff-before">sv_gravity 800</span><span class="diff-arr">→</span><span class="diff-after">700</span><span class="diff-note">↓ floatier feel</span></div>
+              <div class="diff-line"><span class="diff-pfx m">−</span><span class="diff-before">sv_friction 8</span><span class="diff-arr">→</span><span class="diff-after">6</span><span class="diff-note">↓ less sticky ground</span></div>
+              <div class="diff-line"><span class="diff-pfx m">−</span><span class="diff-before">sv_stepheight 26</span><span class="diff-arr">→</span><span class="diff-after">31</span><span class="diff-note">↑ smoother stair traversal</span></div>
+              <div class="diff-line"><span class="diff-pfx m">−</span><span class="diff-before">sv_jumpvelocity 260</span><span class="diff-arr">→</span><span class="diff-after">245</span><span class="diff-note">↓ compensates lower gravity; same height</span></div>
+              <div class="diff-line"><span class="diff-pfx m">−</span><span class="diff-before">sv_airstrafeaccelerate 24</span><span class="diff-arr">→</span><span class="diff-after">18</span><span class="diff-note">↓ reduced air strafe dodge</span></div>
+              <div class="diff-line"><span class="diff-pfx m">−</span><span class="diff-before">sv_aircontrol 125</span><span class="diff-arr">→</span><span class="diff-after">100</span><span class="diff-note">↓ less mid-air steering</span></div>
+              <div class="diff-line"><span class="diff-pfx m">−</span><span class="diff-before">sv_aircontrol_penalty 180</span><span class="diff-arr">→</span><span class="diff-after">0</span><span class="diff-note">removed — no speed penalty for aircontrol</span></div>
+              <div class="diff-line"><span class="diff-pfx m">−</span><span class="diff-before">sv_airspeedlimit_nonqw 800</span><span class="diff-arr">→</span><span class="diff-after">900</span><span class="diff-note">↑ higher non-QW speed cap</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Samual Feb 2014 -->
+    <div class="era">
+      <div class="era-stamp">2014-02-16 <span class="era-hash">5d2506b</span></div>
+      <div class="era-title">Gravity nudged up; jump velocity adjusted proportionally</div>
+      <div class="commits">
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">5d2506b</span>
+            <span class="commit-date">2014-02-16</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Samual Lenks</strong> — "Increase gravity slightly"</div>
+            <div class="diff-block">
+              <div class="diff-line"><span class="diff-pfx m">−</span><span class="diff-before">sv_gravity 700</span><span class="diff-arr">→</span><span class="diff-after">720</span></div>
+              <div class="diff-line"><span class="diff-pfx m">−</span><span class="diff-before">sv_jumpvelocity 245</span><span class="diff-arr">→</span><span class="diff-after">248</span><span class="diff-note">adjusted to maintain jump height (42.71 QU)</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mario Dec 2014 -->
+    <div class="era major">
+      <div class="era-stamp">2014-12-01 <span class="era-hash">ff09529</span> → xonotic-v0.8.0</div>
+      <div class="era-title">"Reversion" — gravity and jump restored; Samual's other changes kept</div>
+      <p class="era-prose">
+        Mario reverts gravity and jump velocity back to their pre-Samual values.
+        All other Samual changes (friction, stepheight, airstrafeaccelerate, aircontrol,
+        aircontrol_penalty, airspeedlimit_nonqw) remain. This produces the 0.8.0 baseline — the
+        gravity experiment is undone; the movement feel changes are permanent.
+      </p>
+      <div class="commits">
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">ff09529</span>
+            <span class="commit-date">2014-12-01</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Mario</strong> — "Use reversion gravity/jumpvelocity"</div>
+            <div class="diff-block">
+              <div class="diff-line"><span class="diff-pfx m">−</span><span class="diff-before">sv_gravity 720</span><span class="diff-arr">→</span><span class="diff-after">800</span><span class="diff-note">restored to pre-Samual / engine default</span></div>
+              <div class="diff-line"><span class="diff-pfx m">−</span><span class="diff-before">sv_jumpvelocity 248</span><span class="diff-arr">→</span><span class="diff-after">260</span><span class="diff-note">comment: "actually 266.6666 for 180bpm, but 260 is nicer to mappers"</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 0.8.1 -->
+    <div class="era">
+      <div class="era-stamp">2015-01-05 <span class="era-hash">05ea82e</span> → xonotic-v0.8.1</div>
+      <div class="era-title">sv_friction_slick added; core values unchanged</div>
+      <div class="commits">
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">05ea82e</span>
+            <span class="commit-date">2015-01-05</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Mario</strong> — "Lower default value and add it to configs"</div>
+            <div class="diff-block">
+              <div class="diff-line"><span class="diff-pfx p">+</span><span class="diff-after">sv_friction_slick 0.5</span><span class="diff-note">friction multiplier on ice/slick surfaces</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 0.8.2 era -->
+    <div class="era">
+      <div class="era-stamp">2016–2017 → xonotic-v0.8.2</div>
+      <div class="era-title">Aircontrol direction toggles; crouch jump variant added</div>
+      <p class="era-prose">
+        No magnitude changes — only new opt-in knobs, all defaulting to 0.
+        <code>sv_aircontrol_backwards</code> and <code>sv_aircontrol_sidewards</code>
+        are later superseded by the <code>sv_aircontrol_flags</code> bitmask in 2025.
+      </p>
+      <div class="commits">
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">7a83212</span>
+            <span class="commit-date">2016-09-26</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Mario</strong> — "Add sv_aircontrol_backwards"</div>
+            <div class="diff-block">
+              <div class="diff-line"><span class="diff-pfx p">+</span><span class="diff-after">sv_aircontrol_backwards 0</span><span class="diff-note">applies forward-aircontrol rules to backward movement; disabled</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">37d93db</span>
+            <span class="commit-date">2017-06-23</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Mario</strong> — "Add sv_aircontrol_sidewards"</div>
+            <div class="diff-block">
+              <div class="diff-line"><span class="diff-pfx p">+</span><span class="diff-after">sv_aircontrol_sidewards 0</span><span class="diff-note">sidewards variant; disabled</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">698ec86</span>
+            <span class="commit-date">2017-11-20</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Mario</strong> — "Add an option to change jump height while crouching"</div>
+            <div class="diff-block">
+              <div class="diff-line"><span class="diff-pfx p">+</span><span class="diff-after">sv_jumpvelocity_crouch 0</span><span class="diff-note">separate jump impulse when crouched; 0 = no change</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2018 rename -->
+    <div class="era">
+      <div class="era-stamp">2018-02-17 <span class="era-hash">07da461</span></div>
+      <div class="era-title">defaultXonotic.cfg renamed and split into xonotic-server.cfg (+ two others)</div>
+      <p class="era-prose">
+        martin-t splits the monolithic <code>defaultXonotic.cfg</code> into
+        <code>xonotic-server.cfg</code>, <code>xonotic-client.cfg</code>, and
+        <code>xonotic-common.cfg</code>. The physics load chain moves from
+        <code>defaultXonotic.cfg → exec physicsX.cfg</code> to
+        <code>xonotic-server.cfg → exec physicsX.cfg</code> (line 675).
+        <code>sv_maxvelocity 1000000000</code> and <code>sv_gameplayfix_q2airaccelerate 1</code>
+        stay in <code>xonotic-server.cfg</code>. physicsX.cfg values are unchanged.
+      </p>
+    </div>
+
+    <!-- 2020 -->
+    <div class="era">
+      <div class="era-stamp">2020-05-23 <span class="era-hash">8db36e7</span></div>
+      <div class="era-title">sv_gameplayfix_stepdown_maxspeed added to physics configs</div>
+      <div class="commits">
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">8db36e7</span>
+            <span class="commit-date">2020-05-23</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Mario</strong> — "Set sv_gameplayfix_stepdown_maxspeed in physics configurations instead of globally"</div>
+            <div class="diff-block">
+              <div class="diff-line"><span class="diff-pfx p">+</span><span class="diff-after">sv_gameplayfix_stepdown_maxspeed 400</span><span class="diff-note">enables step-down logic at speeds up to 400 u/s</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 0.8.5 -->
+    <div class="era major">
+      <div class="era-stamp">2022 → xonotic-v0.8.5</div>
+      <div class="era-title">Player physics migrated from DarkPlaces C code to QuakeC</div>
+      <p class="era-prose">
+        Release notes: <em>"Player physics is now implemented in QuakeC gamecode instead of using
+        the engine physics."</em> physicsX.cfg cvar names and values are unchanged — the code that
+        reads them moved from C to QC. QC uses <code>PHYS_*</code> macro wrappers
+        (<code>PHYS_AIRACCELERATE</code>, etc.) over the same cvars. One physicsX.cfg addition
+        in this release era:
+      </p>
+      <div class="commits">
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">e868f1a</span>
+            <span class="commit-date">2022-03-17</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Morosophos</strong> — "XDF: move speed powerup params to physicsXDF.cfg"</div>
+            <div class="diff-block">
+              <div class="diff-line"><span class="diff-pfx p">+</span><span class="diff-after">g_movement_highspeed_q3_compat 0</span><span class="diff-note">Q3 high-speed compat flag; off by default</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 0.8.6 -->
+    <div class="era major">
+      <div class="era-stamp">2023 → xonotic-v0.8.6</div>
+      <div class="era-title">All entity physics → QC; sv_track_canjump added</div>
+      <p class="era-prose">
+        Release notes: <em>"Made all remaining entities use physics logic handled by QuakeC gamecode
+        rather than the engine."</em> Gravity compensation was added for affected entities — this is
+        handled in QC code, not physicsX.cfg. The file is otherwise identical to the 0.8.5 tag.
+      </p>
+      <div class="commits">
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">b1191ed</span>
+            <span class="commit-date">2023-02-17</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>bones_was_here</strong> — "Corrections and documentation for gravity etc"</div>
+            <div class="diff-block">
+              <div class="diff-line"><span class="diff-pfx p">+</span><span class="diff-after">sv_track_canjump 0</span><span class="diff-note">requires releasing jump key between jumps; 0 = classic permissive behaviour</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2024–2025 -->
+    <div class="era">
+      <div class="era-stamp">2024–2025 <span class="era-hash">// post-0.8.6</span></div>
+      <div class="era-title">New knobs; aircontrol direction flags refactored into bitmask</div>
+      <p class="era-prose">
+        Core movement values remain at their 0.8.0 settings. A cluster of new configurability
+        options landed — plus the replacement of the two individual aircontrol direction cvars
+        with a single bitmask that also covers a new crouch-during-aircontrol case.
+      </p>
+      <div class="commits">
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">c094f44</span>
+            <span class="commit-date">2024-02-10</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Dr. Jaska</strong> — "Minimum velocity for teleporter exits"</div>
+            <div class="diff-block">
+              <div class="diff-line"><span class="diff-pfx p">+</span><span class="diff-after">g_teleport_minspeed 0</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">ebf8ca3</span>
+            <span class="commit-date">2025-07-08</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>otta8634</strong> — "Allow crouching to have no impact on aircontrol"</div>
+            <div class="diff-block">
+              <div class="diff-line"><span class="diff-pfx m">−</span><span class="diff-before">sv_aircontrol_backwards 0</span><span class="diff-note">removed</span></div>
+              <div class="diff-line"><span class="diff-pfx m">−</span><span class="diff-before">sv_aircontrol_sidewards 0</span><span class="diff-note">removed</span></div>
+              <div class="diff-line"><span class="diff-pfx p">+</span><span class="diff-after">sv_aircontrol_flags 0</span><span class="diff-note">bitmask: bit1=backwards, bit2=sidewards, bit4=crouch-no-impact</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">1ad0226</span>
+            <span class="commit-date">2025-07-08</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>otta8634</strong> — "Add sv_airstopaccelerate_full cvar"</div>
+            <div class="diff-block">
+              <div class="diff-line"><span class="diff-pfx p">+</span><span class="diff-after">sv_airstopaccelerate_full 0</span><span class="diff-note">CPM/Q3DF: 2.5× accel when &gt;90° from velocity; off by default</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">ba11acc</span>
+            <span class="commit-date">2025-07-09</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>otta8634</strong> — "Add sv_slickaccelerate cvar"</div>
+            <div class="diff-block">
+              <div class="diff-line"><span class="diff-pfx p">+</span><span class="diff-after">sv_slickaccelerate 15</span><span class="diff-note">acceleration on slick surfaces; matches sv_accelerate — no default behaviour change</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">6c3033e</span>
+            <span class="commit-date">2025-08-29</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>bones_was_here</strong> — "cl_physics: add stepdown and fix existing stepdown configs"</div>
+            <div class="diff-block">
+              <div class="diff-line"><span class="diff-pfx p">+</span><span class="diff-after">sv_gameplayfix_stepdown 2</span><span class="diff-note">enables QC-side step-down logic (mode 2)</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">18282e0</span>
+            <span class="commit-date">2025-11-15</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>bones_was_here</strong> — "cl_physics: add jumpspeedcap_*"</div>
+            <div class="diff-block">
+              <div class="diff-line"><span class="diff-pfx m">−</span><span class="diff-before">sv_jumpspeedcap_min ""</span><span class="diff-arr">→</span><span class="diff-after">"nan"</span><span class="diff-note">float NaN; functionally inactive, but uses float networking</span></div>
+              <div class="diff-line"><span class="diff-pfx m">−</span><span class="diff-before">sv_jumpspeedcap_max ""</span><span class="diff-arr">→</span><span class="diff-after">"nan"</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+<hr>
+
+<!-- ──────────────────────────────────────────────────────── CONFIG CHAIN -->
+<section class="section">
+  <h2 class="section-heading">Config load chain</h2>
+
+  <div class="arch-card">
+    <div class="arch-label">At xonotic-v0.8.0 (Jan 2015)</div>
+    <pre><span class="t-file">defaultXonotic.cfg</span>
+  ├─ <span class="t-acc">sv_maxvelocity</span>                <span class="t-val">1000000000</span>
+  ├─ <span class="t-acc">sv_gameplayfix_q2airaccelerate</span> <span class="t-val">1</span>
+  ├─ <span class="t-acc">sv_gameplayfix_stepmultipletimes</span> <span class="t-val">1</span>
+  └─ exec <span class="t-file">physicsX.cfg</span>
+           └─ (all movement cvars above)</pre>
+  </div>
+
+  <div class="arch-card">
+    <div class="arch-label">After 2018-02-17 (commit 07da461) — current</div>
+    <pre><span class="t-file">xonotic-server.cfg</span>
+  ├─ <span class="t-acc">sv_maxvelocity</span>                <span class="t-val">1000000000</span>  <span class="t-cmt">// line 325</span>
+  ├─ <span class="t-acc">sv_gameplayfix_q2airaccelerate</span> <span class="t-val">1</span>          <span class="t-cmt">// line 562</span>
+  ├─ <span class="t-acc">sv_gameplayfix_stepmultipletimes</span> <span class="t-val">1</span>
+  └─ exec <span class="t-file">physicsX.cfg</span>                          <span class="t-cmt">// line 675</span>
+           └─ (same names; same values as 0.8.0 except additions above)
+
+<span class="t-cmt">xonotic-client.cfg  }
+xonotic-common.cfg  }  also split out from defaultXonotic.cfg</span></pre>
+  </div>
+</section>
+
+<hr>
+
+<!-- ──────────────────────────────────────────────────────── OPEN QUESTIONS -->
+<section class="section">
+  <h2 class="section-heading">Remaining open questions</h2>
+  <div class="gap-list">
+    <div class="gap-row">
+      <span class="gap-icon">?</span>
+      <span class="gap-body"><strong>QC vs. engine behavioural parity for complex cvars.</strong>
+        The 0.8.5 migration preserved cvar names and values but moved the interpreter from C to QC.
+        For cvars with complex interactions — <code>sv_aircontrol</code>, <code>sv_airaccel_qw</code>,
+        <code>sv_warsowbunny_*</code> — whether the QC implementation produces identical movement
+        for the same cvar values was not verified from commit history alone. The gravity compensation
+        added in 0.8.6 confirms at least one measurable difference existed post-migration.</span>
+    </div>
+    <div class="gap-row">
+      <span class="gap-icon">?</span>
+      <span class="gap-body"><strong>sv_gameplayfix_q2airaccelerate exact semantics.</strong>
+        Confirmed present and set to 1 in <code>xonotic-server.cfg</code>. The precise behavioural
+        difference between Q2-style and standard air acceleration was not traced through DarkPlaces C code.</span>
+    </div>
+    <div class="gap-row">
+      <span class="gap-icon">?</span>
+      <span class="gap-body"><strong>Pre-2011 history.</strong> The full diff history begins at
+        "initial checkin from nexuiz svn r8756" but the Nexuiz-era values and any changes in
+        2009–2011 were not traced further here.</span>
+    </div>
+  </div>
+</section>
+
+<hr>
+
+<!-- ──────────────────────────────────────────────────────── SOURCES -->
+<section class="section">
+  <h2 class="section-heading">Sources</h2>
+  <div class="source-list">
+    <div class="source-row">
+      <span class="source-kind git">git</span>
+      <span class="source-text"><code>git log -p --follow -- physicsX.cfg</code> on Base/data/xonotic-data.pk3dir — full diff history, every commit</span>
+    </div>
+    <div class="source-row">
+      <span class="source-kind git">git</span>
+      <span class="source-text"><code>git show xonotic-v0.8.0:physicsX.cfg</code>, <code>…v0.8.1</code>, <code>…v0.8.2</code>, <code>…v0.8.5</code>, <code>…v0.8.6</code> — per-release value verification</span>
+    </div>
+    <div class="source-row">
+      <span class="source-kind git">git</span>
+      <span class="source-text">Base/data/xonotic-data.pk3dir/xonotic-server.cfg lines 325, 562, 675 — sv_maxvelocity, sv_gameplayfix_q2airaccelerate, exec physicsX.cfg</span>
+    </div>
+    <div class="source-row">
+      <span class="source-kind primary">primary</span>
+      <span class="source-text">github.com/xonotic/darkplaces/blob/master/sv_main.c — engine cvar_t defaults</span>
+    </div>
+    <div class="source-row">
+      <span class="source-kind primary">primary</span>
+      <span class="source-text">xonotic.org/posts/2022/xonotic-0-8-5-release/ — QC player physics migration announcement</span>
+    </div>
+    <div class="source-row">
+      <span class="source-kind primary">primary</span>
+      <span class="source-text">xonotic.org/posts/2023/xonotic-0-8-6-release/ — all-entity QC migration + gravity compensation</span>
+    </div>
+  </div>
+</section>

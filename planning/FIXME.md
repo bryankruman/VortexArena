@@ -1,13 +1,12 @@
 # FIXME — Outstanding gameplay bugs
 
 Tracker for reported gameplay defects. Each item carries an `Fnn` label. Update
-status as work lands. See also [TODO.md](TODO.md) and
-[REBIRTH_FEATURE_COMPLETENESS.md](../REBIRTH_FEATURE_COMPLETENESS.md).
+status as work lands. See also [TODO.md](TODO.md) for the active task tracker.
 
 Status legend: **OPEN** · **INVESTIGATING** · **FIX LANDED (unverified)** · **VERIFIED** · **WONTFIX**
 
 Regression coverage for F02/F04 lives in
-[tests/XonoticGodot.Tests/FixmeRegressionTests.cs](tests/XonoticGodot.Tests/FixmeRegressionTests.cs).
+[tests/XonoticGodot.Tests/FixmeRegressionTests.cs](../tests/XonoticGodot.Tests/FixmeRegressionTests.cs).
 All 1456 tests pass; the build is clean.
 
 ---
@@ -18,10 +17,10 @@ Enemy/remote player models rendered but were **frozen in a single pose** while t
 bot moved around the map.
 
 **Root cause (two wire bugs in the remote-player animation feed):**
-1. The server's player snapshot ([game/net/ServerNet.cs](game/net/ServerNet.cs)
+1. The server's player snapshot ([game/net/ServerNet.cs](../game/net/ServerNet.cs)
    `BuildEntitySet`) **never networked `Velocity`** for players, so every remote
    read velocity 0.
-2. The client render proxy ([game/net/ClientEntityView.cs](game/net/ClientEntityView.cs)
+2. The client render proxy ([game/net/ClientEntityView.cs](../game/net/ClientEntityView.cs)
    `DriveEntity`) **never copied the networked `OnGround` flag** onto the proxy
    (`Entity.OnGround` is derived from `EntFlags.OnGround`).
 
@@ -47,16 +46,16 @@ After death the corpse slid and **WASD still drove movement**.
 
 **Root cause:** the authoritative server already gates dead movement
 (`GameWorld.OnClientMove` runs `DeadPlayerThink` and returns), but the
-**client-prediction carrier** ([game/net/EntityMovementStep.cs](game/net/EntityMovementStep.cs))
+**client-prediction carrier** ([game/net/EntityMovementStep.cs](../game/net/EntityMovementStep.cs))
 and the single-process demo path called `Movement.Move` directly with no dead
 gate — so the local predicted body kept sliding under input.
 
 **Fix:**
 - Added the QC `IS_DEAD` bail to the shared chokepoint
-  [PlayerPhysics.Move](src/XonoticGodot.Common/Physics/PlayerPhysics.cs) —
+  [PlayerPhysics.Move](../src/XonoticGodot.Common/Physics/PlayerPhysics.cs) —
   `if (player.DeadState != DeadFlag.No) return;` (covers server, prediction, demo).
 - The prediction carrier is a distinct entity that never learns it died, so
-  [NetGame](game/net/NetGame.cs) now mirrors the authoritative dead state onto the
+  [NetGame](../game/net/NetGame.cs) now mirrors the authoritative dead state onto the
   carrier each frame (listen server: host `Player`; pure client: networked health
   after first spawn) so the gate actually fires.
 
@@ -65,7 +64,7 @@ Covered by `DeadPlayer_DoesNotMoveUnderForwardInput` /
 
 **Follow-up (death-cam shake over a void):** after the freeze, dying mid-fall left
 the corpse with the large downward velocity it died with. The server freezes the
-body but still networks that velocity, and [NetGame.UpdateCamera](game/net/NetGame.cs)
+body but still networks that velocity, and [NetGame.UpdateCamera](../game/net/NetGame.cs)
 extrapolates the eye by `PredictedVelocity * _inputAccum` each render frame — so
 the eye bobbed down and snapped back every input tic (only over a void, where the
 death velocity is large; on solid ground it's ~0). Fixed by (a) zeroing the
@@ -90,11 +89,11 @@ and (b) the client owns its view angles (prediction) so the spawn angle never
 reached `_viewAngles`.
 
 **Fix (QC `fixangle`):**
-- [SpawnSystem.PutPlayerInServer](src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs)
+- [SpawnSystem.PutPlayerInServer](../src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.cs)
   now latches the spawn facing in the QC `.fixangle` channel
   (`p.FixAngle = true; p.FixAngleAngles = sp.Angles;`) — the same field
   teleporters use.
-- [NetGame](game/net/NetGame.cs) reads `LocalServerPlayer.FixAngle` each frame
+- [NetGame](../game/net/NetGame.cs) reads `LocalServerPlayer.FixAngle` each frame
   (before sampling input), snaps `_viewAngles` to the latched facing, and clears
   it (one-shot). This also makes server-side (multi-destination) teleports snap
   the view.
@@ -110,7 +109,7 @@ The CTF state machine worked (scoreboard updated) but the flag entity was a
 headless objective with **no model, no audio, no announcer**, and a carried flag
 didn't move with its carrier.
 
-**Root cause:** [Ctf.cs](src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs) spawned
+**Root cause:** [Ctf.cs](../src/XonoticGodot.Common/Gameplay/GameTypes/Ctf.cs) spawned
 the flag via `GametypeEntities.SpawnObjective` which **never set `Entity.Model`**
 (→ networked invisible), and never called the (already-wired, already-registered)
 sound/notification systems.
