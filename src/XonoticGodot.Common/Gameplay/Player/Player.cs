@@ -85,6 +85,11 @@ public sealed class Player : Entity
     /// <summary>QC IS_BOT_CLIENT(this) — true for an AI-controlled player (affects spawn restriction filtering).</summary>
     public bool IsBot;
 
+    /// <summary>The floating chat-bubble entity shown over this player while typing (QC <c>.chatbubbleentity</c>,
+    /// server/client.qc <c>UpdateChatBubble</c>/<c>ChatBubbleThink</c>). Spawned, followed and freed by
+    /// <c>GameWorld.UpdateChatBubble</c>. (playtest #35c)</summary>
+    public Entity? ChatBubble;
+
     /// <summary>
     /// QC the bot's <c>skill</c> level (0..10), set when the bot is created. Feeds the skill-weighted team
     /// balance (Teamplay.SkillProvider) so a strong bot counts as "more" than a weak one. Meaningless for humans

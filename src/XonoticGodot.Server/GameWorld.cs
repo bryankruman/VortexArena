@@ -585,6 +585,12 @@ public sealed class GameWorld
         // (Teleporters.TeleportRoundGateSuppressed reads GameScores.Gametype == "rc"/"cts") never fires server-side.
         XonoticGodot.Common.Gameplay.Scoring.GameScores.Gametype = GameType?.NetName ?? DefaultGameType;
         XonoticGodot.Common.Gameplay.Scoring.GameScores.Teamplay = GameType?.TeamGame ?? false;
+        // #35: ALSO mirror the team mode onto the real `teamplay` CVAR, like Base's InitGameplayMode (DP exposes
+        // the cvar as the QC global every `teamplay` read compiles to). The port only ever set the GameScores
+        // static above (#27) — the cvar stayed 0 forever, so every Cvars.Teamplay reader was silently non-team:
+        // BotBrain.ShouldAttack's same-team gate never fired (bots attacked their CTF teammates) and warmup's
+        // teamplay_lockonrestart was dead.
+        Services.Cvars.Set("teamplay", (GameType?.TeamGame ?? false) ? "1" : "0");
         // Feed real per-bot skills into the skill-weighted team balance (QC m_skill_mu): a stronger bot counts
         // as "more" than a weaker one. Humans use the flat reference rating (no TrueSkill ratings modeled).
         Teamplay.SkillProvider = p => p.IsBot ? p.BotSkill : 5f;
@@ -1664,6 +1670,14 @@ public sealed class GameWorld
         // funnels through this disconnect chain: drop the brain + notify the net host (BotRemoved).
         if (p.IsBot)
             Bots.OnBotDisconnected(p);
+
+        // (playtest #35c) free a live typing bubble — an abrupt disconnect mid-typing must not orphan it
+        // (QC's ChatBubbleThink self-deletes when its owner goes away; the port has no per-entity think here).
+        if (p.ChatBubble is { IsFreed: false } bubble)
+        {
+            Api.Entities.Remove(bubble);
+            p.ChatBubble = null;
+        }
     }
 
     /// <summary>QC the scoreboard rank (1-based) of a player by SP_SCORE (0 if not registered).</summary>
@@ -2284,6 +2298,44 @@ public sealed class GameWorld
     }
 
     /// <summary>
+    /// QC <c>UpdateChatBubble</c> + <c>ChatBubbleThink</c> (server/client.qc:1350-1397): while a live player
+    /// holds BUTTON_CHAT (typing), a <c>models/misc/chatbubble.spr</c> sprite floats over their head at
+    /// <c>origin + '0 0 15' + maxs_z</c>, visible to every client. Base attaches the bubble and swaps its
+    /// model in a think; the port spawns a plain networked entity on the typing edge, FOLLOWS the owner each
+    /// tick (equivalent to the attachment, server-side), and frees it when the player stops typing / dies /
+    /// spectates — so nothing lingers in the entity table. (playtest #35c)
+    /// </summary>
+    private void UpdateChatBubble(Player p)
+    {
+        bool show = p.ButtonChat && !p.IsDead && !p.IsObserver;
+        Entity? b = p.ChatBubble;
+        if (b is { IsFreed: true })
+            p.ChatBubble = b = null;
+
+        if (!show)
+        {
+            if (b is not null)
+            {
+                Api.Entities.Remove(b);
+                p.ChatBubble = null;
+            }
+            return;
+        }
+
+        if (b is null)
+        {
+            b = Api.Entities.Spawn();
+            b.ClassName = "chatbubbleentity";
+            b.Model = "models/misc/chatbubble.spr"; // MDL_CHAT (client.qc:1389)
+            b.MoveType = MoveType.None;
+            b.Solid = Solid.Not;
+            p.ChatBubble = b;
+        }
+        // QC setorigin(bubble, '0 0 15' + this.maxs_z * '0 0 1') + setattachment(…, this, "") — follow the owner.
+        b.Origin = p.Origin + new System.Numerics.Vector3(0f, 0f, p.Maxs.Z + 15f);
+    }
+
+    /// <summary>
     /// QC per-client physics step (SV_Physics_ClientEntity): PreThink → movement → PostThink. The engine
     /// calls this for each entity in <see cref="SimulationLoop.Clients"/>, in order, each tick.
     /// </summary>
@@ -2315,6 +2367,11 @@ public sealed class GameWorld
         // in a vehicle (the seated player can't fire their hand weapon).
         if (!p.IsBot)
             p.ButtonAttack2 = p.Vehicle is null && (InputProvider(p)?.ButtonAttack2 ?? false);
+
+        // QC UpdateChatBubble (client.qc:1377, called from PlayerPreThink): the floating "typing" sprite over a
+        // chatting player's head, visible to every client. Runs for bots too (they never set ButtonChat — a
+        // cheap no-op) so the state machine lives in one place. (playtest #35c)
+        UpdateChatBubble(p);
 
         // ---- PlayerPreThink (QC client.qc PlayerPreThink) ----
         // QC PlayerPreThink (client.qc:2880) calls anticheat_prethink EVERY frame to zero the div0_evade offset,

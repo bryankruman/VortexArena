@@ -301,6 +301,17 @@ public sealed partial class FaithfulParticleBackend : Node3D
         DecalSplats? splats = Splats;
         if (splats is null)
             return;
+        // cl_decals master toggle (DP CL_SpawnDecalParticleForSurface gates on cl_decals.integer; the
+        // 2026-06-14 graphics audit flagged the port's toggle as dead — playtest #37 wires it). cl_decals
+        // is a DP ENGINE cvar (default 1) that the shipped cfg tree never sets, so UNSET means ON — only an
+        // explicit 0 disables (the cl_autopause unset-is-on pattern).
+        XonoticGodot.Common.Services.ICvarService? cv = _pendingCvars;
+        if (cv is not null)
+        {
+            string dec = cv.GetString("cl_decals");
+            if (!string.IsNullOrEmpty(dec) && cv.GetFloat("cl_decals") == 0f)
+                return;
+        }
 
         // The event color is the raw INVMOD REMOVAL amount, exactly what DP feeds
         // R_DecalSystem_SplatEntities (the sim applies DP's per-path complements — see ParticleSim's
@@ -351,7 +362,11 @@ public sealed partial class FaithfulParticleBackend : Node3D
         // deliberate game-side divergence from DP's 1 s clamp; the faithful sim's own clamp stays bit-exact
         // (parity tests drive Update directly and are unaffected — this only bounds what the backend feeds it).
         const float MaxParticleStep = 0.05f;   // ~3 frames @ 60 fps; far tighter than DP's 1.0 s correctness clamp
-        _clientTime += Math.Min((float)delta, MaxParticleStep);
+        // #30 slowmo/pause: scale the ADVANCE by the client render-time factor (DP's cl.time — which particles
+        // age on — advances by timescaled frametime, and not at all while paused). At slowmo 0 _clientTime holds
+        // still, so Update() is a same-time no-op: particles hang frozen; no aging, no leak (paused sim emits
+        // nothing new). This keeps the wall-clock SOURCE the doc above requires — only the step is scaled.
+        _clientTime += Math.Min(XonoticGodot.Game.Client.ClientRenderTime.ScaleDelta((float)delta), MaxParticleStep);
         _sim.Update(_clientTime);
 
         // View origin/forward in Quake space, from the active camera (GetViewport().GetCamera3D()). The

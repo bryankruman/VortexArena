@@ -415,12 +415,35 @@ public partial class PlayerModel : Node3D
     /// Resolve the legs' per-intent clips + a torso clip from the model's framegroups (by a name keyword, else
     /// a sensible fallback). Without framegroups, the whole pose range becomes one looping clip.
     /// </summary>
+    // The Base animdecide FIXED-INDEX player animation registry (common/animdecide.qh REGISTER_ANIMATION
+    // order). Xonotic player IQMs define their clips via NAMELESS `.framegroups` lines; the DP engine
+    // auto-names those `groupified_<i>_anim` and Base's framenames tables match exactly those — i.e. the
+    // slot INDEX is the contract, not a name. (playtest #32: every port clip used to fall back to
+    // groups[0] = DIE1 because the name match found nothing on unnamed groups — remote players "played
+    // no animation / held the wrong pose" while locomotion selection itself was correct.)
+    private enum Slot
+    {
+        Die1 = 0, Die2 = 1, Draw = 2, Duck = 3, DuckWalk = 4, DuckJump = 5, DuckIdle = 6, Idle = 7,
+        Jump = 8, Pain1 = 9, Pain2 = 10, Shoot = 11, Taunt = 12, Run = 13, RunBackwards = 14,
+        StrafeLeft = 15, StrafeRight = 16, Dead1 = 17, Dead2 = 18, ForwardRight = 19, ForwardLeft = 20,
+        BackRight = 21, BackLeft = 22, Melee = 23, DuckWalkBackwards = 24, DuckWalkStrafeLeft = 25,
+        DuckWalkStrafeRight = 26, DuckWalkForwardRight = 27, DuckWalkForwardLeft = 28,
+        DuckWalkBackRight = 29, DuckWalkBackLeft = 30,
+    }
+
     private void BuildClipTable(IqmData iqm, IReadOnlyList<FrameGroup>? groups)
     {
         int total = Math.Max(1, iqm.Frames.Length);
         var whole = new FrameGroup(0, total, 20f, true);
 
-        FrameGroup Pick(params string[] keys)
+        // A model with NAMED groups (IQM internal anims / community models) resolves by keyword like before;
+        // an unnamed `.framegroups` set (every stock Xonotic player model) resolves by the Base slot index.
+        bool named = false;
+        if (groups is not null)
+            foreach (FrameGroup g in groups)
+                if (!string.IsNullOrEmpty(g.Name)) { named = true; break; }
+
+        FrameGroup PickByName(string[] keys)
         {
             if (groups is not null)
                 foreach (FrameGroup g in groups)
@@ -431,41 +454,58 @@ public partial class PlayerModel : Node3D
             return groups is { Count: > 0 } ? groups[0] : whole;
         }
 
-        // The faithful animdecide locomotion set. Fallbacks mirror animdecide_load_if_needed (animdecide.qc:80-95):
-        // the diagonal/back clips fall back to their straight strafe; runbackwards/strafe fall back to run; the
-        // duckwalk directional set falls back to plain duckwalk; idle/duckidle/jump/duckjump have their own clips.
-        // (Picking by name keyword with the listed fallbacks — a model that lacks e.g. "forwardright" reuses
-        // "straferight" then "run", exactly as Base's animfixfps fallback arg does.)
-        FrameGroup idle = Pick("idle", "stand");
-        FrameGroup run = Pick("run", "forward", "walk");
-        FrameGroup runback = Pick("runbackwards", "run");
-        FrameGroup strafeL = Pick("strafeleft", "run");
-        FrameGroup strafeR = Pick("straferight", "run");
-        FrameGroup duckidle = Pick("duckidle", "duck", "crouch");
-        FrameGroup duckwalk = Pick("duckwalk", "duck", "crouch");
+        // Base animfixfps(primary, fallback): a model missing the primary slot uses the fallback slot
+        // (animdecide.qc:68-96 — forwardright→straferight, melee→shoot, duckwalk-dirs→duckwalk, …).
+        FrameGroup BySlot(Slot idx, Slot fb)
+        {
+            if (groups is not null)
+            {
+                if ((int)idx < groups.Count) return groups[(int)idx];
+                if (fb != idx && (int)fb < groups.Count) return groups[(int)fb];
+            }
+            return groups is { Count: > 0 } ? groups[0] : whole;
+        }
 
-        _legClips[(int)L.Dead] = Pick("death", "dead", "die");
+        // One resolver for both worlds: keyword on named sets, Base slot index on unnamed .framegroups sets.
+        FrameGroup Pick(Slot idx, Slot fb, params string[] keys)
+            => named ? PickByName(keys) : BySlot(idx, fb);
+
+        // The faithful animdecide locomotion set. Fallbacks mirror animdecide_load_if_needed (animdecide.qc:68-96):
+        // the diagonal/back clips fall back to their straight strafe; the duckwalk directional set falls back to
+        // plain duckwalk; idle/duckidle/jump/duckjump have their own clips. Named sets keep the keyword chains;
+        // unnamed .framegroups sets take the Base slot index (see the Slot enum note).
+        FrameGroup idle = Pick(Slot.Idle, Slot.Idle, "idle", "stand");
+        FrameGroup run = Pick(Slot.Run, Slot.Run, "run", "forward", "walk");
+        FrameGroup runback = Pick(Slot.RunBackwards, Slot.Run, "runbackwards", "run");
+        FrameGroup strafeL = Pick(Slot.StrafeLeft, Slot.Run, "strafeleft", "run");
+        FrameGroup strafeR = Pick(Slot.StrafeRight, Slot.Run, "straferight", "run");
+        FrameGroup duckidle = Pick(Slot.DuckIdle, Slot.Idle, "duckidle", "duck", "crouch");
+        FrameGroup duckwalk = Pick(Slot.DuckWalk, Slot.Run, "duckwalk", "duck", "crouch");
+
+        // Dying/dead legs play DIE1 (slot 0) — its non-looping end holds the corpse pose, matching Base's
+        // DEAD1 state (die1 frames while dying, then the settled dead1 hold).
+        _legClips[(int)L.Dead] = Pick(Slot.Die1, Slot.Die1, "death", "dead", "die");
         _legClips[(int)L.Idle] = idle;
         _legClips[(int)L.Run] = run;
         _legClips[(int)L.RunBackwards] = runback;
         _legClips[(int)L.StrafeLeft] = strafeL;
         _legClips[(int)L.StrafeRight] = strafeR;
-        _legClips[(int)L.ForwardLeft] = Pick("forwardleft", "strafeleft", "run");
-        _legClips[(int)L.ForwardRight] = Pick("forwardright", "straferight", "run");
-        _legClips[(int)L.BackLeft] = Pick("backleft", "strafeleft", "run");
-        _legClips[(int)L.BackRight] = Pick("backright", "straferight", "run");
-        _legClips[(int)L.Jump] = Pick("jump");
+        _legClips[(int)L.ForwardLeft] = Pick(Slot.ForwardLeft, Slot.StrafeLeft, "forwardleft", "strafeleft", "run");
+        _legClips[(int)L.ForwardRight] = Pick(Slot.ForwardRight, Slot.StrafeRight, "forwardright", "straferight", "run");
+        _legClips[(int)L.BackLeft] = Pick(Slot.BackLeft, Slot.StrafeLeft, "backleft", "strafeleft", "run");
+        _legClips[(int)L.BackRight] = Pick(Slot.BackRight, Slot.StrafeRight, "backright", "straferight", "run");
+        _legClips[(int)L.Jump] = Pick(Slot.Jump, Slot.Jump, "jump");
         _legClips[(int)L.DuckIdle] = duckidle;
         _legClips[(int)L.DuckWalk] = duckwalk;
-        _legClips[(int)L.DuckWalkBackwards] = Pick("duckwalkbackwards", "duckwalk", "duck");
-        _legClips[(int)L.DuckWalkStrafeLeft] = Pick("duckwalkstrafeleft", "duckwalk", "duck");
-        _legClips[(int)L.DuckWalkStrafeRight] = Pick("duckwalkstraferight", "duckwalk", "duck");
-        _legClips[(int)L.DuckWalkForwardLeft] = Pick("duckwalkforwardleft", "duckwalk", "duck");
-        _legClips[(int)L.DuckWalkForwardRight] = Pick("duckwalkforwardright", "duckwalk", "duck");
-        _legClips[(int)L.DuckWalkBackLeft] = Pick("duckwalkbackleft", "duckwalk", "duck");
-        _legClips[(int)L.DuckWalkBackRight] = Pick("duckwalkbackright", "duckwalk", "duck");
-        _legClips[(int)L.DuckJump] = Pick("duckjump", "jump");
-        _torsoClip = Pick("idle", "stand", "aim");
+        _legClips[(int)L.DuckWalkBackwards] = Pick(Slot.DuckWalkBackwards, Slot.DuckWalk, "duckwalkbackwards", "duckwalk", "duck");
+        _legClips[(int)L.DuckWalkStrafeLeft] = Pick(Slot.DuckWalkStrafeLeft, Slot.DuckWalk, "duckwalkstrafeleft", "duckwalk", "duck");
+        _legClips[(int)L.DuckWalkStrafeRight] = Pick(Slot.DuckWalkStrafeRight, Slot.DuckWalk, "duckwalkstraferight", "duckwalk", "duck");
+        _legClips[(int)L.DuckWalkForwardLeft] = Pick(Slot.DuckWalkForwardLeft, Slot.DuckWalk, "duckwalkforwardleft", "duckwalk", "duck");
+        _legClips[(int)L.DuckWalkForwardRight] = Pick(Slot.DuckWalkForwardRight, Slot.DuckWalk, "duckwalkforwardright", "duckwalk", "duck");
+        _legClips[(int)L.DuckWalkBackLeft] = Pick(Slot.DuckWalkBackLeft, Slot.DuckWalk, "duckwalkbackleft", "duckwalk", "duck");
+        _legClips[(int)L.DuckWalkBackRight] = Pick(Slot.DuckWalkBackRight, Slot.DuckWalk, "duckwalkbackright", "duckwalk", "duck");
+        _legClips[(int)L.DuckJump] = Pick(Slot.DuckJump, Slot.Jump, "duckjump", "jump");
+        _torsoClip = Pick(Slot.Idle, Slot.Idle, "idle", "stand", "aim");
 
         // [W14b LI3/Stage 4] the upper-body ACTION clips: draw / pain1 / pain2 / shoot / melee / taunt / die1 / die2.
         // Force each clip NON-LOOPING and to the AnimDecide framerate (e.g. SHOOT = 5 fps / 0.2s, DRAW = 3 fps / 0.333s,
@@ -473,22 +513,22 @@ public partial class PlayerModel : Node3D
         // last frame exactly when the SERVER expiry window elapses — producer and consumer agree on the duration.
         // The Base fallback discipline (animdecide.qc:88 melee → shoot; the duckwalk-variant → duckwalk) is BAKED into
         // each Pick() keyword chain here, which SUBSUMES the cl-csqcmodel.fallbackframe.remap (no runtime frame-id remap).
-        FrameGroup ActionClip(AnimDecide.AnimUpperAction a, params string[] keys)
+        FrameGroup ActionClip(AnimDecide.AnimUpperAction a, Slot idx, Slot fb, params string[] keys)
         {
-            FrameGroup g = Pick(keys);
+            FrameGroup g = Pick(idx, fb, keys);
             AnimDecide.AnimSpec spec = AnimDecide.SpecFor(a);
             float fps = spec.FrameRate > 0f ? spec.FrameRate : (g.Fps > 0f ? g.Fps : 20f);
             return new FrameGroup(g.FirstFrame, g.FrameCount, fps, loop: false, g.Name);
         }
-        _actionClips[(int)AnimDecide.AnimUpperAction.Draw] = ActionClip(AnimDecide.AnimUpperAction.Draw, "draw", "raise");
-        _actionClips[(int)AnimDecide.AnimUpperAction.Pain1] = ActionClip(AnimDecide.AnimUpperAction.Pain1, "pain1", "pain");
-        _actionClips[(int)AnimDecide.AnimUpperAction.Pain2] = ActionClip(AnimDecide.AnimUpperAction.Pain2, "pain2", "pain");
-        _actionClips[(int)AnimDecide.AnimUpperAction.Shoot] = ActionClip(AnimDecide.AnimUpperAction.Shoot, "shoot", "attack", "fire");
+        _actionClips[(int)AnimDecide.AnimUpperAction.Draw] = ActionClip(AnimDecide.AnimUpperAction.Draw, Slot.Draw, Slot.Draw, "draw", "raise");
+        _actionClips[(int)AnimDecide.AnimUpperAction.Pain1] = ActionClip(AnimDecide.AnimUpperAction.Pain1, Slot.Pain1, Slot.Pain1, "pain1", "pain");
+        _actionClips[(int)AnimDecide.AnimUpperAction.Pain2] = ActionClip(AnimDecide.AnimUpperAction.Pain2, Slot.Pain2, Slot.Pain1, "pain2", "pain");
+        _actionClips[(int)AnimDecide.AnimUpperAction.Shoot] = ActionClip(AnimDecide.AnimUpperAction.Shoot, Slot.Shoot, Slot.Shoot, "shoot", "attack", "fire");
         // Base animdecide.qc:88 melee falls back to shoot — the keyword chain ends with the shoot keys so a model
         // lacking a "melee" framegroup reuses the SHOOT clip (subsumes the fallbackframe melee→shoot remap).
-        _actionClips[(int)AnimDecide.AnimUpperAction.Melee] = ActionClip(AnimDecide.AnimUpperAction.Melee, "melee", "shoot", "attack", "fire");
-        _actionClips[(int)AnimDecide.AnimUpperAction.Taunt] = ActionClip(AnimDecide.AnimUpperAction.Taunt, "taunt");
-        _actionClips[(int)AnimDecide.AnimUpperAction.Die1] = ActionClip(AnimDecide.AnimUpperAction.Die1, "die1", "death1", "death", "dead", "die");
-        _actionClips[(int)AnimDecide.AnimUpperAction.Die2] = ActionClip(AnimDecide.AnimUpperAction.Die2, "die2", "death2", "death", "dead", "die");
+        _actionClips[(int)AnimDecide.AnimUpperAction.Melee] = ActionClip(AnimDecide.AnimUpperAction.Melee, Slot.Melee, Slot.Shoot, "melee", "shoot", "attack", "fire");
+        _actionClips[(int)AnimDecide.AnimUpperAction.Taunt] = ActionClip(AnimDecide.AnimUpperAction.Taunt, Slot.Taunt, Slot.Taunt, "taunt");
+        _actionClips[(int)AnimDecide.AnimUpperAction.Die1] = ActionClip(AnimDecide.AnimUpperAction.Die1, Slot.Die1, Slot.Die1, "die1", "death1", "death", "dead", "die");
+        _actionClips[(int)AnimDecide.AnimUpperAction.Die2] = ActionClip(AnimDecide.AnimUpperAction.Die2, Slot.Die2, Slot.Die1, "die2", "death2", "death", "dead", "die");
     }
 }

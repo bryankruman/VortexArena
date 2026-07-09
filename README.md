@@ -1,38 +1,60 @@
-# XonoticGodot
+# Vortex Arena
 
-[![Tests](https://github.com/bryankruman/XonoticGodot/actions/workflows/ci.yml/badge.svg)](https://github.com/bryankruman/XonoticGodot/actions/workflows/ci.yml)
-[![Release](https://github.com/bryankruman/XonoticGodot/actions/workflows/release.yml/badge.svg)](https://github.com/bryankruman/XonoticGodot/actions/workflows/release.yml)
+[![Tests](https://github.com/bryankruman/VortexArena/actions/workflows/ci.yml/badge.svg)](https://github.com/bryankruman/VortexArena/actions/workflows/ci.yml)
+[![Release](https://github.com/bryankruman/VortexArena/actions/workflows/release.yml/badge.svg)](https://github.com/bryankruman/VortexArena/actions/workflows/release.yml)
 
-**XonoticGodot** is a work-in-progress port of [Xonotic](https://xonotic.org) — the free, open-source arena
-shooter — from its original QuakeC/Darkplaces engine stack to **C# on Godot 4.6 (.NET)**. The goal is a
-faithful recreation of Xonotic's gameplay, physics, and visual style on a modern, maintainable engine.
+**Vortex Arena** is a fast, free, open-source arena shooter — a **fork of [Xonotic](https://xonotic.org)**
+rebuilt on **C# and Godot 4 (.NET)**. It began as a faithful reimplementation of Xonotic's game logic,
+physics, and feel — porting the original QuakeC/DarkPlaces codebase to a modern, maintainable engine — and
+is now its own named project that will continue to evolve.
 
-> This project is under active development. Many features are playable, but expect rough edges,
-> missing content, and breaking changes.
+> Vortex Arena is under active development. The core game is playable end-to-end, but expect rough edges,
+> missing polish, and breaking changes.
+
+> **A note on naming.** The project is *Vortex Arena*, but the solution, `.csproj`, and C# namespaces still
+> carry the original `XonoticGodot` name from the port's origins. Those internal identifiers are being kept
+> stable for now; the rename to Vortex Arena is proceeding at the product/branding level first.
 
 ## Current state
 
-The game code is **mostly structurally ported** — roughly **143,000 lines of C#** so far, against the
-original's **~219,000 lines of QuakeC** — but **many systems are not yet wired into the live game loop,
-and many are still only partially implemented.** What actually runs today:
+The game is **playable end-to-end**: you can launch from the menu, host or join a match, move, shoot, pick
+up items, and finish a game against bots or other players. Roughly **123,000 lines of production C#** back it
+(≈168k including the test suite), covered by **~2,950 automated tests**.
 
-- BSP map loading (Q3-style `.bsp` with lightmaps, patches, Q3 shaders)
-- Player movement that matches Darkplaces physics (bunnyhopping, air control, crouch)
-- Basic weapon fire and item pickup
-- A menu system with the Xonotic look and feel
-- An in-game console
-- 1000+ automated tests covering physics parity, asset parsing, and core logic
+What works today:
 
-Many other systems (vehicles, bots, monsters, minigames, most game types) exist as ported code but
-are not yet connected or testable in a real game session. This is very much a work in progress.
+- **Play paths** — host a listen server, run a headless dedicated server, or connect to a remote host over
+  the network (`--host`, `--connect`, and menu Create-Game / server-browser flows).
+- **Movement** — DarkPlaces-faithful physics: bunnyhopping, air control, strafe acceleration, crouch,
+  ramps, and client-side prediction + reconciliation.
+- **Weapons & combat** — the full fire-driver (primary/secondary, refire timing, reload, weapon switch),
+  hitscan + projectiles, splash/radius damage, headshots, powerups, and the nade subsystem.
+- **Items** — health/armor/ammo/weapon/powerup pickups spawn and are collectable on stock maps.
+- **Game types** — DM, TDM, CTF, Domination, Key Hunt, Race/CTS, Onslaught, Assault, Nexball, Invasion,
+  with working objectives, scoring, spawn logic, and win/overtime/sudden-death conditions.
+- **Bots** — HavocBot AI navigates waypoint graphs, fights, and honors `--bots N`.
+- **Menus, HUD & feedback** — the Xonotic-style menu system, in-game console, and a full HUD (weapon bar,
+  ammo, kill feed, centerprints, announcer, scoreboard, radar), plus hit sounds, footsteps, and combat sounds.
+- **Maps & rendering** — Q3-style `.bsp` loading (lightmaps, patches, Q3 shaders), skeletal player models,
+  team colors, warpzones/portals (including combat traversal), and map-entity content (movers, hazards,
+  ambient particles, weather, triggered sound/music).
+- **Modes & extras** — mutators (Instagib, NIX, dodging, nades, and more), the single-player campaign,
+  minigames, server chat (team/private/ignore/flood control), and a hardened client command bus.
+- **Engineering** — a frame profiler with hitch classification, a performance-debugging playbook, and a
+  local CI gate (build + tests + headless boot smoke).
+
+Additional systems are in progress on feature branches (networked spectating & demo replay, ragdoll physics,
+a packaging/auto-update launcher, and further visual-parity and performance passes). The remaining tracked
+work is mostly breadth, polish, and the long tail of parity fidelity — see
+[`planning/TODO.md`](planning/TODO.md) for the detailed, per-item status.
 
 ## Project structure
 
 ```
-XonoticGodot/
+VortexArena/
 ├── project.godot            Godot 4.6 (.NET) project
-├── XonoticGodot.csproj           Godot host (game client + headless dedicated server)
-├── XonoticGodot.sln              Full solution
+├── XonoticGodot.csproj      Godot host (game client + headless dedicated server)
+├── XonoticGodot.sln         Full solution
 ├── src/
 │   ├── XonoticGodot.Common       Gameplay, physics, protocol defs, framework (NO Godot dependency)
 │   ├── XonoticGodot.Engine       Deterministic simulation core + collision/trace (NO Godot)
@@ -40,31 +62,17 @@ XonoticGodot/
 │   ├── XonoticGodot.Formats      Binary asset parsers — IBSP, MD3, IQM, DPM (NO Godot)
 │   ├── XonoticGodot.Server       Dedicated server logic
 │   └── XonoticGodot.SourceGen    Roslyn source generators (registries, hooks, net)
-├── game/                    Godot-side game code (rendering, UI, input, menus)
-├── tests/XonoticGodot.Tests      xUnit test suite
-└── planning/                Architecture decision records (ADRs), specs, design docs
+├── game/                    Godot-side game code (rendering, UI, input, menus, netcode host)
+├── tests/XonoticGodot.Tests       xUnit test suite
+├── docs/                    Operational guides — running, releasing, debugging, cvar reference
+└── planning/               Architecture decision records (ADRs), specs, design docs, trackers
 ```
+
+(The `XonoticGodot.*` project/assembly names are historical — the port's original codename. See the naming
+note above.)
 
 A core design rule: **`XonoticGodot.Common` has no Godot dependency.** This keeps the gameplay simulation
 headless-testable and enables a dedicated server that runs without the Godot renderer.
-
-## Roadmap
-
-Development is organized into waves. The current focus is closing the gap between "structurally ported"
-and "fully playable":
-
-| Phase | Focus | Status |
-|---|---|---|
-| **Foundation** | BSP maps, movement physics, asset pipeline, core framework | In progress |
-| **Gameplay core** | Weapons, items, damage, game types, mutator hooks | In progress |
-| **Networking** | NetGame host, player sync, prediction/reconciliation | In progress |
-| **Menus & UI** | Full menu system, HUD, console, campaign | In progress |
-| **Visual parity** | Model rendering, team colors, lighting, effects, transparency | In progress |
-| **Wiring pass** | Connect ported-but-dormant systems (vehicles, monsters, minigames) | Planned |
-| **Polish & content** | Missing data tables, audio coverage, map compatibility | Planned |
-| **Release prep** | Performance, packaging, documentation, public builds | Future |
-
-See [`TODO.md`](TODO.md) for the detailed task tracker with per-item status.
 
 ## Getting started
 
@@ -116,18 +124,29 @@ export GODOT="/path/to/Godot_v4.6.3-stable_mono_win64_console.exe"
 "$GODOT" --headless --path . --quit-after 200
 ```
 
-See [`RUNNING.md`](RUNNING.md) for full details on toolchain paths, visual runs, hosting a match,
+See [`docs/RUNNING.md`](docs/RUNNING.md) for full details on toolchain paths, visual runs, hosting a match,
 and debugging tips. For diagnosing frame hitches / FPS problems see
-[`PERF-DEBUGGING.md`](PERF-DEBUGGING.md); for movement/netcode issues see
-[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) and [`NET-DEBUGGING.md`](NET-DEBUGGING.md).
+[`docs/PERF-DEBUGGING.md`](docs/PERF-DEBUGGING.md); for movement/netcode issues see
+[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md) and [`docs/NET-DEBUGGING.md`](docs/NET-DEBUGGING.md).
+Building and publishing packaged releases is covered in [`docs/RELEASING.md`](docs/RELEASING.md).
+
+## Documentation map
+
+- **[`docs/`](docs/)** — operational how-to: [running & testing](docs/RUNNING.md),
+  [releasing](docs/RELEASING.md), [performance debugging](docs/PERF-DEBUGGING.md),
+  [movement/netcode troubleshooting](docs/TROUBLESHOOTING.md),
+  [net tracing](docs/NET-DEBUGGING.md), and the [cvar reference](docs/reference/CVARS.md).
+- **[`planning/`](planning/)** — architecture (ADRs, subsystem specs, glossary), the design rationale,
+  and the project trackers ([`TODO.md`](planning/TODO.md), [`FIXME.md`](planning/FIXME.md),
+  [`WISHLIST.md`](planning/WISHLIST.md)).
 
 ## Contributing
 
 Contributions are welcome. A few guidelines:
 
-- **Read the original source first.** Every ported feature should match the behavior of the
-  original QuakeC/Darkplaces code. The canonical reference lives in `Base/data/xonotic-data.pk3dir/qcsrc/`.
-  Port by mirroring the original logic — same constants, defaults, branch order. Intentional deviations
+- **Match the original behavior first.** Vortex Arena is a fork, but the gameplay core is a faithful port:
+  ported features should mirror the original QuakeC/DarkPlaces logic — same constants, defaults, and branch
+  order. The canonical reference lives in `Base/data/xonotic-data.pk3dir/qcsrc/`. Intentional deviations
   should be commented.
 - **Keep `XonoticGodot.Common` Godot-free.** Gameplay and simulation code must not reference the Godot API.
   This is enforced architecturally (it's a plain .NET class library) and is non-negotiable.
@@ -138,13 +157,13 @@ See [`planning/`](planning/) for architecture decision records and design contex
 
 ## License
 
-XonoticGodot is free software. It is a port of the upstream Xonotic **game** source (`qcsrc/`),
+Vortex Arena is free software. It is a fork of the upstream Xonotic **game** source (`qcsrc/`),
 which Xonotic licenses under the
 [GNU General Public License v3.0 or later](https://www.gnu.org/licenses/gpl-3.0.html) (GPLv3+).
 Because this is a derivative of GPLv3+ code, all source code in this repository is released under
 **GPLv3 or later** as well. See [`COPYING`](COPYING) and [`GPL-3`](GPL-3).
 
-> Upstream's *engine* (DarkPlaces) is GPLv2+, but this port runs on Godot and does not include or
+> Upstream's *engine* (DarkPlaces) is GPLv2+, but this project runs on Godot and does not include or
 > redistribute DarkPlaces, so GPLv2 does not govern this repository.
 
 Game assets (downloaded by `download-assets.sh` from the upstream Xonotic repositories) are
@@ -155,3 +174,4 @@ and sounds. See the Xonotic project's licensing documentation for specifics.
 The [Godot Engine](https://godotengine.org/license/) is licensed under the MIT License, which is
 GPL-compatible. Godot is not vendored here; exported builds that bundle the Godot runtime must include
 Godot's copyright notice and MIT license text.
+</content>
