@@ -76,7 +76,9 @@ def render_row(e):
 
     search = html.escape(' '.join([e['uw'], e.get('headline', ''), e.get('summary', ''),
                                    e.get('recommendation', ''), e.get('source', ''), kind]).lower())
-    return f'''<tr data-rel="{rel}" data-dec="{cls(dec)}" data-kind="{kind}" data-repo="{html.escape(e.get('repo',''))}" data-search="{search}">
+    uwn = int(re.sub(r'\D', '', e['uw']) or 0)
+    hl = html.escape(str(e.get('headline', '')).lower())
+    return f'''<tr data-rel="{rel}" data-dec="{cls(dec)}" data-kind="{kind}" data-repo="{html.escape(e.get('repo',''))}" data-uwn="{uwn}" data-hl="{hl}" data-search="{search}">
   <td class="uw">{uw_cell}</td>
   <td class="contrib">
     <div class="headline">{inline(e.get('headline',''))}</div>
@@ -152,6 +154,10 @@ TEMPLATE = r'''<!doctype html>
   table { border-collapse:collapse; width:100%; }
   thead th { position:sticky; top:57px; background:var(--bg); text-align:left; color:var(--muted);
     font-size:12px; text-transform:uppercase; letter-spacing:.04em; padding:8px 12px; border-bottom:1px solid var(--line); z-index:4; }
+  th.sortable { cursor:pointer; user-select:none; white-space:nowrap; }
+  th.sortable:hover { color:var(--fg); }
+  th .arr { margin-left:5px; color:var(--accent); font-size:11px; }
+  th.sorted { color:var(--fg); }
   td { padding:12px; border-bottom:1px solid var(--line); vertical-align:top; }
   td.uw { white-space:nowrap; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; font-size:12px; }
   td.uw a { color:var(--accent); text-decoration:none; }
@@ -198,7 +204,12 @@ TEMPLATE = r'''<!doctype html>
   <span id="count"></span>
 </div>
 <table>
-  <thead><tr><th>UW</th><th>Contribution</th><th>Relevance</th><th>Decision</th></tr></thead>
+  <thead><tr>
+    <th class="sortable" data-key="uw">UW<span class="arr"></span></th>
+    <th class="sortable" data-key="contrib">Contribution<span class="arr"></span></th>
+    <th class="sortable" data-key="rel">Relevance<span class="arr"></span></th>
+    <th class="sortable" data-key="dec">Decision<span class="arr"></span></th>
+  </tr></thead>
   <tbody id="rows">
 __ROWS__
   </tbody>
@@ -236,6 +247,37 @@ __ROWS__
   document.getElementById('reset').addEventListener('click', function(){
     q.value=''; kind.value=''; btns.forEach(function(b){b.classList.remove('off');}); apply();
   });
+
+  // --- column sorting ---
+  var REL_RANK = {high:0, medium:1, low:2, none:3};
+  var DEC_RANK = {pending:0, port:1, adapt:2, ported:3, defer:4, reject:5, 'n-a':6};
+  var tbody = document.getElementById('rows');
+  var heads = Array.prototype.slice.call(document.querySelectorAll('th.sortable'));
+  var sortKey = null, sortDir = 1;
+  function keyval(r, key){
+    if (key==='uw') return +r.dataset.uwn;
+    if (key==='rel') return REL_RANK[r.dataset.rel];
+    if (key==='dec') return DEC_RANK[r.dataset.dec];
+    return r.dataset.hl;
+  }
+  function sortBy(key){
+    if (sortKey===key) sortDir = -sortDir; else { sortKey = key; sortDir = 1; }
+    rows.sort(function(a,b){
+      var av = keyval(a,key), bv = keyval(b,key);
+      if (av < bv) return -sortDir;
+      if (av > bv) return sortDir;
+      return (+a.dataset.uwn) - (+b.dataset.uwn);   // stable tiebreak by UW
+    });
+    rows.forEach(function(r){ tbody.appendChild(r); });
+    heads.forEach(function(h){
+      var on = h.dataset.key===sortKey;
+      h.classList.toggle('sorted', on);
+      h.querySelector('.arr').textContent = on ? (sortDir>0?'▲':'▼') : '';
+    });
+  }
+  heads.forEach(function(h){ h.addEventListener('click', function(){ sortBy(h.dataset.key); }); });
+
+  sortBy('uw');   // default: UW ascending, with arrow shown
   apply();
 })();
 </script>
