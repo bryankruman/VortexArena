@@ -139,6 +139,7 @@ public sealed partial class ClientEntityView : Node
         e.Alpha = s.Alpha switch { 0 => 1f, 255 => -1f, _ => s.Alpha / 255f };
         e.Health = s.Health;
         e.Team = s.Colormap;
+        e.Colors = s.Colors; // [r15 #43] packed clientcolors → shirt/pants/glow on the body + held weapon
         e.ActiveWeaponId = s.Weapon;
         // [W14a-anim] decode the upper-body action overlay (QC csqcmodel animdecide getupperanim) onto the proxy so a
         // future torso-overlay render (LI3) plays the server-decided SHOOT/PAIN/DRAW/TAUNT/DEAD action over the

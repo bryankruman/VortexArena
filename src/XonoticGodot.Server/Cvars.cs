@@ -174,6 +174,14 @@ public static class Cvars
         // QC sv_teamnagger (xonotic-server.cfg:300): team-size gap threshold for the unbalanced-teams nag; g_warmup
         // won't end while it's tripped. The warmup badteams gate (ReadyCount) reads this via Teamplay.
         new("sv_teamnagger", "2", "team size difference threshold for the unbalanced-teams nag (0 = off)"),
+        // The engine `teamplay` cvar (DP exposes it as the QC global every QC teamplay read compiles to). Base's
+        // InitGameplayMode sets it per gametype; the port mirrors it at GameWorld boot. RUNTIME state — never set
+        // it by hand. (playtest #35: it was never written at all, so every Cvars.Teamplay reader was silently
+        // non-team — bots attacked CTF teammates, warmup's teamplay_lockonrestart was dead.)
+        new("teamplay", "0", "team game in progress (set by the gametype at match boot)"),
+        // QC autocvar_bot_typefrag: allow bots to shoot players who are typing (BUTTON_CHAT). Base default 0 =
+        // spare typing players (bot_shouldattack, bot/default/aim.qc:120).
+        new("bot_typefrag", "0", "allow bots to shoot players who are typing in chat"),
         // QC teamplay_lockonrestart (xonotic-server.cfg:29): lock teams once the match restarts (ReadyRestart_force).
         new("teamplay_lockonrestart", "0", "lock teams once all players readied up and the game restarted"),
         // QC server/teamplay.qc:41-44 + xonotic-server.cfg: the forced-team id/IP lists. Player_DetermineForcedTeam

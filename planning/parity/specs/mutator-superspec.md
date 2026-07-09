@@ -1,7 +1,7 @@
 # Super Spectate (superspec) mutator — parity spec
 
 **Base refs:** `common/mutators/mutator/superspec/sv_superspec.qc` (+ `sv_superspec.qh`, `_mod.inc`, `_mod.qh`) · `mutators.cfg:172` · `common/notifications/all.inc:271`
-**Port refs:** NOT IMPLEMENTED (explicit deferral — see `TODO.md`)
+**Port refs:** NOT IMPLEMENTED (explicit deferral — see `../../TODO.md`)
 **Reference rev:** `v0.8.6-1779-g863cd3e84` · **Last audited:** 2026-06-22
 
 ## Overview
@@ -105,7 +105,7 @@ The port's only spectate primitive is the core `"spectate"` client command
 (`src/XonoticGodot.Server/ClientCommandRegistry.cs:57`); none of superspec's commands or auto-switch logic
 build on it.
 
-`TODO.md` lists superspec as an **explicit deferral** ("admin/niche P3"), confirming the omission is
+`../../TODO.md` lists superspec as an **explicit deferral** ("admin/niche P3"), confirming the omission is
 intentional/known rather than an accidental miss.
 
 ## Parity assessment
@@ -128,9 +128,9 @@ intentional/known rather than an accidental miss.
 - Base behavior: read in full from `sv_superspec.qc` (443 lines) + `sv_superspec.qh`, `_mod.inc`,
   `_mod.qh`; cvar default from `mutators.cfg:172`; notification from `all.inc:271`.
 - Port absence: directory listing of `src/.../Gameplay/Mutators/` (no superspec file); grep for
-  `superspec|autospec|g_superspectate|followpowerup|followkiller` across the whole port (only `TODO.md`,
+  `superspec|autospec|g_superspectate|followpowerup|followkiller` across the whole port (only `../../TODO.md`,
   a legacy recon doc, and `NotificationsList.cs`); `ClientCommandRegistry.cs` has only core `spectate`;
-  `TODO.md` explicit-deferral lines. High confidence.
+  `../../TODO.md` explicit-deferral lines. High confidence.
 
 ## Open questions
 - None. The unit is unambiguously not ported; the only nuance is the dead notification string, which is

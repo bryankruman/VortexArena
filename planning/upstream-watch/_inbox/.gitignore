@@ -1,0 +1,3 @@
+# Harvester output is ephemeral — regenerated each run, not tracked.
+worklist-*.md
+worklist-*.json

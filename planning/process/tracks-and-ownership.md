@@ -1,7 +1,7 @@
 # Process — Parallel Tracks & Ownership
 
 Work is organized into **tracks** — parallel workstreams that recur across phases. The phased TODO
-([`../todo/`](../todo/)) splits each phase into sections by these tracks. Assign an owner per track.
+([`../legacy/todo/`](../legacy/todo/)) splits each phase into sections by these tracks. Assign an owner per track.
 
 ## The tracks
 

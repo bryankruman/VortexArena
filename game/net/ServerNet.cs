@@ -2089,6 +2089,10 @@ public sealed class ServerNet : IDisposable
                 // into this shared snapshot byte would leak hunter identity to prey mid-round (cl_survival.qc derives
                 // e.colormap from the disclosure-gated survival_status, not server-side).
                 Colormap = (int)p.Team,
+                // [r15 #43] QC entcs clientcolors: the packed 16*shirt+pants palette colors — FFA profile color
+                // (the `color` client command / _cl_color) or the team-forced 17*teamcode (SetPlayerColors).
+                // Drives the _shirt/_pants mask tint + glowmod on the player body AND their weapon models.
+                Colors = p.ClientColors & 0xFF,
                 // QC wepent: the remote third-person held weapon model follows the EXTERIOR weapon entity's
                 // weaponname (CL_ExteriorWeaponentity_Think → w_ent.weaponname), which is the weapon slot's
                 // ACTIVE/RAISING weapon (m_weapon) — set only at the WS_CLEAR→WS_RAISE transition in the switch

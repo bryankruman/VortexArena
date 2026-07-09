@@ -231,15 +231,21 @@ public sealed partial class DecalSplats : Node3D
         // boundary (no hard cutoff lines) and keeps far geometry inside the box from taking full marks.
         var ctx = new SplatContext(org, n, right, up, halfSize, removal, alpha * IntensityMultiplier);
 
-        // Preferred geometry: the map's RENDER triangles (what DP clips against). Brush faces are the
-        // secondary source (collision geometry diverges on trim/patches/detail); a flat quad is the last
-        // resort (no world wired, or a hit on an entity).
+        // Preferred geometry: the map's RENDER triangles (what DP clips against). The brush-face and flat-
+        // quad fallbacks only engage when a geometry SOURCE is missing entirely — never on a per-splat clip
+        // miss: when the soup exists but nothing clipped, the impact simply isn't on world geometry (an
+        // entity hit, or off-surface), and DP emits NOTHING there (R_DecalSystem_SplatEntity marks surfaces
+        // only). The old per-miss flat quad was exactly the floating through-wall mark of playtest #37 —
+        // an unclipped plane hanging in space, poking through the corner it failed to conform to.
         if (_tris is not null && _tris.Length > 0)
             ClipSoupTriangles(in ctx, verts, uvs, cols);
-        if (verts.Count == 0 && World is not null)
+        else if (World is not null)
             ClipBrushFaces(in ctx, verts, uvs, cols);
+        else
+            EmitQuad(in ctx, verts, uvs, cols); // no geometry at all (bare client) — soft legacy fallback
+
         if (verts.Count == 0)
-            EmitQuad(in ctx, verts, uvs, cols);
+            return; // nothing conformed → no mark (DP)
 
         AddSplatMesh(verts, uvs, cols, texnum);
     }
