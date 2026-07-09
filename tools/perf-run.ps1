@@ -33,7 +33,7 @@ $logDir = Join-Path $env:USERPROFILE "XonData\logs"
 if ($DebugBuild) {
     $exe = "C:\Program Files\Godot\Godot_v4.6.3-stable_mono_win64_console.exe"
     $exeArgs = @("--path", $root)
-    if (-not (Test-Path $exe)) { throw "Godot console binary not found at $exe (see RUNNING.md)" }
+    if (-not (Test-Path $exe)) { throw "Godot console binary not found at $exe (see docs/RUNNING.md)" }
 } else {
     $exe = Join-Path $root "dist\windows-client\XonoticGodot.exe"
     $exeArgs = @()

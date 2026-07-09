@@ -7,7 +7,7 @@
 //
 // SCOPE — read this before adding to the file. T5 (Wave A5) is a VERIFY-THEN-SCOPE task. The hard constraint is
 // that Godot's headless renderer (dummy_video) renders NOTHING — GetViewport().GetTexture().GetImage() is null
-// headless (game/ScreenshotHook.cs:50-56, RUNNING.md "Run headless"). So NO rendered-frame / pixel correctness
+// headless (game/ScreenshotHook.cs:50-56, docs/RUNNING.md "Run headless"). So NO rendered-frame / pixel correctness
 // can be asserted in CI. This suite therefore asserts ONLY what is decidable from the parsed, byte-packed asset
 // structures, with NO GPU and NO Godot runtime:
 //   * every stock map parses + carries renderable/collidable geometry (load success + object/brush/face counts),
@@ -15,7 +15,7 @@
 //   * every stock .shader script parses with no hard failure (compile-success only — NOT output color/specular).
 // Visual CORRECTNESS (lightmap direction, patch smoothness, flare quads, material color, on-screen bone pose) is
 // NOT automatable here — it is the WINDOWED manual checklist driven by tools/visual-qa.sh and documented in
-// RUNNING.md "Visual QA". Do NOT add a test here that claims to verify rendered output.
+// docs/RUNNING.md "Visual QA". Do NOT add a test here that claims to verify rendered output.
 //
 // Like the ~18 other real-data test classes, every [Theory]/[Fact] self-skips when assets/data is absent (CI
 // has no assets): the MemberData providers yield a single sentinel row carrying null, and the test returns on it.
@@ -40,7 +40,7 @@ namespace XonoticGodot.Tests;
 /// <summary>
 /// T5 (Wave A5) — the headless-safe half of the Visual QA. A sweep over every shipped map, model, and shader
 /// asserting the asset LOADS and is structurally sound, since that is all a renderless headless run can decide.
-/// The windowed/manual half (actual on-screen correctness) is <c>tools/visual-qa.sh</c> + RUNNING.md. See the
+/// The windowed/manual half (actual on-screen correctness) is <c>tools/visual-qa.sh</c> + docs/RUNNING.md. See the
 /// file header for the full headless/manual scoping split.
 /// </summary>
 public class VisualQaTests
