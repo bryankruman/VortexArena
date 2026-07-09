@@ -35,8 +35,9 @@ const LOAD_SCHEMA = {
         type: { type: 'string', enum: ['commit', 'branch'] },
         ref: { type: 'string' },                          // sha, or branch name to diff over master
         title: { type: 'string' },
-        noise: { type: 'boolean' },                       // pre-flagged i18n/ci/chore
+        noise: { type: 'boolean' },                       // pre-flagged ci/chore
         open_mr: { type: 'boolean' },
+        url: { type: 'string' },                          // GitLab commit-or-MR URL (see load prompt)
       } } },
   },
 }
@@ -46,8 +47,12 @@ planning/upstream-watch/LEDGER.md. Return: next_uw = (highest UW-#### integer in
 + 1, or 1 if the table has no data rows yet. harvest_date = the worklist JSON's top-level
 "generated" field. And candidates = one entry per master commit
 (type "commit", ref=sha from the source key after '@') and per branch/MR (type "branch", ref=branch
-name), carrying source, repo, title (commit subject or MR title), noise flag, and open_mr. Do not
-analyze anything yet — just enumerate faithfully and completely.`
+name), carrying source, repo, title (commit subject or MR title), noise flag, and open_mr. Also set
+url per candidate — the GitLab link to the original change: for a commit use
+"https://gitlab.com/xonotic/<proj>/-/commit/<full sha from the worklist>"; for a branch use its
+worklist "mr_url" if present, else "https://gitlab.com/xonotic/<proj>/-/tree/<branch>". <proj> is
+"xonotic-data.pk3dir" for repo=data and "darkplaces" for repo=dp. Do not analyze anything yet —
+just enumerate faithfully and completely.`
 
 const loaded = await agent(loadPrompt, { label: 'load', phase: 'Load', agentType: 'Explore', schema: LOAD_SCHEMA })
 let candidates = (loaded && loaded.candidates) || []
@@ -106,29 +111,34 @@ Be concise; these become ledger cells + a short doc.`
 
 const analyses = (await parallel(real.map(c => () =>
   agent(analyzePrompt(c), { label: `${c.uw}:${c.repo}`, phase: 'Analyze', agentType: 'Explore', schema: ANALYSIS_SCHEMA })
-    .then(a => a ? { ...a, uw: c.uw, source: a.source || c.source, _title: c.title } : null)
+    .then(a => a ? { ...a, uw: c.uw, source: a.source || c.source, url: c.url, _title: c.title } : null)
 ))).filter(Boolean)
 
-// Mechanical n/a rows for pre-flagged noise (translations/CI) — no agent spent.
+// Mechanical n/a rows for pre-flagged chores (CI/version) — no agent spent.
 const noiseRows = noise.map(c => ({
-  uw: c.uw, source: c.source, kind: 'build/i18n/ci', summary: c.title.slice(0, 100),
-  worth: 'none', proposed_decision: 'n/a', effort: 'S', needs_deepdive: false, recommendation: 'noise (i18n/ci/chore)',
+  uw: c.uw, source: c.source, url: c.url, kind: 'build/i18n/ci', summary: c.title.slice(0, 140),
+  worth: 'none', proposed_decision: 'n/a', effort: 'S', needs_deepdive: false, recommendation: 'chore (ci/version)',
 }))
 const all = [...analyses, ...noiseRows].sort((a, b) => a.uw.localeCompare(b.uw))
-log(`Analyzed ${analyses.length}; +${noiseRows.length} mechanical noise rows. Building ${all.length} ledger rows.`)
+log(`Analyzed ${analyses.length}; +${noiseRows.length} mechanical chore rows. Building ${all.length} ledger rows.`)
 
 // ---- Build ledger rows + deep-dive docs deterministically in JS -------------
-// Stacked 3-col layout (Contribution / Value / Decision) so it renders without
-// horizontal scroll on GitHub. Contribution cell = bold id+summary / source+kind / recommendation.
-// Text is kept FULL (only pipes/linebreaks escaped) — the ledger IS the readable analysis.
+// 4-col layout: UW | Contribution | Relevance | Decision — renders without horizontal scroll.
+// Contribution = **1-sentence headline** / <=6-sentence change summary / source-link + kind + effort + deep-dive.
 const esc = s => String(s || '').replace(/\|/g, '\\|').replace(/<br\s*\/?>/gi, ' ').replace(/\n+/g, ' ').trim()
-const VALUE = { high: '🟢 High', medium: '🟡 Medium', low: '🟠 Low', none: '🔴 None' }
+const sentences = t => t.trim().split(/(?<=[.!?])\s+(?=[A-Z0-9("'])/).map(s => s.trim()).filter(Boolean)
+const headlineOf = s => { const h = esc(sentences(s)[0] || s); return h.length > 200 ? h.slice(0, 200).replace(/\s+\S*$/, '').replace(/[ —\-,:;(]+$/, '') + '…' : h }
+const REL = { high: '🟢 High', medium: '🟡 Medium', low: '🟠 Low', none: '🔴 None' }
 const DEC = { pending: '⏳ Pending', port: '✅ Port', adapt: '🔧 Adapt', ported: '📦 Ported', defer: '⏸️ Defer', reject: '❌ Reject', 'n/a': '➖ N/A' }
 const ledgerRows = all.map(a => {
+  const headline = headlineOf(a.summary)
+  const body = esc(sentences(a.summary).slice(1, 7).join(' '))   // <= 6-sentence change summary
+  const src = a.url ? `[\`${esc(a.source)}\`](${a.url})` : `\`${esc(a.source)}\``
   const eff = a.effort && a.effort !== '?' ? ` _(effort ${a.effort})_` : ''
-  let contrib = `**${a.uw} · ${esc(a.summary)}**<br>\`${esc(a.source)}\` · ${a.kind}${eff}<br>${esc(a.recommendation)}`
-  if (a.needs_deepdive) contrib += ` · [deep dive](items/${a.uw}-${a.slug}.md)`
-  return `| ${contrib} | ${VALUE[a.worth] || a.worth} | ${DEC[a.proposed_decision] || a.proposed_decision} |`
+  let meta = `${src} · ${a.kind}${eff}`
+  if (a.needs_deepdive) meta += ` · [deep dive](items/${a.uw}-${a.slug}.md)`
+  const contrib = `**${headline}**` + (body ? `<br>${body}` : '') + `<br>${meta}`
+  return `| ${a.uw} | ${contrib} | ${REL[a.worth] || a.worth} | ${DEC[a.proposed_decision] || a.proposed_decision} |`
 }).join('\n')
 
 const deepDives = analyses.filter(a => a.needs_deepdive).map(a => ({

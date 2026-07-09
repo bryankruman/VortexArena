@@ -73,11 +73,13 @@ REPOS = {
     },
 }
 
-# Subjects that are almost always noise. Recorded but flagged low-priority.
+# Translation/i18n churn: dropped entirely (never emitted to the worklist) — pure noise.
+TRANSLATION_RE = re.compile(
+    r"(transifex|autosync|update translations?|\bl10n\b|\bi18n\b)", re.IGNORECASE,
+)
+# Other low-value chores: recorded but flagged low-priority (not dropped).
 NOISE_RE = re.compile(
-    r"(transifex|autosync|update translations?|\bl10n\b|\bi18n\b|"
-    r"bump version|update credits|\bci:|\.gitlab-ci|update changelog)",
-    re.IGNORECASE,
+    r"(bump version|update credits|\bci:|\.gitlab-ci|update changelog)", re.IGNORECASE,
 )
 # Subjects/paths that should always be surfaced even if the engine is otherwise n/a.
 SECURITY_RE = re.compile(
@@ -168,9 +170,13 @@ def harvest_repo(key: str, cfg: dict, since: str, branch_since: str, ledger_keys
     raw = git(repo, "log", f"--since={since}", "--first-parent", "--date=iso-strict",
               f"--pretty=format:{fmt}", ref)
     master = []
+    translations_dropped = 0
     for line in filter(None, raw.splitlines()):
         sha, author, cdate, subject = (line.split("\x1f") + ["", "", "", ""])[:4]
         if already_seen(ledger_keys, sha):
+            continue
+        if TRANSLATION_RE.search(subject):      # translation/i18n churn — not worth triaging
+            translations_dropped += 1
             continue
         paths = git(repo, "show", "--name-only", "--pretty=format:", sha, check=False)
         master.append({
@@ -256,7 +262,8 @@ def harvest_repo(key: str, cfg: dict, since: str, branch_since: str, ledger_keys
 
     return {"repo": key, "gl_project": cfg["gl_project"],
             "master_commits": master, "branches": branches, "mr_api": bool(mrs),
-            "stale_skipped": stale_skipped, "branch_since": branch_since}
+            "stale_skipped": stale_skipped, "branch_since": branch_since,
+            "translations_dropped": translations_dropped}
 
 
 def write_worklist(results: list[dict], since: str, run_date: str) -> tuple[Path, Path]:
@@ -288,7 +295,9 @@ def write_worklist(results: list[dict], since: str, run_date: str) -> tuple[Path
                          "branch list is ahead-of-master only.\n")
 
         mc = r["master_commits"]
-        lines.append(f"\n### Master commits since {since} ({len(mc)})\n")
+        td = r.get("translations_dropped", 0)
+        drop_note = f" — {td} translation/i18n commit(s) dropped" if td else ""
+        lines.append(f"\n### Master commits since {since} ({len(mc)}){drop_note}\n")
         if mc:
             lines.append("| source | date | author | files | flags | subject |")
             lines.append("|---|---|---|---|---|---|")
