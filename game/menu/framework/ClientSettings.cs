@@ -109,7 +109,7 @@ public static class ClientSettings
         // dt-invariant apex; fps-independent strafe speed — see MovementTimingTests), so variable dt is safe; the
         // server stays a fixed 1/72 s authoritative tick. `set cl_movement_perframe 0` = the LEGACY fixed-tick path
         // (drain input in 1/72 s quanta + snap-to-latest render) — kept as an A/B fallback. See
-        // [[camera-drift-render-smoothing]] / NET-DEBUGGING.md.
+        // [[camera-drift-render-smoothing]] / docs/NET-DEBUGGING.md.
         c.Register("cl_movement_perframe", "1");
         // Sub-tic eye extrapolation (DP partial-final-frame approximation, NetGame.UpdateCamera). Default ON. This
         // LINEAR extrapolation by the leftover input accumulator beats with any fps that isn't a multiple of 72,
@@ -138,7 +138,7 @@ public static class ClientSettings
         // listen-server thread), the server is transiently behind; this HOLDS a moderate reconcile correction for a
         // few snapshots instead of snapping the camera back, then resumes. Defensive (NOT the cause of any observed
         // bug — the spawn-stutter was the ENet throttle), so it's toggleable: `set cl_movement_hitch_hold 0` reverts
-        // to immediate snapping. Rationale + the masking risk it carries: TROUBLESHOOTING.md.
+        // to immediate snapping. Rationale + the masking risk it carries: docs/TROUBLESHOOTING.md.
         c.Register("cl_movement_hitch_hold", "1");
         c.Register("cl_predictfire", "1");       // intentionally default ON (NetGame: unset → on)
         // Client-side projectile prediction (CSQC Projectile_Draw): snap+extrapolate vs the old ease. Default
@@ -165,7 +165,7 @@ public static class ClientSettings
         // Precache ALL weapon view-models at map load (default ON) vs only this match's expected loadout.
         // Warming all (~24) costs a little extra load time, hidden by the loading screen, but removes the
         // 30–300 ms stall the first time the player switches to / picks up / sees an unanticipated weapon
-        // (PERFORMANCE_REPORT.md A3). `set cl_precache_all_weapons 0` restores the smart expected-only warm
+        // (planning/PERFORMANCE_REPORT.md A3). `set cl_precache_all_weapons 0` restores the smart expected-only warm
         // for memory-constrained machines (NetGame.PrecacheWeaponModelsAsync reads it).
         c.Register("cl_precache_all_weapons", "1");
         // Off-screen / distant pose-cull for skeletal player models (3.3): when ON, PlayerModel.PushBones is
@@ -199,7 +199,7 @@ public static class ClientSettings
         // Net input→movement pipeline diagnostic (default-off; NOT archived — a debug toggle shouldn't persist). `set
         // net_input_trace 1` logs the [nettrace] line every ~0.25s: client push/send → server recv/enq/batch → ENet
         // throttle/loss/rtt → predicted-vs-authoritative origin → reconcile error. The end-to-end view for diagnosing
-        // movement/networking issues (it found the ENet packet-throttle spawn-stutter). See NET-DEBUGGING.md.
+        // movement/networking issues (it found the ENet packet-throttle spawn-stutter). See docs/NET-DEBUGGING.md.
         c.Register("net_input_trace", "0");
     }
 
@@ -282,7 +282,7 @@ public static class ClientSettings
         if (!fullscreen)
             DisplayServer.WindowSetFlag(DisplayServer.WindowFlags.Borderless, borderless);
 
-        // Vsync mode (vid_vsync, extended beyond DP's 0/1 — PERFORMANCE_REPORT.md B1):
+        // Vsync mode (vid_vsync, extended beyond DP's 0/1 — planning/PERFORMANCE_REPORT.md B1):
         //   0 = off            — no sync; lowest latency, tears.
         //   1 = on             — classic double-buffered vsync; on a high-refresh display the per-frame work sits
         //                        right at the vblank budget, so any jitter pushes a frame past it → it waits for

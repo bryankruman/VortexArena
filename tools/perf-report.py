@@ -322,7 +322,7 @@ def fmt_report(d: dict) -> str:
             out.append(f"  t={s['t']:.1f}s  {s['mb']:.0f}MB  top1={s['top1']}" + ("  [gen2]" if s["gc2"] else ""))
     if d["frames"]:
         out.append(f"draws p50: {d['draws_p50']:.0f}  (portal-facing spawns roughly double this — see the A/B note "
-                   "in PERF-DEBUGGING.md)")
+                   "in docs/PERF-DEBUGGING.md)")
         gc = d["gc"]
         out.append(f"gc: g0+{gc['gc0']} g1+{gc['gc1']} g2+{gc['gc2']}, pause {d['gc_pause_ms']:.0f}ms"
                    f" | alloc {d['alloc_total_mb']:.0f}MB total")
