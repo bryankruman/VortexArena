@@ -180,7 +180,7 @@ public partial class VignetteOverlay : CanvasLayer
     // StringName per frame today — but passing a string literal to SetShaderParameter (a StringName parameter)
     // would, so they are cached here. STANDING RULE: never pass a string literal to a Godot API typed
     // StringName/NodePath from a per-frame path — cache it as a static readonly StringName (see godot#105750 /
-    // PERFORMANCE_REPORT.md C2/C3). The XG0002 analyzer flags new violations inside _Process/_PhysicsProcess/_Draw.
+    // planning/PERFORMANCE_REPORT.md C2/C3). The XG0002 analyzer flags new violations inside _Process/_PhysicsProcess/_Draw.
     private static readonly StringName URoundness = "roundness";
     private static readonly StringName UStopCount = "stop_count";
     private static readonly StringName UStopColor = "stop_color";

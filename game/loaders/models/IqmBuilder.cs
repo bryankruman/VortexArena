@@ -454,10 +454,25 @@ public static class IqmBuilder
 
         if (framegroups is { Count: > 0 })
         {
+            // (playtest #36) `.framegroups` lines are NAMELESS (the trailing "// fire" is a comment the parser
+            // never sees), so clip names must be SYNTHESIZED — and the slot ORDER is the contract, exactly like
+            // the player animdecide registry (#32). A nameless FOUR-group skeletal rig is Base's weapon-hand
+            // contract (CL_WeaponEntity_SetModel, common/weapons/all.qc: anim_fire1='0…', anim_fire2='1…',
+            // anim_idle='2…', anim_reload='3…' — every shipped h_*.iqm.framegroups has exactly these 4 rows), so
+            // name those slots fire/fire2/idle/reload — the names ViewModel's clip lookups expect. Before this,
+            // the generic player-canonical names landed on weapons as idle/run/runbackwards/strafeleft: "idle"
+            // WAS the fire clip (guns looped their fire animation at rest) and "fire"/"reload" didn't exist.
+            bool allNameless = true;
+            for (int i = 0; i < framegroups.Count && allNameless; i++)
+                allNameless = string.IsNullOrEmpty(framegroups[i].Name);
+            string[]? slotNames = allNameless && framegroups.Count == WeaponSlotNames.Length ? WeaponSlotNames : null;
+
             for (int i = 0; i < framegroups.Count; i++)
             {
                 FrameGroup fg = framegroups[i];
-                string baseName = !string.IsNullOrEmpty(fg.Name) ? fg.Name : DefaultClipName(i);
+                string baseName = !string.IsNullOrEmpty(fg.Name) ? fg.Name
+                    : slotNames is not null ? slotNames[i]
+                    : DefaultClipName(i);
                 clips.Add(new ClipSpec(UniqueName(baseName, usedNames), fg.FirstFrame, fg.FrameCount, fg.Fps, fg.Loop));
             }
         }
@@ -723,6 +738,10 @@ public static class IqmBuilder
             materialName = remap;
             remapped = true;
         }
+        // A RAW nodraw mesh material also hides (no skin remap needed) — the invisible-hand weapon rigs'
+        // skeleton plane is baked as material 'nodraw'; rendered, it was the black landing-dip triangle (r11).
+        if (SkinFile.IsNoDraw(materialName))
+            return null;
         return materialName;
     }
 
@@ -743,6 +762,12 @@ public static class IqmBuilder
     private static string DefaultClipName(int i) => i >= 0 && i < CanonicalAnimNames.Length
         ? CanonicalAnimNames[i]
         : $"anim_{i}";
+
+    /// <summary>Base's weapon-hand rig slot contract (CL_WeaponEntity_SetModel, common/weapons/all.qc:373-376):
+    /// a nameless 4-group `.framegroups` set is fire/fire2/idle/reload BY POSITION. Shared with
+    /// <see cref="DpmBuilder"/> — the DPM hand rigs (h_electro/h_crylink/h_rl/h_gl/h_hagar) carry the same
+    /// nameless 4-slot convention. (playtest #36/r9)</summary>
+    internal static readonly string[] WeaponSlotNames = { "fire", "fire2", "idle", "reload" };
 
     // Common Xonotic player-anim ordering used when a framegroup/anim has no explicit name. Not load-bearing.
     private static readonly string[] CanonicalAnimNames =

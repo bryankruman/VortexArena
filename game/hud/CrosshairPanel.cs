@@ -53,6 +53,10 @@ namespace XonoticGodot.Game.Hud;
 /// </summary>
 public partial class CrosshairPanel : HudPanel
 {
+    /// <summary>(R8) The crosshair draws with its own <c>crosshair_alpha</c>, independent of the scoreboard
+    /// panel-fade, so the HUD manager must keep updating it even while the scoreboard is up.</summary>
+    public override bool DrawsWithOwnAlpha => true;
+
     // Port of crosshair.qc: SHOTTYPE_* — the true-aim hit classification.
     /// <summary>Classification of what the aim ray would hit (QC <c>SHOTTYPE_*</c>).</summary>
     public enum ShotType

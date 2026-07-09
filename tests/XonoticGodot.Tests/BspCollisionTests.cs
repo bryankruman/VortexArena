@@ -296,4 +296,28 @@ public class BspCollisionTests
         // non-empty world alongside the right number of submodels.
         Assert.NotEmpty(r.World.Brushes);
     }
+
+    // ---- real data: the lightgrid lump (playtest r12 #41 — DP's per-position model lighting source) -----
+
+    [Fact]
+    public void Real_Bsp_LightGrid_Parses_And_Samples_NonBlack()
+    {
+        if (!Directory.Exists(DataDir)) return;
+        using var vfs = new VirtualFileSystem();
+        if (!vfs.MountGameDir(DataDir)) return;
+        string? bspPath = vfs.Find("maps/", "bsp").FirstOrDefault(p => p.Contains("stormkeep"));
+        if (bspPath is null) return;
+
+        BspData bsp = BspReader.Read(vfs.ReadBytes(bspPath));
+        Assert.NotNull(bsp.LightGrid); // stock q3map2-compiled maps always ship lump 15
+        LightGridData grid = bsp.LightGrid!;
+        Assert.True(grid.Nx > 1 && grid.Ny > 1 && grid.Nz > 1, $"degenerate grid {grid.Nx}x{grid.Ny}x{grid.Nz}");
+
+        // A sample at the world model's center must return SOME light (0..255 scale) — a fully black grid
+        // would mean the dims/indexing are off (every playable spot on stormkeep is lit).
+        var mid = (bsp.Models[0].Mins + bsp.Models[0].Maxs) * 0.5f;
+        grid.Sample(mid, out var ambient, out var directed, out _);
+        Assert.True(ambient.X + ambient.Y + ambient.Z + directed.X + directed.Y + directed.Z > 0f,
+            $"black sample at world center {mid} (ambient={ambient}, directed={directed})");
+    }
 }

@@ -174,12 +174,13 @@ public partial class ViewModel : Node3D
     private float _recoil;                 // current recoil displacement (Quake units, decays to 0)
     private Node3D? _muzzleFlashNode;      // live flash-model node (single slot; replaced each Fire call)
 
-    // Team colormap + per-weapon glowmod (Base viewmodel_draw lines 302-321: e.colormap = 256 + c;
-    // e.glowmod = weaponentity_glowmod(wep, c)). _teamGlow is the resolved glow color (per-weapon wr_glow override
-    // or the team palette color); _teamColormod tints the gun's albedo toward the team color so the held weapon
-    // reads as "yours". _hasTeam is false in FFA (no tint, native glow). _glowApplied tracks whether the current
-    // model's materials already carry the tint so we only re-walk on a change (mirrors _noDepthTestApplied).
-    private Color _teamColormod = new(1f, 1f, 1f);
+    // Player colormap + per-weapon glowmod (Base viewmodel_draw lines 302-321: e.colormap = 256 + c where c =
+    // entcs_GetClientColors — the packed shirt/pants profile colors in EVERY mode, #43; e.glowmod =
+    // weaponentity_glowmod(wep, c)). _teamGlow is the resolved glow color (per-weapon wr_glow override or the
+    // pants palette color); _shirtColor/_pantsColor tint the gun's _shirt/_pants masks so the held weapon reads
+    // as "yours". _hasTeam ("has color") is false only when no colors resolved (untinted, native glow).
+    // _glowDirty tracks whether the current model's materials already carry the tint so we only re-walk on a
+    // change (mirrors _noDepthTestApplied).
     private Color _teamGlow = new(1f, 1f, 1f);
     private bool _hasTeam;
     private bool _glowDirty = true;        // force a material re-walk after a model swap or a color change
@@ -300,6 +301,7 @@ public partial class ViewModel : Node3D
                 return null;
             });
         }
+        ReseedInstanceTint(); // AFTER attach — the new meshes start untinted (playtest #36)
         CaptureAuthoredShotSide();
     }
 
@@ -377,6 +379,7 @@ public partial class ViewModel : Node3D
         // local transform — _modelRoot's ViewBasis then re-aims the whole assembly into the camera frame.
         model.Transform = attach ?? Transform3D.Identity;
         _modelRoot.AddChild(model);
+        ReseedInstanceTint(); // AFTER attach — the new meshes start untinted (playtest #36)
 
         _muzzleMarker = ResolveMuzzleMarker(name => FindMarkerByName(model, name))
                         // Skeletal viewmodels (the h_ HAND RIG rendered for full-model DPM weapons) carry the
@@ -388,7 +391,11 @@ public partial class ViewModel : Node3D
         // Capture the IQM/DPM AnimationPlayer (h_* skeletal rigs) so PlayIdle/PlayReload/SetNetAnimFrame can
         // drive the live weapon animation. IqmBuilder and DpmBuilder always name it "AnimationPlayer" (verified
         // in IqmBuilder.cs:134 and DpmBuilder.cs:140). Null on plain v_*.md3 static models — those have no rig.
-        _iqmAnimPlayer = model.FindChild("AnimationPlayer", recursive: true, owned: false) as AnimationPlayer;
+        // (r9) The tree can now hold TWO AnimationPlayers: the live-rig equip parents the v_ VISUAL model under
+        // the rig's weapon BoneAttachment, and a skeletal v_ (several are 4-bone IQMs with ZERO animations)
+        // brings its own EMPTY player — FindChild's first match grabbed that one and every clip lookup found an
+        // empty list ([dbg9]-probe confirmed). Prefer the player that actually HAS clips.
+        _iqmAnimPlayer = FindAnimationPlayerWithClips(model);
 
         // Capture the resolved shot tag's authored side offset (Base `vecs.y`) so cl_gunalign moves THIS gun by
         // its own per-model amount. CaptureAuthoredShotSide composes the marker relative to _modelRoot, so it
@@ -474,35 +481,100 @@ public partial class ViewModel : Node3D
     }
 
     /// <summary>
-    /// Set the held weapon's team colormap tint + glowmod, port of the per-child loop in Base
-    /// <c>viewmodel_draw</c> (view.qc:302-321): <c>e.colormap = 256 + c</c> (the local player's team colors) and
-    /// <c>e.glowmod = weaponentity_glowmod(wep, c)</c> (the per-weapon <c>wr_glow</c> override, falling back to the
-    /// team's palette color). So the first-person gun reads as <i>yours</i> — it tints to your team color and
-    /// glows with it (e.g. the Vortex charge glow). <paramref name="hasTeam"/> false (FFA / no team) leaves the gun
-    /// untinted with its native glow, matching Base where a teamless local has colormap 0 (white = no swap).
+    /// Set the held weapon's colormap tint + glowmod, port of the per-child loop in Base
+    /// <c>viewmodel_draw</c> (view.qc:302-321): <c>e.colormap = 256 + c</c> where <c>c</c> is
+    /// <c>entcs_GetClientColors(current_player)</c> — the local player's packed shirt/pants colors,
+    /// UNCONDITIONALLY (the FFA profile color; teamplay's team color falls out because the server forces
+    /// clientcolors to the team) — and <c>e.glowmod = weaponentity_glowmod(wep, c)</c> (the per-weapon
+    /// <c>wr_glow</c> override, falling back to the pants palette color). So the first-person gun reads as
+    /// <i>yours</i> in every mode (#43). <paramref name="hasColor"/> false (colorless — colors never
+    /// networked / spectating nobody) leaves the gun untinted with its native glow.
     ///
     /// <para>Applied two ways to cover both view-model rig kinds: full-rig <c>h_*</c> hand models render through
     /// <see cref="PlayerSkinShader"/> (instance-uniform colormod/glow via <see cref="ModelTint"/>); invisible-hand
     /// <c>v_*</c> models render with a plain <see cref="StandardMaterial3D"/>, so the tint is layered onto the
     /// surface materials in <see cref="ApplyMaterialFx"/>. Idempotent — only re-walks when the color changes.</para>
     /// </summary>
-    public void SetTeamGlow(Color glow, Color colormod, bool hasTeam)
+    public void SetPlayerColors(Color glow, Color shirt, Color pants, bool hasColor)
     {
-        if (_hasTeam == hasTeam && _teamGlow == glow && _teamColormod == colormod)
+        if (_hasTeam == hasColor && _teamGlow == glow && _shirtColor == shirt && _pantsColor == pants)
             return;
         _teamGlow = glow;
-        _teamColormod = colormod;
-        _hasTeam = hasTeam;
+        _shirtColor = shirt;
+        _pantsColor = pants;
+        _hasTeam = hasColor;
         _glowDirty = true;
-        // Full-rig (h_*) viewmodels render via PlayerSkinShader; push the team colormap through its instance
-        // uniforms (the same path as the third-person player model). Harmless on plain-material v_ models (no
-        // such uniforms — the StandardMaterial tint in ApplyMaterialFx handles those instead).
-        if (_modelRoot is not null && GodotObject.IsInstanceValid(_modelRoot))
+        ReapplyInstanceTint();
+    }
+
+    private Color _shirtColor = new(0f, 0f, 0f);
+    private Color _pantsColor = new(0f, 0f, 0f);
+
+    /// <summary>
+    /// The lightgrid-sampled model light at the player's position (#41, upgraded r14 to real DP grid
+    /// SHADING): DP lights every model from the BSP lightgrid (<c>Mod_Q3BSP_LightPoint</c>) — ambient +
+    /// a directed lobe along the baked light direction + a colored specular, all position-varying. The
+    /// host samples the grid at the camera each frame and pushes the terms here; they ride the skin
+    /// shader's per-instance <c>grid_*</c> uniforms (see <c>PlayerSkinShader</c>), which switch the gun
+    /// onto the DP-formula branch and off Godot's scene lights. <paramref name="on"/> false = no grid on
+    /// the map → the PBR + fill-light fallback (the pre-#41 look). Values are DP scale (1.0 ≈ grid byte
+    /// 128, may exceed 1); <paramref name="dir"/> is normalized, GODOT world axes, pointing AT the light.
+    /// Epsilon-gated: the grid varies smoothly, so most frames skip the tree-walk.
+    /// </summary>
+    public void SetGridLight(bool on, Vector3 ambient, Vector3 diffuse, Vector3 dir)
+    {
+        if (on == _gridOn
+            && (ambient - _gridAmbient).LengthSquared() < 1e-4f
+            && (diffuse - _gridDiffuse).LengthSquared() < 1e-4f
+            && (dir - _gridDir).LengthSquared() < 1e-4f)
+            return;
+        _gridOn = on;
+        _gridAmbient = ambient;
+        _gridDiffuse = diffuse;
+        _gridDir = dir;
+        // The always-on fill exists to keep the PBR-lit gun legible; the grid-lit branch ignores scene
+        // lights entirely (EMISSION output), so leaving the omni on would only spill onto nearby world
+        // geometry through the camera.
+        if (_fillLight is not null && GodotObject.IsInstanceValid(_fillLight))
+            _fillLight.Visible = !on;
+        PushGridLight();
+    }
+
+    private bool _gridOn;
+    private Vector3 _gridAmbient = Vector3.One;
+    private Vector3 _gridDiffuse = Vector3.Zero;
+    private Vector3 _gridDir = Vector3.Up;
+
+    /// <summary>
+    /// Push the grid-light uniforms, folding in the muzzle-flash pop while <see cref="_flashTime"/> runs:
+    /// the grid branch ignores the flash OmniLight (EMISSION path), but in DP the muzzle dlight DOES light
+    /// the viewmodel (r_shadow_realtime_dlight 1), so a warm ambient boost stands in for it.
+    /// </summary>
+    private void PushGridLight()
+    {
+        if (_modelRoot is null || !GodotObject.IsInstanceValid(_modelRoot))
+            return;
+        Vector3 ambient = _gridAmbient;
+        if (_gridOn && _flashTime > 0f)
         {
-            Color shirtPants = hasTeam ? colormod : ModelTint.Black;
-            Color glowU = hasTeam ? glow : ModelTint.White;
-            ModelTint.Apply(_modelRoot, ModelTint.White, glowU, shirtPants, shirtPants);
+            float f = Mathf.Clamp(_flashTime / 0.06f, 0f, 1f);
+            ambient += new Vector3(1f, 0.93f, 0.8f) * (0.5f * f);
         }
+        ModelTint.ApplyGridLight(_modelRoot, _gridOn, ambient, _gridDiffuse, _gridDir);
+    }
+
+    /// <summary>Push the current team tint onto the model's skin-shader instance uniforms (shirt/pants =
+    /// the team color), plus the grid-light terms. Harmless on plain-material v_ models (no such uniforms —
+    /// the StandardMaterial tint in ApplyMaterialFx handles those instead).</summary>
+    private void ReapplyInstanceTint()
+    {
+        if (_modelRoot is null || !GodotObject.IsInstanceValid(_modelRoot))
+            return;
+        Color shirt = _hasTeam ? _shirtColor : ModelTint.Black;
+        Color pants = _hasTeam ? _pantsColor : ModelTint.Black;
+        Color glowU = _hasTeam ? _teamGlow : ModelTint.White;
+        ModelTint.Apply(_modelRoot, ModelTint.White, glowU, shirt, pants);
+        PushGridLight();
     }
 
     // =================================================================================================
@@ -534,9 +606,11 @@ public partial class ViewModel : Node3D
             Effects?.MuzzleFlash(effect, originQuake, dirQuake);
         }
 
-        // Flash light + recoil.
+        // Flash light + recoil (+ the grid-lit ambient pop standing in for the flash light — see PushGridLight).
         _flashTime = 0.06f;
         _flashLight.LightEnergy = 3.0f;
+        if (_gridOn)
+            PushGridLight();
         _recoil = Mathf.Min(_recoil + RecoilKick, RecoilKick * 2f);
 
         // Muzzle-flash MODEL (Base W_MuzzleFlash_Model — models/flash.md3 MDL_DEVASTATOR_MUZZLEFLASH and
@@ -673,6 +747,68 @@ public partial class ViewModel : Node3D
         }
         foreach (Node child in node.GetChildren())
             SetFlashAlpha(child, alpha);
+    }
+
+    /// <summary>
+    /// The first <see cref="AnimationPlayer"/> under <paramref name="root"/> that carries at least one clip —
+    /// the h_ rig's real animation driver. A clipless player (a skeletal but animation-less v_ visual model
+    /// nested under the rig's weapon bone) is only returned when NO clip-carrying player exists. (r9)
+    /// </summary>
+    private static AnimationPlayer? FindAnimationPlayerWithClips(Node root)
+    {
+        AnimationPlayer? empty = null;
+        foreach (Node child in root.GetChildren())
+        {
+            if (child is AnimationPlayer ap)
+            {
+                if (ap.GetAnimationList().Length > 0)
+                    return ap;
+                empty ??= ap;
+            }
+            AnimationPlayer? nested = FindAnimationPlayerWithClips(child);
+            if (nested is not null)
+            {
+                if (nested.GetAnimationList().Length > 0)
+                    return nested;
+                empty ??= nested;
+            }
+        }
+        return empty;
+    }
+
+    /// <summary>
+    /// Restart the FIRE clip once — the per-shot server edge (the listen host derives it from the slot's
+    /// ATTACK_FINISHED bump; Base <c>weapon_thinkf(WFRAME_FIRE1)</c> re-sets the frame on EVERY shot). Unlike
+    /// the networked selector's rising-edge path, an already-playing fire clip is REWOUND here so sustained
+    /// rapid fire re-triggers visibly (Godot <c>Play()</c> on the current animation does not restart it).
+    /// (playtest r8 #3)
+    /// </summary>
+    public void PlayFireClip()
+    {
+        string n = FindFireClip(); // plays the clip when found (IQM/DPM or MD3 path)
+        if (_iqmAnimPlayer is not null && GodotObject.IsInstanceValid(_iqmAnimPlayer)
+            && !string.IsNullOrEmpty(n) && _iqmAnimPlayer.CurrentAnimation == n)
+            _iqmAnimPlayer.Seek(0.0, update: true);
+    }
+
+    /// <summary>
+    /// Drop a still-looping FIRE clip back to idle — Base's weapon state machine asserts WFRAME_IDLE
+    /// explicitly when the attack window closes (w_ready → weapon_thinkf), it never waits for clip end.
+    /// Needed because some fire clips are authored LOOPING (h_hagar's fire is loop=1): the end-of-clip idle
+    /// recovery in <see cref="_Process"/> never triggers on those, so the gun pumped forever after the last
+    /// shot (playtest r12). No-op unless the CURRENT clip is a looping fire/fire2.
+    /// </summary>
+    public void StopLoopingFire()
+    {
+        if (_iqmAnimPlayer is null || !GodotObject.IsInstanceValid(_iqmAnimPlayer))
+            return;
+        string cur = _iqmAnimPlayer.CurrentAnimation;
+        if (cur is not ("fire" or "fire2" or "shoot" or "attack" or "fire1"))
+            return;
+        Animation? clip = _iqmAnimPlayer.HasAnimation(cur) ? _iqmAnimPlayer.GetAnimation(cur) : null;
+        if (clip is null || clip.LoopMode == Animation.LoopModeEnum.None)
+            return; // non-looping fire ends on its own (the _Process idle recovery handles it)
+        PlayIdle();
     }
 
     private string FindFireClip()
@@ -885,7 +1021,14 @@ public partial class ViewModel : Node3D
     public override void _Process(double delta)
     {
         using var _vmScope = XonoticGodot.Game.Client.FrameProfiler.Scope("viewmodel"); // [profiling] viewmodel sway/anim
-        float dt = (float)delta;
+        // #30 slowmo/pause: the whole viewmodel animation set (flash decay, recoil recovery, switch slide, sway,
+        // fire/reload clips) advances on the slowmo-scaled delta — Base's viewmodel_draw runs on CSQC frametime,
+        // which freezes/slows with the sim. The two self-advancing clip drivers are speed-scaled the same way.
+        float dt = XonoticGodot.Game.Client.ClientRenderTime.ScaleDelta((float)delta);
+        if (_animator is not null && GodotObject.IsInstanceValid(_animator))
+            _animator.TimeScale = XonoticGodot.Game.Client.ClientRenderTime.Scale; // Advance() multiplies by this
+        if (_iqmAnimPlayer is not null && GodotObject.IsInstanceValid(_iqmAnimPlayer))
+            _iqmAnimPlayer.SpeedScale = XonoticGodot.Game.Client.ClientRenderTime.Scale;
 
         RefreshCvars();
 
@@ -899,6 +1042,9 @@ public partial class ViewModel : Node3D
             // Keep the flash light parked at the muzzle.
             if (_muzzleMarker is not null && GodotObject.IsInstanceValid(_muzzleMarker))
                 _flashLight.GlobalPosition = _muzzleMarker.GlobalPosition;
+            // Grid-lit guns don't see the flash OmniLight — decay the stand-in ambient boost with it.
+            if (_gridOn)
+                PushGridLight();
         }
 
         // Recoil recovers along view forward (+X Quake). It and the sway both feed the gunorg below.
@@ -994,9 +1140,10 @@ public partial class ViewModel : Node3D
         _modelAlpha = a;
         _noDepthTestApplied = true;
         _glowDirty = false;
-        // Team colormod (albedo tint toward the team color) + glowmod (emission) on plain-material v_ models, the
-        // StandardMaterial analog of Base e.colormap/e.glowmod. FFA (no team) → no tint, native (white) glow.
-        ApplyMaterialFx(_modelRoot, a, _hasTeam ? _teamColormod : (Color?)null, _hasTeam ? _teamGlow : (Color?)null);
+        // Player colormod (subtle albedo tint toward the PANTS color — the dominant personal color, and exactly
+        // the team color in teamplay) + glowmod (emission) on plain-material v_ models, the StandardMaterial
+        // analog of Base e.colormap/e.glowmod. Colorless → no tint, native (white) glow.
+        ApplyMaterialFx(_modelRoot, a, _hasTeam ? _pantsColor : (Color?)null, _hasTeam ? _teamGlow : (Color?)null);
     }
 
     /// <summary>Forget the applied material fx so the NEXT frame re-walks the freshly-built model (depth-test +
@@ -1008,13 +1155,19 @@ public partial class ViewModel : Node3D
         _noDepthTestApplied = false;
         _modelAlpha = 1f;
         _glowDirty = true; // the freshly-built model's materials need the team colormod/glow re-applied
-        // Re-seed the PlayerSkinShader instance uniforms on the new full-rig model (cleared by the rebuild).
-        if (_hasTeam && _modelRoot is not null && GodotObject.IsInstanceValid(_modelRoot))
-            ModelTint.Apply(_modelRoot, ModelTint.White, _teamGlow, _teamColormod, _teamColormod);
         if (_muzzleFlashNode is not null && GodotObject.IsInstanceValid(_muzzleFlashNode))
             _muzzleFlashNode.QueueFree();
         _muzzleFlashNode = null;
     }
+
+    /// <summary>
+    /// Re-push the PlayerSkinShader per-INSTANCE team tint + lightgrid modulate onto the CURRENT model
+    /// meshes. Must run AFTER a freshly-built model is attached: the old swap-time re-seed lived in
+    /// <see cref="ResetModelFx"/>, which every equip path calls BEFORE adding the new model — it walked the
+    /// outgoing (freed) meshes and the new ones kept the shader defaults, silently dropping the team tint on
+    /// every weapon switch (playtest #36).
+    /// </summary>
+    private void ReseedInstanceTint() => ReapplyInstanceTint();
 
     private static void ApplyMaterialFx(Node node, float a, Color? colormod = null, Color? glow = null)
     {

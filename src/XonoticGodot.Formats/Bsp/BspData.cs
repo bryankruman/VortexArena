@@ -137,12 +137,17 @@ public sealed class BspData
     public const int LightmapSize = 128;
 
     // --- Lumps intentionally left as raw byte ranges (TODO for later passes) ---
-    // LeafBrushes(6) indexes leaf collision brushes; Effects/Fog(12), LightGrid(15) are renderer hints.
+    // LeafBrushes(6) indexes leaf collision brushes; Effects/Fog(12) are renderer hints.
     // BspReader exposes their raw [offset,length) slices via RawLumps so a later pass can parse them without
-    // re-reading the header. (LeafFaces(5) is now parsed — see LeafFaces above.)
+    // re-reading the header. (LeafFaces(5) and LightGrid(15) are now parsed.)
 
     /// <summary>Raw, unparsed slices of every lump in the directory, indexed by lump number (see <see cref="BspLump"/>).</summary>
     public RawLump[] RawLumps { get; init; } = Array.Empty<RawLump>();
+
+    /// <summary>The parsed lightgrid (lump 15) — the baked per-position MODEL light probes DP samples for
+    /// entity lighting (<c>Mod_Q3BSP_LightPoint</c>). Null when the map ships none or the lump length doesn't
+    /// match the derived grid dims. (playtest r12 #41)</summary>
+    public LightGridData? LightGrid { get; init; }
 }
 
 /// <summary>Q3 BSP lump indices (the 17-entry directory). See <c>model_q3bsp.h</c>.</summary>

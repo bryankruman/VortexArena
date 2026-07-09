@@ -21,7 +21,7 @@ mono_crash.*.json
 .idea/
 .vscode/
 
-# Visual-capture output (--screenshot; see RUNNING.md "Visual capture"). The
+# Visual-capture output (--screenshot; see docs/RUNNING.md "Visual capture"). The
 # .gdignore IS tracked so the Godot editor skips this tree (no *.import sidecars
 # for captured PNGs) even on a fresh checkout before anything is captured.
 screenshots/*
