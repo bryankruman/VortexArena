@@ -83,8 +83,8 @@ same commit/branch is never re-triaged:
 | `reject` | Won't port. **Rationale required** (out of scope, conflicts with design goals, engine-internal, superseded). |
 | `n/a` | Not applicable to the port — DarkPlaces internals we've replaced, translations, upstream CI/packaging. |
 
-`Port-worthiness` is a separate at-a-glance rollup (auditor's recommendation, independent of the
-final human decision): **`high` · `medium` · `low` · `none`**.
+Port-worthiness (the ledger's **Value** column) is a separate at-a-glance rollup (auditor's
+recommendation, independent of the final human decision): **🟢 high · 🟡 medium · 🟠 low · 🔴 none**.
 
 ---
 
