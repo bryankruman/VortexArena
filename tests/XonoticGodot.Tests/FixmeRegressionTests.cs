@@ -11,7 +11,7 @@ using Xunit;
 namespace XonoticGodot.Tests;
 
 /// <summary>
-/// Regression coverage for the FIXME bug pass (see FIXME.md):
+/// Regression coverage for the FIXME bug pass (see planning/FIXME.md):
 ///   F02 — a DEAD player must not move under WASD (the shared PlayerPhysics.Move dead-gate).
 ///   F04 — a CTF flag must get a MODEL on spawn (else it networks invisible) and must RIDE its carrier.
 /// F01 (remote-anim wire) and F03 (respawn view snap) live in the game/ net layer (not visible to this test

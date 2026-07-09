@@ -157,7 +157,7 @@ public partial class Main : Node
 
         // Optional dev/CI visual capture: `--screenshot <path> [--screenshot-frames N]` lets the scene settle,
         // saves the rendered viewport to a PNG, and quits. Windowed only (headless renders blank — see
-        // RUNNING.md "Visual capture"). An agent can then read the PNG to *see* the running game.
+        // docs/RUNNING.md "Visual capture"). An agent can then read the PNG to *see* the running game.
         MaybeCaptureScreenshot(args);
 
         // `--quit-after-seconds <s>`: wall-clock self-quit for scripted/CI runs (the headless host smoke).

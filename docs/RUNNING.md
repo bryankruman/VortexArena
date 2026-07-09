@@ -1,4 +1,4 @@
-# Running & Testing XonoticGodot
+# Running & Testing Vortex Arena
 
 Operational reference for building, running, and smoke-testing the port. A scratchpad for tricks — **add to the
 "Tricks & techniques" section as we learn more** (visual tests, profiling, dedicated server, etc.).
@@ -233,7 +233,7 @@ ToS/welcome/team-select, tools, confirms). Architecture:
 - **Dialogs** live in `game/menu/dialogs/` (one C# file per QC `dialog_*.qc`); `DialogSettingsAudio.cs` is the
   reference pattern. Settings persist to `~/XonData/config.cfg` on Back/Apply — but only cvars the shipped cfg
   tree declares `seta` (or DP-archived engine cvars / explicit user `seta`s), and only when moved off the
-  shipped default (the DP `Cvar_WriteVariables` rule; see CVARS.md "Persistence"). Automation runs
+  shipped default (the DP `Cvar_WriteVariables` rule; see reference/CVARS.md "Persistence"). Automation runs
   (`--quit-after-seconds` / `--no-save-config`) skip the save entirely.
 - **User data dir.** All writable per-user data — `config.cfg` (cvars + keybinds), `settings.cfg`,
   `favorites.cfg`, the `sdfcache/`, and the profiler dumps — lives under **`~/XonData/`** (resolved by
