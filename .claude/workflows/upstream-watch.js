@@ -118,14 +118,17 @@ const all = [...analyses, ...noiseRows].sort((a, b) => a.uw.localeCompare(b.uw))
 log(`Analyzed ${analyses.length}; +${noiseRows.length} mechanical noise rows. Building ${all.length} ledger rows.`)
 
 // ---- Build ledger rows + deep-dive docs deterministically in JS -------------
-const esc = s => String(s || '').replace(/\|/g, '\\|').replace(/\n+/g, ' ').trim()
-const today = (loaded && loaded.harvest_date)
-  || (worklist && (worklist.match(/worklist-(\d{4}-\d{2}-\d{2})/) || [])[1])
-  || 'latest'
+// Stacked 3-col layout (Contribution / Worth / Decision) so it renders without
+// horizontal scroll on GitHub. Contribution cell = bold id+summary / source+kind / recommendation.
+const esc = s => String(s || '').replace(/\|/g, '\\|').replace(/<br\s*\/?>/gi, ' ').replace(/\n+/g, ' ').trim()
+const clip = (s, n) => { s = esc(s); return s.length <= n ? s : s.slice(0, n).replace(/\s+\S*$/, '').replace(/[ —\-,:;(]+$/, '') + '…' }
+const WORTH = { high: '🟢 High', medium: '🟡 Medium', low: '🟠 Low', none: '⚪ None' }
+const DEC = { pending: '⏳ Pending', port: '✅ Port', adapt: '🔧 Adapt', ported: '📦 Ported', defer: '⏸️ Defer', reject: '❌ Reject', 'n/a': '➖ N/A' }
 const ledgerRows = all.map(a => {
-  const note = `${a.effort || '?'}` + (a.needs_deepdive ? ` · [doc](items/${a.uw}-${a.slug}.md)` : '') +
-    (a.recommendation ? ` — ${esc(a.recommendation).slice(0, 80)}` : '')
-  return `| ${a.uw} | \`${esc(a.source)}\` | ${today} | ${a.kind} | ${esc(a.summary).slice(0, 110)} | ${a.worth} | ${a.proposed_decision} | ${note} |`
+  const eff = a.effort && a.effort !== '?' ? ` _(effort ${a.effort})_` : ''
+  let contrib = `**${a.uw} · ${clip(a.summary, 160)}**<br>\`${esc(a.source)}\` · ${a.kind}${eff}<br>${clip(a.recommendation, 160)}`
+  if (a.needs_deepdive) contrib += ` · [deep dive](items/${a.uw}-${a.slug}.md)`
+  return `| ${contrib} | ${WORTH[a.worth] || a.worth} | ${DEC[a.proposed_decision] || a.proposed_decision} |`
 }).join('\n')
 
 const deepDives = analyses.filter(a => a.needs_deepdive).map(a => ({
