@@ -113,8 +113,8 @@ copy_assets() {  # copy_assets <dest-assets-data-dir>
 write_readme() {  # write_readme <dir> <target>
     local dir="$1" t="$2"
     cat > "$dir/README.txt" <<EOF
-XonoticGodot — $t ($version)
-Xonotic, reborn on Godot + C#.  https://github.com/bryankruman/XonoticGodot
+Vortex Arena — $t ($version)
+A fork of Xonotic, reborn on Godot + C#.  https://github.com/bryankruman/VortexArena
 
 This is a "fat" build: the game binary, the Godot runtime, and all Xonotic game data are
 bundled together. Keep the files together — the game loads assets/ from beside the binary.
