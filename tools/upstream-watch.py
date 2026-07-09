@@ -5,7 +5,7 @@ Surfaces new upstream Xonotic work worth triaging: every commit that has landed
 on the `master` branch of the two source repositories since a cutoff date, plus
 every branch that is *ahead of* master (a proposed / in-flight contribution). It
 fetches the repos, enumerates candidates, cross-references what has already been
-triaged in planning/upstream-watch/LEDGER.md, and writes a dated worklist of only
+triaged in planning/upstream-watch/LEDGER.yaml, and writes a dated worklist of only
 the UN-triaged items for the weekly analysis pass to consume.
 
 It makes NO judgement calls. It is the mechanical half of the process documented
@@ -57,7 +57,7 @@ PORT_ROOT = Path(__file__).resolve().parents[1]
 BASE_DIR = Path(os.environ.get("XG_BASE_DIR", PORT_ROOT.parent / "Base"))
 
 WATCH_DIR = PORT_ROOT / "planning" / "upstream-watch"
-LEDGER = WATCH_DIR / "LEDGER.md"
+LEDGER = WATCH_DIR / "LEDGER.yaml"
 INBOX = WATCH_DIR / "_inbox"
 
 REPOS = {

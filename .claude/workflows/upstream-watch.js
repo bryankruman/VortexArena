@@ -1,11 +1,11 @@
 export const meta = {
   name: 'upstream-watch',
-  description: 'Analyze a harvested upstream worklist (new master commits + branches/MRs from the Xonotic data + DarkPlaces repos) against the upstream-watch rubric, assign UW-#### ids, and append ledger rows + per-item deep dives. Human sets the final port/reject decision.',
+  description: 'Analyze a harvested upstream worklist (new master commits + branches/MRs from the Xonotic data + DarkPlaces repos) against the upstream-watch rubric, assign UW-#### ids, and append entries to LEDGER.yaml + per-item deep dives. Human sets the final port/reject decision; regenerate LEDGER.html afterwards.',
   whenToUse: 'Weekly, after running `python tools/upstream-watch.py`. args: { worklist?: "planning/upstream-watch/_inbox/worklist-<date>.json" }',
   phases: [
-    { title: 'Load', detail: 'read the worklist + current ledger high-water UW id' },
-    { title: 'Analyze', detail: 'one analyst per non-noise candidate: apply the rubric from the real diff' },
-    { title: 'Write', detail: 'scribe inserts pre-built ledger rows + writes deep-dive docs' },
+    { title: 'Load', detail: 'read the worklist + current LEDGER.yaml high-water UW id' },
+    { title: 'Analyze', detail: 'one analyst per non-chore candidate: apply the rubric from the real diff' },
+    { title: 'Write', detail: 'scribe appends YAML entries + writes deep-dive docs' },
   ],
 }
 
@@ -25,7 +25,7 @@ log(`upstream-watch analysis: worklist=${worklist || '(latest in _inbox)'}`)
 const LOAD_SCHEMA = {
   type: 'object', required: ['next_uw', 'harvest_date', 'candidates'], additionalProperties: false,
   properties: {
-    next_uw: { type: 'integer' },        // highest UW-#### in LEDGER.md + 1 (or 1 if none)
+    next_uw: { type: 'integer' },        // highest UW-#### in LEDGER.yaml + 1 (or 1 if none)
     harvest_date: { type: 'string' },    // the worklist JSON's "generated" field (YYYY-MM-DD)
     candidates: { type: 'array', items: {
       type: 'object', required: ['source', 'repo', 'type', 'title'], additionalProperties: false,
@@ -43,8 +43,8 @@ const LOAD_SCHEMA = {
 }
 const loadPrompt = `Read ${worklist ? `the worklist JSON at ${worklist}` :
   `the most recent planning/upstream-watch/_inbox/worklist-*.json file`} and read
-planning/upstream-watch/LEDGER.md. Return: next_uw = (highest UW-#### integer in the ledger table)
-+ 1, or 1 if the table has no data rows yet. harvest_date = the worklist JSON's top-level
+planning/upstream-watch/LEDGER.yaml. Return: next_uw = (highest UW-#### integer among the entries'
+`uw:` fields) + 1, or 1 if the file has no entries yet. harvest_date = the worklist JSON's top-level
 "generated" field. And candidates = one entry per master commit
 (type "commit", ref=sha from the source key after '@') and per branch/MR (type "branch", ref=branch
 name), carrying source, repo, title (commit subject or MR title), noise flag, and open_mr. Also set
@@ -122,28 +122,34 @@ const noiseRows = noise.map(c => ({
 const all = [...analyses, ...noiseRows].sort((a, b) => a.uw.localeCompare(b.uw))
 log(`Analyzed ${analyses.length}; +${noiseRows.length} mechanical chore rows. Building ${all.length} ledger rows.`)
 
-// ---- Build ledger rows + deep-dive docs deterministically in JS -------------
-// 4-col layout: UW | Contribution | Relevance | Decision — renders without horizontal scroll.
-// Contribution = **1-sentence headline** / <=6-sentence change summary / source-link + kind + effort + deep-dive.
-const esc = s => String(s || '').replace(/\|/g, '\\|').replace(/<br\s*\/?>/gi, ' ').replace(/\n+/g, ' ').trim()
-const sentences = t => t.trim().split(/(?<=[.!?])\s+(?=[A-Z0-9("'])/).map(s => s.trim()).filter(Boolean)
-const headlineOf = s => { const h = esc(sentences(s)[0] || s); return h.length > 200 ? h.slice(0, 200).replace(/\s+\S*$/, '').replace(/[ —\-,:;(]+$/, '') + '…' : h }
-const REL = { high: '🟢 High', medium: '🟡 Medium', low: '🟠 Low', none: '🔴 None' }
-const DEC = { pending: '⏳ Pending', port: '✅ Port', adapt: '🔧 Adapt', ported: '📦 Ported', defer: '⏸️ Defer', reject: '❌ Reject', 'n/a': '➖ N/A' }
-const ledgerRows = all.map(a => {
-  const headline = headlineOf(a.summary)
-  const body = esc(sentences(a.summary).slice(1, 7).join(' '))   // <= 6-sentence change summary
-  const src = a.url ? `[\`${esc(a.source)}\`](${a.url})` : `\`${esc(a.source)}\``
-  const eff = a.effort && a.effort !== '?' ? ` _(effort ${a.effort})_` : ''
-  let meta = `${src} · ${a.kind}${eff}`
-  if (a.needs_deepdive) meta += ` · [deep dive](items/${a.uw}-${a.slug}.md)`
-  const contrib = `**${headline}**` + (body ? `<br>${body}` : '') + `<br>${meta}`
-  return `| ${a.uw} | ${contrib} | ${REL[a.worth] || a.worth} | ${DEC[a.proposed_decision] || a.proposed_decision} |`
-}).join('\n')
+// ---- Build ledger entries (YAML) + deep-dive docs deterministically in JS ----
+// LEDGER.yaml is the source of truth; LEDGER.html is regenerated from it afterwards.
+// Emit each entry as a YAML list item using JSON-encoded scalars (valid YAML, safely quoted).
+const norm = s => String(s || '').replace(/\s+/g, ' ').trim()
+const sentences = t => norm(t).split(/(?<=[.!?])\s+(?=[A-Z0-9("'])/).map(s => s.trim()).filter(Boolean)
+const headlineOf = s => { const h = sentences(s)[0] || norm(s); return h.length > 220 ? h.slice(0, 220).replace(/\s+\S*$/, '') + '…' : h }
+const J = v => JSON.stringify(v === undefined ? null : v)
+const entryYaml = a => [
+  `- uw: ${J(a.uw)}`,
+  `  title: ${J(norm(a._title))}`,
+  `  headline: ${J(headlineOf(a.summary))}`,
+  `  summary: ${J(norm(a.summary))}`,
+  `  recommendation: ${J(norm(a.recommendation))}`,
+  `  relevance: ${J(a.worth)}`,
+  `  decision: ${J(a.proposed_decision)}`,
+  `  kind: ${J(a.kind)}`,
+  `  effort: ${J(a.effort)}`,
+  `  repo: ${J(a.source.split(':')[0].split('@')[0])}`,
+  `  source: ${J(a.source)}`,
+  `  url: ${J(a.url || null)}`,
+  `  base_symbols: ${J(a.base_symbols || [])}`,
+  `  deep_dive: ${J(a.needs_deepdive ? `items/${a.uw}-${a.slug}.md` : null)}`,
+].join('\n')
+const ledgerBlock = all.map(entryYaml).join('\n')
 
 const deepDives = analyses.filter(a => a.needs_deepdive).map(a => ({
   path: `${WATCH}/items/${a.uw}-${a.slug}.md`,
-  content: `# ${a.uw} — ${esc(a._title)}
+  content: `# ${a.uw} — ${norm(a._title)}
 
 - **Source:** \`${a.source}\`
 - **Kind:** ${a.kind}
@@ -171,25 +177,25 @@ ${a.recommendation}
 `,
 }))
 
-// ---- Write: one scribe does the mechanical inserts (rows pre-built) ----------
+// ---- Write: one scribe appends YAML entries + writes deep-dive docs ----------
 const WRITE_SCHEMA = {
-  type: 'object', required: ['rows_inserted', 'docs_written'], additionalProperties: false,
-  properties: { rows_inserted: { type: 'integer' }, docs_written: { type: 'integer' } },
+  type: 'object', required: ['entries_appended', 'docs_written'], additionalProperties: false,
+  properties: { entries_appended: { type: 'integer' }, docs_written: { type: 'integer' } },
 }
 const scribePrompt = `Do two mechanical writes — do NOT rewrite or re-reason the content, insert it verbatim.
 
-1) In ${WATCH}/LEDGER.md, insert the following ${all.length} pre-built table row(s) into the ledger
-table (immediately after the header separator row, keeping UW ids ascending), and DELETE the
-"_(none yet …)_" placeholder row if present. Do not alter existing rows. The rows:
+1) APPEND the following ${all.length} YAML list item(s) to the end of ${WATCH}/LEDGER.yaml (that file
+is a single top-level YAML list; add these as new items at the very end, preserving exact
+indentation). Do not modify or reorder existing entries. The block to append:
 
-${ledgerRows}
+${ledgerBlock}
 
 2) Write these ${deepDives.length} deep-dive file(s) verbatim (create each path with the given content):
 
 ${deepDives.map(d => `--- FILE: ${d.path} ---\n${d.content}`).join('\n\n')}
 
-Return rows_inserted and docs_written counts.`
+Return entries_appended and docs_written counts.`
 
 const written = await agent(scribePrompt, { label: 'scribe', phase: 'Write', schema: WRITE_SCHEMA })
-log(`Done: ${written ? written.rows_inserted : 0} ledger row(s), ${written ? written.docs_written : 0} deep-dive doc(s). All Decision=pending/n-a until Bryan rules.`)
+log(`Done: ${written ? written.entries_appended : 0} ledger entr(ies), ${written ? written.docs_written : 0} deep-dive doc(s). Now regenerate the HTML: \`python tools/upstream-ledger-html.py\`. All decisions pending/n-a until Bryan rules.`)
 return { analyzed: analyses.length, noise: noiseRows.length, ...written, id_range: `${pad(baseUw)}..${pad(baseUw + candidates.length - 1)}` }
