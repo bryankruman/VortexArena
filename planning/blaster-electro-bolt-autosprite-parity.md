@@ -1,8 +1,12 @@
 # Blaster + Electro primary bolt "flattened" — parity analysis & fix plan
 
 **Date:** 2026-07-06 · **Branch:** `parity/blaster-electro-bolt-autosprite`
-**Status:** 🚧 **WIP — analysis complete, implementation NOT started.** This document is the design of
-record; the code changes below are planned, not yet written. Task breakdown at the bottom.
+**Status:** ✅ **IMPLEMENTED 2026-07-10 (needs playtest).** All three phases below are built as designed
+(2963 tests green, +10 new in `AutospriteBoltTests`); the manual verification checklist in Phase 3 is the
+remaining gate. Where the code lives: `Formats/Md3/AutospriteQuads.cs` (bake),
+`Formats/Materials/AutospriteShaderGen.cs` + `Q3StageGlsl.cs` (generated shader / shared stage emitters),
+`ShaderCompiler.CompileAutosprite` + `AssetSystem.ResolveAutospriteMaterial` (game side),
+`Md3Builder.ResolveSurfaces/ApplyFrame` (CUSTOM0/1), `ProjectileRenderer.BuildWarmupInstances` (PSO warm).
 
 **Scope:** in-flight primary projectile visuals — PROJECTILE_BLASTER (`models/laser.mdl`) and
 PROJECTILE_ELECTRO_BEAM (`models/elaser.mdl`). HLAC (`models/hlac_bullet.md3`) shares the exact bug and is
@@ -224,17 +228,27 @@ deform in the same material.
 
 ---
 
-## Implementation task breakdown (status: all pending)
+## Implementation task breakdown (status: ALL DONE 2026-07-10; playtest pending)
 
-1. Move the shared GLSL stage emitters (tcMod stack, rgbGen, waveforms, float fmt) into
-   `Formats/Materials/Q3StageGlsl.cs`; add the `tcMod page` case; add `TcModType.Page` to
-   `NeedsAnimatedShader`. (ShaderCompiler delegates.)
-2. `Formats/Md3/AutospriteQuads.cs` — pure per-quad center/axis/s/t math (autosprite tangent frame;
-   autosprite2 DP shortest-edge frame), Godot-free, unit-testable.
-3. `AutospriteShaderGen` (Formats) + `ShaderCompiler.CompileAutosprite` (game) +
-   `AssetSystem.ResolveAutospriteMaterial` (opt-in, own cache): the deform vertex shader + DP-faithful
-   lit-base/fullbright-`_glow` fragment; bind albedo + `_glow` textures + instance colormod/glowmod.
-4. `Md3Morph.ApplyFrame` — detect autosprite deform per surface, resolve the deform material, bake
-   `CUSTOM0/1` (RgbaFloat) via `AutospriteQuads`.
-5. Warm-pass coverage for `laser.mdl` / `elaser.mdl` / `hlac_bullet.md3` + their new ShaderMaterials.
-6. Tests + `dotnet build` + full suite; update `planning/playtest-bugs.md` #38 residual to point here.
+1. ✅ Shared GLSL stage emitters (tcMod stack, rgbGen, waveforms, float fmt, alpha cutoff) moved into
+   `Formats/Materials/Q3StageGlsl.cs`; `tcMod page` case added; `TcModType.Page` added to
+   `NeedsAnimatedShader`. (ShaderCompiler delegates via thin aliases.)
+2. ✅ `Formats/Md3/AutospriteQuads.cs` — pure per-quad center/axis/s/t math (autosprite UV-tangent frame
+   with edge-based fallback; autosprite2 DP shortest-edge frame incl. the 1/1024 height tie-bias),
+   Godot-free. One deviation from the sketch: the autosprite2 width axis is `cross(normal, axis)` rather
+   than DP's raw shortest-edge direction — same line, sign pinned to the quad's front face so it agrees
+   with the shader's per-frame `cross(axis, toQuad)`.
+3. ✅ `AutospriteShaderGen` (Formats) + `ShaderCompiler.CompileAutosprite` (game) +
+   `AssetSystem.ResolveAutospriteMaterial` (opt-in, own cache; null-caches non-autosprite names): deform
+   vertex shader + lit-base/fullbright-`_glow` fragment (`ALPHA = 1.0` — GL_ONE GL_ONE under Godot's
+   srcAlpha·ONE blend_add); albedo + `_glow` (1×1 black `AssetSystem.BlackTexture()` when missing) +
+   fragment-stage instance colormod/glowmod.
+4. ✅ `Md3Morph.ResolveSurfaces` detects the deform (quad-shaped surfaces only, `vcount % 4`) and swaps in
+   the deform material; `ApplyFrame` bakes `CUSTOM0/1` (RgbaFloat) from the QUAKE-space morphed verts via
+   `AutospriteQuads`, converting center/axis at the boundary.
+5. ✅ `ProjectileRenderer.BuildWarmupInstances` now also builds the REAL model body per catalog type
+   (deduped by path; null-safe without ModelFactory) — laser/elaser/hlac's new autosprite pipelines
+   compile in the offscreen warm pass instead of on the first shot.
+6. ✅ `AutospriteBoltTests` (10 tests: bake against laser core/streak-shaped corners, square-quad upright
+   bias, multi-quad surfaces, non-quad rejection, shader-gen assertions, page math, parser round-trip);
+   build + full suite green (2963); playtest-bugs #38 residual updated to point here.
