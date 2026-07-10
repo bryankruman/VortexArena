@@ -340,6 +340,10 @@ public sealed partial class NetGame : Node3D
     private const float ClockSlewGain = 1.5f;
     private const float ClockSlewMax = 0.05f;
     private const float MaxClockResync = 0.25f;
+    // Slew target sits HALF A TICK behind the newest snapshot so interpolation samples mid-window rather
+    // than riding the f=1 clamp edge (the r16 uninterpolated-remotes finding; pairs with the hard upper
+    // bound at LatestServerTime in _Process).
+    private const float InterpBias = 0.5f / 72f;
 
     // Fix B: a render frame longer than this (a stall on the shared listen-server thread — GC / heavy map streaming,
     // ~3.6+ ticks) arms the reconciler's post-hitch hold so a transient server-behind correction glides/holds rather
@@ -3285,9 +3289,17 @@ public sealed partial class NetGame : Node3D
         // hitch). cl_netclock_smooth 0 = the old hard per-snapshot rebase, for A/B.
         float slew = 0f;
         if (_lastSeenServerTime >= 0f && _netClockSmoothCv)
-            slew = Math.Clamp((_client.LatestServerTime - _renderClock) * ClockSlewGain,
+            slew = Math.Clamp((_client.LatestServerTime - InterpBias - _renderClock) * ClockSlewGain,
                 -ClockSlewMax, ClockSlewMax);
         _renderClock += dt * slowmo * (1f + slew); // slowmo: stay aligned with the (time-scaled) server clock
+        // DP cl_nettimesyncboundmode invariant (r16 trace finding): the clock must NEVER run past the newest
+        // snapshot — sampling beyond the interp window clamps the two-snapshot lerp at f=1, rendering every
+        // remote entity at its raw newest pose (uninterpolated tick-lumps: the felt combat rubberbanding; the
+        // motion trace measured the clock ~9ms PAST latest on average). Hard upper bound here; the slew above
+        // targets half a tick behind (InterpBias) so typical sampling sits mid-window, and falling far behind
+        // still hard-snaps via MaxClockResync below.
+        if (_lastSeenServerTime >= 0f && _renderClock > _client.LatestServerTime)
+            _renderClock = _client.LatestServerTime;
         if (_client.LatestServerTime != _lastSeenServerTime)
         {
             bool firstSnapshot = _lastSeenServerTime < 0f;
@@ -3897,9 +3909,13 @@ public sealed partial class NetGame : Node3D
         bool haveRemote = _mtRemoteId >= 0 && _client.SampleRemote(_mtRemoteId, _renderClock, out remote, out _);
         if (!haveRemote)
         {
+            // Prefer a PLAYER entity (a bot in motion) — the first trace tracked the lowest id, which was a
+            // static world item and produced a useless all-zero column.
             _mtRemoteId = -1;
             foreach (int id in _client.RemoteIds)
-                if (_mtRemoteId < 0 || id < _mtRemoteId) _mtRemoteId = id;
+                if (_client.TryGetRemoteState(id, out NetEntityState rs) && rs.Kind == NetEntityKind.Player
+                    && (_mtRemoteId < 0 || id < _mtRemoteId))
+                    _mtRemoteId = id;
             haveRemote = _mtRemoteId >= 0 && _client.SampleRemote(_mtRemoteId, _renderClock, out remote, out _);
             _mtHave = false; // new target (or none): don't derive a speed across the switch
         }
