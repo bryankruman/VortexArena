@@ -587,20 +587,21 @@ a:focus-visible { outline: 2px solid #df7b3c; outline-offset: 2px; }
 
 <header class="page-head">
   <div class="head-inner">
-    <div class="head-eyebrow">balance-xonotic.cfg + bal-wep-xonotic.cfg &nbsp;·&nbsp; git-verified &nbsp;·&nbsp; v0.6 → current</div>
+    <div class="head-eyebrow">balanceXonotic.cfg → balance-xonotic.cfg &nbsp;·&nbsp; git-verified &nbsp;·&nbsp; v0.1.0preview → current</div>
     <h1 class="head-title">
       Xonotic Weapon Balance<br>
       <span class="file-ref">Change History</span>
     </h1>
     <p class="head-sub">
       All changes verified from git history in <code>Base/data/xonotic-data.pk3dir</code>.
-      Covers the default balance preset only (<code>balance-xonotic.cfg</code> / <code>bal-wep-xonotic.cfg</code>)
+      Covers the default balance preset only (<code>balanceXonotic.cfg</code> through v0.7,
+      then <code>balance-xonotic.cfg</code> / <code>bal-wep-xonotic.cfg</code> after the v0.8.0 split)
       — not XDF, XPM, Overkill, or other non-default presets.
       Three mechanics changes at v0.8.0 fundamentally altered how weapons feel:
       absolute projectile velocity, invincible projectiles, and higher armor blocking.
     </p>
     <div class="head-pills">
-      <span class="meta-pill">Releases: <strong>0.6 · 0.7 · 0.8.0 · 0.8.1 · 0.8.2 · 0.8.5 · 0.8.6 · current</strong></span>
+      <span class="meta-pill">Releases: <strong>0.1.0preview · 0.5.0 · 0.6.0 · 0.7.0 · 0.8.0 · 0.8.1 · 0.8.2 · 0.8.5 · 0.8.6 · current</strong></span>
       <span class="meta-pill">Formal votes: <strong>#25 · #29 · #30</strong></span>
       <span class="meta-pill">Updated: <strong>2026-07-04</strong></span>
     </div>
@@ -840,11 +841,32 @@ a:focus-visible { outline: 2px solid #df7b3c; outline-offset: 2px; }
       </thead>
       <tbody>
         <tr>
+          <td class="p-name" style="color:#df7b3c;">g_balance_armor_blockpercent</td>
+          <td class="p-rel">0.1pre→0.5.0</td>
+          <td class="p-val p-old">0.70</td>
+          <td class="p-val p-new">0.60</td>
+          <td class="p-note"><strong>Major.</strong> Armor absorption reduced from 70% to 60% at v0.5.0. Later restored to 70% at v0.8.0 — see below.</td>
+        </tr>
+        <tr>
+          <td class="p-name">g_balance_selfdamagepercent</td>
+          <td class="p-rel">0.1pre→0.5.0</td>
+          <td class="p-val p-old">0.65</td>
+          <td class="p-val p-new">0.75</td>
+          <td class="p-note">Self-damage penalty increased at v0.5.0 — then reduced again at v0.6.0 (see row below).</td>
+        </tr>
+        <tr>
+          <td class="p-name">g_projectiles_newton_style_2 factors</td>
+          <td class="p-rel">0.1pre→0.5.0</td>
+          <td class="p-val p-old">min 0.7 / max 5.0</td>
+          <td class="p-val p-new">min 0.8 / max 1.5</td>
+          <td class="p-note">Relative-velocity envelope tightened. Style 2 (relative) still active at v0.5; absolute (style 0) not until v0.8.0.</td>
+        </tr>
+        <tr>
           <td class="p-name">g_balance_selfdamagepercent</td>
           <td class="p-rel">0.5→0.6</td>
           <td class="p-val p-old">0.75</td>
           <td class="p-val p-new">0.65</td>
-          <td class="p-note">Less splash self-punishment. Encourages aggressive close-range rocket/mortar use.</td>
+          <td class="p-note">Reverted back to the v0.1.0preview value. Less splash self-punishment — encourages aggressive close-range play.</td>
         </tr>
         <tr>
           <td class="p-name">g_balance_weaponswitchdelay (global)</td>
@@ -929,18 +951,100 @@ a:focus-visible { outline: 2px solid #df7b3c; outline-offset: 2px; }
 
   <div class="timeline">
 
-    <!-- ── v0.6 BASELINE ── -->
+    <!-- ── FOUNDING ── -->
     <div class="era">
-      <div class="era-stamp">xonotic-v0.6.0 &nbsp;<span class="era-hash">// baseline</span></div>
-      <div class="era-title">v0.6 state — key values before any changes</div>
+      <div class="era-stamp">2010-03-18 <span class="era-hash">0e7ed909b</span></div>
+      <div class="era-title">Initial Nexuiz SVN import — balanceFruit.cfg is the Xonotic ancestor</div>
+      <p class="era-prose">
+        Repository seeded from Nexuiz SVN r8756. The file <code>balanceFruit.cfg</code>
+        (by FruitieX) is the early Xonotic balance variant, alongside <code>balance.cfg</code>
+        (pure Nexuiz) and <code>balanceSamual.cfg</code>, <code>balanceXPM.cfg</code>, etc.
+        <code>g_balance_armor_blockpercent</code> is already 0.7; <code>g_projectiles_newton_style</code>
+        is 2 (relative velocity).
+      </p>
+    </div>
+
+    <!-- ── RENAME ── -->
+    <div class="era">
+      <div class="era-stamp">2010-07-24 <span class="era-hash">66e790aed</span></div>
+      <div class="era-title">"rename balance configs" — balanceFruit.cfg → balanceXonotic.cfg</div>
+      <p class="era-prose">
+        Formal Xonotic/Nexuiz balance separation. <code>balance.cfg</code> becomes
+        <code>balanceNexSVN.cfg</code> (archived Nexuiz preset); <code>balanceFruit.cfg</code>
+        becomes <code>balanceXonotic.cfg</code> (the Xonotic standard going forward).
+        Commit message: "rename balance configs :P"
+      </p>
+    </div>
+
+    <!-- ── v0.1.0preview ── -->
+    <div class="era">
+      <div class="era-stamp">2010-12-22 → xonotic-v0.1.0preview</div>
+      <div class="era-title">balanceXonotic.cfg at first public release — global mechanics differ significantly from v0.5.0</div>
+      <p class="era-prose">
+        The v0.1.0preview tag shows three global mechanics values that would later shift substantially
+        before v0.5.0. Weapon names are unchanged from Nexuiz (Laser, Uzi, Nex, RocketLauncher).
+        Starting health is 125 (higher than the later 100). Per-weapon stats for most weapons are
+        already close to the v0.5.0 values — the biggest differences are in the global settings:
+      </p>
+      <div class="baseline-block">
+        <div class="baseline-heading">balanceXonotic.cfg — v0.1.0preview global values that differ from v0.5.0</div>
+        <div class="baseline-inner">
+          <div class="br"><span class="br-name">g_balance_health_start</span><span class="br-val">125</span><span class="br-ann">// reduced to 100 at v0.5.0</span></div>
+          <div class="br"><span class="br-name">g_balance_armor_blockpercent</span><span class="br-val">0.70</span><span class="br-ann">// reduced to 0.60 at v0.5.0; restored to 0.70 at v0.8.0</span></div>
+          <div class="br"><span class="br-name">g_balance_selfdamagepercent</span><span class="br-val">0.65</span><span class="br-ann">// raised to 0.75 at v0.5.0; lowered back to 0.65 at v0.6.0</span></div>
+          <div class="br"><span class="br-name">g_start_ammo_shells</span><span class="br-val">20</span><span class="br-ann">// reduced to 15 at v0.5.0</span></div>
+          <div class="br"><span class="br-name">g_lms_start_armor</span><span class="br-val">100</span><span class="br-ann">// raised to 200 at v0.5.0</span></div>
+          <div class="br"><span class="br-name">g_projectiles_newton_style_2 minfactor / maxfactor</span><span class="br-val">0.7 / 5.0</span><span class="br-ann">// tightened to 0.8 / 1.5 at v0.5.0</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── v0.1.0preview → v0.5.0 ── -->
+    <div class="era major">
+      <div class="era-stamp">xonotic-v0.1.0preview → xonotic-v0.5.0 (2011-09-05)</div>
+      <div class="era-title">Armor block reduced; self-damage raised; starting health lowered; newton envelope tightened</div>
+      <p class="era-prose">
+        Nine months of active development between the first public release and v0.5.0.
+        The two most impactful global changes are the armor block reduction (0.70→0.60, making armor
+        less effective) and the self-damage increase (0.65→0.75, punishing splash more).
+        Both would later partially reverse — self-damage at v0.6.0, armor at v0.8.0.
+        Per-weapon stats also changed across this period but a full commit-by-commit per-weapon diff
+        has not been traced — see open questions below.
+      </p>
+      <div class="change-wrap">
+        <table class="change-table">
+          <thead><tr><th>Category</th><th>Parameter</th><th>v0.1.0preview</th><th>v0.5.0</th><th>Notes</th></tr></thead>
+          <tbody>
+            <tr class="wep-group-row"><td colspan="5">Global — confirmed from git tag snapshots</td></tr>
+            <tr><td></td><td class="ct-param">g_balance_health_start</td><td class="ct-old">125</td><td class="ct-new">100</td><td class="ct-note">Lower starting health; closer to Quake convention.</td></tr>
+            <tr><td></td><td class="ct-param">g_balance_armor_blockpercent</td><td class="ct-old">0.70</td><td class="ct-new">0.60</td><td class="ct-note"><strong>Major.</strong> Armor absorbs only 60% of damage. With 100 armor, an 80-dmg rocket hits for 32 HP (not 24). Makes armor less decisive.</td></tr>
+            <tr><td></td><td class="ct-param">g_balance_selfdamagepercent</td><td class="ct-old">0.65</td><td class="ct-new">0.75</td><td class="ct-note">Higher splash self-punishment discourages close-range rocket use. Reverted to 0.65 at v0.6.0.</td></tr>
+            <tr><td></td><td class="ct-param">g_start_ammo_shells</td><td class="ct-old">20</td><td class="ct-new">15</td><td class="ct-note">Less starting shotgun ammo.</td></tr>
+            <tr><td></td><td class="ct-param">g_lms_start_armor</td><td class="ct-old">100</td><td class="ct-new">200</td><td class="ct-note">LMS mode: full armor at start (survivability focus for the mode).</td></tr>
+            <tr><td></td><td class="ct-param">g_pickup_ammo_anyway</td><td class="ct-old">—</td><td class="ct-new">1</td><td class="ct-note">Pick up ammo even at max — prevents blocking pickups.</td></tr>
+            <tr><td></td><td class="ct-param">g_pickup_weapons_anyway</td><td class="ct-old">—</td><td class="ct-new">1</td><td class="ct-note">Pick up weapons even when already owned.</td></tr>
+            <tr><td></td><td class="ct-param">g_projectiles_newton_style_2 minfactor</td><td class="ct-old">0.7</td><td class="ct-new">0.8</td><td class="ct-note">Floor of relative-velocity contribution raised.</td></tr>
+            <tr><td></td><td class="ct-param">g_projectiles_newton_style_2 maxfactor</td><td class="ct-old">5.0</td><td class="ct-new">1.5</td><td class="ct-note">Cap on relative-velocity contribution dramatically reduced — projectile speed less affected by player velocity.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── v0.5.0 BASELINE ── -->
+    <div class="era">
+      <div class="era-stamp">xonotic-v0.5.0 (2011-09-05) &nbsp;<span class="era-hash">// pre-v0.6 baseline</span></div>
+      <div class="era-title">v0.5.0 state — key weapon values before the v0.6 changes</div>
       <p class="era-prose">
         File: monolithic <code>balanceXonotic.cfg</code>. Weapon renames had not happened yet
-        (still Laser, Uzi, Nex, etc.). Self-damage 0.75, armor block 0.6, newton style 2 (relative velocity).
+        (still Laser, Uzi, Nex, etc.). At v0.5.0: self-damage 0.75, armor block 0.6,
+        newton style 2 (relative velocity with minfactor 0.8 / maxfactor 1.5).
+        The v0.6.0 tag (2012-03-08) later lowered self-damage to 0.65 and raised throughfloor values
+        — see the global mechanics table above.
       </p>
 
       <div class="change-wrap">
         <table class="change-table">
-          <thead><tr><th>Weapon</th><th>Parameter</th><th style="color:#4c7872;">v0.6 value</th><th></th><th>Notes</th></tr></thead>
+          <thead><tr><th>Weapon</th><th>Parameter</th><th style="color:#4c7872;">v0.5.0 value</th><th></th><th>Notes</th></tr></thead>
           <tbody>
             <tr class="wep-group-row"><td colspan="5">Laser</td></tr>
             <tr><td></td><td class="ct-param">primary_damage</td><td class="ct-old" style="text-decoration:none;color:#bdd8d1;">25</td><td></td><td class="ct-note">25 dmg, 300 force, 70 radius, 6000 speed</td></tr>
@@ -957,7 +1061,7 @@ a:focus-visible { outline: 2px solid #df7b3c; outline-offset: 2px; }
             <tr class="wep-group-row"><td colspan="5">Crylink</td></tr>
             <tr><td></td><td class="ct-param">primary_damage / shots</td><td class="ct-old" style="text-decoration:none;color:#bdd8d1;">12 / 6</td><td></td><td class="ct-note">Speed 2000; force -60; joindelay 0.1</td></tr>
             <tr class="wep-group-row"><td colspan="5">Nex (Vortex)</td></tr>
-            <tr><td></td><td class="ct-param">primary_damage / refire</td><td class="ct-old" style="text-decoration:none;color:#bdd8d1;">80 / 1.5</td><td></td><td class="ct-note">Force 400, ammo 6, switchdelay 0.3</td></tr>
+            <tr><td></td><td class="ct-param">primary_damage / refire</td><td class="ct-old" style="text-decoration:none;color:#bdd8d1;">90 / 1.5</td><td></td><td class="ct-note">Force 400, ammo 6, switchdelay 0.3. Confirmed 90 at both v0.5.0 and v0.6.0; nerf to 80 happened at v0.7.0.</td></tr>
             <tr class="wep-group-row"><td colspan="5">Hagar</td></tr>
             <tr><td></td><td class="ct-param">primary_damage / speed</td><td class="ct-old" style="text-decoration:none;color:#bdd8d1;">25 / 2200</td><td></td><td class="ct-note">Spread 0 (both primary and secondary)</td></tr>
             <tr class="wep-group-row"><td colspan="5">RocketLauncher (Devastator)</td></tr>
@@ -1264,11 +1368,25 @@ a:focus-visible { outline: 2px solid #df7b3c; outline-offset: 2px; }
   <h2 class="section-heading">Gaps and open questions</h2>
   <div class="gap-list">
     <div class="gap-row">
+      <span class="gap-icon">✓</span>
+      <span class="gap-body"><strong>v0.1.0preview → v0.5.0 global mechanics: verified.</strong>
+        Armor block (0.70→0.60), self-damage (0.65→0.75), health_start (125→100), shell ammo, LMS armor, and
+        newton_style_2 factors confirmed from <code>git show xonotic-v0.1.0preview:balanceXonotic.cfg</code>
+        and <code>git show xonotic-v0.5.0:balanceXonotic.cfg</code>.</span>
+    </div>
+    <div class="gap-row">
+      <span class="gap-icon">?</span>
+      <span class="gap-body"><strong>v0.1.0preview → v0.5.0 per-weapon stats not fully diffed.</strong>
+        Global mechanics for this era are now confirmed (see above), but the per-weapon changes
+        (Rocket Launcher, Nex, Crylink, etc.) across those nine months have not been traced commit-by-commit.
+        Most weapons at v0.5.0 appear similar to v0.1.0preview but this has not been verified.</span>
+    </div>
+    <div class="gap-row">
       <span class="gap-icon">?</span>
       <span class="gap-body"><strong>v0.5.0 → v0.6.0 complete diff not verified per-weapon.</strong>
         The v0.5.0 baseline section above is drawn from the full file read; the v0.6.0 diff
         was constructed from a partial diff output. A few low-impact parameters may have changed
-        without being captured here.</span>
+        without being captured here. Global mechanics (self-damage, throughfloor) verified.</span>
     </div>
     <div class="gap-row">
       <span class="gap-icon">?</span>
@@ -1308,7 +1426,15 @@ a:focus-visible { outline: 2px solid #df7b3c; outline-offset: 2px; }
     </div>
     <div class="source-row">
       <span class="source-kind git">git</span>
-      <span class="source-text"><code>git show xonotic-v0.6:balanceXonotic.cfg</code>, <code>xonotic-v0.7:balanceXonotic.cfg</code>, <code>xonotic-v0.8.0:balance-xonotic.cfg</code>, <code>xonotic-v0.8.0:bal-wep-xonotic.cfg</code> — tag snapshots</span>
+      <span class="source-text"><code>git show xonotic-v0.1.0preview:balanceXonotic.cfg</code>, <code>xonotic-v0.5.0:balanceXonotic.cfg</code>, <code>xonotic-v0.6:balanceXonotic.cfg</code>, <code>xonotic-v0.7:balanceXonotic.cfg</code>, <code>xonotic-v0.8.0:balance-xonotic.cfg</code>, <code>xonotic-v0.8.0:bal-wep-xonotic.cfg</code> — tag snapshots</span>
+    </div>
+    <div class="source-row">
+      <span class="source-kind git">git</span>
+      <span class="source-text"><code>git log --oneline --format="%H %ad %s" -- balanceXonotic.cfg balanceFruit.cfg</code> — founding and rename commits (0e7ed909b, 66e790aed)</span>
+    </div>
+    <div class="source-row">
+      <span class="source-kind git">git</span>
+      <span class="source-text"><code>git show xonotic-v0.5.0:balanceXonotic.cfg | grep -E "nex_primary_damage|armor_block|selfdamage|health_start"</code> and equivalent at v0.6.0 and v0.7.0 — point-in-time cvar verification</span>
     </div>
   </div>
 </section>

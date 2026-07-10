@@ -57,6 +57,11 @@ public partial class Shell : Node
     /// <summary>Bot count for the <c>--host</c> listen server (CLI <c>--bots N</c>); 0 = no bots.</summary>
     public int BootBots { get; set; }
 
+    /// <summary>UDP port every listen server this process hosts binds (CLI <c>--port N</c>, DP <c>-port</c>).
+    /// Defaults to the stock game port; override it so scripted/agent runs don't collide with a live instance
+    /// already holding 26000 (a second host on a busy port otherwise self-connects to the WRONG server).</summary>
+    public int BootPort { get; set; } = XonoticGodot.Game.Net.NetGame.DefaultPort;
+
     private CanvasLayer _menuLayer = null!;
     private MenuRoot _menu = null!;
     private ModelViewer? _viewer;
@@ -66,6 +71,20 @@ public partial class Shell : Node
     private bool _windowFocused = true;      // OS window focus, tracked from _Notification (drives auto-pause)
     private CanvasLayer? _loadingLayer;
     private LoadingScreen? _loadingScreen;
+    private Game.Hud.ChatPrompt _chatPrompt = null!;   // [#46] the messagemode chat input line
+
+    /// <summary>[#46] <c>messagemode</c>/<c>messagemode2</c>: open the chat prompt (in a match only — at the
+    /// menu there is nobody to talk to; print the standard hint instead, like other match-only commands).</summary>
+    private void OpenChatPrompt(bool team)
+    {
+        if (!MatchRunning || ConsoleState.IsOpen)
+        {
+            if (!MatchRunning)
+                XonoticGodot.Common.Diagnostics.Log.Help("messagemode: not connected — start a match first.");
+            return;
+        }
+        _chatPrompt.Open(team);
+    }
 
     /// <summary>Apply any <c>--cvar NAME VALUE</c> command-line overrides into the shared store (repeatable; each
     /// <c>--cvar</c> token consumes the next two args). For test/automation/A-B runs that need to pin a cvar at
@@ -118,6 +137,23 @@ public partial class Shell : Node
         // `bind` lines layered on top — one source of truth shared by `bind`/gameplay input. Here we only wire
         // the runtime hook: release all held buttons whenever the console opens (DP in_releaseall).
         BindInput.Install();
+
+        // [#46] The messagemode chat prompt (the DP engine chat input the stock ENTER/T/Y/Z binds target — Base
+        // has NO QC-side chat input). Lives on its own high CanvasLayer (over the HUD, under the console) and
+        // submits through the SAME dual route a console-typed `say` takes: the in-process listen world as a
+        // client command, else the remote string-command channel. The commands exist even at the menu (they
+        // print a hint), so a bind fired outside a match never lands in the void.
+        var chatLayer = new CanvasLayer { Name = "ChatPromptLayer", Layer = 90 };
+        AddChild(chatLayer);
+        _chatPrompt = new Game.Hud.ChatPrompt { Name = "ChatPrompt" };
+        _chatPrompt.Submit = line =>
+        {
+            if (LocalRouteCommand(line) is null)
+                RouteRemoteCommand(line);
+        };
+        chatLayer.AddChild(_chatPrompt);
+        MenuState.Interp!.RegisterCommand("messagemode", _ => OpenChatPrompt(team: false));
+        MenuState.Interp!.RegisterCommand("messagemode2", _ => OpenChatPrompt(team: true));
 
         // The client-side `screenshot` command (DP CF_CLIENT, bound to F12 by binds-xonotic.cfg): a Godot node that
         // grabs the next rendered frame and writes it to user://screenshots/. Registered on the SHARED interpreter
@@ -347,6 +383,23 @@ public partial class Shell : Node
         if (key.Pressed)
             return;
 
+        // In-match Escape ownership, highest priority first — each acts on the RELEASE edge (the only edge that
+        // reliably arrives while the mouse is captured, per the note above). Without these, cancelling the chat
+        // prompt or pressing Escape in the HUD editor leaked to the generic pause menu instead:
+        //   1. the chat prompt cancels (it deliberately does NOT consume Escape, so both edges reach here);
+        if (Game.Hud.ChatPrompt.IsOpen)
+        {
+            _chatPrompt.Close();
+            return;
+        }
+        //   2. the live HUD editor (no menu dialog up) opens its setup-exit dialog — QC menu_showhudexit —
+        //      instead of the pause menu; with a dialog already up (_paused) fall through so Escape pops it.
+        if (!_paused && MenuState.Cvars.GetFloat("_hud_configure") != 0f)
+        {
+            MenuCommand.Run("menu_showhudexit");
+            return;
+        }
+
         if (_paused)
         {
             // Inside a pushed sub-screen (Settings, …) Escape backs out one level; at the pause root it resumes.
@@ -515,6 +568,11 @@ public partial class Shell : Node
 
     private void TeardownGame()
     {
+        // Close the messagemode prompt if the match ends while it's open — otherwise the Shell-lifetime overlay
+        // (CanvasLayer 90, above the menu) keeps drawing over the main menu and its _Input eats every keystroke,
+        // and the static IsOpen leaks into the next match (movement/fire suppressed + BUTTON_CHAT forced).
+        _chatPrompt?.Close();
+
         if (_viewer is not null)
         {
             _viewer.QueueFree();
@@ -609,7 +667,7 @@ public partial class Shell : Node
             gametype: string.IsNullOrWhiteSpace(config.Gametype) ? "dm" : config.Gametype,
             botCount: config.BotCount,
             botSkill: config.BotSkill,
-            port: XonoticGodot.Game.Net.NetGame.DefaultPort,
+            port: BootPort,
             playerName: ResolvePlayerName(),
             serverName: MenuState.Cvars.GetString("hostname") is { Length: > 0 } hn ? hn : "XonoticGodot Listen Server",
             vfs: MenuState.Vfs,
