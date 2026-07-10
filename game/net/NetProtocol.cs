@@ -115,7 +115,13 @@ public static class NetProtocol
     /// </list>
     /// All three are unconditional reads, so mixed builds would mis-parse every snapshot — the bump makes
     /// BuildParity reject them at handshake instead.
-    public const uint ProtocolVersion = 14;
+    ///
+    /// v15 (the ±4096 coord-wrap fix, r16): snapshot entity Origin/Velocity switched from
+    /// <c>NetPrecision.Low</c> (13-bit fixed point — EncodeCoord13's unchecked short cast wrapped past
+    /// ±4096 qu, teleporting everything on implosion's blue half into the void; bolt velocities ≥4096 qu/s
+    /// sign-flipped extrapolation everywhere) to full 32-bit floats — DP7's coord path, matching the owner
+    /// block. Wire layout change in every entity delta ⇒ version bump.
+    public const uint ProtocolVersion = 15;
 
     /// <summary>Ordered, reliable ENet channel — handshake, spawns/removes, notifications, scores.</summary>
     public const int ReliableChannel = 0;
