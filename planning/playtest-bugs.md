@@ -661,6 +661,20 @@ nudge-out-of-solid; see #9), **#14** flag jitter (user-deferred).
   are GONE (guidestop-1 servers just get a slightly under-predicted cadence — cosmetic).
 - **LESSON:** when a prediction "doesn't fire," check ALL gate inputs with a probe before touching the gate —
   and don't test ammo-gated prediction in a weapon arena without the unlimited-ammo flag handled.
+- **v4 addendum (2026-07-09, playtest: "devastator FX sometimes missing"):** the v3 press-edge-only gate was
+  TOO strict — Base fires whenever the button is **held** with `rl_release` armed and ATTACK_FINISHED expired
+  (wr_think: `rl_release || guidestop` + `weapon_prepareattack`), so a re-press during the cooldown tail +
+  hold makes the server fire a rocket with NO press edge at that moment. Nothing was predicted, and both the
+  networked (`OnSoundReceived` IsPredicted drop) and in-process (`SuppressOwnFireEffects`) copies of the real
+  fire sound/flash are suppressed UNCONDITIONALLY for predicted weapons → a fully silent rocket. **Fix:** a
+  client `rl_release` MIRROR (`_rlReleaseMirror`: armed on release + on equip like wr_setup, cleared on each
+  predicted shot) replaces the press-edge condition — one predicted shot per release, fired the moment the
+  ready clock lands, exactly QC's latch. Hold-to-guide still predicts nothing (#24 preserved). TWO more silencers
+  fixed with it: the secondary DETONATE press was treated as a shot (Base fire&2 has no W_MuzzleFlash and no
+  prepareattack) — it popped a phantom flash AND bumped the SHARED ready clock, swallowing the next primary's
+  prediction (the fire→detonate→fire combo went silent) → devastator/minelayer excluded from SecondaryFiresShot;
+  and prediction is now gated through the switch raise window (`_switchRaiseLeft`) like the drop, so a held
+  trigger through a weapon switch doesn't flash before the server can actually fire.
 
 ### 25. Rocket ammo goes NEGATIVE under unlimited ammo (weaponarena) — Devastator FIXED; sibling sweep OPEN
 - [~] **Status:** Devastator fixed (branch `claude/playtest-fixes`); the same bypass exists in OTHER weapons.

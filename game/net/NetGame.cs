@@ -1848,6 +1848,21 @@ public sealed partial class NetGame : Node3D
     /// </summary>
     private float _switchDropLeft = -1f;
 
+    /// <summary>
+    /// Seconds left of the INCOMING weapon's <c>switchdelay_raise</c> after a first-person weapon install
+    /// (set beside <c>PlayRaise</c>). The server slot is in the Raise state (can't fire) for this window, so the
+    /// fire-feedback gate holds prediction through it — else a held trigger through a switch predicted the flash
+    /// up to the raise time EARLY. Decays in <see cref="UpdateLocalFireFeedback"/>; negative = idle.
+    /// </summary>
+    private float _switchRaiseLeft = -1f;
+
+    /// <summary>
+    /// Client mirror of QC <c>wepent.rl_release</c> (armed on release/equip, cleared on each predicted shot) —
+    /// the release-gated-weapon (Devastator) fire condition. See <see cref="UpdateLocalFireFeedback"/>.
+    /// </summary>
+    private bool _rlReleaseMirror = true;
+    private int _rlMirrorWeaponId = -1;
+
     private void EquipNetworkedWeapon()
     {
         if (_viewModel is null || !GodotObject.IsInstanceValid(_viewModel) || _client is not { Accepted: true })
@@ -1953,6 +1968,9 @@ public sealed partial class NetGame : Node3D
         // Raise the new gun into view instead of popping the model in (Xonotic viewmodel_draw raise; pairs with
         // the keypress holster in RunBoundCommand). Confirmed switch → cancels any pending holster auto-recovery.
         _viewModel.PlayRaise();
+        // The server slot now runs the incoming weapon's raise think (can't fire until it lands) — hold fire
+        // prediction for the same window so a held trigger doesn't pop the flash while the gun is still rising.
+        _switchRaiseLeft = w?.SwitchDelayRaise() ?? 0f;
     }
 
     /// <summary>
@@ -6000,11 +6018,19 @@ public sealed partial class NetGame : Node3D
         bool a1 = BindTable.AttackHeld;
         if (a1 && !_attackHeld)
             _attackLatch = true; // sub-tick latch for the server (independent of FX prediction)
+        if (!a1)
+            _rlReleaseMirror = true; // QC wr_think else-branch: rl_release = 1 any frame fire is up (must run
+                                     // even inside the switch drop/raise gate below, or a release fully inside
+                                     // the window would be missed and the next held shot never predicts)
 
-        // A staged weapon swap is holstering (EquipNetworkedWeapon holds the old model for switchdelay_drop):
-        // the server slot is in the Drop state and cannot fire, so don't predict flash/sound through it. Both
-        // press edges still latch for the server, so the input stream is unaffected — only the local FX skip.
-        if (_switchDropLeft >= 0f)
+        if (_switchRaiseLeft >= 0f)
+            _switchRaiseLeft -= dt; // the incoming weapon's raise window decays here (set at install)
+
+        // A staged weapon swap is holstering or raising (EquipNetworkedWeapon holds the old model for
+        // switchdelay_drop, then the new gun raises for switchdelay_raise): the server slot is in the Drop/Raise
+        // state and cannot fire, so don't predict flash/sound through it. Both press edges still latch for the
+        // server, so the input stream is unaffected — only the local FX skip.
+        if (_switchDropLeft >= 0f || _switchRaiseLeft >= 0f)
         {
             bool a2Drop = BindTable.Attack2Held;
             if (a2Drop && !_attack2Held)
@@ -6016,16 +6042,29 @@ public sealed partial class NetGame : Node3D
 
         if (_predictFire)
         {
+            // Client mirror of QC wepent.rl_release (devastator.qc wr_think: cleared on each rocket, re-armed any
+            // frame fire is NOT held; wr_setup arms it on equip). A release-gated weapon fires whenever the button
+            // is HELD with the latch armed and ATTACK_FINISHED has expired — NOT only on a fresh press. The old
+            // press-edge-only gate (#24) missed the "re-press during the cooldown tail and keep holding" shot:
+            // the server fires at cooldown expiry with no press edge in sight, nothing was predicted, and the
+            // real fire sound/flash are suppressed as "already predicted" → a fully silent rocket.
+            if (_client is { } clw && clw.ActiveWeaponId != _rlMirrorWeaponId)
+            {
+                _rlMirrorWeaponId = clw.ActiveWeaponId;
+                _rlReleaseMirror = true; // QC wr_setup: rl_release = 1 on equip
+            }
+
             // cl_predictfire on: predict the view-model flash + local fire sound on every shot (first on the press
             // edge, then one per `refire` s while held) — but ONLY once the weapon's persistent ready clock has
             // elapsed, so a burst of taps / wheel-fire can't out-run the refire rate. FirePredictReady + the
             // MarkFirePredicted cadence are the client mirror of the server's ATTACK_FINISHED gate.
             if (a1 && !LocalDeadNow() && HasAmmoNow()
                 && TryActivePrimaryFire(out int wid, out string fireSound, out float refire) && FirePredictReady(wid)
-                && (!_attackHeld || !PrimaryRefireRequiresRelease(wid))) // #24: release-gated weapons only fire on a fresh press
+                && (!PrimaryRefireRequiresRelease(wid) || _rlReleaseMirror)) // #24: release-gated weapons need the armed latch, not a press edge
             {
                 PredictFireShot(fireSound);
                 MarkFirePredicted(wid, refire, dt);
+                _rlReleaseMirror = false; // QC: rl_release = 0 on the shot (inert for non-gated weapons)
             }
         }
         else if (a1 && !_attackHeld && !LocalDeadNow()
@@ -6099,6 +6138,11 @@ public sealed partial class NetGame : Node3D
             "vortex" or "vaporizer" or "rifle" => false, // secondary = zoom
             "shotgun" => false,                           // secondary = melee (no muzzle)
             "blaster" or "hook" => false,                 // secondary isn't a barrel shot
+            // Remote DETONATE, not a shot: Base wr_think fire&2 just flags the live rockets/mines (no
+            // W_MuzzleFlash, no weapon_prepareattack — ATTACK_FINISHED is NOT bumped). Treating it as a shot
+            // popped a phantom flash AND advanced the shared client ready clock, which then swallowed the
+            // prediction of the NEXT primary rocket (the fire→detonate→fire combo went silent).
+            "devastator" or "minelayer" => false,
             "" => false,
             _ => true,
         };
