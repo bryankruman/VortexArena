@@ -1933,6 +1933,22 @@ public sealed partial class NetGame : Node3D
                 XonoticGodot.Common.Gameplay.Weapon outgoing = XonoticGodot.Common.Gameplay.Weapons.ById(_equippedWeaponId);
                 _switchDropLeft = outgoing?.SwitchDelayDrop() ?? 0f;
                 _viewModel.PlayHolster(); // no-op refresh if the manual keypress already started the slide
+
+                // Out-of-ammo FORCED switch with the trigger still down: Base (cl_unpress_attack_on_weapon_switch
+                // 0 default) lets the switched-to weapon open fire the moment it raises — surprising, since the
+                // player never chose it. Release the attack buttons (DP -fire/-fire2, exactly what Base's opt-in
+                // cvar localcmds) until a physical re-press — but ONLY when the outgoing weapon is genuinely dry
+                // (the forced-switch signature; ClientHasWeapon(andAmmo) is the server's own W_SwitchToOtherWeapon
+                // dry test, so the Devastator's ammo>=4 floor counts as dry). A held trigger through a MANUAL
+                // switch (old weapon still usable) keeps firing, and a non-dry forced cycle (NIX) is untouched.
+                if ((BindTable.AttackHeld || BindTable.Attack2Held) && outgoing is not null
+                    && MenuState.Cvars.GetString("cl_unpress_attack_on_empty_switch") != "0"
+                    && (LocalServerPlayer ?? _hudMirror) is { } fireActor
+                    && !XonoticGodot.Common.Gameplay.Inventory.ClientHasWeapon(fireActor, outgoing, andAmmo: true, complain: false))
+                {
+                    BindTable.ReleaseAttack();
+                    _attackLatch = _attack2Latch = false; // pending sub-tick taps die with the release
+                }
             }
             _switchDropLeft -= (float)GetProcessDeltaTime();
             if (_switchDropLeft > 0f)

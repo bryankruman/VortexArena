@@ -141,6 +141,12 @@ public static class ClientSettings
         // to immediate snapping. Rationale + the masking risk it carries: docs/TROUBLESHOOTING.md.
         c.Register("cl_movement_hitch_hold", "1");
         c.Register("cl_predictfire", "1");       // intentionally default ON (NetGame: unset → on)
+        // Release +attack/+attack2 (until a physical re-press) when the server FORCE-switches a weapon that ran
+        // DRY while the trigger is still down, so the switched-to weapon doesn't surprise-fire the moment it
+        // raises. Port addition, default ON: Base's cl_unpress_attack_on_weapon_switch covers EVERY switch and
+        // ships 0 (holding fire through an out-of-ammo switch opens fire with the new gun); this narrower gate
+        // keeps manual-switch hold-fire and non-dry forced cycles (NIX) Base-faithful. 0 = raw Base behavior.
+        c.Register("cl_unpress_attack_on_empty_switch", "1");
         // Client-side projectile prediction (CSQC Projectile_Draw): snap+extrapolate vs the old ease. Default
         // ON; `set cl_projectile_prediction 0` reverts for A/B feel-testing (ClientWorld polls it live).
         c.Register("cl_projectile_prediction", "1");
