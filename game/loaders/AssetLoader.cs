@@ -145,36 +145,18 @@ public sealed class AssetLoader
         if (key.Length == 0)
             return null;
 
-        // [#48] Quake SPRITE models (.spr — the chat bubble models/misc/chatbubble.spr is the stock user of
-        // this path): DP renders these as camera-facing billboards; the shipped data also carries the frame as
-        // a plain `<name>.spr_0.tga` next to the .spr (the DP external-frame override), so we don't need a
-        // .spr container parser — a billboard quad textured with that frame IS the faithful render. Without
-        // this branch the loader fell through to the placeholder box (the "block" over typing players' heads).
+        // [#48] Quake SPRITE models (.spr — the chat bubble models/misc/chatbubble.spr is the stock user): route
+        // through the real sprite pipeline (SpriteReader parses IDSP/IDS2 incl. the Half-Life embedded-palette
+        // chatbubble; SpriteBuilder sizes the quad from the frame, picks the billboard mode from the sprite type,
+        // applies the frame origin, animates multi-frame sprites, and caches). SpriteBuilder's DP external-frame
+        // override still prefers the shipped `<name>.spr_0.tga` when present. This replaced a hand-rolled 16×16
+        // quad that bypassed all of the above; LoadSprite returns null only when the container can't be parsed.
         if (key.EndsWith(".spr", StringComparison.OrdinalIgnoreCase))
         {
-            Texture2D? sprTex = LoadTexture(key + "_0");
-            if (sprTex is not null)
-            {
-                var spr = new MeshInstance3D
-                {
-                    Name = "sprite",
-                    // Base chatbubble.spr renders ~16qu square; sized to read like DP's at head offset.
-                    Mesh = new QuadMesh { Size = new Vector2(16f, 16f) },
-                    MaterialOverride = new StandardMaterial3D
-                    {
-                        ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-                        Transparency = BaseMaterial3D.TransparencyEnum.Alpha,
-                        BillboardMode = BaseMaterial3D.BillboardModeEnum.Enabled,
-                        AlbedoTexture = sprTex,
-                        NoDepthTest = false,
-                    },
-                    CastShadow = GeometryInstance3D.ShadowCastingSetting.Off,
-                };
-                var sprRoot = new Node3D { Name = "spr" };
-                sprRoot.AddChild(spr);
-                return sprRoot;
-            }
-            // No external frame → fall through to the normal (placeholder) path.
+            Node3D? sprite = LoadSprite(key);
+            if (sprite is not null)
+                return sprite;
+            // Unparseable container → fall through to the normal (placeholder) path.
         }
 
         // Cache key includes the skin variant (different skins build different nodes).
@@ -608,7 +590,7 @@ public sealed class AssetLoader
             GD.PrintErr($"[AssetLoader] sprite '{key}' read/parse failed: {ex.Message}");
             return null;
         }
-        return () => SpriteBuilder.Build(spr, _assets);
+        return () => SpriteBuilder.Build(spr, _assets, key);
     }
 
     // =============================================================================================

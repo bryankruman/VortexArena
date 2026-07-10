@@ -1973,7 +1973,12 @@ public sealed class ServerNet : IDisposable
             // delta encoder removes them against its baseline (re-spawning them when they return into view).
             IReadOnlyDictionary<int, NetEntityState> sendSet =
                 RelevantEntitiesFor(st, owner, st.NetId, cullEntitiesPvs, radarShowEnemies, teamplay);
-            st.SnapHistory.EncodeSnapshot(_snapshotWriter, sendSet, _snapshotSeq, excludeEntNum: st.NetId);
+            // v14: the recipient's OWN entity is included (it used to be excluded via excludeEntNum). The client
+            // never interpolates it — ClientNet.HandleSnapshot diverts it into LocalState, the decoded own-entity
+            // slice every "watched == self" consumer reads (viewmodel anim frame/colors, vortex glow, powerup
+            // status timers, hitsound damage diff, the own name tag). Matches Base, where CSQC receives the local
+            // player's own entity too.
+            st.SnapHistory.EncodeSnapshot(_snapshotWriter, sendSet, _snapshotSeq);
 
             // Snapshots are normally unreliable (latest-wins, loss-tolerant), but the FIRST frame to a client is a
             // full baseline of every networked entity (all of the map's static items at once) and exceeds the
@@ -2470,7 +2475,7 @@ public sealed class ServerNet : IDisposable
         {
             bool isOwn = kv.Key == ownNetId;
 
-            // PVS cull: never cull the recipient's own entity (EncodeSnapshot excludes it anyway); keep anything
+            // PVS cull: never cull the recipient's own entity (it ships as the client's LocalState slice); keep anything
             // whose bounds touch a cluster the recipient can see — DIRECTLY or THROUGH a visible portal (the
             // warpzone cluster union above).
             if (havePvsCull && !isOwn
@@ -2488,7 +2493,8 @@ public sealed class ServerNet : IDisposable
             // ent_cs enemy-privacy mask: a live remote PLAYER (the entcs owner IS_PLAYER) whose recipient is an
             // enemy → strip the private HEALTH/ARMOR slice. SAME_TEAM = teamplay ? sameTeamColor : (to == player);
             // a distinct player is never the same entity, so in a non-team game EVERY other player is an enemy (you
-            // never learn anyone else's HP — FFA). Own entity is excluded from the snapshot anyway, so it's unmasked.
+            // never learn anyone else's HP — FFA). The own entity ships unmasked (it IS this recipient — the
+            // client keeps it as its LocalState slice, never in the remote table).
             if (applyPrivacy && !isOwn && state.Kind == NetEntityKind.Player)
             {
                 bool sameTeam = teamplay && ownerTeam != 0 && state.Colormap == ownerTeam;
@@ -2959,21 +2965,22 @@ public sealed class ServerNet : IDisposable
             ArcHeat = wsArcHeat,
         }.Write(w); // ClientNet.HandleSnapshot reads this via OwnerWeaponRings.Read, in lockstep
 
-        // Owner inventory (QC the ammo/items STATs, stats.qh RES_* + STAT_WEAPONS): the ammo pools, the owned-
-        // weapon bitset, and the unlimited-ammo flag — what a PURE remote client's full HUD (ammo panel, weapons
-        // panel, crosshair ring color) needs; a listen host reads the same values straight off LocalServerPlayer.
-        // Appended at the END of the owner block; ClientNet.HandleSnapshot reads these in this exact order.
-        // Floats (ammo pools are float resources; fuel burns fractionally). WriteULong is 32-bit, so the 64-bit
-        // WepSet rides as lo/hi halves.
-        w.WriteFloat(p.GetResource(ResourceType.Shells));
-        w.WriteFloat(p.GetResource(ResourceType.Bullets));
-        w.WriteFloat(p.GetResource(ResourceType.Rockets));
-        w.WriteFloat(p.GetResource(ResourceType.Cells));
-        w.WriteFloat(p.GetResource(ResourceType.Fuel));
-        ulong wep = p.OwnedWeaponSet.Bits;
-        w.WriteULong((uint)(wep & 0xFFFFFFFFUL));
-        w.WriteULong((uint)(wep >> 32));
-        w.WriteBool(p.UnlimitedAmmo);
+        // Owner inventory (QC the ammo/items STATs, stats.qh RES_* + STAT_WEAPONS + the STAT_ITEMS flag bits):
+        // what a PURE remote client's full HUD (ammo panel, weapons panel, powerups item rows, crosshair ring
+        // color) needs; a listen host reads the same values straight off LocalServerPlayer. Appended at the END
+        // of the owner block; ClientNet.HandleSnapshot reads it via OwnerInventory.Read, in lockstep — the
+        // struct's single Write/Read pair owns the wire layout (see OwnerWeaponRings for why).
+        new XonoticGodot.Net.OwnerInventory
+        {
+            Shells = p.GetResource(ResourceType.Shells),
+            Bullets = p.GetResource(ResourceType.Bullets),
+            Rockets = p.GetResource(ResourceType.Rockets),
+            Cells = p.GetResource(ResourceType.Cells),
+            Fuel = p.GetResource(ResourceType.Fuel),
+            WeaponBits = p.OwnedWeaponSet.Bits,
+            UnlimitedAmmo = p.UnlimitedAmmo,
+            ItemFlags = p.Items,
+        }.Write(w);
     }
 
     // =====================================================================================

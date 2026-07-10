@@ -378,6 +378,23 @@ public partial class Shell : Node
         if (key.Pressed)
             return;
 
+        // In-match Escape ownership, highest priority first — each acts on the RELEASE edge (the only edge that
+        // reliably arrives while the mouse is captured, per the note above). Without these, cancelling the chat
+        // prompt or pressing Escape in the HUD editor leaked to the generic pause menu instead:
+        //   1. the chat prompt cancels (it deliberately does NOT consume Escape, so both edges reach here);
+        if (Game.Hud.ChatPrompt.IsOpen)
+        {
+            _chatPrompt.Close();
+            return;
+        }
+        //   2. the live HUD editor (no menu dialog up) opens its setup-exit dialog — QC menu_showhudexit —
+        //      instead of the pause menu; with a dialog already up (_paused) fall through so Escape pops it.
+        if (!_paused && MenuState.Cvars.GetFloat("_hud_configure") != 0f)
+        {
+            MenuCommand.Run("menu_showhudexit");
+            return;
+        }
+
         if (_paused)
         {
             // Inside a pushed sub-screen (Settings, …) Escape backs out one level; at the pause root it resumes.
@@ -546,6 +563,11 @@ public partial class Shell : Node
 
     private void TeardownGame()
     {
+        // Close the messagemode prompt if the match ends while it's open — otherwise the Shell-lifetime overlay
+        // (CanvasLayer 90, above the menu) keeps drawing over the main menu and its _Input eats every keystroke,
+        // and the static IsOpen leaks into the next match (movement/fire suppressed + BUTTON_CHAT forced).
+        _chatPrompt?.Close();
+
         if (_viewer is not null)
         {
             _viewer.QueueFree();

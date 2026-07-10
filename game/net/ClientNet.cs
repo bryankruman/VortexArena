@@ -107,21 +107,16 @@ public sealed class ClientNet : IDisposable
     public int Health { get; private set; }
     public int Armor { get; private set; }
 
-    /// <summary>Owner ammo pools from the last snapshot (QC RES_SHELLS/BULLETS/ROCKETS/CELLS/FUEL STATs) — feed
-    /// the full HUD's ammo/weapons panels on a pure remote client (NetGame's HUD mirror player). Floats: ammo
-    /// resources are float-valued server-side (fuel burns fractionally).</summary>
-    public float LocalAmmoShells { get; private set; }
-    public float LocalAmmoBullets { get; private set; }
-    public float LocalAmmoRockets { get; private set; }
-    public float LocalAmmoCells { get; private set; }
-    public float LocalAmmoFuel { get; private set; }
+    /// <summary>Owner inventory stats from the last snapshot (QC the ammo RES_* STATs + STAT_WEAPONS +
+    /// IT_UNLIMITED_AMMO + the STAT_ITEMS flag bits) — feeds the full HUD's ammo/weapons/powerups panels on a
+    /// pure remote client (NetGame's HUD mirror player). One struct, read in lockstep with the server's
+    /// <c>OwnerInventory.Write</c>.</summary>
+    public XonoticGodot.Net.OwnerInventory LocalInventory { get; private set; } = XonoticGodot.Net.OwnerInventory.None;
 
-    /// <summary>Owner owned-weapon bitset (QC STAT_WEAPONS, bit index == weapon RegistryId) from the last
-    /// snapshot — which weapons the weapons panel draws as owned on a pure remote client.</summary>
-    public ulong LocalOwnedWeaponBits { get; private set; }
-
-    /// <summary>Owner unlimited-ammo flag (QC IT_UNLIMITED_AMMO) from the last snapshot.</summary>
-    public bool LocalUnlimitedAmmo { get; private set; }
+    /// <summary>Whether the PREDICTED local player is on the ground this frame (the reconciler's live predicted
+    /// state, seeded from the owner block's onground bool) — feeds the HUD mirror's OnGround flag so the
+    /// physics/strafehud panels take the same ground branches on a pure client as on the listen host.</summary>
+    public bool PredictedOnGround => _reconciler.Predicted.OnGround;
 
     /// <summary>QC view punch (<c>punchangle</c>): the weapon-recoil view kick the server applies on firing and
     /// decays (PM_check_punch). Added to the rendered view angles ONLY (not the aim), so the gun kicks the
@@ -1147,18 +1142,11 @@ public sealed class ClientNet : IDisposable
         // aligned for the movevars/scores/entity sections that follow — the server writes them unconditionally.
         LocalWeaponRings = XonoticGodot.Net.OwnerWeaponRings.Read(ref r);
 
-        // Owner inventory (appended after the ring floats — the exact order ServerNet.WriteOwnerState writes):
-        // ammo pools + the 64-bit owned-weapon bitset (as lo/hi 32-bit halves) + unlimited-ammo. Feeds the full
-        // HUD's ammo/weapons panels on a pure remote client via NetGame's HUD mirror player.
-        LocalAmmoShells = r.ReadFloat();
-        LocalAmmoBullets = r.ReadFloat();
-        LocalAmmoRockets = r.ReadFloat();
-        LocalAmmoCells = r.ReadFloat();
-        LocalAmmoFuel = r.ReadFloat();
-        ulong wepLo = r.ReadULong();
-        ulong wepHi = r.ReadULong();
-        LocalOwnedWeaponBits = wepLo | (wepHi << 32);
-        LocalUnlimitedAmmo = r.ReadBool();
+        // Owner inventory (appended after the ring floats — the struct's Write/Read pair owns the layout): ammo
+        // pools + owned-weapon bitset + unlimited-ammo + the STAT_ITEMS flag bits. Feeds the full HUD's
+        // ammo/weapons/powerups panels on a pure remote client via NetGame's HUD mirror player. ALWAYS consumes
+        // the fixed layout so the owner block stays aligned for the movevars/scores/entity sections that follow.
+        LocalInventory = XonoticGodot.Net.OwnerInventory.Read(ref r);
 
         // movevars: when the server's physics changed, stamp the replicated values into our cvar store so the
         // predictor's MovementParameters.FromCvars() matches authority (mid-match physics/mutator changes), then
@@ -1341,6 +1329,12 @@ public sealed class ClientNet : IDisposable
                 _staleScratch.Add(id);
         for (int i = 0; i < _staleScratch.Count; i++)
             _remotes.Remove(_staleScratch[i]);
+
+        // The own entity left the set (we became an observer — the server's entity set skips observers): drop
+        // the captured slice so the "watched == self" consumers see NO state rather than the last alive frame
+        // (e.g. a fire viewmodel frame latched at the moment of death).
+        if (LocalNetId != 0 && !entities.ContainsKey(LocalNetId))
+            LocalState = null;
     }
 
     private RemoteEntity GetOrCreateRemote(int netId)
@@ -1391,6 +1385,8 @@ public sealed class ClientNet : IDisposable
     /// <see cref="LocalState"/> so it's never interpolated), so a <see cref="TryGetRemoteState"/> on
     /// <see cref="LocalNetId"/> always MISSES — the silent breaker of every pure-client "watched == self"
     /// consumer (viewmodel anim frame, viewmodel colors, vortex glow). Use THIS for view-through reads.
+    /// (v14: the server actually SENDS the own entity — before that the divert branch was dead and LocalState
+    /// stayed null for the whole session, which is why the #49/#51/#58 fixes didn't land on the wire.)
     /// </summary>
     public bool TryGetViewedState(int netId, out NetEntityState state)
     {
