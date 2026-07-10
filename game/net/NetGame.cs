@@ -3655,6 +3655,12 @@ public sealed partial class NetGame : Node3D
             UpdateInfoMessages();
         }
 
+        // [r16 #5] ng.viewfx: the equip + screen-effects + radar + shownames feed block — previously unscoped,
+        // one of the stretches the profiler's "proc:other dominated / add Prof scopes" debt pointed at.
+        // Explicitly disposed just before the second ng.hud block (a `using var` would swallow it + the tail).
+        XonoticGodot.Common.Diagnostics.Prof.ScopeToken _viewfxScope =
+            XonoticGodot.Game.Client.FrameProfiler.Scope("ng.viewfx");
+
         // Install / swap the first-person weapon model when the networked active weapon changes (CSQC view.qc:305
         // picks the v_ model from the active weapon, rebuilding only on a swap).
         EquipNetworkedWeapon();
@@ -3747,6 +3753,7 @@ public sealed partial class NetGame : Node3D
             // players sharing profile colors classified as teammates (LOS skipped, names always visible).
             _shownamesLayer.Teamplay = XonoticGodot.Common.Gameplay.Scoring.GameScores.Teamplay;
         }
+        _viewfxScope.Dispose(); // close ng.viewfx — the scoreboard/panels below are ng.hud's
 
         // Scoreboard (QC +showscores): show while the scoreboard key is held, and feed it the networked rows +
         // team totals whenever a fresh LatestScoreboard arrives (the panel only repaints on data/toggle, so this

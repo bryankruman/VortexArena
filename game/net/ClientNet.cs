@@ -1086,6 +1086,9 @@ public sealed class ClientNet : IDisposable
 
     private void HandleSnapshot(ref BitReader r)
     {
+        // [r16 #5] cn.snapshot: the snapshot decode+apply is the heavy slice of ng.poll (4-5ms spikes at
+        // 150+ entities were landing in ng.process "(other)"); scoped so the census names it.
+        using var _snapScope = XonoticGodot.Common.Diagnostics.Prof.Sample("cn.snapshot");
         float serverTime = r.ReadFloat();
         uint ackedSeq = r.ReadULong();
 
