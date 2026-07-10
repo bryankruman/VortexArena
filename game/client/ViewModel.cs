@@ -176,7 +176,7 @@ public partial class ViewModel : Node3D
     private AnimationPlayer? _iqmAnimPlayer;    // optional IQM/DPM skeletal AnimationPlayer (h_* rigs); mutually exclusive with _animator — only one is set at a time
     private Node3D _modelRoot = null!;     // holds the weapon mesh (+ its tags), under the Quake->camera basis
     private Marker3D? _muzzleMarker;       // muzzle socket on the model (from tags)
-    private bool _noDepthTestApplied;      // EF_NODEPTHTEST has been pushed onto the current model's materials
+    private bool _surfaceFxApplied;        // viewmodel surface state (short-depth-range / legacy fallback) applied to the current model
     private float _modelAlpha = 1f;        // last alpha applied to the model materials (so we only re-touch on change)
     private OmniLight3D _flashLight = null!;
     private OmniLight3D _fillLight = null!; // soft constant light so the view-model is never a black silhouette
@@ -190,7 +190,7 @@ public partial class ViewModel : Node3D
     // pants palette color); _shirtColor/_pantsColor tint the gun's _shirt/_pants masks so the held weapon reads
     // as "yours". _hasTeam ("has color") is false only when no colors resolved (untinted, native glow).
     // _glowDirty tracks whether the current model's materials already carry the tint so we only re-walk on a
-    // change (mirrors _noDepthTestApplied).
+    // change (mirrors _surfaceFxApplied).
     private Color _teamGlow = new(1f, 1f, 1f);
     private bool _hasTeam;
     private bool _glowDirty = true;        // force a material re-walk after a model swap or a color change
@@ -247,6 +247,9 @@ public partial class ViewModel : Node3D
             OmniAttenuation = 0.5f,
             ShadowEnabled = false,
             Position = new Vector3(8f, 14f, 6f), // camera-local: right, up, behind (+Z) — Quake units
+            // The gun meshes live on the dedicated viewmodel render layer; restricting the fill to that layer
+            // stops it spilling onto nearby world geometry through the camera (it exists only for the gun).
+            LightCullMask = ViewModelRenderFx.RenderLayerBit,
         };
         AddChild(_fillLight);
 
@@ -311,6 +314,7 @@ public partial class ViewModel : Node3D
                 return null;
             });
         }
+        ViewModelRenderFx.Apply(_modelRoot); // viewmodel layer + no shadows + no occlusion cull + short-depth-range materials
         ReseedInstanceTint(); // AFTER attach — the new meshes start untinted (playtest #36)
         CaptureAuthoredShotSide();
     }
@@ -346,6 +350,7 @@ public partial class ViewModel : Node3D
         var muzzle = new Marker3D { Name = "tag_shot", Position = new Vector3(24f, 0f, 0f) };
         _modelRoot.AddChild(muzzle);
         _muzzleMarker = muzzle;
+        ViewModelRenderFx.Apply(_modelRoot); // layer + no shadows (+ NoDepthTest on the override bar)
         // The placeholder is centered (no authored side); keep the representative-fallback so cl_gunalign
         // left/right still read distinctly on the placeholder bar.
         _authoredShotSideY = null;
@@ -389,6 +394,7 @@ public partial class ViewModel : Node3D
         // local transform — _modelRoot's ViewBasis then re-aims the whole assembly into the camera frame.
         model.Transform = attach ?? Transform3D.Identity;
         _modelRoot.AddChild(model);
+        ViewModelRenderFx.Apply(_modelRoot); // viewmodel layer + no shadows + no occlusion cull + short-depth-range materials
         ReseedInstanceTint(); // AFTER attach — the new meshes start untinted (playtest #36)
 
         _muzzleMarker = ResolveMuzzleMarker(name => FindMarkerByName(model, name))
@@ -675,6 +681,10 @@ public partial class ViewModel : Node3D
 
         // EF_ADDITIVE | EF_FULLBRIGHT: make every surface on the model unshaded + additive blend.
         ApplyFlashMaterialFx(flashNode);
+        // Viewmodel render state for the flash too (inherited RENDER_VIEWMODEL in DP): the dedicated render
+        // layer (hidden from portal cameras), no shadow casting, no occlusion cull, and the short-depth-range
+        // uniform on GPU-morph flash materials (the additive BaseMaterial3D surfaces got NoDepthTest above).
+        ViewModelRenderFx.Apply(flashNode);
 
         _muzzleMarker.AddChild(flashNode);
         _muzzleFlashNode = flashNode;
@@ -740,6 +750,12 @@ public partial class ViewModel : Node3D
                 ov.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;  // EF_FULLBRIGHT
                 ov.Transparency = BaseMaterial3D.TransparencyEnum.Alpha;
                 ov.BlendMode = BaseMaterial3D.BlendModeEnum.Add;            // EF_ADDITIVE
+                // The flash is setattachment'd to the viewmodel, so in DP it inherits RENDER_VIEWMODEL
+                // (cl_main.c:1138) and its depth hack. For this transparent additive material the no-depth-test
+                // flag is the working equivalent (DP itself converts SHORTDEPTHRANGE to NODEPTHTEST for
+                // sprite-class attachments, r_sprites.c:407-408): drawn after the opaque world, it can never
+                // be clipped by the wall you are firing into point-blank.
+                ov.NoDepthTest = true;
             }
         }
         foreach (Node child in node.GetChildren())
@@ -1144,34 +1160,39 @@ public partial class ViewModel : Node3D
     }
 
     /// <summary>
-    /// Apply EF_NODEPTHTEST + a continuous opacity to every mesh in the current weapon model, faithful to Base
-    /// <c>viewmodel_draw</c> (the per-child loop sets <c>csqcmodel_effects |= EF_NODEPTHTEST</c> and
-    /// <c>e.alpha = a</c>). NoDepthTest makes the gun always draw on top of the scene instead of clipping into
-    /// nearby world geometry; the alpha is the cl_viewmodel_alpha opacity. Walks every <see cref="MeshInstance3D"/>
-    /// descendant and edits its surface materials in place; only re-touches when the alpha changes.
+    /// Apply the viewmodel surface state + continuous opacity to every mesh in the current weapon model,
+    /// faithful to Base <c>viewmodel_draw</c> (the per-child loop sets <c>csqcmodel_effects |=
+    /// EF_NODEPTHTEST</c> and <c>e.alpha = a</c>; the engine turns RENDER_VIEWMODEL/EF_NODEPTHTEST into
+    /// <c>MATERIALFLAG_SHORTDEPTHRANGE</c> — see <see cref="ViewModelRenderFx"/>). At the default opaque
+    /// alpha every surface rides the faithful short-depth-range shader (converting plain StandardMaterial3D
+    /// surfaces); with <c>cl_viewmodel_alpha</c> &lt; 1 the plain surfaces fall back to the legacy
+    /// translucent BaseMaterial3D path (NoDepthTest + alpha — the skin shader is deliberately opaque-only).
+    /// Walks every <see cref="MeshInstance3D"/> descendant; only re-touches on a change.
     /// </summary>
     private void ApplyModelAlpha(float a)
     {
         bool alphaChanged = !Mathf.IsEqualApprox(a, _modelAlpha);
-        bool needDepth = !_noDepthTestApplied;
+        bool needDepth = !_surfaceFxApplied;
         if (!alphaChanged && !needDepth && !_glowDirty)
             return;
         _modelAlpha = a;
-        _noDepthTestApplied = true;
+        _surfaceFxApplied = true;
         _glowDirty = false;
         // Player colormod (subtle albedo tint toward the PANTS color — the dominant personal color, and exactly
-        // the team color in teamplay) + glowmod (emission) on plain-material v_ models, the StandardMaterial
-        // analog of Base e.colormap/e.glowmod. Colorless → no tint, native (white) glow.
-        ApplyMaterialFx(_modelRoot, a, _hasTeam ? _pantsColor : (Color?)null, _hasTeam ? _teamGlow : (Color?)null);
+        // the team color in teamplay) + glowmod (emission) — only reachable on the legacy BaseMaterial3D
+        // fallback surfaces; converted/skin surfaces take their tint from the instance uniforms
+        // (ReapplyInstanceTint), which is DP's actual model: no _shirt/_pants/_glow map → no team color.
+        ApplyMaterialFx(_modelRoot, a, _hasTeam ? _pantsColor : (Color?)null, _hasTeam ? _teamGlow : (Color?)null,
+            _muzzleFlashNode);
     }
 
-    /// <summary>Forget the applied material fx so the NEXT frame re-walks the freshly-built model (depth-test +
+    /// <summary>Forget the applied material fx so the NEXT frame re-walks the freshly-built model (depth state +
     /// alpha must be re-applied to the new model's materials). Called by every model swap. Also clears any
     /// still-live muzzle-flash model node (the QC wepent.muzzle_flash slot is implicitly cleared on model change
     /// since the exterior weapon entity is rebuilt; we QueueFree so there is no orphan node).</summary>
     private void ResetModelFx()
     {
-        _noDepthTestApplied = false;
+        _surfaceFxApplied = false;
         _modelAlpha = 1f;
         _glowDirty = true; // the freshly-built model's materials need the team colormod/glow re-applied
         if (_muzzleFlashNode is not null && GodotObject.IsInstanceValid(_muzzleFlashNode))
@@ -1188,16 +1209,29 @@ public partial class ViewModel : Node3D
     /// </summary>
     private void ReseedInstanceTint() => ReapplyInstanceTint();
 
-    private static void ApplyMaterialFx(Node node, float a, Color? colormod = null, Color? glow = null)
+    private static void ApplyMaterialFx(Node node, float a, Color? colormod = null, Color? glow = null, Node? skip = null)
     {
+        if (node == skip)
+            return; // the muzzle-flash model runs its own material FX + fade (ApplyFlashMaterialFx/SetFlashAlpha)
         if (node is MeshInstance3D mi && mi.Mesh is { } mesh)
         {
             int surfaces = mesh.GetSurfaceCount();
             for (int i = 0; i < surfaces; i++)
             {
-                // Edit a per-instance override so we never mutate a shared mesh material (other instances / the
-                // world pickup share it). Reuse our own override if present (idempotent re-touch on alpha change);
-                // otherwise duplicate the surface's base material to one (the GpuWarmPass per-instance pattern).
+                // OPAQUE default (cl_viewmodel_alpha 1): the faithful short-depth-range state — plain
+                // StandardMaterial3D surfaces are swapped to the equivalent skin-shader material and every
+                // shader surface rides the viewmodel_depth_range instance uniform (set at equip). Tint/glow
+                // ride the instance uniforms there (ReapplyInstanceTint); nothing else to touch per surface.
+                if (a >= 1f && ViewModelRenderFx.EnsureOpaqueSurfaceFx(mi, i))
+                    continue;
+
+                // Legacy BaseMaterial3D path: a translucent gun (cl_viewmodel_alpha < 1 — the skin shader is
+                // deliberately opaque-only) or a surface the shader can't reproduce (untextured / tinted /
+                // transparent source). Edit a per-instance override so we never mutate a shared mesh material
+                // (other instances / the world pickup share it). Reuse our own override if present (idempotent
+                // re-touch on alpha change) — but a ShaderMaterial override left by a previous opaque frame is
+                // replaced from the pristine mesh source; otherwise duplicate the surface's base material
+                // (the GpuWarmPass per-instance pattern).
                 BaseMaterial3D? ov = mi.GetSurfaceOverrideMaterial(i) as BaseMaterial3D;
                 if (ov is null)
                 {
@@ -1206,7 +1240,7 @@ public partial class ViewModel : Node3D
                     ov = (BaseMaterial3D)bm.Duplicate();
                     mi.SetSurfaceOverrideMaterial(i, ov);
                 }
-                ov.NoDepthTest = true; // EF_NODEPTHTEST — always draw the gun on top of the world.
+                ov.NoDepthTest = true; // EF_NODEPTHTEST approximation — draw the gun over the world.
 
                 // Team colormod (Base e.colormap = 256 + c): tint the gun's albedo toward the player's team color
                 // so the held weapon reads as yours. Captured base RGB once (in AlbedoColor.A's sibling channels)
@@ -1251,7 +1285,7 @@ public partial class ViewModel : Node3D
             }
         }
         foreach (Node child in node.GetChildren())
-            ApplyMaterialFx(child, a, colormod, glow);
+            ApplyMaterialFx(child, a, colormod, glow, skip);
     }
 
     /// <summary>
