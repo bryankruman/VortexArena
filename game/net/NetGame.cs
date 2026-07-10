@@ -327,10 +327,18 @@ public sealed partial class NetGame : Node3D
     private const float MaxInputFrameDt = 0.1f;
     private const float MaxSubStepDt = 0.05f;
 
-    // PATH A render-clock damping (#2): fraction of the render-clock→server-time error closed per fresh snapshot
-    // (DP cl_nettimesyncfactor-style gradual catch-up), and the discontinuity threshold above which we hard-snap
-    // instead (respawn / teleport / level change / a big hitch).
-    private const float ClockSyncFactor = 0.2f;
+    // PATH A render-clock RATE SLEW (r16 rubberband fix — supersedes the per-snapshot ClockSyncFactor STEP):
+    // the render clock converges on server time by modulating its playback RATE within a bounded,
+    // imperceptible band instead of stepping a fraction of the error on each snapshot arrival. Every step
+    // visibly sped/slowed ALL interpolated entities for a frame; under combat load the listen server's tick
+    // catch-up makes LatestServerTime elastic vs wall time, so the steps oscillated in ~300-600ms waves
+    // (session-20260710-182544: frame-time lag-1 autocorr +0.61) — the felt "movement rubberbanding".
+    //   ClockSlewGain — rate deviation per second of clock error (err 33ms → the 5% cap);
+    //   ClockSlewMax  — playback-rate deviation cap (±5%: never perceptibly fast/slow);
+    //   MaxClockResync — discontinuity threshold beyond which we hard-snap (respawn / level change / a
+    //                    huge hitch). DP's cl_nettimesyncboundmode family, done as a rate, not a step.
+    private const float ClockSlewGain = 1.5f;
+    private const float ClockSlewMax = 0.05f;
     private const float MaxClockResync = 0.25f;
 
     // Fix B: a render frame longer than this (a stall on the shared listen-server thread — GC / heavy map streaming,
@@ -3261,26 +3269,29 @@ public sealed partial class NetGame : Node3D
         using (XonoticGodot.Game.Client.FrameProfiler.Scope("ng.poll"))
             _client.Poll();
 
-        // Advance the render clock: free-run by this frame's elapsed time, then gently CREEP it toward server time
-        // on a fresh snapshot (see _renderClock).
-        _renderClock += dt * slowmo; // slowmo: keep the render clock aligned with the (time-scaled) server clock
+        // Advance the render clock: free-run by this frame's elapsed time with a BOUNDED RATE SLEW toward
+        // server time (r16 rubberband fix). The previous design free-ran then corrected 20% of the error
+        // as a STEP on each fresh snapshot — every step jolted the interpolation sampling clock, visibly
+        // speeding/slowing all remote entities for a frame; with the listen server's tick catch-up making
+        // LatestServerTime elastic under combat load, the steps oscillated in ~300-600ms waves — the felt
+        // rubberbanding. Now the clock's PLAYBACK RATE is modulated continuously (±ClockSlewMax): the same
+        // error converges over a few hundred ms while entity motion never deviates perceptibly from real
+        // time — frame rate and sim tick batching fully decouple from interpolation speed. Snap only on
+        // the FIRST snapshot or a discontinuity beyond MaxClockResync (respawn / level change / a huge
+        // hitch). cl_netclock_smooth 0 = the old hard per-snapshot rebase, for A/B.
+        float slew = 0f;
+        if (_lastSeenServerTime >= 0f && _netClockSmoothCv)
+            slew = Math.Clamp((_client.LatestServerTime - _renderClock) * ClockSlewGain,
+                -ClockSlewMax, ClockSlewMax);
+        _renderClock += dt * slowmo * (1f + slew); // slowmo: stay aligned with the (time-scaled) server clock
         if (_client.LatestServerTime != _lastSeenServerTime)
         {
             bool firstSnapshot = _lastSeenServerTime < 0f;
             _lastSeenServerTime = _client.LatestServerTime;
-            // PATH A (#2 divergence vs Base): do NOT hard-rebase the render clock to server time on every snapshot.
-            // The in-process server runs 0-4 ticks/frame and only broadcasts when the world advanced, so snapshots
-            // arrive in lumps; a hard `= LatestServerTime` jolts the clock — and the camera / error+stair decay
-            // timeline it drives — at irregular instants (a contributor to the bhop judder). Instead let the clock
-            // free-run (+= dt above) and gently creep toward server time, matching Base's cl_nettimesyncboundmode
-            // (bound + small per-frame creep, cl_parse.c). Snap only on the FIRST snapshot or a large discontinuity
-            // (respawn / teleport / level change / a hitch beyond MaxClockResync). cl_netclock_smooth 0 = old hard
-            // rebase, for A/B.
             float err = _client.LatestServerTime - _renderClock;
             if (firstSnapshot || !_netClockSmoothCv || MathF.Abs(err) > MaxClockResync)
                 _renderClock = _client.LatestServerTime;
-            else
-                _renderClock += err * ClockSyncFactor; // DP-style gradual catch-up (cl_nettimesyncfactor)
+            // (no per-snapshot step otherwise — the rate slew above owns convergence)
             if (firstSnapshot)
             {
                 // Seed the carrier from the server's authoritative owner state so the predictor's first replay
