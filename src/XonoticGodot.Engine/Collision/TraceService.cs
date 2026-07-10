@@ -19,7 +19,7 @@ namespace XonoticGodot.Engine.Collision;
 /// </summary>
 public sealed class TraceService : ITraceService
 {
-    private readonly CollisionWorld _world;
+    private CollisionWorld _world;
 
     /// <summary>Entity provider for the entity-vs-box sweep. The EntityService implements this.</summary>
     public interface IEntityProvider
@@ -49,6 +49,15 @@ public sealed class TraceService : ITraceService
         _world = world;
         _entities = entities;
     }
+
+    /// <summary>
+    /// Swap the static collision world this service traces against. Used by a pure network client that starts on
+    /// a flat prediction floor and later loads the server's real map BSP (<c>NetGame.LoadClientMapFromServer</c>):
+    /// the swap makes the predicted local player clip real geometry instead of the placeholder floor. Safe to call
+    /// between frames — traces are single-threaded and hold no per-world cached state (only the per-call scratch
+    /// buffers and the hull-keyed box cache, both world-independent).
+    /// </summary>
+    public void SetCollisionWorld(CollisionWorld world) => _world = world;
 
     /// <summary>
     /// [T45] Wire this world's warpzone manager (QC global <c>g_warpzones</c>) so the warpzone-aware trace
