@@ -1440,6 +1440,11 @@ public sealed class ServerNet : IDisposable
         _scratchWriter.WriteUShort(st.NetId);                     // your net entity id
         _scratchWriter.WriteFloat(1f / SimulationLoopTicRate);     // server tick RATE in Hz (1/dt) for client timing
         _scratchWriter.WriteString(_serverName);                   // server display name (for the client UI)
+        // The current map + gametype so a pure remote client can load the BSP itself — rendering the world and
+        // building its own prediction collision (NetGame.LoadClientMapFromServer). ClientNet.HandleAccept reads
+        // these two strings in this exact order, right after the server name.
+        _scratchWriter.WriteString(_world.Services.Cvars.GetString("mapname"));
+        _scratchWriter.WriteString(_world.GameType?.RegistryName ?? "dm");
         _transport.Send(peerId, _scratchWriter.WrittenSpan, reliable: true);
 
         // [W14a-QW4] QC ClientInit_misc (server/client.qc:907): right after the accept, send the one-shot per-server
@@ -1968,7 +1973,12 @@ public sealed class ServerNet : IDisposable
             // delta encoder removes them against its baseline (re-spawning them when they return into view).
             IReadOnlyDictionary<int, NetEntityState> sendSet =
                 RelevantEntitiesFor(st, owner, st.NetId, cullEntitiesPvs, radarShowEnemies, teamplay);
-            st.SnapHistory.EncodeSnapshot(_snapshotWriter, sendSet, _snapshotSeq, excludeEntNum: st.NetId);
+            // v14: the recipient's OWN entity is included (it used to be excluded via excludeEntNum). The client
+            // never interpolates it — ClientNet.HandleSnapshot diverts it into LocalState, the decoded own-entity
+            // slice every "watched == self" consumer reads (viewmodel anim frame/colors, vortex glow, powerup
+            // status timers, hitsound damage diff, the own name tag). Matches Base, where CSQC receives the local
+            // player's own entity too.
+            st.SnapHistory.EncodeSnapshot(_snapshotWriter, sendSet, _snapshotSeq);
 
             // Snapshots are normally unreliable (latest-wins, loss-tolerant), but the FIRST frame to a client is a
             // full baseline of every networked entity (all of the map's static items at once) and exceeds the
@@ -2465,7 +2475,7 @@ public sealed class ServerNet : IDisposable
         {
             bool isOwn = kv.Key == ownNetId;
 
-            // PVS cull: never cull the recipient's own entity (EncodeSnapshot excludes it anyway); keep anything
+            // PVS cull: never cull the recipient's own entity (it ships as the client's LocalState slice); keep anything
             // whose bounds touch a cluster the recipient can see — DIRECTLY or THROUGH a visible portal (the
             // warpzone cluster union above).
             if (havePvsCull && !isOwn
@@ -2483,7 +2493,8 @@ public sealed class ServerNet : IDisposable
             // ent_cs enemy-privacy mask: a live remote PLAYER (the entcs owner IS_PLAYER) whose recipient is an
             // enemy → strip the private HEALTH/ARMOR slice. SAME_TEAM = teamplay ? sameTeamColor : (to == player);
             // a distinct player is never the same entity, so in a non-team game EVERY other player is an enemy (you
-            // never learn anyone else's HP — FFA). Own entity is excluded from the snapshot anyway, so it's unmasked.
+            // never learn anyone else's HP — FFA). The own entity ships unmasked (it IS this recipient — the
+            // client keeps it as its LocalState slice, never in the remote table).
             if (applyPrivacy && !isOwn && state.Kind == NetEntityKind.Player)
             {
                 bool sameTeam = teamplay && ownerTeam != 0 && state.Colormap == ownerTeam;
@@ -2953,6 +2964,23 @@ public sealed class ServerNet : IDisposable
             MineCount = wsMineCount, MineLimit = wsMineLimit,
             ArcHeat = wsArcHeat,
         }.Write(w); // ClientNet.HandleSnapshot reads this via OwnerWeaponRings.Read, in lockstep
+
+        // Owner inventory (QC the ammo/items STATs, stats.qh RES_* + STAT_WEAPONS + the STAT_ITEMS flag bits):
+        // what a PURE remote client's full HUD (ammo panel, weapons panel, powerups item rows, crosshair ring
+        // color) needs; a listen host reads the same values straight off LocalServerPlayer. Appended at the END
+        // of the owner block; ClientNet.HandleSnapshot reads it via OwnerInventory.Read, in lockstep — the
+        // struct's single Write/Read pair owns the wire layout (see OwnerWeaponRings for why).
+        new XonoticGodot.Net.OwnerInventory
+        {
+            Shells = p.GetResource(ResourceType.Shells),
+            Bullets = p.GetResource(ResourceType.Bullets),
+            Rockets = p.GetResource(ResourceType.Rockets),
+            Cells = p.GetResource(ResourceType.Cells),
+            Fuel = p.GetResource(ResourceType.Fuel),
+            WeaponBits = p.OwnedWeaponSet.Bits,
+            UnlimitedAmmo = p.UnlimitedAmmo,
+            ItemFlags = p.Items,
+        }.Write(w);
     }
 
     // =====================================================================================

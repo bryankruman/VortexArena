@@ -355,9 +355,24 @@ public partial class DialogSettingsGameHud : SettingsTab
 
         box.AddChild(Ui.Spacer());
 
-        // QC: makeXonoticButton("Enter HUD editor") onClick=HUDSetup_Check_Gamestatus. No HUD editor backend here;
-        // wire the engine command "menu_showhudoptions" through MenuCommand (logged inert if no backend yet).
-        box.AddChild(Widgets.CommandButton("Enter HUD editor", "menu_showhudoptions"));
+        // QC: makeXonoticButton("Enter HUD editor") onClick=HUDSetup_Check_Gamestatus
+        // (dialog_settings_game_hud.qc): already in a match → HUDSetup_Start runs `togglemenu 0` +
+        // `_hud_configure 1` (drop straight into the live editor, game/hud/HudConfigEditor.cs); not in a match
+        // → the confirm dialog offering to start a local game first (dialog_settings_game_hudconfirm.qc).
+        var enterHud = new Button
+        {
+            Text = Localization.Tr("Enter HUD editor"),
+            CustomMinimumSize = new Vector2(0, 36),
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+        };
+        enterHud.Pressed += () =>
+        {
+            if (MenuCommand.InMatch?.Invoke() == true)
+                MenuCommand.Run("togglemenu 0; _hud_configure 1"); // QC HUDSetup_Start (in-match branch)
+            else
+                MenuCommand.OpenDialogOverlay?.Invoke("hudconfirm"); // QC DialogOpenButton → hudconfirmDialog
+        };
+        box.AddChild(enterHud);
     }
 
     private static string Percent(float v) => $"{Mathf.RoundToInt(v * 100f)}%";
