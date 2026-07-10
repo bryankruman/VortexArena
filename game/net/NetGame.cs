@@ -3783,6 +3783,13 @@ public sealed partial class NetGame : Node3D
         if (_pickupInit)
         {
             XonoticGodot.Game.Hud.PickupPanel? feed = _fullHud.GetPanel<XonoticGodot.Game.Hud.PickupPanel>();
+            // Leading-timer feed (QC HUD_Pickup_Time reads the timer panel's clock): Push samples this ONCE per
+            // pickup and freezes the string, so the readout is the match time the pickup HAPPENED — it used to
+            // fall back to the panel's running "time since" counter, which visibly ticked up. Wired lazily
+            // (idempotent) — the timer panel returns null until its net feed arrives, keeping the fallback.
+            if (feed is not null && feed.MatchTimeProvider is null
+                && _fullHud.GetPanel<XonoticGodot.Game.Hud.TimerPanel>() is { } timerPanel)
+                feed.MatchTimeProvider = timerPanel.PickupTimeString;
             // (QC STAT(LAST_PICKUP) advance → pickup_crosshair_size = 1, crosshair.qc:362-379): a pickup this
             // frame also bumps the crosshair. We derive the same trigger from the client-side pickup detection
             // below (any new weapon or resource jump) and pulse the crosshair once.
