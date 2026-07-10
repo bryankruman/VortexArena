@@ -352,8 +352,8 @@ public sealed partial class NetGame : Node3D
     // not in the movement dt.
     private float _inputDeltaTime = XonoticGodot.Engine.Simulation.SimulationLoop.TicRate;
 
-    // FPS eye height (Xonotic PL_VIEW_OFS '0 0 35'). Mouse-look sensitivity now reads the live `sensitivity`
-    // cvar (LookSensitivity), not a hardcoded constant, so the input-settings dialog drives it.
+    // FPS eye height (Xonotic PL_VIEW_OFS '0 0 35'). Mouse-look reads the live `sensitivity` × m_yaw/m_pitch
+    // cvars (DP cl_input.c formula), so the input-settings dialog drives it and tuned m_yaw/m_pitch work.
     private const float EyeHeight = 35f;
 
     // Standing player hull (Xonotic sv_player_mins/maxs), Quake units — same as PlayerController.HullMins/Maxs.
@@ -2881,6 +2881,14 @@ public sealed partial class NetGame : Node3D
     private int _netTraceTick;             // throttle counter for the net_input_trace log
     private bool _hitchHoldCv = true;      // cl_movement_hitch_hold: Fix B post-hitch stall-aware reconcile (see docs/TROUBLESHOOTING.md)
     private bool _immediateButtonsCv = true; // cl_netimmediatebuttons: send fire/jump/impulse immediately past the rate gate (DP)
+    // DP mouse pipeline (cl_input.c IN_Move → CL_Input): raw deltas accumulate per frame in _mouseDx/Dy
+    // (_UnhandledInput), then FlushMouseLook applies the m_accelerate/m_filter block ONCE per render frame
+    // (the accel math needs realframetime) and scales into the view angles. Params cached R11-style.
+    private readonly XonoticGodot.Common.Input.MouseAccel _mouseAccel = new();
+    private XonoticGodot.Common.Input.MouseAccelParams _mouseAccelCv = XonoticGodot.Common.Input.MouseAccelParams.DpDefaults;
+    private float _pitchMinCv = -90f;      // in_pitch_min (DP -90; quake used -70)
+    private float _pitchMaxCv = 90f;       // in_pitch_max (DP 90; quake used 80)
+    private float _mouseDx, _mouseDy;
 
     private void EnsureProcessCvarCache()
     {
@@ -2902,8 +2910,21 @@ public sealed partial class NetGame : Node3D
             || name.Equals("cl_netclock_smooth", StringComparison.OrdinalIgnoreCase)
             || name.Equals("net_input_trace", StringComparison.OrdinalIgnoreCase)
             || name.Equals("cl_movement_hitch_hold", StringComparison.OrdinalIgnoreCase)
-            || name.Equals("cl_netimmediatebuttons", StringComparison.OrdinalIgnoreCase))
+            || name.Equals("cl_netimmediatebuttons", StringComparison.OrdinalIgnoreCase)
+            // the DP mouse family: m_filter + the whole m_accelerate_* set, and the pitch clamp pair
+            || name.StartsWith("m_", StringComparison.OrdinalIgnoreCase)
+            || name.StartsWith("in_pitch_", StringComparison.OrdinalIgnoreCase))
             RefreshProcessCvars();
+    }
+
+    /// <summary>Read a float cvar with an unset-aware default (GetFloat can't tell unset from 0 — several
+    /// DP mouse-accel defaults are non-zero: minspeed 5000, power 2, in_pitch ±90).</summary>
+    private float CvOr(string name, float def)
+    {
+        string? s = _sharedCvars?.GetString(name);
+        return !string.IsNullOrEmpty(s)
+            && float.TryParse(s, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float v)
+            ? v : def;
     }
 
     private void RefreshProcessCvars()
@@ -2921,6 +2942,25 @@ public sealed partial class NetGame : Node3D
         _hitchHoldCv = (_sharedCvars?.GetString("cl_movement_hitch_hold") ?? "") != "0";
         // cl_netimmediatebuttons defaults ON (unset → on): treat anything but "0" as enabled.
         _immediateButtonsCv = (_sharedCvars?.GetString("cl_netimmediatebuttons") ?? "") != "0";
+        // The DP mouse pipeline params (cl_input.c:401-412 registration defaults for anything unset).
+        var dp = XonoticGodot.Common.Input.MouseAccelParams.DpDefaults;
+        _mouseAccelCv = new XonoticGodot.Common.Input.MouseAccelParams
+        {
+            MFilter             = CvOr("m_filter", 0f) != 0f,
+            Accelerate          = CvOr("m_accelerate", dp.Accelerate),
+            AccelerateMinSpeed  = CvOr("m_accelerate_minspeed", dp.AccelerateMinSpeed),
+            AccelerateMaxSpeed  = CvOr("m_accelerate_maxspeed", dp.AccelerateMaxSpeed),
+            AccelerateFilter    = CvOr("m_accelerate_filter", dp.AccelerateFilter),
+            PowerOffset         = CvOr("m_accelerate_power_offset", dp.PowerOffset),
+            Power               = CvOr("m_accelerate_power", dp.Power),
+            PowerSensCap        = CvOr("m_accelerate_power_senscap", dp.PowerSensCap),
+            PowerStrength       = CvOr("m_accelerate_power_strength", dp.PowerStrength),
+            NaturalStrength     = CvOr("m_accelerate_natural_strength", dp.NaturalStrength),
+            NaturalAccelSensCap = CvOr("m_accelerate_natural_accelsenscap", dp.NaturalAccelSensCap),
+            NaturalOffset       = CvOr("m_accelerate_natural_offset", dp.NaturalOffset),
+        };
+        _pitchMinCv = CvOr("in_pitch_min", -90f);
+        _pitchMaxCv = CvOr("in_pitch_max", 90f);
     }
 
     public override void _Process(double delta)
@@ -2936,6 +2976,10 @@ public sealed partial class NetGame : Node3D
         EnsureProcessCvarCache();   // (§11 R11) hot-path cvar values are cached; refreshed on Changed
 
         float dt = (float)delta;
+
+        // DP CL_Input: apply the frame's accumulated mouse-look FIRST (raw wall-clock dt — cl.realframetime),
+        // so everything below (input sampling, camera, radar) sees this frame's view angles.
+        FlushMouseLook(dt);
 
         // slowmo / host_timescale: the CLIENT-side time accumulators (input cadence + render clock) scale by the
         // SAME factor the server applies to its sim (ServerNet.StepWorld → SimulationLoop.TimeScale), so the player's
@@ -3291,10 +3335,10 @@ public sealed partial class NetGame : Node3D
                     Mathf.DegToRad(fa.Y), Mathf.DegToRad(_lastPredictedFixAngles.Y))));
                 bool predictedSame = Time.GetTicksMsec() * 0.001f - _lastPredictedFixTime < 1f
                     && yawDiff < 2f
-                    && Mathf.Abs(Mathf.Clamp(fa.X, -89f, 89f) - _lastPredictedFixAngles.X) < 2f;
+                    && Mathf.Abs(Mathf.Clamp(fa.X, _pitchMinCv, _pitchMaxCv) - _lastPredictedFixAngles.X) < 2f;
                 if (!predictedSame)
                 {
-                    _viewAngles.X = Mathf.Clamp(fa.X, -89f, 89f);
+                    _viewAngles.X = Mathf.Clamp(fa.X, _pitchMinCv, _pitchMaxCv);
                     _viewAngles.Y = fa.Y;
                     _viewAngles.Z = 0f;
                     _lastFixApplyTime = Time.GetTicksMsec() * 0.001f; // arm the predicted replay-echo discard window
@@ -5639,21 +5683,44 @@ public sealed partial class NetGame : Node3D
             BindInput.HandleEvent(@event, RunBoundCommand);
 
         // Accumulate mouse-look while the cursor is captured (the Shell owns Escape + the mouse around the
-        // in-game menu). Mouse right → yaw decreases (Quake CCW yaw); mouse down → pitch increases (down-positive).
-        // Sensitivity is the live `sensitivity` cvar (the value the input-settings dialog binds), not a hardcoded
-        // constant; the `m_pitch` SIGN gives invert-Y (the dialog's "Invert aiming" flips m_pitch < 0). The shared
-        // view's SensitivityScale folds in (QC setsensitivityscale) so zoomed aim is finer on the net path too.
+        // in-game menu) — DP's IN_Move: raw deltas sum into in_mouse_x/y over the frame; the application (the
+        // m_accelerate/m_filter block + the m_yaw/m_pitch × sensitivity scale) happens ONCE per render frame in
+        // FlushMouseLook, because the accel math needs realframetime. Events are dispatched before _Process, so
+        // this adds no latency.
         // QC FixIntermissionClient / SVC_INTERMISSION: at intermission the engine freezes the player view at the
         // intermission camera and mouse-look is locked. Mirror it by ignoring look input while the match is over
         // (the angles latched at intermission entry are held), so the scoreboard view doesn't swing with the mouse.
         if (@event is InputEventMouseMotion motion && Input.MouseMode == Input.MouseModeEnum.Captured
             && !(_client?.MatchIntermission ?? false))
         {
-            float sens = LookSensitivity() * _view.SensitivityScale;
-            _viewAngles.Y -= motion.Relative.X * sens;
-            _viewAngles.X += motion.Relative.Y * sens * PitchSign();
-            _viewAngles.X = Mathf.Clamp(_viewAngles.X, -89f, 89f);
+            _mouseDx += motion.Relative.X;
+            _mouseDy += motion.Relative.Y;
         }
+    }
+
+    /// <summary>
+    /// The per-frame half of the DP mouse pipeline (cl_input.c CL_Input:550-694): run the accumulated deltas
+    /// through the m_accelerate/m_filter block (<see cref="XonoticGodot.Common.Input.MouseAccel"/>), then apply
+    /// — yaw -= m_yaw · dx · sensitivity · sensitivityscale; pitch += m_pitch · dy · sensitivity ·
+    /// sensitivityscale (m_pitch SIGNED, negative = invert-Y; SensitivityScale = QC setsensitivityscale; Xonotic
+    /// never sets cl.viewzoom, so that DP factor stays 1). Pitch clamps to in_pitch_min/max (DP ±90 — CL_AdjustAngles).
+    /// Runs on ZERO-input frames too: averagespeed still decays through the accel lowpass and the m_filter tail
+    /// drains, exactly like DP running the block unconditionally each frame.
+    /// A hardcoded 0.025 here once replaced m_yaw (DP 0.022) — +13.6% view turn per count vs Base at equal
+    /// sensitivity, which in air-strafe turning reads as sharper movement, not just hotter aim.
+    /// </summary>
+    private void FlushMouseLook(float realFrameTime)
+    {
+        float dx = _mouseDx, dy = _mouseDy;
+        _mouseDx = 0f;
+        _mouseDy = 0f;
+        (float mx, float my) = _mouseAccel.Apply(dx, dy, realFrameTime, in _mouseAccelCv, LookSensitivity());
+        if (mx == 0f && my == 0f)
+            return;
+        float sens = LookSensitivity() * _view.SensitivityScale;
+        _viewAngles.Y -= mx * sens * MYaw();
+        _viewAngles.X += my * sens * MPitch();
+        _viewAngles.X = Mathf.Clamp(_viewAngles.X, _pitchMinCv, _pitchMaxCv);
     }
 
     /// <summary>
@@ -5870,16 +5937,26 @@ public sealed partial class NetGame : Node3D
     private float LookSensitivity()
     {
         float s = Api.Services is not null ? Api.Cvars.GetFloat("sensitivity") : 0f;
-        // The `sensitivity` cvar is ~1..9 (xonotic default 6); scale it into the deg/pixel feel the prior
-        // constant (0.15 ≈ sensitivity 6 × 0.025) gave, so existing aim is unchanged at the default.
-        return s > 0f ? s * 0.025f : 0.15f;
+        return s > 0f ? s : 3f;
     }
 
-    /// <summary>Invert-Y sign from `m_pitch` (DP: negative pitch inverts the Y axis). +1 normal, −1 inverted.</summary>
-    private static float PitchSign()
+    /// <summary>DP `m_yaw` (default 0.022 deg/count): the yaw half of the mouse scale. Unset/0 → 0.022.</summary>
+    private static float MYaw()
     {
-        if (Api.Services is null) return 1f;
-        return Api.Cvars.GetFloat("m_pitch") < 0f ? -1f : 1f;
+        float v = Api.Services is not null ? Api.Cvars.GetFloat("m_yaw") : 0f;
+        return v != 0f ? v : 0.022f;
+    }
+
+    /// <summary>DP `m_pitch` (default 0.022 deg/count, SIGNED — negative inverts the Y axis; the input
+    /// dialog's "Invert aiming" writes ±|value|). Unset/0 → +0.022. Legacy configs hold ±1 from the old
+    /// sign-only invert convention (ClientSettings used to register "1") — any DP-implausible magnitude
+    /// (≥0.5) is read as sign × 0.022 so an archived ±1 doesn't give 45× pitch.</summary>
+    private static float MPitch()
+    {
+        float v = Api.Services is not null ? Api.Cvars.GetFloat("m_pitch") : 0f;
+        if (v == 0f) return 0.022f;
+        if (MathF.Abs(v) >= 0.5f) return v < 0f ? -0.022f : 0.022f; // legacy sign-only ±1
+        return v;
     }
 
     /// <summary>
@@ -5943,7 +6020,7 @@ public sealed partial class NetGame : Node3D
             _consumedWarpSeq = XonoticGodot.Engine.Simulation.TriggerTouch.LastPredictedWarpSeq;
             Common.Gameplay.WarpzoneTransform wt = XonoticGodot.Engine.Simulation.TriggerTouch.LastPredictedWarpTransform;
             _viewAngles = wt.TransformAngles(_viewAngles);
-            _viewAngles.X = Mathf.Clamp(_viewAngles.X, -89f, 89f);
+            _viewAngles.X = Mathf.Clamp(_viewAngles.X, _pitchMinCv, _pitchMaxCv);
             _client.RotatePendingMoves(a => wt.TransformAngles(a));
             float nowW = Time.GetTicksMsec() * 0.001f;
             // Arm the same guards the (now mostly redundant) fixangle paths use: the server's authoritative
@@ -5976,7 +6053,7 @@ public sealed partial class NetGame : Node3D
                 return;
             }
             _viewAngles = _carrier.FixAngleAngles;
-            _viewAngles.X = Mathf.Clamp(_viewAngles.X, -89f, 89f);
+            _viewAngles.X = Mathf.Clamp(_viewAngles.X, _pitchMinCv, _pitchMaxCv);
             _carrier.FixAngle = false;
             // Remember what the PREDICTED snap applied: the server's AUTHORITATIVE stamp for the SAME crossing
             // arrives 1-3 frames later (its tick runs behind the replay), and re-applying it would discard every
