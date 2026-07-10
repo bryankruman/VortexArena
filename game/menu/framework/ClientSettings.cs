@@ -197,6 +197,21 @@ public static class ClientSettings
         // (planning/PERFORMANCE_REPORT.md A3). `set cl_precache_all_weapons 0` restores the smart expected-only warm
         // for memory-constrained machines (NetGame.PrecacheWeaponModelsAsync reads it).
         c.Register("cl_precache_all_weapons", "1");
+        // Persist the shared asset caches (parsed models, decoded sounds, compiled materials/textures, parsed
+        // shaders) across map changes AND server switches (default ON). When ON, every match reuses MenuState's
+        // process-lifetime AssetLoader, so the second map load finds the stock assets already hot instead of
+        // rebuilding them — the whole per-map model/sound/material warm collapses to cache hits. The cost is
+        // that the warmed set stays resident between matches (plus each visited map's external lightmaps
+        // accumulate). `set cl_persist_asset_cache 0` restores per-match loaders for memory-constrained machines
+        // (NetGame._Ready reads it once when choosing its AssetLoader).
+        c.Register("cl_persist_asset_cache", "1");
+        // Warm the map-independent eager asset set (weapons, stock player models, combat sounds) into the shared
+        // cache at GAME LOAD — in the background while the player sits at the menu — instead of at the first map
+        // load (default ON). With cl_persist_asset_cache, this makes the first match's precache a cache hit so the
+        // map loads fast; the warm is fully budgeted (heavy IQM parse off-thread, small builds on a per-frame main
+        // budget) so the menu never hitches (Shell.StartMenuAssetWarm → MenuAssetWarmer). No effect when
+        // persistence is off (a per-match loader wouldn't see the warmed cache). `set cl_warm_at_boot 0` disables.
+        c.Register("cl_warm_at_boot", "1");
         // Off-screen / distant pose-cull for skeletal player models (3.3): when ON, PlayerModel.PushBones is
         // skipped for a REMOTE player whose model is off-screen, and distant on-screen players refresh the
         // Skeleton3D at half rate. The CPU locomotion clock keeps running every frame, so a model going
