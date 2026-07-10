@@ -949,9 +949,17 @@ nudge-out-of-solid; see #9), **#14** flag jitter (user-deferred).
   the additive contribution is near-black → a flat dark blob. Q3 additive stages are UNLIT
   self-luminous adds — `ApplyBlend` + `ApplyBaseBlend` now set Unshaded for Add (and Filter, which
   multiplies the already-lit framebuffer). Also brightens every dim additive map/FX surface.
-- **Residual (documented):** `deformVertexes autosprite2` (the "long" streak quad) approximated as
-  a full camera billboard — Godot StandardMaterial3D has no axial billboard; a custom-shader axial
-  roll is a follow-up if the streak orientation still reads wrong.
+- **Residual — FIXED (branch `parity/blaster-electro-bolt-autosprite`, needs playtest):** both
+  deforms are now implemented faithfully as a generated `skip_vertex_transform` vertex shader with
+  per-quad center/axis baked into CUSTOM0/1 by the MD3 builder (`AutospriteQuads` +
+  `AutospriteShaderGen`; DP `gl_rmain.c` Q3DEFORM_AUTOSPRITE/AUTOSPRITE2 math) — the core re-aims at
+  the view plane, the streak stays on its flight axis and only rolls toward the camera, pivoting at
+  its own trailing center. Also fixes HLAC (same two-quad pattern). NOTE: the same change
+  **supersedes this fix's unshaded treatment for the bolts** — DP's bolt stages are LIT
+  (`rgbGen lightingDiffuse`) with a fullbright `_glow` companion added on top; the new bolt material
+  is lit-base + `_glow` EMISSION, additive (the general `ApplyBlend` unshaded rule for other map FX
+  is untouched). Electro's `tcMod page 4 1 0.1` crackle flipbook also now animates (was a parsed
+  no-op). Details: planning/blaster-electro-bolt-autosprite-parity.md.
 
 ### r8 addendum — #36 weapon appearance v2 + the fire-animation trigger (both re-reported, both FIXED)
 - [x] **Appearance "too shiny / seeing through geometry" (screenshots 18:42):** caused by the r7 cubemap
