@@ -1911,6 +1911,12 @@ public sealed partial class NetGame : Node3D
         string vModel = string.IsNullOrEmpty(vmOverride) ? WeaponVModelPath(w) : "models/weapons/" + vmOverride;
         ViewModelEquip eq = ViewModelEquip.Build(_assets, vModel);
         _viewModel.SetWeaponModel(eq.Model, MuzzleEffectFor(w), "tag_shot", eq.Attach, MuzzleModelFor(w));
+        // QC wepent.movedir (CL_WeaponEntity_SetModel): the weapon's registered model-local tag_shot offset —
+        // the SAME value the server's SetupShot fires from — so the first-person flash spawns at the real
+        // muzzle point (Base movedir_aligned), not wherever the compressed-view-space render tag lands.
+        System.Numerics.Vector3 mdv = XonoticGodot.Common.Gameplay.WeaponFiring.TryGetMuzzleOffset(id, out System.Numerics.Vector3 mo)
+            ? mo : XonoticGodot.Common.Gameplay.WeaponFiring.DefaultMuzzleOffset;
+        _viewModel.MuzzleMovedir = new Vector3(mdv.X, mdv.Y, mdv.Z);
         _viewModel.Visible = true;
         // Raise the new gun into view instead of popping the model in (Xonotic viewmodel_draw raise; pairs with
         // the keypress holster in RunBoundCommand). Confirmed switch → cancels any pending holster auto-recovery.

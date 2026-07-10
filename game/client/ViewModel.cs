@@ -67,6 +67,16 @@ public partial class ViewModel : Node3D
     [Export] public string MuzzleTagName { get; set; } = "tag_shot";
 
     /// <summary>
+    /// QC <c>wepent.movedir</c> — the equipped weapon's model-local <c>tag_shot</c> offset in Quake coords
+    /// (X = forward, Y = +left, Z = up), the SAME registered value the server's <c>SetupShot</c> spawns shots
+    /// from (<c>WeaponFiring.RegisterMuzzleOffset</c>). Set per equip by the host; <see cref="Fire"/> rotates it
+    /// into the live view basis (with the <c>cl_gunalign</c> mirror — Base <c>movedir_aligned</c>) to place the
+    /// first-person muzzle-flash burst at the REAL muzzle point, independent of how the viewmodel renders.
+    /// Default = <c>WeaponFiring.DefaultMuzzleOffset</c> (the tag-less/dedicated fallback).
+    /// </summary>
+    public Vector3 MuzzleMovedir { get; set; } = new Vector3(12f, 0f, -8f);
+
+    /// <summary>
     /// <c>cl_viewmodel_scale</c> — uniform scale DarkPlaces applies to the viewmodel matrix. Xonotic's default
     /// is 1: the <c>v_*</c> models are authored at the right size in view space, so we do NOT shrink them.
     /// </summary>
@@ -591,15 +601,29 @@ public partial class ViewModel : Node3D
     {
         string effect = string.IsNullOrEmpty(effectOverride) ? MuzzleEffect : effectOverride!;
 
-        // Muzzle flash: the REAL per-weapon effectinfo burst, world-space at the muzzle socket's live transform —
-        // the same Spawn path a networked W_MuzzleFlash from another player takes (parsed effectinfo blocks, the
-        // block dlight, the faithful/modern router). Base-faithful: QC W_MuzzleFlash fires pointparticles at
-        // shotorg with shotdir*1000 in WORLD space; only the flash MODEL attaches to the gun (below). The old
-        // attached name-heuristic burst made every weapon's first-person flash read generic (playtest #49).
-        Transform3D muzzleXf = MuzzleGlobalTransform();
-        var originQuake = Coords.ToQuake(muzzleXf.Origin);
-        var dirQuake = Coords.ToQuake(-muzzleXf.Basis.Z) * 1000f; // QC shotdir * 1000 (matches the networked emit)
-        Effects?.MuzzleFlash(effect, originQuake, dirQuake);
+        // Muzzle flash: the REAL per-weapon effectinfo burst, via the same Spawn path a networked W_MuzzleFlash
+        // from another player takes (parsed effectinfo blocks, the block dlight, the faithful/modern router).
+        // Origin/direction are the port of Base NET_HANDLE(w_muzzleflash)'s first-person branch (all.qc:742-775):
+        //   org = eye + the weapon's movedir_aligned rotated into the VIEW basis (forward*md.x + right*-md.y + up*md.z)
+        //   dir = view forward * 1000
+        // NOT the rendered tag_shot's world transform: the viewmodel draws in compressed view space hung off the
+        // camera, so the tag's world position sits short of the real muzzle and its basis is authored/bone-rest
+        // arbitrary — both read visibly wrong on screen (playtest follow-up to #49). This node is a direct child
+        // of the camera at identity, so its GlobalPosition IS the render eye.
+        if (ViewStateProvider is not null)
+        {
+            AngleVectorsQuake(ViewStateProvider().ViewAnglesQuake, out NVec3 fwd, out NVec3 right, out NVec3 up);
+            Vector3 md = MovedirAligned();
+            NVec3 eye = Coords.ToQuake(GlobalPosition);
+            NVec3 org = eye + fwd * md.X + right * -md.Y + up * md.Z; // QC right*-vecs.y: model Y is +left
+            Effects?.MuzzleFlash(effect, org, fwd * 1000f);
+        }
+        else
+        {
+            // No view state wired (tests/tools): fall back to the muzzle socket's world transform.
+            Transform3D muzzleXf = MuzzleGlobalTransform();
+            Effects?.MuzzleFlash(effect, Coords.ToQuake(muzzleXf.Origin), Coords.ToQuake(-muzzleXf.Basis.Z) * 1000f);
+        }
 
         // Flash light + recoil (+ the grid-lit ambient pop standing in for the flash light — see PushGridLight).
         _flashTime = 0.06f;
@@ -1469,6 +1493,24 @@ public partial class ViewModel : Node3D
 
     /// <summary>Map a Quake view-space point (X fwd, Y left, Z up) into the camera's local Godot frame.</summary>
     private static Vector3 QuakeViewToCamera(Vector3 q) => new(-q.Y, q.Z, -q.X);
+
+    /// <summary>
+    /// Base <c>movedir_aligned</c> (all.qc:483 — <c>shotorg_adjust(v, false, visual:true, algn)</c> =
+    /// <c>shotorg_adjustfromclient</c>): the weapon's <see cref="MuzzleMovedir"/> with the <c>cl_gunalign</c>
+    /// adjustment — right (3) = authored, left (4) mirrors Y, center (1/2) zeroes Y and drops 2u. This is the
+    /// visual shot origin the first-person muzzle flash spawns from (unaffected by shootfromeye).
+    /// </summary>
+    private Vector3 MovedirAligned()
+    {
+        Vector3 md = MuzzleMovedir;
+        switch (GunAlign)
+        {
+            case 4: md.Y = -md.Y; break;                 // left: mirror across the centre line
+            case 1: case 2: md.Y = 0f; md.Z -= 2f; break; // center: middle + 2u drop
+            default: break;                               // 3 right: authored
+        }
+        return md;
+    }
 
     /// <summary>
     /// The <c>cl_gunalign</c> view-space nudge (Quake: X fwd, Y left, Z up). Right alignment (3) is the model's
