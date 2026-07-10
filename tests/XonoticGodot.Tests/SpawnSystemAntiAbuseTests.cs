@@ -337,4 +337,52 @@ public sealed class SpawnSystemAntiAbuseTests : System.IDisposable
         }
         Assert.True(sawA, "with re-pick off the occupied spot should sometimes be chosen");
     }
+
+    // ---- R0a complement: the in-solid gate must still catch BRUSH-ENTITY embedding (closed doors) ----------
+
+    [Fact]
+    public void R0a_BrushEntityOnSpot_IsStillRejected()
+    {
+        // The camper fix must not over-reach: a spot covered by a closed func_door/plat (Solid.Bsp) is genuinely
+        // unusable and must be dropped. The gate's filter is NoMonsters — world + brush entities, no player
+        // hulls — NOT WorldOnly, which would skip the door and spawn the player inside it.
+        Cvar("g_spawn_avoid_los", "0");
+        Cvar("g_spawnpoints_auto_move_out_of_solid", "0"); // isolate the reject path from the relocation nudge
+        Entity covered = Spot(new NVec3(0, 0, 0));
+        Entity clean = Spot(new NVec3(500, 0, 0));
+
+        Entity door = Api.Entities.Spawn();               // a closed door engulfing the first spot's placement box
+        door.ClassName = "func_door";
+        door.Solid = Solid.Bsp;
+        Api.Entities.SetSize(door, new NVec3(-64, -64, -16), new NVec3(64, 64, 160));
+        Api.Entities.SetOrigin(door, new NVec3(0, 0, 0));
+
+        SpawnSystem.Reseed(1);
+        SpawnPoint? sp = SpawnSystem.SelectSpawnPoint(new Player { Flags = EntFlags.Client }, new List<Player>());
+
+        Assert.NotNull(sp);
+        Assert.Same(clean, sp!.Value.Source);             // the door-embedded spot is out of the pool
+        Assert.NotSame(covered, sp!.Value.Source);
+    }
+
+    // ---- R1 preset: duel disables the LOS demotion for the match and restores it after -------------------
+
+    [Fact]
+    public void R1_DuelPreset_DisablesLosAvoid_AndRestoresOnDeactivate()
+    {
+        // The duel gametype preserves the 1v1 spawn-reading meta: Activate saves the host's value and forces
+        // g_spawn_avoid_los 0; Deactivate restores the saved value (so duel -> DM doesn't leak the 0).
+        Cvar("g_spawn_avoid_los", "1");
+        var duel = new Duel();
+        duel.Activate();
+        try
+        {
+            Assert.Equal(0f, Api.Cvars.GetFloat("g_spawn_avoid_los"));
+        }
+        finally
+        {
+            duel.Deactivate();
+        }
+        Assert.Equal(1f, Api.Cvars.GetFloat("g_spawn_avoid_los"));
+    }
 }

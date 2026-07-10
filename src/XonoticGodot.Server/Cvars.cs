@@ -260,7 +260,8 @@ public static class Cvars
         new("g_spawn_furthest", "0.5", "fraction of spawns biased far from players"),
         new("g_spawn_useallspawns", "0"),
         // ---- anti-abuse spawn scoring (spawn-system-analysis 2026-07-06). R1 ships ON (a deliberate divergence
-        //      from Base; duel/XPM ruleset presets set g_spawn_avoid_los 0); the rest default off/faithful. ----
+        //      from Base; the Duel gametype disables it for the match — Duel.Activate saves + sets
+        //      g_spawn_avoid_los 0, Deactivate restores); the rest default off/faithful. ----
         new("g_spawn_avoid_los", "1", "[R1] avoid spawning where a live enemy has line of sight to the spot (0 = Base)"),
         new("g_spawn_avoid_los_distance", "1250", "[R1] only enemies within this range (qu) count for the LOS check"),
         new("g_spawn_avoid_death_radius", "0", "[R2] demote spawns within this radius (qu) of where you just died (0 = off)"),

@@ -60,7 +60,11 @@ Files: [SpawnSystem.cs](../src/XonoticGodot.Common/Gameplay/Player/SpawnSystem.c
 [Cvars.cs](../src/XonoticGodot.Server/Cvars.cs),
 tests in [SpawnSystemAntiAbuseTests.cs](../tests/XonoticGodot.Tests/SpawnSystemAntiAbuseTests.cs), CVARS.md regenerated.
 Not per-frame (runs once per respawn) so no `Prof.Sample` scope / perf-smoke needed.
-**Still to do:** duel/XPM ruleset presets should set `g_spawn_avoid_los 0`; live playtest with `sv_spawn_debug 1`.
+**Still to do:** live playtest with `sv_spawn_debug 1`. ~~Duel preset~~ — DONE 2026-07-10: `Duel.Activate`
+saves + sets `g_spawn_avoid_los 0`, `Deactivate` restores (there is no XPM ruleset in the port yet; when one
+lands it should do the same). Also 2026-07-10 (review finding): the R0a in-solid gate + relocation switched
+`WorldOnly` → `NoMonsters` so a spot covered by a closed func_door/plat is still rejected while player hulls
+still can't displace spots; both pinned in `SpawnSystemAntiAbuseTests`.
 
 ---
 

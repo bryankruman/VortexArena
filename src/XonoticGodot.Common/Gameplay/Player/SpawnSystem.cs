@@ -539,17 +539,19 @@ public static class SpawnSystem
         // and, on trace_startsolid, attempt the move-out-of-solid relocation, persisting it onto the spot's origin
         // (the spot entity is re-read each selection, so the nudge sticks like Base's permanent link-time move).
         //
-        // [R0a] The trace is WORLD-ONLY. Base runs this once at map LOAD (relocate_spawnpoint), when the world is
-        // empty of players — so it only ever caught spots embedded in the map's own brushes (a mapper error). The
-        // port runs it per-SELECTION, when players are live; a plain Normal trace here would clip against player
-        // hulls, so an enemy standing on a spot would trip startsolid and either PERMANENTLY relocate the spot ~70qu
-        // upward (the persisted SetOrigin below) or, under a low ceiling, get it scored -1 and dropped from the pool
-        // while they stand there — a body-block spawn-control lever Base doesn't have. WorldOnly restores Base's
-        // intent (catch world-embedded spots, ignore players); occupied spots are handled by policy (R5), not here.
+        // [R0a] The trace is NOMONSTERS (world + brush-model entities, no player hulls). Base runs this once at
+        // map LOAD (relocate_spawnpoint), when the world is empty of players — so it only ever caught spots
+        // embedded in solid geometry (a mapper error). The port runs it per-SELECTION, when players are live; a
+        // plain Normal trace here would clip against player hulls, so an enemy standing on a spot would trip
+        // startsolid and either PERMANENTLY relocate the spot ~70qu upward (the persisted SetOrigin below) or,
+        // under a low ceiling, get it scored -1 and dropped from the pool while they stand there — a body-block
+        // spawn-control lever Base doesn't have. NoMonsters restores Base's intent (players can't displace spots)
+        // while STILL rejecting a spot covered by a closed func_door/plat (Solid.Bsp clips under NoMonsters —
+        // WorldOnly would skip those and spawn the player inside the door). Occupied spots are policy (R5), not here.
         if (Api.Services is not null)
         {
             Vector3 place = spot.Origin + new Vector3(0f, 0f, 1f - PlayerMins.Z - 24f);
-            TraceResult bad = Api.Trace.Trace(place, PlayerMins, PlayerMaxs, place, MoveFilter.WorldOnly, forPlayer);
+            TraceResult bad = Api.Trace.Trace(place, PlayerMins, PlayerMaxs, place, MoveFilter.NoMonsters, forPlayer);
             if (bad.StartSolid)
             {
                 if (!CvarBool("g_spawnpoints_auto_move_out_of_solid", true)
@@ -585,7 +587,8 @@ public static class SpawnSystem
         // prefilter, then a world-only eye-to-eye traceline within g_spawn_avoid_los_distance — drop the
         // good-distance tier so a hidden spot outscores a visible one. This is the direct answer to "I spawned in
         // his crosshair". Floored at 0 so it never makes a spot unusable (a visible spot is a last resort, not
-        // rejected). Duel/XPM ruleset presets set g_spawn_avoid_los 0 to preserve the spawn-reading meta.
+        // rejected). The Duel gametype disables this for the match (Duel.Activate saves + sets g_spawn_avoid_los 0,
+        // Deactivate restores) to preserve the competitive spawn-reading meta.
         if (CvarBool("g_spawn_avoid_los", true) && SpotSeenByEnemy(forPlayer, spot, livePlayers))
             prio = MathF.Max(0f, prio - PrioGoodDistance);
 
@@ -924,9 +927,10 @@ public static class SpawnSystem
         {
             Vector3 newOrigin = spot.Origin + new Vector3(0f, 0f, dz);
             Vector3 place = newOrigin + new Vector3(0f, 0f, zNudge);
-            // [R0a] WorldOnly to match the ScoreSpot gate that called us: we relocate out of WORLD embedding only,
-            // never off a live player hull (a player can't permanently displace a spawnpoint by standing on it).
-            TraceResult t = Api.Trace.Trace(place, PlayerMins, PlayerMaxs, place, MoveFilter.WorldOnly, forPlayer);
+            // [R0a] NoMonsters to match the ScoreSpot gate that called us: we relocate out of world/brush-entity
+            // embedding only, never off a live player hull (a player can't permanently displace a spawnpoint by
+            // standing on it — but a closed door still counts as solid, so we don't relocate INTO one either).
+            TraceResult t = Api.Trace.Trace(place, PlayerMins, PlayerMaxs, place, MoveFilter.NoMonsters, forPlayer);
             if (!t.StartSolid)
             {
                 // Commit the relocation onto the spot (QC setorigin in relocate_spawnpoint). Persists across
