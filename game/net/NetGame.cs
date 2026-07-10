@@ -1840,6 +1840,14 @@ public sealed partial class NetGame : Node3D
     /// owner's active weapon arrives in the snapshot owner block (<see cref="ClientNet.ActiveWeaponId"/>).
     /// Holstered / dead (id &lt; 0 or health &le; 0) hides the gun, mirroring view.qc masking it when dead.
     /// </summary>
+    /// <summary>
+    /// Seconds left of the OUTGOING weapon's <c>switchdelay_drop</c> during a staged first-person weapon swap
+    /// (the holster slide window <see cref="EquipNetworkedWeapon"/> holds the old model through). Negative = no
+    /// swap staged. Also read by the fire-feedback gate: the server slot is in the Drop state for this window,
+    /// so predicted muzzle flash/sound must not fire through it.
+    /// </summary>
+    private float _switchDropLeft = -1f;
+
     private void EquipNetworkedWeapon()
     {
         if (_viewModel is null || !GodotObject.IsInstanceValid(_viewModel) || _client is not { Accepted: true })
@@ -1889,9 +1897,33 @@ public sealed partial class NetGame : Node3D
 
         if (id == _equippedWeaponId && vmOverride == _equippedVmOverride)
         {
+            _switchDropLeft = -1f;        // a staged switch back to the current weapon dissolves
             _viewModel.Visible = !hidden; // no weapon/model change; just track the dead/holstered visibility edge
             return;
         }
+
+        // Weapon CHANGE while a gun is up: hold the OLD model on screen for the outgoing weapon's
+        // switchdelay_drop while the holster slide plays, and only then install the new model + raise — QC
+        // weapon_thinkf(WFRAME_DONTCHANGE, oldwep.switchdelay_drop, w_clear) installs the new weapon at w_clear.
+        // The port's Inventory.SwitchWeapon mirrors ActiveWeaponId IMMEDIATELY (the fire driver alone carries the
+        // drop/raise timing), so without this hold the swap looked instantaneous — worst on the out-of-ammo
+        // auto-switch, which has no keypress holster to mask it. Re-targeting mid-drop (rapid re-switch) keeps
+        // the running drop clock, like QC re-entering w_clear with a new m_switchweapon. First equip
+        // (_equippedWeaponId < 0) and the hidden/dead path stay immediate.
+        // (id check: a same-weapon wr_viewmodel override change — the Tuba instrument swap — rebuilds immediately.)
+        if (!hidden && _equippedWeaponId >= 0 && id >= 0 && id != _equippedWeaponId)
+        {
+            if (_switchDropLeft < 0f)
+            {
+                XonoticGodot.Common.Gameplay.Weapon outgoing = XonoticGodot.Common.Gameplay.Weapons.ById(_equippedWeaponId);
+                _switchDropLeft = outgoing?.SwitchDelayDrop() ?? 0f;
+                _viewModel.PlayHolster(); // no-op refresh if the manual keypress already started the slide
+            }
+            _switchDropLeft -= (float)GetProcessDeltaTime();
+            if (_switchDropLeft > 0f)
+                return; // old model stays up while it lowers
+        }
+        _switchDropLeft = -1f;
         _equippedWeaponId = id;
         _equippedVmOverride = vmOverride;
 
@@ -5968,6 +6000,19 @@ public sealed partial class NetGame : Node3D
         bool a1 = BindTable.AttackHeld;
         if (a1 && !_attackHeld)
             _attackLatch = true; // sub-tick latch for the server (independent of FX prediction)
+
+        // A staged weapon swap is holstering (EquipNetworkedWeapon holds the old model for switchdelay_drop):
+        // the server slot is in the Drop state and cannot fire, so don't predict flash/sound through it. Both
+        // press edges still latch for the server, so the input stream is unaffected — only the local FX skip.
+        if (_switchDropLeft >= 0f)
+        {
+            bool a2Drop = BindTable.Attack2Held;
+            if (a2Drop && !_attack2Held)
+                _attack2Latch = true;
+            _attackHeld = a1;
+            _attack2Held = a2Drop;
+            return;
+        }
 
         if (_predictFire)
         {
