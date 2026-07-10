@@ -222,6 +222,12 @@ public class AutospriteBoltTests
         Assert.Contains("colormod", src);                 // per-entity DP colormod/glowmod ride fragment
         Assert.Contains("glowmod", src);                  //   instance uniforms (the safe, working kind)
         Assert.Contains("ALPHA = 1.0", src);              // GL_ONE GL_ONE: alpha must not scale the add
+        // DP lightingDiffuse is diffuse-only: Godot's specular lobe lights the whole quad independent
+        // of the black albedo — the intermittent "white box around the bolt" — and Godot fog blends
+        // additive surfaces toward the fog COLOR (DP fades them toward black). Both must stay off.
+        Assert.Contains("SPECULAR = 0.0", src);
+        Assert.Contains("ROUGHNESS = 1.0", src);
+        Assert.Contains("fog_disabled", src);
     }
 
     [Fact]

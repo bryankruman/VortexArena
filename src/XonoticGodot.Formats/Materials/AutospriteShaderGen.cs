@@ -42,7 +42,10 @@ public static class AutospriteShaderGen
         // cull_disabled: the re-aimed quad's winding depends on the view; both faces must draw.
         // blend_add: Q3 `blendfunc add` — and deliberately NOT `unshaded`: DP lights the base texture
         // (rgbGen lightingDiffuse) and only the _glow companion is fullbright (EMISSION).
-        sb.Append("render_mode skip_vertex_transform, cull_disabled, blend_add;\n\n");
+        // fog_disabled: Godot fogs transparent surfaces toward the FOG COLOR, which on an additive
+        // quad paints the black region as a haze-colored box; DP instead fades additive surfaces
+        // toward black in fog. Staying fog-free is the lesser divergence for a small short-lived bolt.
+        sb.Append("render_mode skip_vertex_transform, cull_disabled, blend_add, fog_disabled;\n\n");
 
         sb.Append("uniform sampler2D albedo_tex : source_color, filter_linear_mipmap_anisotropic;\n");
         sb.Append("uniform sampler2D glow_tex : source_color, filter_linear_mipmap_anisotropic;\n");
@@ -82,6 +85,11 @@ public static class AutospriteShaderGen
         sb.Append("    vec4 c = texture(albedo_tex, uv);\n");
         Q3StageGlsl.EmitRgbGen(sb, stage.RgbGen);
         sb.Append("    ALBEDO = c.rgb * colormod;                       // lit — rgbGen lightingDiffuse\n");
+        // DP's lightingDiffuse is DIFFUSE-ONLY. Godot's lit pipeline would add a specular lobe over the
+        // whole quad INDEPENDENT of the black albedo — a view/light-angle-dependent white sheen that
+        // makes the quad's full square flash into view (the "white box around the bolt" artifact).
+        sb.Append("    SPECULAR = 0.0;\n");
+        sb.Append("    ROUGHNESS = 1.0;\n");
         sb.Append("    EMISSION = texture(glow_tex, uv).rgb * glowmod;  // _glow companion, fullbright add\n");
         // Q3 add is GL_ONE GL_ONE; Godot blend_add is srcAlpha*ONE, so alpha must be 1 — black texels
         // self-erase under the add, exactly like DP.
