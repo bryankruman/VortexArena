@@ -306,30 +306,30 @@ features:
       - "common/weapons/all.qc:NET_HANDLE(w_muzzleflash)"
     port_refs:
       - "game/client/ViewModel.cs:Fire"
-      - "game/client/EffectSystem.cs:MuzzleFlashAttached"
+      - "game/client/EffectSystem.cs:MuzzleFlash"
       - "game/net/NetGame.cs:MuzzleEffectFor"
       - "game/net/NetGame.cs:UpdateLocalFireFeedback"
     constants:
-      - { name: "local emit", base: "pointparticles(m_muzzleeffect) at view-projected movedir_aligned", port: "MuzzleFlashAttached burst at tag_shot socket + flash OmniLight + recoil", match: false }
+      - { name: "local emit", base: "pointparticles(m_muzzleeffect) at view-projected movedir_aligned, shotdir*1000", port: "full effectinfo Spawn (same path as the networked copy: parsed blocks + dlight + router) at the tag_shot socket's live transform, dir*1000", match: true }
       - { name: "remote emit", base: "Send_Effect_Except(m_muzzleeffect, shotorg, shotdir*1000, except actor)", port: "server EffectEmitter.Emit('*_MUZZLEFLASH', ..., except: actor)", match: true }
       - { name: "chase_active branch", base: "emit at server sv_shotorg", port: "not handled (gun hidden in chase)", match: false }
     status:
       logic: faithful
       values: partial
       timing: faithful
-      presentation: partial
+      presentation: faithful
       audio: na
       liveness: live
     intended_divergence: false
     divergence_rationale: null
     gaps:
-      - "Local muzzle position is a heuristic at the tag_shot socket rather than Base's view-projected movedir_aligned (not verified to read identically on-screen)."
-      - "Secondary fire does not flash (only the primary _attackHeld path calls Fire; UpdateLocalFireFeedback comments 'secondary FX stay networked for now')."
+      - "Local muzzle position is the tag_shot socket's live transform rather than Base's view-projected movedir_aligned (not verified to read identically on-screen)."
+      - "The port ADDITIONALLY pops ViewModel._flashLight (energy 3, 0.06s) on top of the effectinfo block dlight — a stand-in kept for effects without a light row and for the grid-lit viewmodel pop; possible brief double-light where the effect has its own dlight."
       - "ClientWorld.OnMuzzleFlash wrapper has no caller (NetGame calls _viewModel.Fire() directly) — dead wrapper, but the feature is live by another path."
     verification:
-      - { kind: code, ref: "ViewModel.Fire -> MuzzleFlashAttached + OmniLight; live from PredictFireShot / UpdateLocalFireFeedback; remote VERIFIED via EffectEmitter.Emit('*_MUZZLEFLASH', shot.Origin, shot.Dir*1000, except: actor)", result: pass }
+      - { kind: code, ref: "ViewModel.Fire -> EffectSystem.MuzzleFlash (full effectinfo Spawn) + OmniLight; live from PredictFireShot / UpdateLocalFireFeedback (primary refire clock + secondary press edge); remote VERIFIED via EffectEmitter.Emit('*_MUZZLEFLASH', shot.Origin, shot.Dir*1000, except: actor)", result: pass }
     confidence: medium
-    notes: "Both local and remote particle flashes are LIVE. Remote emit confirmed faithful to Send_Effect_Except (every weapon passes except: actor). Position is heuristic (tag socket) not the QC view-projection; not runtime-verified for on-screen match. Secondary fire genuinely does not flash."
+    notes: "Both local and remote particle flashes are LIVE and now share the SAME effectinfo path (the heuristic MuzzleFlashAttached burst was deleted — it made every weapon's local flash read generic, playtest #49). Remote emit confirmed faithful to Send_Effect_Except (every weapon passes except: actor). Secondary shots flash on the press edge (SecondaryFiresShot gate). Position is the tag socket, not the QC view-projection; not runtime-verified for on-screen match."
 
   - id: cl-viewmodel.muzzle.flash_model
     name: "Muzzle flash MODEL (spinning flash md3 for the 7 m_muzzlemodel weapons: Devastator/MineLayer/OkRPC=flash.md3, Machinegun/Shotgun/OkHMG/OkMachinegun=uziflash.md3)"

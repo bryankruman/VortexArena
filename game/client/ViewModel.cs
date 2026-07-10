@@ -591,20 +591,15 @@ public partial class ViewModel : Node3D
     {
         string effect = string.IsNullOrEmpty(effectOverride) ? MuzzleEffect : effectOverride!;
 
-        // Muzzle flash: attach the burst to the muzzle socket so it emits from the barrel and rides the gun's
-        // sway/recoil/bob (the snappy local first-person flash). Remote players still see the networked world-space
-        // copy. Fall back to a one-shot world-space burst at the model front when no socket resolved.
-        if (_muzzleMarker is not null && GodotObject.IsInstanceValid(_muzzleMarker))
-        {
-            Effects?.MuzzleFlashAttached(effect, _muzzleMarker);
-        }
-        else
-        {
-            Transform3D muzzleXf = MuzzleGlobalTransform();
-            var originQuake = Coords.ToQuake(muzzleXf.Origin);
-            var dirQuake = Coords.ToQuake(-muzzleXf.Basis.Z) * 120f; // forward
-            Effects?.MuzzleFlash(effect, originQuake, dirQuake);
-        }
+        // Muzzle flash: the REAL per-weapon effectinfo burst, world-space at the muzzle socket's live transform —
+        // the same Spawn path a networked W_MuzzleFlash from another player takes (parsed effectinfo blocks, the
+        // block dlight, the faithful/modern router). Base-faithful: QC W_MuzzleFlash fires pointparticles at
+        // shotorg with shotdir*1000 in WORLD space; only the flash MODEL attaches to the gun (below). The old
+        // attached name-heuristic burst made every weapon's first-person flash read generic (playtest #49).
+        Transform3D muzzleXf = MuzzleGlobalTransform();
+        var originQuake = Coords.ToQuake(muzzleXf.Origin);
+        var dirQuake = Coords.ToQuake(-muzzleXf.Basis.Z) * 1000f; // QC shotdir * 1000 (matches the networked emit)
+        Effects?.MuzzleFlash(effect, originQuake, dirQuake);
 
         // Flash light + recoil (+ the grid-lit ambient pop standing in for the flash light — see PushGridLight).
         _flashTime = 0.06f;

@@ -1168,16 +1168,23 @@ both consumers hoisted out of the host-only block earlier) — likely fixed by t
   chatbubble asset resolve.
 
 ### 49. Remote client's muzzle flash looks generic/strange **[client-map-load]**
-- [ ] **Status:** Not started
+- [x] **Status:** FIXED (needs playtest) — real per-weapon effectinfo flash
 - **Symptom:** Weapon-fire muzzle flash on the pure client plays oddly — looks like a generic flash,
   not the weapon's own (host looks right).
-- **Notes (hypothesis, unverified):** the first-person flash rides `ViewModel.Fire()` +
-  per-weapon `MuzzleModelPath`/muzzle effects set at equip; the pure-client equip path (networked
-  ActiveWeaponId → EquipNetworkedWeapon) may skip the per-weapon muzzle setup the listen path gets, or
-  the predicted-fire feedback (`UpdateLocalFireFeedback`, cl_predictfire) falls back to a generic effect
-  when there's no local server Player. Compare host vs remote logs for the flash-model resolve.
-- **First look:** `NetGame.EquipNetworkedWeapon` muzzle wiring + `UpdateLocalFireFeedback` on the pure
-  client vs listen host; `ViewModel.FlashModelFactory`/`MuzzleModelFor`.
+- **Root cause (the original hypothesis was WRONG):** the equip path was fine — `EquipNetworkedWeapon`
+  passes `MuzzleEffectFor(w)`/`MuzzleModelFor(w)` identically on host and pure client. The generic look
+  was the LOCAL first-person flash itself: `ViewModel.Fire` spawned `EffectSystem.MuzzleFlashAttached`,
+  a deliberate name-heuristic burst (one shape/tint classifier for every weapon) instead of the weapon's
+  real effectinfo blocks — while the real per-weapon burst (the networked copy) is except'd away for the
+  shooter. Related: two remote-visual regressions from the #50 fix (whole-body pitch zeroing also killed
+  the aim-bone pitch) were fixed on `feature/owner-inventory` (Entity.ViewPitch), now folded back.
+- **Fix:** `ViewModel.Fire` now routes through the FULL effectinfo `Spawn` path (parsed blocks + block
+  dlight + faithful/modern router — the exact path a networked muzzle flash takes) at the muzzle socket's
+  live world transform, `dir*1000` like the server emit. Base-faithful: QC `W_MuzzleFlash` fires
+  world-space `pointparticles` at shotorg; only the flash MODEL attaches to the gun (already ported).
+  The heuristic `MuzzleFlashAttached` was deleted. Watch in playtest: possible brief over-bright where
+  an effect's own dlight now stacks with the `_flashLight` stand-in (kept for the grid-lit pop +
+  effects without a light row).
 
 ### 50. Remote player model pitches its whole body when looking up/down **[client-map-load]**
 - [ ] **Status:** Not started
