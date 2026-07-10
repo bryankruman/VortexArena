@@ -98,8 +98,31 @@ public static class ClientSettings
         c.Register("r_world_cell_div", "8");
         c.Register("r_world_cell_min", "256");
         c.Register("r_world_cell_max", "4096");
-        // Mouse pitch (only its SIGN is used here, for invert-look); DP default 1 (non-inverted) = current behaviour.
-        c.Register("m_pitch", "1", save);
+        // Mouse pitch/yaw scale (DP cl_input.c defaults, 0.022 deg/count). m_pitch is SIGNED — negative inverts
+        // the Y axis (the input dialog's "Invert aiming" writes ±|value|). Pre-DP-formula builds registered
+        // m_pitch "1" and used only its sign — archived ±1 values are normalized at read (NetGame.MPitch) and
+        // by the invert checkbox, so old configs don't get 45× pitch.
+        c.Register("m_pitch", "0.022", save);
+        c.Register("m_yaw", "0.022", save);
+        // DP mouse filter + acceleration family (cl_input.c:401-412, all CF_ARCHIVE) — applied per render
+        // frame by NetGame.FlushMouseLook (Common.Input.MouseAccel); the input dialog's "Smooth aiming"
+        // checkbox and acceleration sliders bind m_filter / m_accelerate / minspeed / maxspeed. Stock values
+        // make every branch a no-op (DP parity).
+        c.Register("m_filter", "0", save);
+        c.Register("m_accelerate", "1", save);
+        c.Register("m_accelerate_minspeed", "5000", save);
+        c.Register("m_accelerate_maxspeed", "10000", save);
+        c.Register("m_accelerate_filter", "0", save);
+        c.Register("m_accelerate_power_offset", "0", save);
+        c.Register("m_accelerate_power", "2", save);
+        c.Register("m_accelerate_power_senscap", "0", save);
+        c.Register("m_accelerate_power_strength", "0", save);
+        c.Register("m_accelerate_natural_strength", "0", save);
+        c.Register("m_accelerate_natural_accelsenscap", "0", save);
+        c.Register("m_accelerate_natural_offset", "0", save);
+        // DP pitch clamp (CF_CLIENT, NOT archived): how far you can aim up/down (quake used -70/80).
+        c.Register("in_pitch_min", "-90");
+        c.Register("in_pitch_max", "90");
         // Server-browser auto-refresh pause toggle (DP default 0).
         c.Register("net_slist_pause", "0");
         // Local-player movement-prediction model (read live by NetGame). DEFAULT 1 = PATH A, the Base-faithful path:
@@ -141,6 +164,12 @@ public static class ClientSettings
         // to immediate snapping. Rationale + the masking risk it carries: docs/TROUBLESHOOTING.md.
         c.Register("cl_movement_hitch_hold", "1");
         c.Register("cl_predictfire", "1");       // intentionally default ON (NetGame: unset → on)
+        // Release +attack/+attack2 (until a physical re-press) when the server FORCE-switches a weapon that ran
+        // DRY while the trigger is still down, so the switched-to weapon doesn't surprise-fire the moment it
+        // raises. Port addition, default ON: Base's cl_unpress_attack_on_weapon_switch covers EVERY switch and
+        // ships 0 (holding fire through an out-of-ammo switch opens fire with the new gun); this narrower gate
+        // keeps manual-switch hold-fire and non-dry forced cycles (NIX) Base-faithful. 0 = raw Base behavior.
+        c.Register("cl_unpress_attack_on_empty_switch", "1");
         // Client-side projectile prediction (CSQC Projectile_Draw): snap+extrapolate vs the old ease. Default
         // ON; `set cl_projectile_prediction 0` reverts for A/B feel-testing (ClientWorld polls it live).
         c.Register("cl_projectile_prediction", "1");

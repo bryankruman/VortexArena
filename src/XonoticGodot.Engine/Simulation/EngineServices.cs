@@ -37,6 +37,13 @@ public sealed class EngineServices : IEngineServices
     /// </summary>
     public XonoticGodot.Formats.Bsp.BspPvs? Pvs { get => TraceImpl.Pvs; set => TraceImpl.Pvs = value; }
 
+    /// <summary>
+    /// Swap the static collision world the trace service clips against, in place (keeping the entity table, clock,
+    /// cvars and models). A pure network client boots on a flat prediction floor and calls this once it has loaded
+    /// the server's real map BSP, so the predicted local player collides with real geometry.
+    /// </summary>
+    public void SetCollisionWorld(CollisionWorld world) => TraceImpl.SetCollisionWorld(world);
+
     /// <param name="world">The collision world this facade traces against.</param>
     /// <param name="sharedCvars">
     /// An optional process-wide cvar store to reuse instead of a fresh one. The menu front-end creates the
@@ -246,6 +253,32 @@ public sealed class EntityService : IEntityService, TraceService.IEntityProvider
             // jumping player's center sits ~34u above their feet, so a floor blast under them must still land.
             Vector3 nearest = Vector3.Clamp(origin, e.Origin + e.Mins, e.Origin + e.Maxs);
             if ((nearest - origin).LengthSquared() <= r2)
+                results[w++] = e;
+        }
+        results.RemoveRange(w, results.Count - w);
+    }
+
+    /// <summary>
+    /// Allocation-free, area-grid-accelerated <c>findbox</c> (DP <c>VM_findbox</c>/<c>World_EntitiesInBox</c>):
+    /// fills <paramref name="results"/> with every entity whose linked bounds (<c>AbsMin</c>/<c>AbsMax</c>)
+    /// overlap [<paramref name="mins"/>, <paramref name="maxs"/>]. The precise AABB test is applied HERE (DP
+    /// does the same engine-side), so callers replacing the QC findradius(origin, huge-radius) + per-entity
+    /// boxesoverlap pattern (upstream xonotic-data b6e02fe3 — the telefrag loop) need no follow-up box filter.
+    /// </summary>
+    public void FindInBox(Vector3 mins, Vector3 maxs, List<Entity> results)
+    {
+        // Broadphase: the grid cells overlapping the box (conservative superset — XY-partitioned, cleared+filled).
+        _grid.EntitiesInBox(mins, maxs, results);
+
+        int w = 0;
+        for (int i = 0; i < results.Count; i++)
+        {
+            Entity e = results[i];
+            if (e.IsFreed) continue;
+            // Precise: linked AbsMin/AbsMax overlap (QC boxesoverlap semantics — touching counts).
+            if (mins.X <= e.AbsMax.X && maxs.X >= e.AbsMin.X
+                && mins.Y <= e.AbsMax.Y && maxs.Y >= e.AbsMin.Y
+                && mins.Z <= e.AbsMax.Z && maxs.Z >= e.AbsMin.Z)
                 results[w++] = e;
         }
         results.RemoveRange(w, results.Count - w);

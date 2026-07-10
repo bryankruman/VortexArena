@@ -249,7 +249,13 @@ public partial class PlayerModel : Node3D
                     anim = LocomotionBlend.Split(legs, _legsTime, actionClip, phase, _actionTag: true);
             }
         }
-        _player.FromFrames(anim, e.Angles.X, dead);
+        // Aim-bone pitch for the torso/arms. Remote players come through ClientEntityView, which renders the BODY
+        // yaw-only (#50, e.Angles.X forced to 0) and parks the view pitch on the render-only ViewPitch field (#7)
+        // — read that. The local player's own body (third-person crosshair-chase) is bound to a direct entity that
+        // never passed through that choke point, so its pitch still rides Angles.X and ViewPitch is 0; fall back to
+        // Angles.X there. The two are never both non-zero, so this can't double-count.
+        float aimPitch = e.ViewPitch != 0f ? e.ViewPitch : e.Angles.X;
+        _player.FromFrames(anim, aimPitch, dead);
 
         // 3.3: decide whether to PUSH the posed bones onto the Skeleton3D this frame. The synthesis above always
         // ran, so the skip never produces a stale logical pose — only a delayed visual refresh. Order matters:
