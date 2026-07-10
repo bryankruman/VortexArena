@@ -99,7 +99,23 @@ public static class NetProtocol
     /// (<c>Commands.DispatchImpulse</c>) already routes impulse 1..N to <c>MapVoting.CastVote</c> while the vote
     /// runs, so only the S2C ballot needed a new opcode. Additive (old clients drop the unknown frame), but the
     /// version bump keeps the parity hash honest.
-    public const uint ProtocolVersion = 13;
+    ///
+    /// v14 (the client-map-load remote-HUD bump — three same-build lockstep changes ride it together):
+    /// <list type="number">
+    ///   <item>the HandshakeAccept gained two trailing strings — the server's current map name + gametype — so a
+    ///         pure --connect client can load the BSP for world render + prediction collision
+    ///         (<c>NetGame.LoadClientMapFromServer</c>);</item>
+    ///   <item>the owner block gained the <see cref="XonoticGodot.Net.OwnerInventory"/> tail (ammo pools, owned-
+    ///         weapon bitset, unlimited-ammo, STAT_ITEMS flag bits) feeding the pure client's full HUD;</item>
+    ///   <item>the snapshot entity section now INCLUDES the recipient's own entity (the old encoder excluded it
+    ///         via excludeEntNum) — the client diverts it into <c>ClientNet.LocalState</c> (never interpolated),
+    ///         which every "watched == self" consumer reads (viewmodel anim frame/colors, vortex glow, powerup
+    ///         status timers, hitsound damage diff, own name tag). Matches Base: CSQC receives the local
+    ///         player's own entity.</item>
+    /// </list>
+    /// All three are unconditional reads, so mixed builds would mis-parse every snapshot — the bump makes
+    /// BuildParity reject them at handshake instead.
+    public const uint ProtocolVersion = 14;
 
     /// <summary>Ordered, reliable ENet channel — handshake, spawns/removes, notifications, scores.</summary>
     public const int ReliableChannel = 0;
