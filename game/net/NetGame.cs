@@ -1908,6 +1908,10 @@ public sealed partial class NetGame : Node3D
         // and follow a living bot (BenchSpectateThink) so a capture camera experiences real gameplay. The
         // perf-run demo scenario sets it together with g_weaponarena/g_forced_respawn/bot_ai_weapon_rotate.
         Api.Cvars.Register("cl_bench_spectate", "0");
+        // cl_motion_trace (r16 rubberband diagnostic): per-frame CSV of the motion-timeline signals — render
+        // clock error/slew, server ticks per frame, camera/predicted/remote-entity rendered speeds, prediction
+        // error magnitude — so a felt motion wobble can be attributed to its actual carrier. Port-only debug.
+        Api.Cvars.Register("cl_motion_trace", "0");
         // Spectator follow-cam angle smoothing half-life in seconds (port quality knob, NOT a Base cvar —
         // Base renders the spectatee's raw stepped angles). 0 = raw. See SmoothSpectateAngles.
         Api.Cvars.Register("cl_spectate_smoothangles", "0.05");
@@ -3821,6 +3825,9 @@ public sealed partial class NetGame : Node3D
             }
             Callable.From(() => MapChangeRequested?.Invoke(map, gametype, bots, skill, campId, campIdx)).CallDeferred();
         }
+        // r16 rubberband diagnostic — last so it records this frame's FINAL camera/prediction state.
+        MotionTrace(dt, slew);
+
         } // end try (S5 sim-gate span)
         finally
         {
@@ -3829,6 +3836,91 @@ public sealed partial class NetGame : Node3D
             if (simGateTaken)
                 System.Threading.Monitor.Exit(simGate!);
         }
+    }
+
+    // ---- cl_motion_trace (r16 rubberband diagnostic) --------------------------------------------------
+    // Per-frame CSV of the motion-timeline signals, written while the cvar is on (opened lazily, closed on
+    // toggle-off). Columns answer "which signal carries the felt wave": clock_err/slew (the interp clock),
+    // ticks (server catch-up bursts), cam/pred speeds (the OWN view's rendered velocity — waves here =
+    // own-movement rubberband), pred_err (reconcile corrections), remote_speed (one tracked remote entity's
+    // rendered velocity — waves here with a steady cam = entity-interp rubberband).
+    private System.IO.StreamWriter? _motionTrace;
+    private NVec3 _mtPrevCam, _mtPrevPred, _mtPrevRemote;
+    private int _mtRemoteId = -1;
+    private int _mtLines;
+    private bool _mtHave;
+
+    private void MotionTrace(float dt, float slew)
+    {
+        bool on = (_sharedCvars?.GetFloat("cl_motion_trace") ?? 0f) != 0f;
+        if (!on)
+        {
+            if (_motionTrace is not null)
+            {
+                _motionTrace.Flush();
+                _motionTrace.Dispose();
+                _motionTrace = null;
+                _mtHave = false;
+                XonoticGodot.Common.Diagnostics.Log.Info("[motiontrace] closed");
+            }
+            return;
+        }
+        if (!_cameraReady || _client is null || dt <= 0f)
+            return;
+
+        if (_motionTrace is null)
+        {
+            try
+            {
+                string path = UserPaths.Resolve("motion_trace.csv");
+                _motionTrace = new System.IO.StreamWriter(path, append: false) { AutoFlush = false };
+                _motionTrace.WriteLine("t,dt_ms,clock_err_ms,slew_pct,ticks,cam_speed,pred_speed,pred_err,remote_speed");
+                XonoticGodot.Common.Diagnostics.Log.Info($"[motiontrace] recording -> {path}");
+            }
+            catch (System.Exception ex)
+            {
+                XonoticGodot.Common.Diagnostics.Log.Info($"[motiontrace] open failed: {ex.Message}");
+                _sharedCvars?.Set("cl_motion_trace", "0");
+                return;
+            }
+        }
+
+        NVec3 cam = Coords.ToQuake(_camera.GlobalPosition);
+        NVec3 pred = _client.PredictedOrigin;
+        float errMs = (_client.LatestServerTime - _renderClock) * 1000f;
+        float predErr = _client.PredictionErrorOffset(_renderClock).Length();
+        int ticks = _server?.LastTicksRan ?? -1;
+
+        // One tracked remote entity's rendered pose (the lowest live id; re-picked when it vanishes).
+        float remoteSpeed = -1f;
+        NVec3 remote = default;
+        bool haveRemote = _mtRemoteId >= 0 && _client.SampleRemote(_mtRemoteId, _renderClock, out remote, out _);
+        if (!haveRemote)
+        {
+            _mtRemoteId = -1;
+            foreach (int id in _client.RemoteIds)
+                if (_mtRemoteId < 0 || id < _mtRemoteId) _mtRemoteId = id;
+            haveRemote = _mtRemoteId >= 0 && _client.SampleRemote(_mtRemoteId, _renderClock, out remote, out _);
+            _mtHave = false; // new target (or none): don't derive a speed across the switch
+        }
+
+        if (_mtHave)
+        {
+            float camSpeed = (cam - _mtPrevCam).Length() / dt;
+            float predSpeed = (pred - _mtPrevPred).Length() / dt;
+            if (haveRemote)
+                remoteSpeed = (remote - _mtPrevRemote).Length() / dt;
+            _motionTrace.WriteLine(
+                $"{_renderClock:F4},{dt * 1000f:F2},{errMs:F2},{slew * 100f:F2},{ticks}," +
+                $"{camSpeed:F1},{predSpeed:F1},{predErr:F2},{remoteSpeed:F1}");
+            if (++_mtLines % 128 == 0)
+                _motionTrace.Flush(); // survive a quit without the toggle-off close
+        }
+
+        _mtPrevCam = cam;
+        _mtPrevPred = pred;
+        if (haveRemote) _mtPrevRemote = remote;
+        _mtHave = true;
     }
 
     /// <summary>The active gametype short code for a changelevel: the live <c>gametype</c> cvar if a mid-match

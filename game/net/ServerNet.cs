@@ -95,6 +95,10 @@ public sealed class ServerNet : IDisposable
     /// run on the Godot main thread (the transport poll), so this is safe to read from the main-thread UI.</summary>
     public int ConnectedPeerCount => _peers.Count;
 
+    /// <summary>Fixed sim ticks the last <c>PumpTransport</c> ran (0 when rendering faster than 72 Hz, up to
+    /// MaxTicksPerFrame on catch-up). Read by the <c>cl_motion_trace</c> diagnostic (r16 rubberband hunt).</summary>
+    public int LastTicksRan { get; private set; }
+
     // --- snapshot delta-compression + movevar replication + teleport detection ---
     private ushort _snapshotSeq;                                     // global snapshot sequence (clients ack it)
     private readonly Dictionary<int, NetEntityState> _entityScratch = new(); // reused per-tick entity set
@@ -465,6 +469,7 @@ public sealed class ServerNet : IDisposable
         // The world runs its fixed ticks, pulling each client's queued input via ProvideInput and firing
         // effect/notification emissions into our sinks. ticksRan == 0 when the host renders faster than 72 Hz.
         int ticksRan = _world.Frame(realDelta);
+        LastTicksRan = ticksRan; // exposed for the cl_motion_trace diagnostic (r16 rubberband hunt)
         Prof.Mark("ticks", ticksRan); // >1 ⇒ a server.tick spike is catch-up amortizing a prior stall, not new work
 
         // Observer/join lifecycle: a human connects as an OBSERVER (ClientConnect → TRANSMUTE(Observer)) and only
