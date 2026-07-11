@@ -160,14 +160,14 @@ public partial class ClientWorld : Node3D
         public bool HasTrailTail;     // false until the first frame a trail is active, so the first segment starts at the model origin (no spurious long streak on spawn)
         public float ItemFadeApplied; // last transparency pushed (§11 R9 change gate; 0 = opaque, the node default)
         public int ItemFadeMeshCount; // mesh-list size at last push (re-push after a cache rebuild)
-        public Godot.Vector3 ItemTintApplied = Godot.Vector3.One; // last item colormod pushed (One = untinted; change gate like ItemFadeApplied)
-        public int ItemTintMeshCount; // mesh-list size at last tint push (re-push after a cache rebuild)
-        public ulong ItemTintFirstMeshId; // first mesh instance id at last tint push — catches a SAME-COUNT model
-                                          // swap (placeholder→real) the count alone can't (ModelTint.TintCache pattern)
-        public bool ItemDuoApplied;   // a weapon duotone paint (uniforms + overrides) is currently applied
-        public ItemPaint ItemDuoPaint; // last duotone paint pushed (change gate)
-        public int ItemDuoMeshCount;  // mesh-list size at last duotone push (re-push after a cache rebuild)
-        public ulong ItemDuoFirstMeshId; // first mesh instance id at last duotone push (same-count swap detection)
+        // The ONE applied-tint record for the item paint state machine (ApplyItemTint): what spec is currently
+        // painted, and on which mesh list (count + first id — a same-count placeholder→real swap must repaint;
+        // the ModelTint.TintCache pattern). All three render channels (instance uniforms, surface overrides,
+        // whole-mesh MaterialOverride) are derived from the spec by ApplyItemTint alone — no split gates.
+        public ItemTintSpec ItemTintSpecApplied;
+        public bool ItemTintSpecValid;
+        public int ItemTintSpecMeshCount;
+        public ulong ItemTintSpecFirstMeshId;
         /// <summary>PER-ENTITY dark-ghost flat (whole-mesh MaterialOverride). Never shared across entities:
         /// CsqcModelEffects' render-flag setters mutate any BaseMaterial3D MaterialOverride in place (additive/
         /// fullbright/nodepthtest), so a shared cached flat would be corrupted for every ghost at once.</summary>
@@ -177,6 +177,7 @@ public partial class ClientWorld : Node3D
         public bool PaintKeyValid;
         public string PaintKeyModel = "";
         public int PaintKeyCmap;
+        public int PaintKeyWeapon = -1;
         public bool PaintHas;
         public ItemPaint PaintCached;
     }
@@ -1508,7 +1509,8 @@ public partial class ClientWorld : Node3D
         float stay = Mathf.Clamp(CvarF("cl_weapon_stay_alpha", 0.75f), 0f, 1f); // xonotic-client.cfg default 0.75
         float alpha = stay * Mathf.Clamp(distAlpha, 0f, 1f); // QC: alpha = distFade; then alpha *= cl_weapon_stay_alpha
         SetTreeTransparency(node, st, 1f - alpha);
-        SetTreeColormod(node, st, CvarColormod("cl_weapon_stay_color", new Godot.Vector3(2f, 0.5f, 0.5f)));
+        ApplyItemTint(node, st, ItemTintSpec.ForColormod(
+            CvarColormod("cl_weapon_stay_color", new Godot.Vector3(2f, 0.5f, 0.5f))));
         node.SetGameplayVisible(alpha > 0.001f);
     }
 
@@ -1519,7 +1521,7 @@ public partial class ClientWorld : Node3D
     /// DP multiplies the surface color and clamps, so the shipped default renders the ghost as a translucent
     /// near-BLACK silhouette; '0 0 0' is the "leave color unchanged" sentinel, per the cfg description).
     /// <c>cl_ghost_items</c> 0 hides it entirely (QC <c>alpha 0 → drawmask 0</c>). Alpha rides the per-instance
-    /// transparency, the tint a per-surface override variant (<see cref="SetTreeColormod"/>) — neither touches
+    /// transparency, the tint an <see cref="ApplyItemTint"/> colormod spec — neither touches
     /// the shared/cached item materials; the bob+spin keeps running (driven in EntityNode). (playtest #29)
     /// </summary>
     private void DriveItemGhostFx(EntityNode node, CsqcState st, float distAlpha = 1f)
@@ -1527,7 +1529,8 @@ public partial class ClientWorld : Node3D
         float ghost = Mathf.Clamp(CvarF("cl_ghost_items", 0.45f), 0f, 1f); // QC autocvar_cl_ghost_items default 0.45
         float alpha = ghost * Mathf.Clamp(distAlpha, 0f, 1f); // QC: alpha = distFade; then alpha *= cl_ghost_items
         SetTreeTransparency(node, st, 1f - alpha);
-        SetTreeColormod(node, st, CvarColormod("cl_ghost_items_color", new Godot.Vector3(-1f, -1f, -1f)));
+        ApplyItemTint(node, st, ItemTintSpec.ForColormod(
+            CvarColormod("cl_ghost_items_color", new Godot.Vector3(-1f, -1f, -1f))));
         node.SetGameplayVisible(alpha > 0.001f);
     }
 
@@ -1619,81 +1622,105 @@ public partial class ClientWorld : Node3D
         st.ItemFadeMeshCount = meshes.Count;
     }
 
-    /// <summary>
-    /// Apply a whole-model colormod multiply to every mesh surface of an item node — the render-side analogue of
-    /// QC's per-entity <c>.colormod</c>/<c>.glowmod</c> for items (ghost tint / weapon-stay tint, playtest #29).
-    /// Mechanism: a per-SURFACE override material (<see cref="MeshInstance3D.SetSurfaceOverrideMaterial"/>) whose
-    /// albedo/emission are pre-multiplied by the (0-clamped) colormod — a cached DUPLICATE per (material, tint),
-    /// so the shared/cached item materials (AssetSystem SurfaceSetMaterial) are never mutated, mirroring
-    /// <see cref="SetTreeTransparency"/>'s never-touch-shared rule. Restoring to identity clears the overrides,
-    /// exposing the original shared surface material again. DP semantics: a ZERO colormod vector means "unset"
-    /// (identity — csprogs CSQC_AddRenderEdict only copies a non-zero colormod); negatives clamp to 0 (black).
-    /// Non-BaseMaterial3D surfaces (animated ShaderMaterials) are left untinted (alpha still applies).
-    /// Change-gated like the transparency push: one walk per state change, not per frame.
-    /// </summary>
-    private static void SetTreeColormod(EntityNode node, CsqcState st, Godot.Vector3 colormod)
+    /// <summary>The kind of paint an item wants this frame — the single input to <see cref="ApplyItemTint"/>.</summary>
+    private enum ItemTintKind : byte
     {
-        if (colormod == Godot.Vector3.Zero)
-            colormod = Godot.Vector3.One; // QC/DP: '0 0 0' = leave the color unchanged
+        None,     // stock look (shared materials live, identity uniforms)
+        Colormod, // QC .colormod/.glowmod multiply (ghost / weapon-stay fx tints)
+        Duotone,  // the weapon two-tone paint (dropper colors / HUD-icon colors)
+    }
+
+    /// <summary>The desired item look, as one value: compare-for-equality is the whole change gate.</summary>
+    private readonly record struct ItemTintSpec(ItemTintKind Kind, Godot.Vector3 Colormod, ItemPaint Paint)
+    {
+        public static readonly ItemTintSpec None = new(ItemTintKind.None, Godot.Vector3.One, default);
+
+        /// <summary>QC/DP semantics: '0 0 0' means "leave the color unchanged", '1 1 1' is identity → None.</summary>
+        public static ItemTintSpec ForColormod(Godot.Vector3 c)
+            => c == Godot.Vector3.Zero || c == Godot.Vector3.One ? None : new(ItemTintKind.Colormod, c, default);
+
+        public static ItemTintSpec ForDuotone(in ItemPaint p)
+            => new(ItemTintKind.Duotone, Godot.Vector3.One, p);
+    }
+
+    /// <summary>
+    /// The ONE owner of an item's paint. Callers declare the desired look (<see cref="ItemTintSpec"/>) and this
+    /// derives ALL THREE render channels from it — the <see cref="PlayerSkinShader"/> instance uniforms, the
+    /// per-surface override variants, and the whole-mesh dark-flat MaterialOverride — behind a single change
+    /// gate (spec + mesh-list identity), so no caller can update one channel and forget the others (the
+    /// stuck-tint bug class that fired three times while this machinery was split across two methods).
+    ///
+    /// <para>Channel rules: a DARK colormod (max clamped channel ≤ <see cref="GhostDarkMax"/>, e.g. the shipped
+    /// <c>cl_ghost_items_color '-1 -1 -1'</c>) renders as DP does — a flat silhouette — via a PER-ENTITY
+    /// unshaded MaterialOverride (per-entity because CsqcModelEffects' render-flag setters mutate any
+    /// BaseMaterial3D MaterialOverride in place; properties re-asserted each push to heal that; and
+    /// MaterialOverride because it is the one channel that survives ModelAnimator's in-place surface rebuilds).
+    /// A BRIGHT colormod multiplies per-surface BaseMaterial3D variants (ShaderMaterial surfaces stay live —
+    /// flattening them would erase texture/animation). The duotone pushes the four instance uniforms (the
+    /// channel skin-shader weapon materials actually read) plus BaseMaterial3D duotone variants. Foreign
+    /// MaterialOverrides (the placeholder box, MdlBuilder skins — meshes whose ONLY material lives there) are
+    /// never touched. Uniforms are reset to identity whenever the spec is not Duotone.</para>
+    /// </summary>
+    private static void ApplyItemTint(EntityNode node, CsqcState st, in ItemTintSpec spec)
+    {
         List<MeshInstance3D> meshes = CsqcModelEffects.GetCachedMeshes(st.Effects, node);
-        // Gate: value + mesh-list identity (count AND first id — a same-count placeholder→real swap must
-        // repaint), and never early-out over a live duotone (this pass is what undoes it).
-        if (!st.ItemDuoApplied && st.ItemTintApplied == colormod
-            && st.ItemTintMeshCount == meshes.Count && st.ItemTintFirstMeshId == FirstMeshId(meshes))
+        if (st.ItemTintSpecValid && st.ItemTintSpecApplied == spec
+            && st.ItemTintSpecMeshCount == meshes.Count && st.ItemTintSpecFirstMeshId == FirstMeshId(meshes))
             return;
-        bool clear = colormod == Godot.Vector3.One;
-        // DP renders colormod as a multiply over the LIT surface (ambient+diffuse AND the glow via glowmod —
-        // QC sets both to the same vector in the item branches), so a DARK tint (the shipped cl_ghost_items_color
-        // '-1 -1 -1') comes out a flat near-black silhouette: no texture, no glow, no specular gleam. A
-        // per-surface albedo-multiplied variant can't reproduce that (Godot PBR keeps its specular/reflection
-        // terms, and a ModelAnimator-driven MD3 rebuilds its surfaces in place every frame, silently DROPPING
-        // per-surface overrides — the ghost mega armor kept its green glow). So a dark tint is applied as a
-        // whole-mesh MaterialOverride flat unshaded color — exactly the DP output, and MaterialOverride is the
-        // one channel that survives in-place surface rebuilds (see ModelAnimator's persistent-mesh note).
-        float cr = Mathf.Max(colormod.X, 0f), cg = Mathf.Max(colormod.Y, 0f), cb = Mathf.Max(colormod.Z, 0f);
-        bool darkFlat = !clear && MathF.Max(cr, MathF.Max(cg, cb)) <= GhostDarkMax;
+
+        // Channel 1 — instance uniforms (change-rate: spec transitions only, so an unconditional push is cheap).
+        if (spec.Kind == ItemTintKind.Duotone)
+            ModelTint.Apply(meshes, spec.Paint.Colormod, spec.Paint.Glowmod, spec.Paint.Shirt, spec.Paint.Pants);
+        else
+            ModelTint.Apply(meshes, ModelTint.White, ModelTint.White, ModelTint.Black, ModelTint.Black);
+
+        // Channel 2 — the dark-flat whole-mesh override (DP black-silhouette ghosts).
+        float cr = Mathf.Max(spec.Colormod.X, 0f), cg = Mathf.Max(spec.Colormod.Y, 0f), cb = Mathf.Max(spec.Colormod.Z, 0f);
+        bool darkFlat = spec.Kind == ItemTintKind.Colormod && MathF.Max(cr, MathF.Max(cg, cb)) <= GhostDarkMax;
         StandardMaterial3D? flat = null;
         if (darkFlat)
         {
-            // PER-ENTITY flat, properties re-asserted on every push: CsqcModelEffects' render-flag setters
-            // mutate any BaseMaterial3D MaterialOverride in place, so the flat must never be shared across
-            // entities and may need healing after an effects pass touched it.
             flat = st.ItemFlatMat ??= new StandardMaterial3D();
             flat.ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded;
             flat.BlendMode = BaseMaterial3D.BlendModeEnum.Mix;
             flat.NoDepthTest = false;
             flat.AlbedoColor = new Color(cr, cg, cb, 1f);
         }
+
         for (int i = 0; i < meshes.Count; i++)
         {
             MeshInstance3D mi = meshes[i];
             if (mi.Mesh is not Mesh mesh)
                 continue;
-            // Only touch MaterialOverride slots we own: some meshes carry their ONLY material there (the
-            // unresolved-model placeholder box, MdlBuilder skins) — replacing or nulling those would strip
-            // them to Godot's default white. Such meshes keep their material (alpha still applies), exactly
-            // the pre-duotone behavior.
-            bool oursOrEmpty = mi.MaterialOverride is null
-                               || ReferenceEquals(mi.MaterialOverride, st.ItemFlatMat);
-            if (oursOrEmpty)
+            // Only touch MaterialOverride slots we own (null or our own flat) — some meshes carry their ONLY
+            // material there (the unresolved-model placeholder box, MdlBuilder skins); replacing or nulling
+            // those would strip them to Godot's default white. Such meshes keep their material (alpha still
+            // applies), exactly the pre-duotone behavior.
+            if (mi.MaterialOverride is null || ReferenceEquals(mi.MaterialOverride, st.ItemFlatMat))
                 mi.MaterialOverride = darkFlat ? flat : null;
+
+            // Channel 3 — per-surface override variants.
             int surfaces = mesh.GetSurfaceCount();
             for (int s = 0; s < surfaces; s++)
-                mi.SetSurfaceOverrideMaterial(s, clear || darkFlat ? null : TintVariant(mesh.SurfaceGetMaterial(s), colormod));
+            {
+                Material? ov = spec.Kind switch
+                {
+                    ItemTintKind.Duotone => DuotoneVariant(mesh.SurfaceGetMaterial(s),
+                        spec.Paint.OverrideBase, spec.Paint.OverrideEmission),
+                    ItemTintKind.Colormod when !darkFlat => TintVariant(mesh.SurfaceGetMaterial(s), spec.Colormod),
+                    _ => null, // None, or darkFlat (the flat MaterialOverride carries the look)
+                };
+                mi.SetSurfaceOverrideMaterial(s, ov);
+            }
         }
-        st.ItemTintApplied = colormod;
-        st.ItemTintMeshCount = meshes.Count;
-        st.ItemTintFirstMeshId = FirstMeshId(meshes);
-        if (st.ItemDuoApplied)
-        {
-            // The colormod pass overwrote (or cleared) the duotone overrides; also reset the instance
-            // uniforms the duotone pushed, so a skin-shader weapon returns to its stock look.
-            ModelTint.Apply(meshes, ModelTint.White, ModelTint.White, ModelTint.Black, ModelTint.Black);
-            st.ItemDuoApplied = false;
-        }
+
+        st.ItemTintSpecApplied = spec;
+        st.ItemTintSpecValid = true;
+        st.ItemTintSpecMeshCount = meshes.Count;
+        st.ItemTintSpecFirstMeshId = FirstMeshId(meshes);
     }
 
-    /// <summary>Mesh-list identity fingerprint for the item tint change gates: first instance id (0 = empty).
+    /// <summary>Mesh-list identity fingerprint for the item tint change gate: first instance id (0 = empty).
     /// Combined with the count it catches a same-count model swap (ModelTint.TintCache pattern).</summary>
     private static ulong FirstMeshId(List<MeshInstance3D> meshes)
         => meshes.Count > 0 ? meshes[0].GetInstanceId() : 0;
@@ -1707,10 +1734,9 @@ public partial class ClientWorld : Node3D
     /// </summary>
     private static void ApplyRestingItemTint(Entity e, EntityNode node, CsqcState st, bool colorsOn)
     {
-        if (TryGetItemDuotone(e, st, colorsOn, out ItemPaint paint))
-            SetTreeDuotone(node, st, paint);
-        else
-            SetTreeColormod(node, st, Godot.Vector3.One);
+        ApplyItemTint(node, st, TryGetItemDuotone(e, st, colorsOn, out ItemPaint paint)
+            ? ItemTintSpec.ForDuotone(paint)
+            : ItemTintSpec.None);
     }
 
     /// <summary>
@@ -1742,10 +1768,10 @@ public partial class ClientWorld : Node3D
             return false;
         }
 
-        // Per-entity resolved-paint cache: the paint is a pure function of (Model, ColorMapOverride), both of
-        // which change rarely — so the per-frame resting pass costs two compares here instead of a registry
-        // probe + palette/HSV math + struct build discarded by the change gate downstream.
-        if (st.PaintKeyValid && st.PaintKeyCmap == e.ColorMapOverride
+        // Per-entity resolved-paint cache: the paint is a pure function of (ItemWeaponId, Model,
+        // ColorMapOverride), all of which change rarely — so the per-frame resting pass costs three compares
+        // here instead of a registry probe + palette/HSV math + struct build discarded by the gate downstream.
+        if (st.PaintKeyValid && st.PaintKeyCmap == e.ColorMapOverride && st.PaintKeyWeapon == e.ItemWeaponId
             && (ReferenceEquals(st.PaintKeyModel, e.Model) || st.PaintKeyModel == e.Model))
         {
             paint = st.PaintCached;
@@ -1755,6 +1781,7 @@ public partial class ClientWorld : Node3D
         st.PaintKeyValid = true;
         st.PaintKeyModel = e.Model;
         st.PaintKeyCmap = e.ColorMapOverride;
+        st.PaintKeyWeapon = e.ItemWeaponId;
         st.PaintHas = has;
         st.PaintCached = paint;
         return has;
@@ -1763,11 +1790,25 @@ public partial class ClientWorld : Node3D
     private static bool ResolveItemDuotone(Entity e, out ItemPaint paint)
     {
         paint = default;
-        // WEAPON pickups only, identified by the item MODEL (g_*.md3 ↔ Weapon.ItemModel — a remote client's
-        // item proxy carries the generic "item" classname, so the classname can't gate). Ammo/health/armor/
-        // powerups — and colormapped map PROPS, which also arrive with the Item kind — keep their stock look.
-        if (WeaponIconColor(e.Model) is not { } icon)
+        // WEAPON pickups only. Preferred identity: the networked weapon registry id (Entity.ItemWeaponId,
+        // protocol v16 — explicit, survives a mapper overriding the pickup's model). Fallback: match the item
+        // MODEL filename against Weapon.ItemModel (listen-server shared edicts predating the decode, old
+        // demos). Ammo/health/armor/powerups — and colormapped map PROPS, which also arrive with the Item
+        // kind — keep their stock look.
+        Color icon;
+        if (e.ItemWeaponId >= 0 && e.ItemWeaponId < XonoticGodot.Common.Gameplay.Weapons.All.Count)
+        {
+            Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(e.ItemWeaponId);
+            icon = new Color(w.Color.X, w.Color.Y, w.Color.Z);
+        }
+        else if (WeaponIconColor(e.Model) is { } fromModel)
+        {
+            icon = fromModel;
+        }
+        else
+        {
             return false;
+        }
 
         // Dropped loot carrying the thrower's packed colormap (1024 + (shirt<<4) + pants | BIT(10)) — set by
         // the server at throw time and never rewritten, so the paint stays the DROPPER's until pickup/despawn.
@@ -1831,45 +1872,6 @@ public partial class ClientWorld : Node3D
         return result;
     }
 
-    /// <summary>
-    /// Apply the weapon paint to every mesh of an item node, on BOTH channels: the four
-    /// <see cref="PlayerSkinShader"/> instance uniforms (colormod/glowmod/shirt/pants — the channel that
-    /// reaches the skin-shader materials weapon g_ models compile to; harmless no-op on StandardMaterial3D),
-    /// and a per-surface override variant for plain BaseMaterial3D surfaces (same never-touch-shared rule as
-    /// <see cref="SetTreeColormod"/>; null → no override on ShaderMaterial surfaces, whose look the uniforms
-    /// already carry). Change-gated on (paint, mesh list); invalidates the plain colormod gate so a later
-    /// ghost/stay/despawn tint always repaints over it.
-    /// </summary>
-    private static void SetTreeDuotone(EntityNode node, CsqcState st, in ItemPaint paint)
-    {
-        List<MeshInstance3D> meshes = CsqcModelEffects.GetCachedMeshes(st.Effects, node);
-        // Gate: paint value + mesh-list identity (count AND first id — a same-count placeholder→real model
-        // swap must repaint the fresh meshes; the uniforms/overrides died with the freed ones). No sentinel
-        // dance with the colormod gate: SetTreeColormod checks st.ItemDuoApplied itself.
-        if (st.ItemDuoApplied && st.ItemDuoPaint.Equals(paint)
-            && st.ItemDuoMeshCount == meshes.Count && st.ItemDuoFirstMeshId == FirstMeshId(meshes))
-            return;
-        ModelTint.Apply(meshes, paint.Colormod, paint.Glowmod, paint.Shirt, paint.Pants);
-        for (int i = 0; i < meshes.Count; i++)
-        {
-            MeshInstance3D mi = meshes[i];
-            if (mi.Mesh is not Mesh mesh)
-                continue;
-            // Undo a prior ghost's whole-mesh dark flat (weapon respawned) — but ONLY ours; a foreign
-            // MaterialOverride (placeholder box, MdlBuilder skin) is that mesh's real material.
-            if (st.ItemFlatMat is not null && ReferenceEquals(mi.MaterialOverride, st.ItemFlatMat))
-                mi.MaterialOverride = null;
-            int surfaces = mesh.GetSurfaceCount();
-            for (int s = 0; s < surfaces; s++)
-                mi.SetSurfaceOverrideMaterial(s,
-                    DuotoneVariant(mesh.SurfaceGetMaterial(s), paint.OverrideBase, paint.OverrideEmission));
-        }
-        st.ItemDuoApplied = true;
-        st.ItemDuoPaint = paint;
-        st.ItemDuoMeshCount = meshes.Count;
-        st.ItemDuoFirstMeshId = FirstMeshId(meshes);
-    }
-
     /// <summary>Cache of duotone BaseMaterial3D variants keyed by (shared source material, base, highlight).
     /// Bounded by the few weapon-item materials × the shipped weapon/player palette; variants hold their
     /// source's textures by reference. Main-thread only (built inside the ClientWorld drive).</summary>
@@ -1881,7 +1883,7 @@ public partial class ClientWorld : Node3D
     /// surface's own glow texture when it has one (the DP glowmod semantic), otherwise a soft flat accent so
     /// an unlit model still shows the highlight without turning into a slab. Returns null (no override, the
     /// shared material stays live) for ShaderMaterial surfaces — those take the paint through the
-    /// <see cref="PlayerSkinShader"/> instance uniforms <see cref="SetTreeDuotone"/> pushes alongside.
+    /// <see cref="PlayerSkinShader"/> instance uniforms <see cref="ApplyItemTint"/> pushes alongside.
     /// </summary>
     private static Material? DuotoneVariant(Material? source, Color baseCol, Color highlight)
     {
@@ -1928,7 +1930,7 @@ public partial class ClientWorld : Node3D
         {
             // [#54] ShaderMaterial (a compiled Q3/glow/skin shader — the POWERUP models are almost entirely
             // these): an arbitrary shader's output can't be colormod-multiplied from here. A DARK tint is now
-            // handled BEFORE this by SetTreeColormod's whole-mesh MaterialOverride flat (the DP black-silhouette
+            // handled BEFORE this by ApplyItemTint's whole-mesh MaterialOverride flat (the DP black-silhouette
             // path), so this only sees BRIGHT tints (the g_weapon_stay 'cl_weapon_stay_color 2 0.5 0.5'
             // still-pickable weapon) — flattening those would erase the model's texture/animation, so leave the
             // live shader (return null = shared material stays live, alpha-only), the least-wrong option for a

@@ -35,8 +35,7 @@ public static class ObserverCamera
     /// </summary>
     public static bool Configure(string pos, string? lookAt)
     {
-        float[]? p = ParseVec(pos);
-        if (p is null || p.Length < 3)
+        if (!XonoticGodot.Common.Framework.VecParse.TryParseFloats(pos, min: 3, out float[] p))
         {
             Log.Severe($"[observe] bad --observe value '{pos}' — expected \"x y z [yaw pitch]\"");
             return false;
@@ -47,8 +46,7 @@ public static class ObserverCamera
 
         if (!string.IsNullOrWhiteSpace(lookAt))
         {
-            float[]? t = ParseVec(lookAt!);
-            if (t is null || t.Length < 3)
+            if (!XonoticGodot.Common.Framework.VecParse.TryParseFloats(lookAt, min: 3, out float[] t))
             {
                 Log.Severe($"[observe] bad --look-at value '{lookAt}' — expected \"x y z\"");
                 return false;
@@ -79,17 +77,4 @@ public static class ObserverCamera
         Log.Info("[observe] disarmed (game session ended)");
     }
 
-    /// <summary>Parse "x y z ..." (space- and/or comma-separated floats, invariant culture), or null.</summary>
-    private static float[]? ParseVec(string s)
-    {
-        string[] parts = s.Split(new[] { ' ', ',', '\t' }, StringSplitOptions.RemoveEmptyEntries);
-        var vals = new float[parts.Length];
-        for (int i = 0; i < parts.Length; i++)
-        {
-            if (!float.TryParse(parts[i], System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out vals[i]))
-                return null;
-        }
-        return vals.Length == 0 ? null : vals;
-    }
 }

@@ -53,25 +53,30 @@ public class SnapshotDeltaTests
     }
 
     [Fact]
-    public void EntityCodec_RoundTrips_Colormapped_Loot_Colors()
+    public void EntityCodec_RoundTrips_ColorMapOverride()
     {
-        // A dropped weapon carries the thrower's packed 16*shirt+pants in Colors + the Colormapped flag
-        // (WeaponThrowing.ThrowerColormap → ServerNet snapshot). Both must round-trip so the client can
-        // rebuild 1024 + Colors | RENDER_COLORMAPPED and paint the dropper's colors on the loot.
+        // A dropped weapon carries the thrower's full packed colormap (1024 + (shirt<<4) + pants with
+        // RENDER_COLORMAPPED = the same 1024 bit — WeaponThrowing.ThrowerColormap) in its own delta field
+        // (protocol v16), so the client paints the dropper's colors on the loot. The value must round-trip
+        // VERBATIM — the earlier byte+flag squeeze collapsed sub-1024 slot-reference colormaps.
         var baseline = NetEntityState.Empty(20);
         var cur = baseline;
         cur.Kind = NetEntityKind.Item;
-        cur.Colors = (7 << 4) + 12; // shirt 7, pants 12
-        cur.Flags = NetEntityFlags.Colormapped | NetEntityFlags.ItemAnimate1;
+        cur.ColorMapOverride = 1024 + (7 << 4) + 12; // shirt 7, pants 12, RENDER_COLORMAPPED
+        cur.Flags = NetEntityFlags.ItemAnimate1;
 
         var w = new BitWriter();
         EntityStateCodec.WriteDelta(w, baseline, cur);
         var r = new BitReader(w.WrittenSpan);
         NetEntityState got = EntityStateCodec.ReadDelta(ref r, baseline);
         Assert.False(r.BadRead);
-        Assert.Equal((7 << 4) + 12, got.Colors);
-        Assert.True((got.Flags & NetEntityFlags.Colormapped) != 0);
+        Assert.Equal(1024 + (7 << 4) + 12, got.ColorMapOverride);
         Assert.True((got.Flags & NetEntityFlags.ItemAnimate1) != 0);
+
+        // A plain item (no colormap) must keep the bit clear — the field costs nothing by default.
+        var w2 = new BitWriter();
+        EntityField mask = EntityStateCodec.WriteDelta(w2, NetEntityState.Empty(21), NetEntityState.Empty(21));
+        Assert.Equal(EntityField.None, mask & EntityField.ColormapOverride);
     }
 
     [Fact]
