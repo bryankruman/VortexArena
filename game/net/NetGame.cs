@@ -2971,6 +2971,7 @@ public sealed partial class NetGame : Node3D
     private bool _netInputTraceCv;         // net_input_trace: dormant net input→movement pipeline diagnostic (see _Process)
     private int _netTraceTick;             // throttle counter for the net_input_trace log
     private bool _hitchHoldCv = true;      // cl_movement_hitch_hold: Fix B post-hitch stall-aware reconcile (see docs/TROUBLESHOOTING.md)
+    private bool _smoothDtCv = true;       // cl_smoothdt: conditioned client-motion dt (the r16 variance fix; see ConditionDt)
     private bool _immediateButtonsCv = true; // cl_netimmediatebuttons: send fire/jump/impulse immediately past the rate gate (DP)
     // DP mouse pipeline (cl_input.c IN_Move → CL_Input): raw deltas accumulate per frame in _mouseDx/Dy
     // (_UnhandledInput), then FlushMouseLook applies the m_accelerate/m_filter block ONCE per render frame
@@ -3031,6 +3032,8 @@ public sealed partial class NetGame : Node3D
         _netInputTraceCv = (_sharedCvars?.GetString("net_input_trace") ?? "") == "1";
         // cl_movement_hitch_hold defaults ON (unset → on): treat anything but "0" as enabled.
         _hitchHoldCv = (_sharedCvars?.GetString("cl_movement_hitch_hold") ?? "") != "0";
+        // cl_smoothdt defaults ON (unset → on): the r16 conditioned-motion-dt fix; 0 = raw Godot delta (A/B).
+        _smoothDtCv = (_sharedCvars?.GetString("cl_smoothdt") ?? "") != "0";
         // cl_netimmediatebuttons defaults ON (unset → on): treat anything but "0" as enabled.
         _immediateButtonsCv = (_sharedCvars?.GetString("cl_netimmediatebuttons") ?? "") != "0";
         // The DP mouse pipeline params (cl_input.c:401-412 registration defaults for anything unset).
@@ -3066,7 +3069,18 @@ public sealed partial class NetGame : Node3D
 
         EnsureProcessCvarCache();   // (§11 R11) hot-path cvar values are cached; refreshed on Changed
 
-        float dt = (float)delta;
+        float rawDt = (float)delta;
+        // [r16 rubberband FIX — the conviction after the full elimination matrix] Godot's delta is the
+        // PREVIOUS frame's duration: each frame advances the world by how long the LAST frame took, then is
+        // displayed for however long THIS frame takes. With uniform frame times the error is zero (why
+        // vsync-on and a hard-engaged cap feel smooth); with the port's frame-time variance every frame
+        // carries a motion error proportional to that variance — the felt wobble, at ANY average fps,
+        // surviving present-path/GC/movement-mode changes because none of them touch the variance.
+        // ConditionDt feeds the client's MOTION path a rolling-median PREDICTED dt (a better estimate of
+        // this frame's true display duration than last frame's measurement), passes real hitches through
+        // raw, and drift-corrects so accumulated time stays exactly wall-true. The server tick pump keeps
+        // RAW dt — its accumulator integrates variance harmlessly. cl_smoothdt 0 = raw dt for A/B.
+        float dt = ConditionDt(rawDt);
 
         // DP CL_Input: apply the frame's accumulated mouse-look FIRST (raw wall-clock dt — cl.realframetime),
         // so everything below (input sampling, camera, radar) sees this frame's view angles.
@@ -3104,7 +3118,7 @@ public sealed partial class NetGame : Node3D
 
         if (_serverThread is null)
             using (XonoticGodot.Game.Client.FrameProfiler.Scope("server.tick"))
-                _server?.Tick(dt);
+                _server?.Tick(rawDt); // RAW wall time: the tick accumulator integrates variance harmlessly
 
         // S5: from here to the end of _Process we read/mutate server-world state (the music/HUD feeds,
         // LocalServerPlayer, the carrier reconcile) AND run the client prediction replay (inside _client.SendInput
@@ -3125,7 +3139,7 @@ public sealed partial class NetGame : Node3D
         // transport (_client.Poll, further down) then receives that snapshot the SAME frame.
         if (_serverThread is not null)
             using (XonoticGodot.Game.Client.FrameProfiler.Scope("server.tick"))
-                _server?.PumpTransportThreaded(dt);
+                _server?.PumpTransportThreaded(rawDt); // RAW wall time (see the server Tick note above)
 
         // Demo/benchmark camera: keep the host observing a living bot (no-op unless cl_bench_spectate is set;
         // throttled to 2 Hz). Under the gate — it mutates server-side spectator state.
@@ -3273,7 +3287,7 @@ public sealed partial class NetGame : Node3D
         // camera back (see ClientNet.HandleSnapshot). Gated by a cvar because it's defensive, not the cause of any
         // observed bug (the spawn-stutter was the ENet throttle) — `set cl_movement_hitch_hold 0` disables it.
         // Rationale + risks: docs/TROUBLESHOOTING.md.
-        _client.RecentHitch = _hitchHoldCv && dt > HitchFrameSeconds;
+        _client.RecentHitch = _hitchHoldCv && rawDt > HitchFrameSeconds; // hitch detection must see the REAL frame
         using (XonoticGodot.Game.Client.FrameProfiler.Scope("ng.poll"))
             _client.Poll();
 
@@ -3848,6 +3862,55 @@ public sealed partial class NetGame : Node3D
             if (simGateTaken)
                 System.Threading.Monitor.Exit(simGate!);
         }
+    }
+
+    // ---- cl_smoothdt (r16 rubberband FIX): conditioned client-motion dt --------------------------------
+    // Godot's delta is the PREVIOUS frame's duration; with frame-time variance, advancing motion by it puts
+    // a per-frame error into everything the eye sees (see the note at the top of _Process). This filter
+    // replaces it, for the CLIENT MOTION PATH only, with a better estimate of the CURRENT frame's duration:
+    //   estimate = median of the last 9 raw deltas   (robust to one-off spikes — the classic frame pacer),
+    //   hitches pass through RAW                      (a real stall must advance real time — no slow-mo),
+    //   drift correction                              (a bounded ±4% nudge keeps Σ(smooth) == Σ(raw), so
+    //                                                  total time is exactly wall-true and nothing desyncs
+    //                                                  from the server's raw-dt accumulator).
+    private readonly float[] _dtRing = new float[9];
+    private int _dtRingN;                // filled entries (grows to ring size)
+    private int _dtRingI;                // next write slot
+    private float _dtDrift;             // Σ(raw) - Σ(smooth): positive = smooth is BEHIND wall time
+    private readonly float[] _dtSort = new float[9];
+
+    private float ConditionDt(float rawDt)
+    {
+        if (!_smoothDtCv || rawDt <= 0f)
+            return rawDt;
+
+        // Ring update.
+        _dtRing[_dtRingI] = rawDt;
+        _dtRingI = (_dtRingI + 1) % _dtRing.Length;
+        if (_dtRingN < _dtRing.Length) _dtRingN++;
+        if (_dtRingN < 3)
+            return rawDt; // not enough history yet
+
+        // Median of the recent window.
+        System.Array.Copy(_dtRing, _dtSort, _dtRingN);
+        System.Array.Sort(_dtSort, 0, _dtRingN);
+        float median = _dtSort[_dtRingN / 2];
+
+        // A real hitch (or a big cadence change) passes through raw — and resets nothing: the ring absorbs
+        // it and the median follows if the new cadence persists.
+        if (rawDt > median * 1.8f || rawDt < median * 0.5f)
+        {
+            // keep the drift ledger honest for the raw frame too (smooth == raw here, so no drift change)
+            return rawDt;
+        }
+
+        // Drift-corrected estimate: fold a bounded fraction of the accumulated (raw - smooth) error into
+        // this frame so total conditioned time tracks wall time exactly; ±4% is imperceptible per frame.
+        float bound = median * 0.04f;
+        float nudge = Math.Clamp(_dtDrift * 0.25f, -bound, bound);
+        float smooth = median + nudge;
+        _dtDrift += rawDt - smooth;
+        return smooth;
     }
 
     // ---- cl_motion_trace (r16 rubberband diagnostic) --------------------------------------------------

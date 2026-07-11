@@ -163,6 +163,11 @@ public static class ClientSettings
         // bug — the spawn-stutter was the ENet throttle), so it's toggleable: `set cl_movement_hitch_hold 0` reverts
         // to immediate snapping. Rationale + the masking risk it carries: docs/TROUBLESHOOTING.md.
         c.Register("cl_movement_hitch_hold", "1");
+        // (r16) cl_smoothdt: condition the client MOTION path's per-frame dt (rolling-median predicted,
+        // hitch-passthrough, drift-corrected to wall time) instead of Godot's previous-frame delta — with
+        // frame-time variance the raw lagged delta puts a per-frame motion error into everything the eye
+        // sees (the r16 "rubberband"). 0 = raw delta (A/B). Server tick timing is unaffected (always raw).
+        c.Register("cl_smoothdt", "1");
         c.Register("cl_predictfire", "1");       // intentionally default ON (NetGame: unset → on)
         // Release +attack/+attack2 (until a physical re-press) when the server FORCE-switches a weapon that ran
         // DRY while the trigger is still down, so the switched-to weapon doesn't surprise-fire the moment it
