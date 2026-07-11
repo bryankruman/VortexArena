@@ -13,6 +13,13 @@ config_version=5
 config/name="XonoticGodot"
 config/description="Xonotic, reborn on Godot + C#. See planning/."
 run/main_scene="res://Main.tscn"
+; r16 rubberband ROOT CAUSE: Godot's delta smoothing (default ON) snaps every _Process delta onto a grid
+; derived from the DETECTED refresh rate — which this platform misreads as 60Hz on high-refresh panels
+; (the known borderless under-report; see ClientSettings' auto-cap note). On a 143Hz display the sim was
+; fed 8.33/11.11/16.67ms quantized deltas while real frames ran otherwise — everything moved measurably
+; slow-then-fast (the motion trace caught 11.11ms-constant deltas over 8.33ms wall frames = 33% slow).
+; Raw measured deltas are DP-faithful (cl.realframetime) and what every timing system here expects.
+run/delta_smooth=false
 config/features=PackedStringArray("4.6", "C#", "Forward Plus")
 
 [dotnet]
