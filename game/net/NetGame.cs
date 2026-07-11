@@ -3907,25 +3907,44 @@ public sealed partial class NetGame : Node3D
             return;
         _govAccum = 0f;
 
-        System.Array.Copy(_govRing, _govSort, _govN);
-        System.Array.Sort(_govSort, 0, _govN);
-        float p75 = MathF.Max(_govSort[(int)(_govN * 0.75f)], 0.0005f);
-        int target = (int)(0.98f / p75);
+        // The measured dt INCLUDES the limiter's own sleep once a cap is applied, so a percentile target
+        // chases itself downward (the first build spiraled 137->83). React instead to the OVER-CAP TAIL —
+        // frames whose dt exceeded the budget did real work past it; sleep can't fake those:
+        //   busy > 25%  -> the scene genuinely can't hold the cap: drop 6%.
+        //   busy <  5%  -> headroom: probe up 3% (the cap follows the workload back up).
+        //   else        -> hold (paced and sustainable — the desired steady state).
+        int target;
+        if (_govApplied == 0)
+        {
+            // First engage: seed from the uncapped distribution (no sleep in it yet).
+            System.Array.Copy(_govRing, _govSort, _govN);
+            System.Array.Sort(_govSort, 0, _govN);
+            float p75 = MathF.Max(_govSort[(int)(_govN * 0.75f)], 0.0005f);
+            target = (int)(0.98f / p75);
+        }
+        else
+        {
+            float budget = 1f / _govApplied;
+            int busy = 0;
+            for (int i = 0; i < _govN; i++)
+                if (_govRing[i] > budget * 1.10f) busy++;
+            float busyFrac = (float)busy / _govN;
+            if (busyFrac > 0.25f)      target = Math.Max((int)(_govApplied * 0.94f), 60);
+            else if (busyFrac < 0.05f) target = _govApplied + Math.Max(2, _govApplied * 3 / 100);
+            else                       target = _govApplied;
+        }
 
-        // AIMD: drop to the new sustainable rate immediately; climb back at most ~5%/s.
-        if (_govApplied > 0 && target > _govApplied)
-            target = Math.Min(target, _govApplied + Math.Max(2, _govApplied / 20));
         target = Math.Max(target, 60); // floor: never governor below 60
         int userCap = (int)(_sharedCvars?.GetFloat("cl_maxfps") ?? 0f);
         if (userCap > 0 && userCap != 256)
             target = Math.Min(target, userCap); // an explicit player cap stays the upper bound
 
         if (_govSaved < 0) _govSaved = Godot.Engine.MaxFps;
-        if (_govApplied == 0 || Math.Abs(target - _govApplied) * 100 >= _govApplied * 3)
+        if (target != _govApplied)
         {
             Godot.Engine.MaxFps = target;
-            if (_govApplied != 0) // don't log the first engage spam at boot
-                XonoticGodot.Common.Diagnostics.Log.Info($"[governor] MaxFps -> {target} (p75 {p75 * 1000f:F2}ms)");
+            if (_govApplied != 0) // don't log the first engage at boot
+                XonoticGodot.Common.Diagnostics.Log.Info($"[governor] MaxFps -> {target}");
             _govApplied = target;
         }
     }
