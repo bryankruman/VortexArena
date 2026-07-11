@@ -490,9 +490,9 @@ features:
     divergence_rationale: null
     gaps:
       - "rangebias: the generic DM role still passes flat 2000 for items/enemies/roam rather than QC's per-rating-call bias (objective roles like CTS now do vary it, e.g. 5000). Minor scaling divergence only — the path-cost metric itself is now faithful. (NARROWED 2026-06-28 fourth pass.)"
-      - "enemyplayers aggression refinement: QC skill>3 nudges the t factor by Strength/Shield powerup timers (StatusEffects_gettime); the port has no status-effect-expiry accessor yet, so that refinement is deferred."
-      - "Weapon pickups use a flat 7000 unowned value (QC has per-weapon bot_pickupbasevalue 2000-10000 + arsenal discount); ammo uses a flat 1500 base (QC per-ammo m_botvalue 1000-2000). Same order of magnitude; per-def values need weapon-def plumbing."
-      - "havocbot_ai's underwater no-goal shore-waypoint push (havocbot.qc:68-100) is not ported."
+      - "(CLOSED 2026-07-11 follow-up) enemyplayers Strength/Shield aggression nudges — WIRED via StatusEffectsCatalog.GetTime (skill>3, ±0.5/±0.2/-0.4 per QC roles.qc:203-210)."
+      - "(CLOSED 2026-07-11 follow-up) per-weapon bot_pickupbasevalue — every Weapon def now carries the QC 'rating' ATTRIB value (Weapon.BotPickupBaseValue) with the arsenal discount (c = 1 - Σowned/20000·0.5) and the full ammo_pickupevalfunc (per-ammo m_botvalue × need + 10% weapon base; ammo for unowned weapons rates 0)."
+      - "(CLOSED 2026-07-11 follow-up) underwater no-goal shore-waypoint push — BotBrain.TryPushShoreWaypoint (QC havocbot_ai:68-100), run in the token block for a SWIMMING goal-less bot."
     verification:
       - { kind: code, ref: "SeedRoute is NOW WIRED: BotBrain.cs:335 calls _rater.SeedRoute(Network, bot.Origin) inside the strategy-token block immediately BEFORE Role(this,_rater) at :336 (token-gated, one bot/frame). SeedRoute sets _routeSeeded=true and runs ComputeRouteCosts (multi-seed Dijkstra over the graph, Waypoint.cs:804). GoalRater.Rate (BotRoles.cs:83-86) then reads RouteCostTo for the path-cost discount, straight-line only on the unreachable/graphless fallback. SetGoal (BotBrain.cs:346, 5-arg onGround overload) routes via NearestSeeds + FindPath(seeds) (BotNavigation.cs:247-248), single-nearest only as fallback. Build green, 46 bot tests pass. Powerup time-item lead + jitter exemption, enemyplayers nofire/water/speed gates, roam-shell peel all present & matching Base roles.qc:176-228.", result: pass }
     confidence: high

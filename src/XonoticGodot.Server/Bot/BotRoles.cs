@@ -248,6 +248,9 @@ public static class BotRoles
         float radius2 = radius * radius;
         float maxSpeed2 = Cvars.MaxSpeed * 2f;
         maxSpeed2 *= maxSpeed2;
+        float now = Api.Services is not null ? Api.Clock.Time : 0f;
+        StatusEffectDef? strength = StatusEffectsCatalog.ByName("strength");
+        StatusEffectDef? shield = StatusEffectsCatalog.ByName("shield");
         foreach (var e in brain.Players())
         {
             if (!BotBrain.ShouldAttack(bot, e)) continue;
@@ -260,10 +263,23 @@ public static class BotRoles
             // health/armor advantage and low skill both increase aggression (QC t factor)
             float advantage = (bot.Health - e.Health) / 150f;
             float t = System.Math.Clamp(1f + advantage, 0f, 3f);
+            // QC skill>3: fold in live Strength/Shield timers (StatusEffects_gettime, roles.qc:203-210) —
+            // press the advantage while OUR powerup has >1s left; back off a powered-up enemy. The -1 keeps
+            // a bot from committing to a chase its powerup won't survive.
+            if (brain.Skill > 3f)
+            {
+                if (strength is not null)
+                {
+                    if (now < StatusEffectsCatalog.GetTime(bot, strength, now) - 1f) t += 0.5f;
+                    if (now < StatusEffectsCatalog.GetTime(e, strength, now) - 1f) t -= 0.5f;
+                }
+                if (shield is not null)
+                {
+                    if (now < StatusEffectsCatalog.GetTime(bot, shield, now) - 1f) t += 0.2f;
+                    if (now < StatusEffectsCatalog.GetTime(e, shield, now) - 1f) t -= 0.4f;
+                }
+            }
             t += System.Math.Max(0f, 8f - brain.Skill) * 0.05f;
-            // NOTE: QC skill>3 also nudges t by the bot's/enemy's Strength/Shield powerup timers
-            // (StatusEffects_gettime); the port has no entity-side status-effect expiry accessor yet, so that
-            // refinement is deferred (see todos) — the base advantage+skill aggression is preserved here.
             rater.Rate(org, e, e.Origin, ratingScale * t * RatingEnemy, 2000f);
         }
     }
@@ -354,29 +370,51 @@ public static class BotRoles
             return baseValue * System.MathF.Min(2f, c);
         }
 
-        // Weapon pickup (QC weapon_pickupevalfunc): an unowned weapon returns its bot_pickupbasevalue
-        // (2000-10000 per weapon, typical 6000-8000) discounted by how stacked the bot's arsenal already is;
-        // an owned one is only worth its ammo (QC falls through to ammo_pickupevalfunc). The port's weapon
-        // defs don't carry per-weapon bot values yet, so use the 7000 mode of the QC table for unowned and
-        // the ammo path for owned.
-        if (!string.IsNullOrEmpty(item.NetName) && Weapons.ByName(item.NetName) is not null)
+        // Weapon pickup (QC weapon_pickupevalfunc, items.qc:887-907): an unowned weapon returns its own
+        // bot_pickupbasevalue (per-weapon "rating" ATTRIB, 0-10000) discounted by how stacked the bot's
+        // arsenal already is (c = 1 - bound(0, Σowned/20000, 1)·0.5); an owned one is only worth its ammo
+        // (QC falls through to ammo_pickupevalfunc).
+        if (!string.IsNullOrEmpty(item.NetName) && Weapons.ByName(item.NetName) is Weapon wpn)
         {
             if (!bot.HasWeapon(item.NetName))
-                return 7000f;
-            // Owned: worth the ammo it carries (if any) — fall through to the ammo branch below.
+            {
+                float arsenal = 0f;
+                foreach (Weapon w in Weapons.All)
+                    if (Inventory.HasWeapon(bot, w))
+                        arsenal += w.BotPickupBaseValue;
+                float c = 1f - System.Math.Clamp(arsenal / 20000f, 0f, 1f) * 0.5f;
+                return wpn.BotPickupBaseValue * c;
+            }
+            // Owned (QC ammo_pickupevalfunc, weapon-pickup branch): the weapon's ammo value scaled by need,
+            // plus 10% of the weapon's own base. An ammoless weapon (RES_NONE → no ammo item) rates 0.
+            if (wpn.AmmoType == ResourceType.None)
+                return 0f;
+            float ammoCap = Resources.GetResourceLimit(bot, wpn.AmmoType);
+            float botAmmo = bot.GetResource(wpn.AmmoType);
+            float itemAmmo = item.GetResource(wpn.AmmoType);
+            float need = (itemAmmo > 0f && botAmmo < ammoCap)
+                ? itemAmmo / System.MathF.Max(0.5f, botAmmo) // QC noammorating = 0.5
+                : 0f;
+            return AmmoBotValue(wpn.AmmoType) * System.MathF.Min(need, 2f) + wpn.BotPickupBaseValue * 0.1f;
         }
 
-        // Ammo (QC ammo_pickupevalfunc): rating = the ammo def's m_botvalue (1000-2000) × a 0..2 need factor.
+        // Ammo box (QC ammo_pickupevalfunc, plain-ammo branch): rated only when the bot OWNS a weapon that
+        // feeds on this resource (QC: item_resource stays NULL otherwise → rating 0), then the ammo def's
+        // m_botvalue × a 0..2 need factor.
         foreach (ResourceType ammo in AmmoResources)
         {
             float amt = item.GetResource(ammo);
             if (amt <= 0f) continue;
-            float cap = System.MathF.Max(1f, Resources.GetResourceLimit(bot, ammo));
-            float missing = 1f - bot.GetResource(ammo) / cap;
-            return 1500f * System.Math.Clamp(missing * 2f, 0f, 2f);
+            bool ownsUser = false;
+            foreach (Weapon w in Weapons.All)
+                if (w.AmmoType == ammo && Inventory.HasWeapon(bot, w)) { ownsUser = true; break; }
+            if (!ownsUser)
+                return 0f;
+            float cap = Resources.GetResourceLimit(bot, ammo);
+            float botAmt = bot.GetResource(ammo);
+            float c = (botAmt < cap) ? amt / System.MathF.Max(0.5f, botAmt) : 0f;
+            return AmmoBotValue(ammo) * System.MathF.Min(c, 2f);
         }
-        if (!string.IsNullOrEmpty(item.NetName) && Weapons.ByName(item.NetName) is not null)
-            return 1000f; // owned weapon with no rateable ammo payload: minor pull (QC ~ammo value)
 
         // Powerup / generic pickup (QC generic_pickupevalfunc): m_botvalue directly — Powerup 11000,
         // Jetpack/FuelRegen 3000.
@@ -395,6 +433,18 @@ public static class BotRoles
     private static readonly ResourceType[] AmmoResources =
     {
         ResourceType.Shells, ResourceType.Bullets, ResourceType.Rockets, ResourceType.Cells, ResourceType.Fuel,
+    };
+
+    /// <summary>QC the ammo item defs' <c>m_botvalue</c> ATTRIBs (common/items/item/ammo.qh: Shells 1000,
+    /// Bullets/Rockets/Cells 1500, Fuel 2000).</summary>
+    private static float AmmoBotValue(ResourceType res) => res switch
+    {
+        ResourceType.Shells => 1000f,
+        ResourceType.Bullets => 1500f,
+        ResourceType.Rockets => 1500f,
+        ResourceType.Cells => 1500f,
+        ResourceType.Fuel => 2000f,
+        _ => 0f,
     };
 
     private static bool Mentions(string s, string token)

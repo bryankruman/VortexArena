@@ -101,6 +101,9 @@ public sealed class BotBrain
     private GoalRating _pendingGoal;
     private bool _pendingGoalSet;
 
+    /// <summary>QC WATERLEVEL_SWIMMING — waist-deep and actually swimming (the shore-waypoint push gate).</summary>
+    private const int WaterLevelSwimming = 2;
+
     // Set by BeginGoalRating during the current role invocation: whether the role actually opened a rating
     // pass this token frame (QC: whether navigation_goalrating_start ran), and the entry-seed set its flood
     // produced (handed to the deferred SetGoal). Reset by the strategy block before each role call.
@@ -286,6 +289,36 @@ public sealed class BotBrain
         => e is Player || (e is not null && e.Velocity != Vector3.Zero);
 
     /// <summary>
+    /// QC havocbot_ai:68-100 — the underwater "find the shore" fallback: pick the closest waypoint that leads
+    /// UP and out (above the bot, no more than 100qu over eye level), whose top sits in empty (non-water,
+    /// non-solid) space, with a clear line from the eye, and push it as a direct route (QC
+    /// navigation_pushroute — no A*). Returns true if a shore waypoint was pushed.
+    /// </summary>
+    public bool TryPushShoreWaypoint(Player bot)
+    {
+        if (Network is null) return false;
+        Waypoint? shore = null;
+        float bestD2 = float.MaxValue;
+        Vector3 eye = bot.Origin + bot.ViewOfs;
+        foreach (var wp in Network.Nodes)
+        {
+            float d2 = (wp.Origin - bot.Origin).LengthSquared();
+            if (d2 > 10000f * 10000f || d2 >= bestD2) continue;
+            if (wp.Origin.Z < bot.Origin.Z) continue;                        // must lead UP and out
+            if (wp.Origin.Z - bot.Origin.Z - bot.ViewOfs.Z > 100f) continue; // too high to climb out to
+            // QC pointcontents(origin + maxs + '0 0 1') != CONTENT_EMPTY → still submerged/solid, skip.
+            if (Api.Trace.PointContents(wp.Origin + wp.Maxs + new Vector3(0f, 0f, 1f)) != 0) continue;
+            var tr = Api.Trace.Trace(eye, Vector3.Zero, Vector3.Zero, wp.Center, MoveFilter.Normal, bot);
+            if (tr.Fraction < 1f) continue;
+            shore = wp;
+            bestD2 = d2;
+        }
+        if (shore is null) return false;
+        Nav.PushRoute(shore.Origin); // QC navigation_pushroute(this, newgoal)
+        return true;
+    }
+
+    /// <summary>
     /// Advance the bot one frame (QC havocbot_ai + bot_think) AND apply the produced move via
     /// <see cref="Movement.Move"/> — the standalone/bench entry point (the live server instead pulls
     /// <see cref="ThinkProduce"/> through the per-tick input path so the SAME tick's physics consumes it).
@@ -469,6 +502,12 @@ public sealed class BotBrain
                 if (!captured && !Nav.HasGoal)
                     _strategyTime = now + 2f;
             }
+
+            // QC havocbot_ai:68-100: a SWIMMING bot with no goal (and none pending from this pass) pushes the
+            // closest "shore" waypoint so it doesn't tread water aimlessly between strategy passes.
+            if (!Nav.HasGoal && !_pendingGoalSet && bot.WaterLevel >= WaterLevelSwimming)
+                TryPushShoreWaypoint(bot);
+
             OnStrategyTokenUsed?.Invoke(); // QC bot_strategytoken_taken = true (used this frame)
         }
 
