@@ -2138,6 +2138,12 @@ public sealed class ServerNet : IDisposable
                 NadeBonus = p.NadeBonus,
                 NadeBonusType = p.NadeBonusType,
                 NadeBonusScore = p.NadeBonusScore,
+                // [hitsound] QC STAT(HIT_TIME)/STAT(TYPEHIT_TIME)/STAT(KILL_TIME): the EndFrame-flushed hit-feedback
+                // times (exactly one advances per frame, typehit > kill > hit). The client HitSound plays the
+                // matching sound per advance; HitDamageDealtTotal above carries the pitch-driving damage diff.
+                HitTime = p.HitTime,
+                TypeHitTime = p.TypeHitTime,
+                KillTime = p.KillTime,
                 // [W14b LI1] the animdecide upper-body action overlay (SHOOT this wave) + its start time. The server
                 // latches the action at the weapon-fire commit (WeaponFireGate) and networks the expiry-resolved id
                 // (resolvedAction above): the client plays it as a torso overlay over the velocity-derived legs (LI3).

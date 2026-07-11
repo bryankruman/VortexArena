@@ -2738,6 +2738,15 @@ public sealed class GameWorld
         // own it), so feeding it here would perpetually re-arm the window; passing no fixAngleClients is correct.
         AntiCheat.EndFrame(Simulation.FrameTime, Time);
 
+        // 4.5) QC EndFrame's hit-feedback stat flush (world.qc:2507-2528): per player, advance exactly ONE of
+        // HIT_TIME / TYPEHIT_TIME / KILL_TIME (priority typehit > kill > hit — the killing blow gives ONLY the
+        // kill sound) + the ceil'd cumulative damage total, then clear the per-frame accumulators the damage
+        // pipeline / Obituary banked this tick. Runs after the gametype/round steps so same-frame gametype
+        // kills (round-end executions etc.) flush this frame, not next. Bots' stats are set too but the
+        // owner-only Feedback privacy gate keeps them off the wire.
+        foreach (Player p in Clients.Players)
+            XonoticGodot.Common.Gameplay.Damage.DamageSystem.EndFrameFlushHitSoundStats(p, Time);
+
         // 5) the post-resolution server hook (QC the tail of the server frame).
         ServerHooks.FireEndFrame(Time);
 

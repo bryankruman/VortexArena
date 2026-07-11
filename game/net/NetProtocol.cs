@@ -121,7 +121,12 @@ public static class NetProtocol
     /// ±4096 qu, teleporting everything on implosion's blue half into the void; bolt velocities ≥4096 qu/s
     /// sign-flipped extrapolation everywhere) to full 32-bit floats — DP7's coord path, matching the owner
     /// block. Wire layout change in every entity delta ⇒ version bump.
-    public const uint ProtocolVersion = 15;
+    ///
+    /// v16 (hit/kill/typehit feedback parity): the <see cref="XonoticGodot.Net.EntityField.Feedback"/> block
+    /// gained three trailing floats — QC STAT(HIT_TIME) / STAT(TYPEHIT_TIME) / STAT(KILL_TIME), the
+    /// EndFrame-flushed feedback times driving the client's distinct hit/typehit/kill confirmation sounds
+    /// (view.qc HitSound). Unconditional reads inside an existing block ⇒ version bump.
+    public const uint ProtocolVersion = 16;
 
     /// <summary>Ordered, reliable ENet channel — handshake, spawns/removes, notifications, scores.</summary>
     public const int ReliableChannel = 0;
