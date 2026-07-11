@@ -2972,6 +2972,7 @@ public sealed partial class NetGame : Node3D
     private int _netTraceTick;             // throttle counter for the net_input_trace log
     private bool _hitchHoldCv = true;      // cl_movement_hitch_hold: Fix B post-hitch stall-aware reconcile (see docs/TROUBLESHOOTING.md)
     private bool _smoothDtCv = true;       // cl_smoothdt: conditioned client-motion dt (the r16 variance fix; see ConditionDt)
+    private bool _frameGovernorCv = true;  // cl_frame_governor: adaptive frame pacing (r16; see FrameGovernor)
     private bool _immediateButtonsCv = true; // cl_netimmediatebuttons: send fire/jump/impulse immediately past the rate gate (DP)
     // DP mouse pipeline (cl_input.c IN_Move → CL_Input): raw deltas accumulate per frame in _mouseDx/Dy
     // (_UnhandledInput), then FlushMouseLook applies the m_accelerate/m_filter block ONCE per render frame
@@ -3034,6 +3035,8 @@ public sealed partial class NetGame : Node3D
         _hitchHoldCv = (_sharedCvars?.GetString("cl_movement_hitch_hold") ?? "") != "0";
         // cl_smoothdt defaults ON (unset → on): the r16 conditioned-motion-dt fix; 0 = raw Godot delta (A/B).
         _smoothDtCv = (_sharedCvars?.GetString("cl_smoothdt") ?? "") != "0";
+        // cl_frame_governor defaults ON (unset → on): adaptive frame pacing; 0 = off (A/B).
+        _frameGovernorCv = (_sharedCvars?.GetString("cl_frame_governor") ?? "") != "0";
         // cl_netimmediatebuttons defaults ON (unset → on): treat anything but "0" as enabled.
         _immediateButtonsCv = (_sharedCvars?.GetString("cl_netimmediatebuttons") ?? "") != "0";
         // The DP mouse pipeline params (cl_input.c:401-412 registration defaults for anything unset).
@@ -3081,6 +3084,7 @@ public sealed partial class NetGame : Node3D
         // raw, and drift-corrects so accumulated time stays exactly wall-true. The server tick pump keeps
         // RAW dt — its accumulator integrates variance harmlessly. cl_smoothdt 0 = raw dt for A/B.
         float dt = ConditionDt(rawDt);
+        FrameGovernor(rawDt); // adaptive frame pacing (r16) — see the method's rationale block
 
         // DP CL_Input: apply the frame's accumulated mouse-look FIRST (raw wall-clock dt — cl.realframetime),
         // so everything below (input sampling, camera, radar) sees this frame's view angles.
@@ -3861,6 +3865,68 @@ public sealed partial class NetGame : Node3D
             // the early `_client is null` return and any throw in the body above.
             if (simGateTaken)
                 System.Threading.Monitor.Exit(simGate!);
+        }
+    }
+
+    // ---- cl_frame_governor (r16): adaptive frame pacing — "reliable frame time while the rate varies" ---
+    // The two conditions that felt smooth all night (vsync ON, a hard-engaged cap) share one property: the
+    // frame DELIVERY cadence is uniform. The port's frame production is structurally lumpy (tick frames /
+    // snapshot-decode frames / effect bursts alternate with cheap frames: p10 3.7ms vs p90 8.3ms), so with
+    // no pacing the panel receives frames of wildly varying age — the felt wobble, at any average fps.
+    // The governor paces frame starts at a rolling target just under what the scene currently sustains:
+    // every second it sets Engine.MaxFps to ~0.98/p75(recent raw dts) — the limiter is then ENGAGED on
+    // most frames (its sleep pads the cheap ones to match the expensive ones) while the rate still adapts
+    // to load over seconds. AIMD dynamics (fall fast on load, climb <=5%/s) prevent self-oscillation; the
+    // user's explicit cl_maxfps stays an upper bound; floor 60. cl_frame_governor 0 = off (restores the
+    // ClientSettings-applied cap).
+    private readonly float[] _govRing = new float[256];
+    private readonly float[] _govSort = new float[256];
+    private int _govI, _govN;
+    private float _govAccum;
+    private int _govApplied;      // last MaxFps the governor applied (0 = none yet)
+    private int _govSaved = -1;   // Engine.MaxFps before the governor took over (-1 = not saved)
+
+    private void FrameGovernor(float rawDt)
+    {
+        if (!_frameGovernorCv)
+        {
+            if (_govSaved >= 0)
+            {
+                Godot.Engine.MaxFps = _govSaved;
+                _govSaved = -1; _govApplied = 0; _govN = 0; _govI = 0; _govAccum = 0f;
+                XonoticGodot.Common.Diagnostics.Log.Info("[governor] off — restored engine cap");
+            }
+            return;
+        }
+        if (rawDt <= 0f) return;
+        _govRing[_govI] = rawDt;
+        _govI = (_govI + 1) % _govRing.Length;
+        if (_govN < _govRing.Length) _govN++;
+        _govAccum += rawDt;
+        if (_govAccum < 1.0f || _govN < 32)
+            return;
+        _govAccum = 0f;
+
+        System.Array.Copy(_govRing, _govSort, _govN);
+        System.Array.Sort(_govSort, 0, _govN);
+        float p75 = MathF.Max(_govSort[(int)(_govN * 0.75f)], 0.0005f);
+        int target = (int)(0.98f / p75);
+
+        // AIMD: drop to the new sustainable rate immediately; climb back at most ~5%/s.
+        if (_govApplied > 0 && target > _govApplied)
+            target = Math.Min(target, _govApplied + Math.Max(2, _govApplied / 20));
+        target = Math.Max(target, 60); // floor: never governor below 60
+        int userCap = (int)(_sharedCvars?.GetFloat("cl_maxfps") ?? 0f);
+        if (userCap > 0 && userCap != 256)
+            target = Math.Min(target, userCap); // an explicit player cap stays the upper bound
+
+        if (_govSaved < 0) _govSaved = Godot.Engine.MaxFps;
+        if (_govApplied == 0 || Math.Abs(target - _govApplied) * 100 >= _govApplied * 3)
+        {
+            Godot.Engine.MaxFps = target;
+            if (_govApplied != 0) // don't log the first engage spam at boot
+                XonoticGodot.Common.Diagnostics.Log.Info($"[governor] MaxFps -> {target} (p75 {p75 * 1000f:F2}ms)");
+            _govApplied = target;
         }
     }
 

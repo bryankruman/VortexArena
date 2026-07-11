@@ -168,6 +168,11 @@ public static class ClientSettings
         // frame-time variance the raw lagged delta puts a per-frame motion error into everything the eye
         // sees (the r16 "rubberband"). 0 = raw delta (A/B). Server tick timing is unaffected (always raw).
         c.Register("cl_smoothdt", "1");
+        // (r16) cl_frame_governor: adaptive frame pacing — every second, cap the engine at ~0.98/p75 of the
+        // recent frame times so delivery is metronomic while the rate still adapts to load (the property both
+        // smooth-feeling controls — vsync ON and a hard-engaged cap — share). 0 = off. An explicit cl_maxfps
+        // remains the upper bound; floor 60.
+        c.Register("cl_frame_governor", "1");
         c.Register("cl_predictfire", "1");       // intentionally default ON (NetGame: unset → on)
         // Release +attack/+attack2 (until a physical re-press) when the server FORCE-switches a weapon that ran
         // DRY while the trigger is still down, so the switched-to weapon doesn't surprise-fire the moment it
