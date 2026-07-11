@@ -347,6 +347,67 @@ body {
 
 .era-prose strong { color: #bdd8d1; font-weight: 500; }
 
+/* ──────────────────────── COMMIT CARDS ──────────────────────── */
+/* Real git commits (hash · date · author · message) from xonotic-data.pk3dir. */
+
+.commits-heading {
+  font-family: 'Cascadia Code', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #4c7872;
+  margin: 4px 0 6px;
+}
+
+.commits {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #162a24;
+  margin: 2px 0 16px;
+}
+
+.commit {
+  display: grid;
+  grid-template-columns: 12ch 1fr;
+  border-bottom: 1px solid #0f1e1b;
+}
+
+.commit:last-child { border-bottom: none; }
+
+.commit-left {
+  padding: 10px 12px 10px 14px;
+  border-right: 1px solid #0f1e1b;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: #090e0c;
+}
+
+.commit-hash {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.65rem;
+  color: #2d5450;
+  letter-spacing: 0.03em;
+}
+
+.commit-date {
+  font-family: 'Cascadia Code', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 0.64rem;
+  color: #df7b3c;
+  white-space: nowrap;
+}
+
+.commit-right {
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  justify-content: center;
+}
+
+.commit-msg { font-size: 0.82rem; color: #8db8b2; line-height: 1.45; }
+.commit-msg strong { color: #bdd8d1; font-weight: 500; }
+
 /* ──────────────────────── PER-WEAPON CHANGE TABLE ──────────────────────── */
 
 .change-wrap {
@@ -582,6 +643,8 @@ a:focus-visible { outline: 2px solid #df7b3c; outline-offset: 2px; }
 @media (max-width: 600px) {
   body { padding: 0 14px 80px; }
   .change-table .ct-note { display: none; }
+  .commit { grid-template-columns: 1fr; }
+  .commit-left { border-right: none; border-bottom: 1px solid #0f1e1b; flex-direction: row; gap: 12px; }
 }
 </style>
 
@@ -962,6 +1025,18 @@ a:focus-visible { outline: 2px solid #df7b3c; outline-offset: 2px; }
         <code>g_balance_armor_blockpercent</code> is already 0.7; <code>g_projectiles_newton_style</code>
         is 2 (relative velocity).
       </p>
+      <div class="commits-heading">Commit</div>
+      <div class="commits">
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">0e7ed909b</span>
+            <span class="commit-date">2010-03-18</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>xonotic</strong> — "initial checkin from nexuiz svn r8756"</div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- ── RENAME ── -->
@@ -972,8 +1047,19 @@ a:focus-visible { outline: 2px solid #df7b3c; outline-offset: 2px; }
         Formal Xonotic/Nexuiz balance separation. <code>balance.cfg</code> becomes
         <code>balanceNexSVN.cfg</code> (archived Nexuiz preset); <code>balanceFruit.cfg</code>
         becomes <code>balanceXonotic.cfg</code> (the Xonotic standard going forward).
-        Commit message: "rename balance configs :P"
       </p>
+      <div class="commits-heading">Commit</div>
+      <div class="commits">
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">66e790aed</span>
+            <span class="commit-date">2010-07-24</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Rudolf Polzer</strong> — "rename balance configs :P"</div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- ── v0.1.0preview ── -->
@@ -1027,6 +1113,72 @@ a:focus-visible { outline: 2px solid #df7b3c; outline-offset: 2px; }
             <tr><td></td><td class="ct-param">g_projectiles_newton_style_2 maxfactor</td><td class="ct-old">5.0</td><td class="ct-new">1.5</td><td class="ct-note">Cap on relative-velocity contribution dramatically reduced — projectile speed less affected by player velocity.</td></tr>
           </tbody>
         </table>
+      </div>
+      <div class="commits-heading">Key commits</div>
+      <div class="commits">
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">84a2a5cea</span>
+            <span class="commit-date">2010-12-27</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Rudolf Polzer</strong> — "rename campingrifle to sniperrifle whereever possible (everywhere except model name)"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">b373babed</span>
+            <span class="commit-date">2011-01-21</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Mircea Kitsune</strong> — "Per weapon load, part 1. Still buggy and not functioning properly" <span class="era-hash">// start of the universal reload system</span></div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">93eaab4d4</span>
+            <span class="commit-date">2011-03-28</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Rudolf Polzer</strong> — "new toy: autocvar_g_damagepush_speedfactor - ENJOY"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">16522be1a</span>
+            <span class="commit-date">2011-04-11</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Mircea Kitsune</strong> — "Begin implementation of loadable hagar secondary…"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">1ed620d16</span>
+            <span class="commit-date">2011-05-24</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Rudolf Polzer</strong> — "THE BIG BALANCE SWITCHOVER!!!1"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">a36e826e5</span>
+            <span class="commit-date">2011-05-24</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Rudolf Polzer</strong> — "rename the sniper rifle to just a rifle."</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">1bf29808a</span>
+            <span class="commit-date">2011-08-29</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Samual</strong> — "Increase damage of rifle primary and secondary, plus double the spread on the secondary. This gun actually feels a lot better now I think :O"</div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1103,6 +1255,45 @@ a:focus-visible { outline: 2px solid #df7b3c; outline-offset: 2px; }
           </tbody>
         </table>
       </div>
+      <div class="commits-heading">Key commits</div>
+      <div class="commits">
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">93a11d3a4</span>
+            <span class="commit-date">2012-09-19</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Samual Lenks</strong> — "Attempt to slightly rebalance the Crylink by giving it a new secondary"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">334f8247b</span>
+            <span class="commit-date">2013-02-12</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Rudolf Polzer</strong> — "animation blending makes headshots pointless; so let's remove them"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">5ff2b402f</span>
+            <span class="commit-date">2013-04-15</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Samual Lenks</strong> — "Lower Nex damage to 80, raise animtime to 0.5"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">beac65b0b</span>
+            <span class="commit-date">2013-05-14</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Samual Lenks</strong> — "Increase Nex raise/drop/animtime, decrease laser raise/drop time"</div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- ── v0.7 → v0.8.0 (MAJOR) ── -->
@@ -1152,6 +1343,63 @@ a:focus-visible { outline: 2px solid #df7b3c; outline-offset: 2px; }
           </tbody>
         </table>
       </div>
+      <div class="commits-heading">Key commits</div>
+      <div class="commits">
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">8ff736708</span>
+            <span class="commit-date">2012-05-21</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Samual</strong> — "Working on new laser primary attack — now has no projectile and works with its own tracing method"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">b45ca96db</span>
+            <span class="commit-date">2012-07-27</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Samual Lenks</strong> — "Implement new primary effect for Blaster-- MESSY MESSY MESSY!"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">710bd9995</span>
+            <span class="commit-date">2013-12-23</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Mario</strong> — "Rename nex to vortex"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">9c195bccc</span>
+            <span class="commit-date">2013-12-30</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Mario</strong> — "Rename uzi to machinegun"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">1b0c1bff4</span>
+            <span class="commit-date">2014-03-22</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Mario</strong> — "Add a new ammo type: plasma"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">e449f7019</span>
+            <span class="commit-date">2014-11-26</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Mario</strong> — "Weapons branch reloaded"</div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- ── v0.8.0 → v0.8.1 ── -->
@@ -1195,6 +1443,18 @@ a:focus-visible { outline: 2px solid #df7b3c; outline-offset: 2px; }
             <tr><td></td><td class="ct-param">beam_force</td><td class="ct-old">900</td><td class="ct-new">600</td><td class="ct-note">Beam push force reduced.</td></tr>
           </tbody>
         </table>
+      </div>
+      <div class="commits-heading">Commit</div>
+      <div class="commits">
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">27dcb19be</span>
+            <span class="commit-date">2015-02-12</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Mirio</strong> — "Forgot keep owner cvar in 0.8; buff SG; change back spawn furthest"</div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1250,6 +1510,54 @@ a:focus-visible { outline: 2px solid #df7b3c; outline-offset: 2px; }
             <tr><td></td><td class="ct-param">bolt enabled</td><td class="ct-old">0</td><td class="ct-new">1</td><td class="ct-note">Bolt fire mode activated (burst discharge).</td></tr>
           </tbody>
         </table>
+      </div>
+      <div class="commits-heading">Key commits &nbsp;<span class="era-hash">// bal-wep-xonotic.cfg</span></div>
+      <div class="commits">
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">09619e5ec</span>
+            <span class="commit-date">2019-09-02</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Martin Taibr</strong> — "enable linkexplode by default again"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">237d6375e</span>
+            <span class="commit-date">2020-01-16</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Martin Taibr</strong> — "more midair combo options: own/teammate/enemy"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">a79c1b2b6</span>
+            <span class="commit-date">2020-10-07</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Mario</strong> — "Implement a new design for the Arc secondary: electric orbs that can bounce (balance for bouncing is in the testing configuration)"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">f9eb80c3f</span>
+            <span class="commit-date">2021-03-11</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>drjaska</strong> — "Mortar longer lifetime so that it's usable as a mortar in large open maps"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">978636c39</span>
+            <span class="commit-date">2021-05-23</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>bones_was_here</strong> — "Set HLAC projectile speed to 6000, matches Blaster"</div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1313,6 +1621,90 @@ a:focus-visible { outline: 2px solid #df7b3c; outline-offset: 2px; }
             <tr><td></td><td class="ct-param">status</td><td class="ct-old">mutator prototype</td><td class="ct-new">removed (Feb 2025)</td><td class="ct-note">Commit 571f63db2: "Remove the unfinished Shockwave prototype." Weapon number #19 reassigned to Arc.</td></tr>
           </tbody>
         </table>
+      </div>
+      <div class="commits-heading">Key commits</div>
+      <div class="commits">
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">6ac3d2917</span>
+            <span class="commit-date">2023-07-11</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Dr. Jaska</strong> — "Implemented 3 Balance Council votes"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">c344197ee</span>
+            <span class="commit-date">2024-09-04</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>drjaska</strong> — "Rework Machinegun's spread to be time-based"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">9291a6676</span>
+            <span class="commit-date">2024-10-09</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Mario</strong> — "Remove the unused Plasma ammo type"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">571f63db2</span>
+            <span class="commit-date">2025-02-09</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Mario</strong> — "Remove the unfinished Shockwave prototype"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">d878c8d1e</span>
+            <span class="commit-date">2025-07-12</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>bones_was_here</strong> — "Apply balance vote 29: g_projectiles_interact 1; g_balance_devastator_damageforcescale 0"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">3256937e4</span>
+            <span class="commit-date">2025-08-30</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>bones_was_here</strong> — "Apply balance vote 30: Switch weapons faster to/from the blaster"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">8a696f04c</span>
+            <span class="commit-date">2025-10-28</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>bones_was_here</strong> — "Turbo HLAC"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">8f9cd8fd2</span>
+            <span class="commit-date">2026-01-16</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>bones_was_here</strong> — "Make the minelayer more useful for defence and more balanced"</div>
+          </div>
+        </div>
+        <div class="commit">
+          <div class="commit-left">
+            <span class="commit-hash">a1d8252b5</span>
+            <span class="commit-date">2026-05-31</span>
+          </div>
+          <div class="commit-right">
+            <div class="commit-msg"><strong>Mario</strong> — "Add an option to make the Vortex lose its charge when not held"</div>
+          </div>
+        </div>
       </div>
     </div>
 
