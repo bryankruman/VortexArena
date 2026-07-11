@@ -153,6 +153,7 @@ public static class BotRoles
             "assault" or "as" => BotObjectiveRoles.RoleAssault,        // havocbot_role_ass_*
             "cts" => BotObjectiveRoles.RoleCts,                        // havocbot_role_cts (run the course)
             "rc" or "race" => BotObjectiveRoles.RoleRace,              // havocbot_role_race (run the track)
+            "inv" or "invasion" => BotObjectiveRoles.RoleInvasion,     // hunt the monster waves (port improvement)
             _ => RoleGeneric,
         };
     }
@@ -367,7 +368,15 @@ public static class BotRoles
                 c = itemHealth / System.MathF.Max(1f, health);
             if (c <= 0f && itemHealth <= 0f && itemArmor <= 0f)
                 c = 0.5f; // name-matched but resource-less item entity: modest fallback pull
-            return baseValue * System.MathF.Min(2f, c);
+            float value = baseValue * System.MathF.Min(2f, c);
+            // [PORT IMPROVEMENT — Duel item denial; Base bots only rate items they need] In Duel, controlling
+            // the big stack items (mega health / big+mega armor, ≥50) IS the game: taking them when topped up
+            // denies the opponent the resource. High-skill duel bots keep a LOW-rating floor on them so they
+            // sweep the majors between fights (rangebias 2000 keeps it to nearby ones) without outranking real
+            // needs, enemies, or a genuine low-health detour.
+            if (brain.GameType is Duel && brain.Skill >= 7f && (itemHealth >= 50f || itemArmor >= 50f))
+                value = System.MathF.Max(value, 2500f); // BOT_PICKUP_RATING_LOW
+            return value;
         }
 
         // Weapon pickup (QC weapon_pickupevalfunc, items.qc:887-907): an unowned weapon returns its own

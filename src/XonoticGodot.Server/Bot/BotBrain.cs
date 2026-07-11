@@ -104,6 +104,9 @@ public sealed class BotBrain
     /// <summary>QC WATERLEVEL_SWIMMING — waist-deep and actually swimming (the shore-waypoint push gate).</summary>
     private const int WaterLevelSwimming = 2;
 
+    /// <summary>Scratch for the monster sweep in <see cref="ChooseEnemy"/> (alloc-free FindInRadius).</summary>
+    private readonly List<Entity> _monsterScratch = new();
+
     // Set by BeginGoalRating during the current role invocation: whether the role actually opened a rating
     // pass this token frame (QC: whether navigation_goalrating_start ran), and the entry-seed set its flood
     // produced (handed to the deferred SetGoal). Reset by the strategy block before each role call.
@@ -1185,9 +1188,9 @@ public sealed class BotBrain
         // (prefer the weak/close kill) — a LOWER rating is better in both, so the radius² seeds the ceiling.
         float bestRating = EnemyDetectionRadius * EnemyDetectionRadius;
 
-        foreach (var e in Players())
+        void Consider(Entity e)
         {
-            if (!ShouldAttack(Bot, e)) continue;
+            if (!ShouldAttack(Bot, e)) return;
             var center = (e.AbsMin != e.AbsMax) ? (e.AbsMin + e.AbsMax) * 0.5f : e.Origin + e.ViewOfs;
             float d2 = (center - eye).LengthSquared();
 
@@ -1199,11 +1202,11 @@ public sealed class BotBrain
                 float hp = e.Health + e.GetResource(ResourceType.Armor);
                 rating = QMath.Bound(50f, hp, 250f) * d2;
             }
-            if (rating >= bestRating) continue;
+            if (rating >= bestRating) return;
 
             // PVS pre-filter (QC checkpvs): a target in a non-visible cluster can't possibly be seen, so skip
             // the expensive traceline. Conservative (no false negatives) and a no-op on an unvised map.
-            if (!Api.Trace.CheckPvs(eye, center)) continue;
+            if (!Api.Trace.CheckPvs(eye, center)) return;
 
             // require line of sight (QC traceline; trace_ent == it || trace_fraction >= 1)
             var tr = Api.Trace.Trace(eye, Vector3.Zero, Vector3.Zero, center, MoveFilter.Normal, Bot);
@@ -1211,6 +1214,24 @@ public sealed class BotBrain
             {
                 best = e;
                 bestRating = rating;
+            }
+        }
+
+        foreach (var e in Players())
+            Consider(e);
+
+        // QC havocbot_chooseenemy walks g_bot_targets — players AND live monsters/turrets (anything spawned
+        // with .bot_attack; sv_monsters.qc:1449 pushes every monster). The port's roster is players-only, so
+        // sweep the entity table for FL_MONSTER entities too — without this bots are blind to Invasion waves
+        // and any map monsters. (No turret system exists in the port yet.)
+        if (Api.Services is not null)
+        {
+            Api.Entities.FindInRadius(Bot.Origin, EnemyDetectionRadius, _monsterScratch);
+            for (int i = 0; i < _monsterScratch.Count; i++)
+            {
+                Entity m = _monsterScratch[i];
+                if (m.IsFreed || (m.Flags & EntFlags.Monster) == 0) continue;
+                Consider(m);
             }
         }
 

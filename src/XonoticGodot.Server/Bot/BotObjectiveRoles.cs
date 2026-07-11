@@ -227,6 +227,35 @@ public static class BotObjectiveRoles
             brain.CtfRoleTimeout = Api.Clock.Time + 10f + (float)Prandom.Float() * 10f;
     }
 
+    /// <summary>
+    /// [PORT IMPROVEMENT] Pass the carried flag to the best same-team receiver: alive, empty-handed, inside
+    /// g_ctf_pass_radius, with a clear straight line (the port's pass flies straight — no arc trace). Nearest
+    /// wins. Returns true when a pass actually launched (<see cref="Ctf.PassFlag"/> applies the full rule set:
+    /// pass enabled, antispam, receiver validity).
+    /// </summary>
+    private static bool TryCarrierPass(BotBrain brain, Ctf ctf)
+    {
+        if (brain.Bot is not Player self || Api.Services is null) return false;
+        float radius = Cvars.FloatOr("g_ctf_pass_radius", 500f);
+        Player? best = null;
+        float bestD = radius;
+        Vector3 eye = self.Origin + self.ViewOfs;
+        foreach (Entity e in brain.Players())
+        {
+            if (e is not Player p || ReferenceEquals(p, self) || p.IsDead) continue;
+            if ((int)p.Team != (int)self.Team) continue;
+            if (ctf.CarriedBy(p) is not null) continue; // QC: can't pass to another carrier
+            float d = (p.Origin - self.Origin).Length();
+            if (d > bestD) continue;
+            var tr = Api.Trace.Trace(eye, Vector3.Zero, Vector3.Zero, p.Origin + p.ViewOfs,
+                MoveFilter.Normal, self);
+            if (tr.Fraction < 1f && !ReferenceEquals(tr.Ent, p)) continue; // wall in the way
+            best = p;
+            bestD = d;
+        }
+        return best is not null && ctf.PassFlag(self, best);
+    }
+
     // ---- CTF goal-rating helpers (QC havocbot_goalrating_ctf_*) ----
 
     /// <summary>QC havocbot_goalrating_ctf_ourbase / _enemybase: route toward a flag base (QC rates the
@@ -286,6 +315,17 @@ public static class BotObjectiveRoles
         var bot = brain.Bot;
         if (ctf.CarriedBy(bot) is null) { CtfResetRole(brain, ctf, mf, ef, middle, middleRadius); return; }
 
+        // [PORT IMPROVEMENT — Base bots never pass] A carrier about to die hands the flag off to a teammate
+        // in pass range with a clear line, keeping the run alive instead of dumping the flag on death.
+        // Runs at token cadence; PassFlag's own antispam (g_ctf_pass_wait) rate-limits retries. Skill-gated
+        // so low-skill bots keep their tunnel vision.
+        if (brain.Skill >= 3f && bot.Health + bot.GetResource(ResourceType.Armor) < 40f
+            && TryCarrierPass(brain, ctf))
+        {
+            CtfResetRole(brain, ctf, mf, ef, middle, middleRadius); // no longer carrying
+            return;
+        }
+
         if (!brain.GoalRatingTimedOut) return;
         brain.BeginGoalRating(rater);
 
@@ -308,6 +348,9 @@ public static class BotObjectiveRoles
             brain.CtfCantFindFlagTime = Api.Clock.Time + 10f;
         else if (Api.Clock.Time > brain.CtfCantFindFlagTime)
         {
+            // [PORT IMPROVEMENT] Before giving the route search another spin, try to PASS the flag to a
+            // reachable teammate — a stuck carrier handing off beats QC's suicide and beats circling forever.
+            TryCarrierPass(brain, ctf);
             brain.Nav.ClearRoute();
             brain.ForceGoalRating();
             brain.CtfCantFindFlagTime = Api.Clock.Time + 10f;
@@ -1473,6 +1516,46 @@ public static class BotObjectiveRoles
                     rater.Rate(bot.Origin, it, it.Origin, RatingRaceCheckpoint, 5000f);
             }
 
+        rater.End();
+    }
+
+    // ----------------------------------------------------------------------------------------
+    // Invasion — hunt the monster waves
+    // ----------------------------------------------------------------------------------------
+
+    /// <summary>QC BOT_RATING_ENEMY-adjacent scale for a live monster as a route goal. Modest — a wave that
+    /// spawned across the map is worth walking to, but health/armor between the bot and the monsters still
+    /// win when needed.</summary>
+    private const float RatingMonster = 2500f;
+
+    /// <summary>
+    /// Invasion role (PORT IMPROVEMENT — Base's Invasion bots run havocbot_role_generic and only fight
+    /// monsters that wander into view, since QC's goal rating covers players only): rate every LIVE monster
+    /// as a route goal so bots actively hunt the wave down instead of roaming until one finds them. Target
+    /// acquisition itself is the shared ChooseEnemy monster sweep (QC g_bot_targets); the gametype's
+    /// Bot_ForbidAttack hook (players vetoed, QC sv_invasion.qc:426) keeps the fire discipline faithful.
+    /// </summary>
+    public static void RoleInvasion(BotBrain brain, GoalRater rater)
+    {
+        var bot = brain.Bot;
+        if (!brain.GoalRatingTimedOut) return;
+        brain.BeginGoalRating(rater);
+
+        if (Api.Services is not null)
+        {
+            Api.Entities.FindInRadius(bot.Origin, 15000f, _scratch);
+            for (int i = 0; i < _scratch.Count; i++)
+            {
+                Entity m = _scratch[i];
+                if (m.IsFreed || (m.Flags & EntFlags.Monster) == 0) continue;
+                if (m.DeadState != DeadFlag.No || m.Health <= 0f) continue;
+                Vector3 pos = (m.AbsMin != m.AbsMax) ? (m.AbsMin + m.AbsMax) * 0.5f : m.Origin;
+                rater.Rate(bot.Origin, m, pos, RatingMonster, 2000f);
+            }
+        }
+
+        BotRoles.GoalrateItems(brain, rater, bot.Origin, 10000f);
+        BotRoles.GoalrateRoamWaypoints(brain, rater, bot.Origin, 3000f);
         rater.End();
     }
 

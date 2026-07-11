@@ -313,10 +313,12 @@ features:
     divergence_rationale: null
     gaps:
       - "No second see-through-transparent (DPCONTENTS_OPAQUE) scan pass and no misc_breakablemodel secondary targeting; bots won't shoot breakables or acquire targets through transparent surfaces. (UNCHANGED.)"
+      - "(CLOSED 2026-07-11 batch #3) monsters as targets — QC walks g_bot_targets (players + monsters via sv_monsters.qc:1449 + turrets); the port scan was players-only, leaving bots BLIND to Invasion waves. ChooseEnemy now also sweeps FL_MONSTER entities (FindInRadius + EntFlags.Monster). Turrets remain n/a (no turret system in the port)."
     verification:
-      - { kind: code, ref: "ChooseEnemy: invalid-enemy drop + immediate rescan; sticky window (LOS trace + <1000qu, +0.5s hold); SUPERBOT bound(50,hp,250)*d2 rating; non-SUPERBOT d2; PVS+LOS gate. No transparent/breakable second pass.", result: pass }
+      - { kind: code, ref: "ChooseEnemy: invalid-enemy drop + immediate rescan; sticky window (LOS trace + <1000qu, +0.5s hold); SUPERBOT bound(50,hp,250)*d2 rating; non-SUPERBOT d2; PVS+LOS gate; players + FL_MONSTER sweep (QC g_bot_targets). No transparent/breakable second pass.", result: pass }
+      - { kind: test, ref: "BotHuntPassDenyTests.ChooseEnemy_TargetsMonsters + InvasionForbidHook_VetoesPlayers_AllowsMonsters (the sv_invasion.qc:426 Bot_ForbidAttack veto, wired in the GameWorld Invasion arm)", result: pass }
     confidence: high
-    notes: "Unchanged. Sticky-enemy window + SUPERBOT health+armor rating ported. Still missing: the DPCONTENTS_OPAQUE transparent re-scan + misc_breakablemodel secondary targeting. PVS pre-filter retained (conservative optimization)."
+    notes: "2026-07-11 batch #3: monster targeting landed (players + FL_MONSTER sweep = QC g_bot_targets minus turrets); Invasion also gained the QC player-attack veto hook AND a hunt role (BotObjectiveRoles.RoleInvasion — a PORT IMPROVEMENT; Base's Invasion bots run generic and never path to monsters). Still missing: the DPCONTENTS_OPAQUE transparent re-scan + misc_breakablemodel secondary targeting. PVS pre-filter retained (conservative optimization)."
 
   - id: bot-ai.target.shouldattack
     name: "Target eligibility filter (bot_shouldattack)"
