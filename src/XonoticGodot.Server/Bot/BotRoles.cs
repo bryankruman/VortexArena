@@ -195,6 +195,11 @@ public static class BotRoles
         bool timeItems = Cvars.Bool("bot_ai_timeitems");
         float minRespawnDelay = System.Math.Max(11f, Cvars.FloatOr("bot_ai_timeitems_minrespawndelay", 11f));
 
+        // Per-pass arsenal snapshot (lazy): the bot's owned-weapon set can't change mid-pass, so the
+        // Weapons.All walk ItemValue needs (arsenal value + owned-ammo-types) runs at most once per
+        // GoalrateItems call instead of once per rated item.
+        ArsenalCache arsenal = default;
+
         // Fill the rater's reused scratch (alloc-free) instead of allocating a findradius iterator each call.
         // The body only reads/rates (no spawn/free), so index-iterating the snapshot directly is safe.
         Api.Entities.FindInRadius(org, radius, rater.Scratch);
@@ -227,8 +232,37 @@ public static class BotRoles
             var pos = (it.AbsMin + it.AbsMax) * 0.5f;
             if (pos == Vector3.Zero) pos = it.Origin;
 
-            float value = ItemValue(brain, it);
+            float value = ItemValue(brain, it, ref arsenal);
             rater.Rate(org, it, pos, value * ratingScale, 2000f);
+        }
+    }
+
+    /// <summary>
+    /// Lazy per-rating-pass snapshot of the bot's weapon inventory, filled by <see cref="EnsureArsenal"/> on
+    /// first use: the summed <c>bot_pickupbasevalue</c> of owned weapons (QC weapon_pickupevalfunc's arsenal
+    /// discount) and which ammo types an owned weapon feeds on (indexed like <see cref="AmmoResources"/>).
+    /// </summary>
+    private struct ArsenalCache
+    {
+        public bool Computed;
+        public float Value;
+        public byte OwnedAmmoMask; // bit i = bot owns a weapon whose AmmoType == AmmoResources[i]
+    }
+
+    private static void EnsureArsenal(Entity bot, ref ArsenalCache cache)
+    {
+        if (cache.Computed) return;
+        cache.Computed = true;
+        foreach (Weapon w in Weapons.All)
+        {
+            if (!Inventory.HasWeapon(bot, w)) continue;
+            cache.Value += w.BotPickupBaseValue;
+            for (int i = 0; i < AmmoResources.Length; i++)
+                if (w.AmmoType == AmmoResources[i])
+                {
+                    cache.OwnedAmmoMask |= (byte)(1 << i);
+                    break;
+                }
         }
     }
 
@@ -343,7 +377,7 @@ public static class BotRoles
     /// [parity 2026-07-11: the old 0..1 values made every item ~4 orders of magnitude too weak, so bots never
     /// detoured for health/armor/weapons in ANY mode — a root cause of "bots feed and ignore pickups".]
     /// </summary>
-    private static float ItemValue(BotBrain brain, Entity item)
+    private static float ItemValue(BotBrain brain, Entity item, ref ArsenalCache arsenal)
     {
         var bot = brain.Bot;
         string name = string.IsNullOrEmpty(item.NetName) ? item.ClassName : item.NetName;
@@ -387,11 +421,8 @@ public static class BotRoles
         {
             if (!bot.HasWeapon(item.NetName))
             {
-                float arsenal = 0f;
-                foreach (Weapon w in Weapons.All)
-                    if (Inventory.HasWeapon(bot, w))
-                        arsenal += w.BotPickupBaseValue;
-                float c = 1f - System.Math.Clamp(arsenal / 20000f, 0f, 1f) * 0.5f;
+                EnsureArsenal(bot, ref arsenal);
+                float c = 1f - System.Math.Clamp(arsenal.Value / 20000f, 0f, 1f) * 0.5f;
                 return wpn.BotPickupBaseValue * c;
             }
             // Owned (QC ammo_pickupevalfunc, weapon-pickup branch): the weapon's ammo value scaled by need,
@@ -410,14 +441,13 @@ public static class BotRoles
         // Ammo box (QC ammo_pickupevalfunc, plain-ammo branch): rated only when the bot OWNS a weapon that
         // feeds on this resource (QC: item_resource stays NULL otherwise → rating 0), then the ammo def's
         // m_botvalue × a 0..2 need factor.
-        foreach (ResourceType ammo in AmmoResources)
+        for (int i = 0; i < AmmoResources.Length; i++)
         {
+            ResourceType ammo = AmmoResources[i];
             float amt = item.GetResource(ammo);
             if (amt <= 0f) continue;
-            bool ownsUser = false;
-            foreach (Weapon w in Weapons.All)
-                if (w.AmmoType == ammo && Inventory.HasWeapon(bot, w)) { ownsUser = true; break; }
-            if (!ownsUser)
+            EnsureArsenal(bot, ref arsenal);
+            if ((arsenal.OwnedAmmoMask & (1 << i)) == 0)
                 return 0f;
             float cap = Resources.GetResourceLimit(bot, ammo);
             float botAmt = bot.GetResource(ammo);
