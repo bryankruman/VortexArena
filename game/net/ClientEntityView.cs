@@ -153,6 +153,12 @@ public sealed partial class ClientEntityView : Node
         e.Health = s.Health;
         e.Team = s.Colormap;
         e.Colors = s.Colors; // [r15 #43] packed clientcolors → shirt/pants/glow on the body + held weapon
+        // RENDER_COLORMAPPED loot (dropped weapons): rebuild the server's authoritative packed colormap from
+        // the Colors byte so ClientWorld's item tint pass paints the DROPPER's shirt/pants on the loot model —
+        // the same 1024 + (shirt<<4) + pants | BIT(10) encoding WeaponThrowing.ThrowerColormap stamped. On the
+        // listen-server path the shared edict already carries it; this fills the remote-client proxy.
+        e.ColorMapOverride = (s.Flags & NetEntityFlags.Colormapped) != 0
+            ? (1024 + (s.Colors & 0xFF)) | (1 << 10) : 0;
         e.ActiveWeaponId = s.Weapon;
         // [W14a-anim] decode the upper-body action overlay (QC csqcmodel animdecide getupperanim) onto the proxy so a
         // future torso-overlay render (LI3) plays the server-decided SHOOT/PAIN/DRAW/TAUNT/DEAD action over the

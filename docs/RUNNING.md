@@ -161,6 +161,8 @@ Headless doesn't render. To walk around the scene:
 4. Or from CLI, windowed: `"$GODOT" --path "C:/Users/Bryan/Projects/Xonotic/XonoticGodot"` (omit `--headless`).
 5. For an **automated frame an agent/CI can inspect**, add `--screenshot <path>` (writes a PNG then quits) —
    see Tricks → *Visual capture* below.
+6. To frame a **specific spot on a map** (an item pickup, a lightmap seam, a prop) without walking there, add
+   `--observe "<x y z> [yaw pitch]"` (+ optional `--look-at "<x y z>"`) — see Tricks → *Observer camera* below.
 
 ---
 
@@ -336,6 +338,19 @@ ToS/welcome/team-select, tools, confirms). Architecture:
   `.gdignore` so the Godot editor skips them and never spams the tree with `*.import` sidecars, and both are
   git-ignored. A root-level capture (`_*.png`) is git-ignored too but Godot will still generate a stray
   `_*.png.import` next to it, so prefer the folders.
+- **Observer camera (verified 2026-07):** `--observe "<x y z> [yaw pitch]"` pins the rendered camera at a fixed
+  Quake-space point (map-entity-lump coordinates) and keeps the local client an **observer** — no auto-join, so no
+  body/viewmodel intrudes and nothing perturbs the world. Add `--look-at "<x y z>"` to aim at a target point
+  instead of giving angles (the usual way to frame an entity). Pair with `--map` + `--screenshot` to capture any
+  spot on a map; add `--bots N` to observe live combat. Values may be space- or comma-separated; Quake pitch is
+  positive-down. Find entity coordinates in the BSP entity lump (lump 0 — plain text, e.g.
+  `python -c "..."` over `maps/<map>.bsp`, or the `viewpos` console print).
+  ```bash
+  "$GODOT" --path . --map stormkeep --observe "456 1288 220" --look-at "576 1408 180" \
+           --resolution 1280x720 --screenshot "$PWD/screenshots/devastator-pad.png"
+  ```
+  (Implementation: `game/net/ObserverCamera.cs`, parsed in `Main.cs`; the camera override + auto-join/CaptureGate
+  gates live in `game/net/NetGame.cs` — grep `ObserverCamera.Active`.)
   (First proof of this caught stormkeep's **walls rendering as missing-texture magenta** — unsupported DDS
   textures — while the headless smoke test still reported `0 errors`; now fixed by `DdsDecoder` (S3TC/BC1-3 +
   uncompressed). The last couple of `_norm`/`_gloss` maps were pk3 **symlink** stubs from build-time dedup,

@@ -162,6 +162,9 @@ public partial class ClientWorld : Node3D
         public int ItemFadeMeshCount; // mesh-list size at last push (re-push after a cache rebuild)
         public Godot.Vector3 ItemTintApplied = Godot.Vector3.One; // last item colormod pushed (One = untinted; change gate like ItemFadeApplied)
         public int ItemTintMeshCount; // mesh-list size at last tint push (re-push after a cache rebuild)
+        public bool ItemDuoApplied;   // a weapon duotone paint (uniforms + overrides) is currently applied
+        public ItemPaint ItemDuoPaint; // last duotone paint pushed (change gate)
+        public int ItemDuoMeshCount;  // mesh-list size at last duotone push (re-push after a cache rebuild)
     }
     private readonly Dictionary<int, CsqcState> _csqc = new();
 
@@ -1448,7 +1451,7 @@ public partial class ClientWorld : Node3D
                     // Available but distance-faded: apply only the distance alpha (QC's available branch keeps the
                     // base alpha, colormod 1, no ghost/stay multiply). Hidden once fully faded out past fade_end.
                     SetTreeTransparency(node, st, 1f - distAlpha);
-                    SetTreeColormod(node, st, Godot.Vector3.One); // QC available branch: colormod = '1 1 1'
+                    ApplyRestingItemTint(e, node, st); // weapon duotone (or colormod 1) — QC available branch
                     node.SetGameplayVisible(distAlpha > 0.001f);
                     st.ItemFaded = true;
                 }
@@ -1456,9 +1459,16 @@ public partial class ClientWorld : Node3D
                 {
                     // Back to available + in-range — undo the prior ghost/despawn/distance fade exactly once.
                     SetTreeTransparency(node, st, 0f);
-                    SetTreeColormod(node, st, Godot.Vector3.One);
+                    ApplyRestingItemTint(e, node, st);
                     node.SetGameplayVisible(true);
                     st.ItemFaded = false;
+                }
+                else
+                {
+                    // Resting (available, in-range, no fx): keep the weapon duotone painted — the dropper's
+                    // shirt/pants on a thrown weapon, the HUD-icon-derived base/highlight on a map pickup.
+                    // Change-gated inside, so this is a no-op after the first application.
+                    ApplyRestingItemTint(e, node, st);
                 }
             }
 
@@ -1624,6 +1634,207 @@ public partial class ClientWorld : Node3D
         }
         st.ItemTintApplied = colormod;
         st.ItemTintMeshCount = meshes.Count;
+        if (st.ItemDuoApplied)
+        {
+            // The colormod pass overwrote (or cleared) the duotone overrides; also reset the instance
+            // uniforms the duotone pushed, so a skin-shader weapon returns to its stock look.
+            ModelTint.Apply(meshes, ModelTint.White, ModelTint.White, ModelTint.Black, ModelTint.Black);
+            st.ItemDuoApplied = false;
+        }
+    }
+
+    /// <summary>
+    /// Paint an item's RESTING tint — what an available, un-fx'd pickup looks like. Weapons get the two-tone
+    /// paint (<see cref="TryGetItemDuotone"/>): a dropped weapon keeps its DROPPER's shirt/pants until it
+    /// despawns or is picked up (the next owner's drop then carries THEIR colors), a map-spawned weapon wears
+    /// its HUD-icon-derived base/highlight. Everything else resets to the untinted shared material. Both
+    /// setters are change-gated, so calling this per frame is a no-op after the first paint.
+    /// </summary>
+    private void ApplyRestingItemTint(Entity e, EntityNode node, CsqcState st)
+    {
+        if (TryGetItemDuotone(e, out ItemPaint paint))
+            SetTreeDuotone(node, st, paint);
+        else
+            SetTreeColormod(node, st, Godot.Vector3.One);
+    }
+
+    /// <summary>
+    /// The full two-channel weapon-item paint: the four <see cref="PlayerSkinShader"/> instance uniforms
+    /// (the channel that reaches skin-shader weapon materials — g_*.md3 textures ship _shirt/_reflect/_glow
+    /// siblings, so they compile to <see cref="PlayerSkinShader"/> and IGNORE surface overrides) plus the
+    /// base/emission pair for the plain-BaseMaterial3D surface-override fallback. Both are pushed; each
+    /// no-ops on the material kind it doesn't apply to.
+    /// </summary>
+    private readonly struct ItemPaint : System.IEquatable<ItemPaint>
+    {
+        public readonly Color Colormod, Glowmod, Shirt, Pants; // instance uniforms (skin-shader surfaces)
+        public readonly Color OverrideBase, OverrideEmission;  // BaseMaterial3D override variant (fallback)
+
+        public ItemPaint(Color colormod, Color glowmod, Color shirt, Color pants,
+            Color overrideBase, Color overrideEmission)
+        {
+            Colormod = colormod; Glowmod = glowmod; Shirt = shirt; Pants = pants;
+            OverrideBase = overrideBase; OverrideEmission = overrideEmission;
+        }
+
+        public bool Equals(ItemPaint o)
+            => Colormod == o.Colormod && Glowmod == o.Glowmod && Shirt == o.Shirt && Pants == o.Pants
+               && OverrideBase == o.OverrideBase && OverrideEmission == o.OverrideEmission;
+        public override bool Equals(object? o) => o is ItemPaint p && Equals(p);
+        public override int GetHashCode() => Colormod.GetHashCode() ^ OverrideBase.GetHashCode();
+    }
+
+    /// <summary>
+    /// Resolve the two-tone paint for a weapon pickup, if it gets one (<c>cl_weapon_item_colors</c>, default on).
+    /// A DROPPED weapon (RENDER_COLORMAPPED colormap inherited from the thrower — WeaponThrowing) keeps the
+    /// dropper's colors: highlight = pants palette color (the same nibble DP feeds glowmod), base = the shirt
+    /// color darkened for contrast. A MAP-SPAWNED <c>weapon_*</c> pickup derives its pair from the weapon's
+    /// HUD-icon color (<see cref="Weapon.Color"/> — the registry RGB generated from the icon art): highlight =
+    /// the icon color itself, base = a darker, slightly desaturated version of it (e.g. devastator orange-yellow
+    /// over dark amber, crylink purple over dark plum). Non-weapon items get no duotone.
+    /// </summary>
+    private bool TryGetItemDuotone(Entity e, out ItemPaint paint)
+    {
+        paint = default;
+        if (CvarF("cl_weapon_item_colors", 1f) == 0f)
+            return false;
+
+        // WEAPON pickups only, identified by the item MODEL (g_*.md3 ↔ Weapon.ItemModel — a remote client's
+        // item proxy carries the generic "item" classname, so the classname can't gate). Ammo/health/armor/
+        // powerups — and colormapped map PROPS, which also arrive with the Item kind — keep their stock look.
+        if (WeaponIconColor(e.Model) is not { } icon)
+            return false;
+
+        // Dropped loot carrying the thrower's packed colormap (1024 + (shirt<<4) + pants | BIT(10)) — set by
+        // the server at throw time and never rewritten, so the paint stays the DROPPER's until pickup/despawn.
+        if ((e.ColorMapOverride & (1 << 10)) != 0)
+        {
+            int lo = e.ColorMapOverride & 0x0F;
+            int hi = (e.ColorMapOverride >> 4) & 0x0F;
+            // Fixed t=0: the animated rainbow palette nibble would otherwise change color every frame,
+            // regrowing a paint (and a material variant) per frame — a dropped weapon keeps ONE frozen
+            // paint, which also matches "the colors they had when dropped".
+            (float sr, float sg, float sb) = CsqcModelAppearance.ColormapPaletteColor(hi, isPants: false, 0f);
+            (float pr, float pg, float pb) = CsqcModelAppearance.ColormapPaletteColor(lo, isPants: true, 0f);
+            var shirt = new Color(sr, sg, sb);
+            var pants = new Color(pr, pg, pb);
+            // Skin-shader channel = Base's dropped-loot look exactly (csqcmodel colormap apply): shirt/pants
+            // masks tinted with the dropper's palette colors, glowmod = the pants color, no darkening.
+            // Plain-material fallback = the duotone contrast pair (dark shirt base, pants emission).
+            paint = new ItemPaint(ModelTint.White, pants, shirt, pants,
+                DarkenForBase(shirt), pants);
+            return true;
+        }
+
+        // Map-spawned weapon pickup → HUD-icon-derived duotone: the whole diffuse is multiplied toward the
+        // dark desaturated BASE (colormod), while the glow texture + the team-colorable shirt/pants mask
+        // accents carry the HIGHLIGHT (the icon color itself).
+        Color baseCol = DarkenForBase(icon);
+        paint = new ItemPaint(baseCol, icon, icon, icon, baseCol, icon);
+        return true;
+    }
+
+    /// <summary>Derive the duotone BASE from a highlight: darker and slightly desaturated, so the highlight
+    /// pops against it (the user-spec contrast pair). Applied as a MULTIPLY over already-mid-gray weapon
+    /// diffuse textures, so V stays moderate — 0.35 would land near-black in a dim room.</summary>
+    private static Color DarkenForBase(Color c)
+        => Color.FromHsv(c.H, c.S * 0.8f, c.V * 0.5f);
+
+    /// <summary>Per-model HUD-icon color cache: the item model path (".../g_rl.md3") → the registry
+    /// <see cref="Weapon.Color"/> (the RGB derived from the weapon's HUD icon art), null for a non-weapon
+    /// item model. Keyed on the FULL networked model path; matched by filename against
+    /// <see cref="Weapon.ItemModel"/> (the registry stores the bare "g_rl.md3" name).</summary>
+    private static readonly Dictionary<string, Color?> _weaponIconColors = new();
+
+    private static Color? WeaponIconColor(string model)
+    {
+        if (string.IsNullOrEmpty(model))
+            return null;
+        if (_weaponIconColors.TryGetValue(model, out Color? cached))
+            return cached;
+        Color? result = null;
+        int slash = model.LastIndexOfAny(new[] { '/', '\\' });
+        string file = slash >= 0 ? model[(slash + 1)..] : model;
+        foreach (Weapon w in XonoticGodot.Common.Gameplay.Weapons.All)
+        {
+            if (string.IsNullOrEmpty(w.ItemModel)
+                || !string.Equals(w.ItemModel, file, System.StringComparison.OrdinalIgnoreCase))
+                continue;
+            result = new Color(w.Color.X, w.Color.Y, w.Color.Z);
+            break;
+        }
+        _weaponIconColors[model] = result;
+        return result;
+    }
+
+    /// <summary>
+    /// Apply the weapon paint to every mesh of an item node, on BOTH channels: the four
+    /// <see cref="PlayerSkinShader"/> instance uniforms (colormod/glowmod/shirt/pants — the channel that
+    /// reaches the skin-shader materials weapon g_ models compile to; harmless no-op on StandardMaterial3D),
+    /// and a per-surface override variant for plain BaseMaterial3D surfaces (same never-touch-shared rule as
+    /// <see cref="SetTreeColormod"/>; null → no override on ShaderMaterial surfaces, whose look the uniforms
+    /// already carry). Change-gated on (paint, mesh list); invalidates the plain colormod gate so a later
+    /// ghost/stay/despawn tint always repaints over it.
+    /// </summary>
+    private static void SetTreeDuotone(EntityNode node, CsqcState st, in ItemPaint paint)
+    {
+        List<MeshInstance3D> meshes = CsqcModelEffects.GetCachedMeshes(st.Effects, node);
+        if (st.ItemDuoApplied && st.ItemDuoPaint.Equals(paint) && st.ItemDuoMeshCount == meshes.Count)
+            return;
+        ModelTint.Apply(meshes, paint.Colormod, paint.Glowmod, paint.Shirt, paint.Pants);
+        for (int i = 0; i < meshes.Count; i++)
+        {
+            MeshInstance3D mi = meshes[i];
+            if (mi.Mesh is not Mesh mesh)
+                continue;
+            int surfaces = mesh.GetSurfaceCount();
+            for (int s = 0; s < surfaces; s++)
+                mi.SetSurfaceOverrideMaterial(s,
+                    DuotoneVariant(mesh.SurfaceGetMaterial(s), paint.OverrideBase, paint.OverrideEmission));
+        }
+        st.ItemDuoApplied = true;
+        st.ItemDuoPaint = paint;
+        st.ItemDuoMeshCount = meshes.Count;
+        // Force the next SetTreeColormod through its gate (it compares against this) so fx tints repaint.
+        st.ItemTintApplied = new Godot.Vector3(float.MinValue, 0f, 0f);
+        st.ItemTintMeshCount = -1;
+    }
+
+    /// <summary>Cache of duotone BaseMaterial3D variants keyed by (shared source material, base, highlight).
+    /// Bounded by the few weapon-item materials × the shipped weapon/player palette; variants hold their
+    /// source's textures by reference. Main-thread only (built inside the ClientWorld drive).</summary>
+    private static readonly Dictionary<(Material, Color, Color), Material?> _itemDuotoneVariants = new();
+
+    /// <summary>
+    /// Get (or build) the duotone duplicate of a plain BaseMaterial3D item surface: albedo multiplied by the
+    /// BASE color (gray weapon metal reads as the base hue), emission carrying the HIGHLIGHT — masked by the
+    /// surface's own glow texture when it has one (the DP glowmod semantic), otherwise a soft flat accent so
+    /// an unlit model still shows the highlight without turning into a slab. Returns null (no override, the
+    /// shared material stays live) for ShaderMaterial surfaces — those take the paint through the
+    /// <see cref="PlayerSkinShader"/> instance uniforms <see cref="SetTreeDuotone"/> pushes alongside.
+    /// </summary>
+    private static Material? DuotoneVariant(Material? source, Color baseCol, Color highlight)
+    {
+        if (source is not BaseMaterial3D src)
+            return null;
+        var key = (source!, baseCol, highlight);
+        if (_itemDuotoneVariants.TryGetValue(key, out Material? cached))
+            return cached;
+        var variant = (BaseMaterial3D)src.Duplicate();
+        Color a = src.AlbedoColor;
+        variant.AlbedoColor = new Color(a.R * baseCol.R, a.G * baseCol.G, a.B * baseCol.B, a.A);
+        if (src.EmissionEnabled)
+        {
+            variant.Emission = highlight; // the glow texture masks it — the DP glowmod path
+        }
+        else
+        {
+            variant.EmissionEnabled = true;
+            variant.Emission = highlight;
+            variant.EmissionEnergyMultiplier = 0.35f; // flat accent, not a glowing slab
+        }
+        _itemDuotoneVariants[key] = variant;
+        return variant;
     }
 
     /// <summary>Cache of tinted BaseMaterial3D variants keyed by (shared source material, colormod). Bounded by the

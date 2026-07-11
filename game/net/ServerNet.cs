@@ -2276,6 +2276,11 @@ public sealed class ServerNet : IDisposable
                 Velocity = e.Velocity,             // static entities keep 0 → the delta never sends it
                 Effects = e.Effects,
                 Colormap = (int)e.Team,
+                // RENDER_COLORMAPPED loot (a thrown/death-dropped weapon inheriting the thrower's packed
+                // shirt/pants — WeaponThrowing.ThrowerColormap): ship the packed 16*shirt+pants low byte in
+                // Colors + the Colormapped flag below, so the client repaints the loot in the DROPPER's colors
+                // (frozen at throw time — the server never rewrites a loot colormap after spawn).
+                Colors = (e.ColorMapOverride & RenderColormappedBit) != 0 ? e.ColorMapOverride & 0xFF : 0,
                 Health = (int)e.Health,
                 Alpha = QuantizeAlpha(e.Alpha), // [W1-alpha-net] per-entity render transparency (e.g. Cloaked items)
                 Owner = (e.Owner is Player op && _byPlayer.TryGetValue(op, out PeerState? ops)) ? ops.PeerId : 0,
@@ -2289,7 +2294,8 @@ public sealed class ServerNet : IDisposable
                 Flags = (e.ItemExpiringFx ? NetEntityFlags.ItemExpiring : NetEntityFlags.None)
                         | (e.ItemAnimate == 1 ? NetEntityFlags.ItemAnimate1 : NetEntityFlags.None)
                         | (e.ItemAnimate == 2 ? NetEntityFlags.ItemAnimate2 : NetEntityFlags.None)
-                        | (kind == NetEntityKind.Item && !e.ItemAvailable ? NetEntityFlags.ItemGhost : NetEntityFlags.None),
+                        | (kind == NetEntityKind.Item && !e.ItemAvailable ? NetEntityFlags.ItemGhost : NetEntityFlags.None)
+                        | ((e.ColorMapOverride & RenderColormappedBit) != 0 ? NetEntityFlags.Colormapped : NetEntityFlags.None),
             };
 
             // [objstream] Fold the turret-head + objective-state extras into the SAME snapshot record (no second
@@ -2734,6 +2740,10 @@ public sealed class ServerNet : IDisposable
 
     /// <summary>Net-id base for non-player entities, above the small ENet peer ids (so the two id spaces can't collide).</summary>
     private const int EntityNetBase = 16384;
+
+    /// <summary>RENDER_COLORMAPPED (BIT(10)) on <see cref="Entity.ColorMapOverride"/> — the same constant
+    /// WeaponThrowing/MonsterAI/MapModels stamp server-side when an entity carries an authoritative colormap.</summary>
+    private const int RenderColormappedBit = 1 << 10;
 
     /// <summary>
     /// [W1-alpha-net] Quantize an entity's render alpha (QC csqcmodel m_alpha) to the wire byte: a fully-opaque

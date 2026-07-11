@@ -53,6 +53,28 @@ public class SnapshotDeltaTests
     }
 
     [Fact]
+    public void EntityCodec_RoundTrips_Colormapped_Loot_Colors()
+    {
+        // A dropped weapon carries the thrower's packed 16*shirt+pants in Colors + the Colormapped flag
+        // (WeaponThrowing.ThrowerColormap → ServerNet snapshot). Both must round-trip so the client can
+        // rebuild 1024 + Colors | RENDER_COLORMAPPED and paint the dropper's colors on the loot.
+        var baseline = NetEntityState.Empty(20);
+        var cur = baseline;
+        cur.Kind = NetEntityKind.Item;
+        cur.Colors = (7 << 4) + 12; // shirt 7, pants 12
+        cur.Flags = NetEntityFlags.Colormapped | NetEntityFlags.ItemAnimate1;
+
+        var w = new BitWriter();
+        EntityStateCodec.WriteDelta(w, baseline, cur);
+        var r = new BitReader(w.WrittenSpan);
+        NetEntityState got = EntityStateCodec.ReadDelta(ref r, baseline);
+        Assert.False(r.BadRead);
+        Assert.Equal((7 << 4) + 12, got.Colors);
+        Assert.True((got.Flags & NetEntityFlags.Colormapped) != 0);
+        Assert.True((got.Flags & NetEntityFlags.ItemAnimate1) != 0);
+    }
+
+    [Fact]
     public void EntityCodec_Plain_Player_Leaves_Wepent_And_AnimAction_Clear()
     {
         // [W14a] a plain player (no action, switch ids at the -1 sentinel) must NOT set the new group bits — they

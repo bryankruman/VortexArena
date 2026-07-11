@@ -43,6 +43,12 @@ public enum NetEntityFlags : ushort
     // drives the rocket trail AND the looping jetpack-fly sound (csqcmodel_hooks.qc:611/645). The port networks it
     // here so the client can re-derive MF_ROCKET per player (ComposeForcedAppearance) instead of networking MF_*.
     UsingJetpack = 1 << 8,
+    // Server-side Entity.ColorMapOverride carries RENDER_COLORMAPPED (dropped-weapon loot inheriting the
+    // thrower's packed shirt/pants — WeaponThrowing.ThrowerColormap; colormapped props/monsters use the same
+    // seam). When set, the snapshot's Colors byte is that packed 16*shirt+pants value and the client rebuilds
+    // 1024 + Colors | RENDER_COLORMAPPED onto its proxy so the loot renders the DROPPER's colors, frozen at
+    // throw time, until the item despawns/is picked up. Never set on players (their Colors byte is live).
+    Colormapped = 1 << 9,
 }
 
 /// <summary>
