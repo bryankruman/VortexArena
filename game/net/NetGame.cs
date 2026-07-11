@@ -3433,11 +3433,14 @@ public sealed partial class NetGame : Node3D
             }
         }
 
+        // "Client counts as spawned" — shared by the CaptureGate mark below and the loading-screen stage pick:
+        // a real spawn (Health > 0), or an armed --observe camera (which never spawns — Health stays 0).
+        bool clientSpawned = _cameraReady && (_client.Health > 0 || ObserverCamera.Active);
+
         // Capture readiness: a windowed --screenshot waits on this so it lands on the spawned world, not the
         // loading screen or a from-origin pre-spawn frame (CaptureGate). One-shot at first spawn, independent of
         // the loading-screen block below (which a bare CLI host may not have).
-        // (--observe never spawns — Health stays 0 — so the armed observer camera counts as "ready".)
-        if (!_captureMarked && _cameraReady && (_client.Health > 0 || ObserverCamera.Active))
+        if (!_captureMarked && clientSpawned)
         {
             _captureMarked = true;
             CaptureGate.MarkReady();
@@ -3450,9 +3453,9 @@ public sealed partial class NetGame : Node3D
         if (LoadingScreen is not null || _fallbackOverlay is not null)
         {
             HandshakeStage stage =
-                (_cameraReady && (_client.Health > 0 || ObserverCamera.Active)) ? HandshakeStage.Spawned
-                : !_client.Accepted                  ? HandshakeStage.Connecting
-                : !_cameraReady                       ? HandshakeStage.WaitingForServer
+                clientSpawned          ? HandshakeStage.Spawned
+                : !_client.Accepted    ? HandshakeStage.Connecting
+                : !_cameraReady        ? HandshakeStage.WaitingForServer
                 : HandshakeStage.Joining;
 
             if (stage != _handshakeStage)

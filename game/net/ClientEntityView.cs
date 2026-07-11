@@ -158,7 +158,7 @@ public sealed partial class ClientEntityView : Node
         // the same 1024 + (shirt<<4) + pants | BIT(10) encoding WeaponThrowing.ThrowerColormap stamped. On the
         // listen-server path the shared edict already carries it; this fills the remote-client proxy.
         e.ColorMapOverride = (s.Flags & NetEntityFlags.Colormapped) != 0
-            ? (1024 + (s.Colors & 0xFF)) | (1 << 10) : 0;
+            ? (1024 + (s.Colors & 0xFF)) | Entity.RenderColormapped : 0;
         e.ActiveWeaponId = s.Weapon;
         // [W14a-anim] decode the upper-body action overlay (QC csqcmodel animdecide getupperanim) onto the proxy so a
         // future torso-overlay render (LI3) plays the server-decided SHOOT/PAIN/DRAW/TAUNT/DEAD action over the

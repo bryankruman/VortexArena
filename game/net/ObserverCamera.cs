@@ -66,6 +66,19 @@ public static class ObserverCamera
         return true;
     }
 
+    /// <summary>
+    /// Disarm on game-session teardown (Shell.TeardownGame): --observe is a boot-time capture for ONE session.
+    /// Without this the latch would outlive the capture — a later menu-created game in the same process would
+    /// silently never auto-join its host and keep the camera pinned at the OLD map's coordinates.
+    /// </summary>
+    public static void Disarm()
+    {
+        if (!Active)
+            return;
+        Active = false;
+        Log.Info("[observe] disarmed (game session ended)");
+    }
+
     /// <summary>Parse "x y z ..." (space- and/or comma-separated floats, invariant culture), or null.</summary>
     private static float[]? ParseVec(string s)
     {
