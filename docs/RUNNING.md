@@ -351,6 +351,14 @@ ToS/welcome/team-select, tools, confirms). Architecture:
   ```
   (Implementation: `game/net/ObserverCamera.cs`, parsed in `Main.cs`; the camera override + auto-join/CaptureGate
   gates live in `game/net/NetGame.cs` — grep `ObserverCamera.Active`.)
+  To frame an item in a specific SERVER STATE, `--cvar g_debug_items_start_unavailable "<classname substring>|all"`
+  marks matching permanent items as already picked up at spawn (the awaiting-respawn ghost) — combine with a large
+  `--cvar g_pickup_respawntime_*` so the ghost persists for the capture:
+  ```bash
+  "$GODOT" --path . --map stormkeep --observe "-1050 -300 160" --look-at "-910 -160 100" \
+           --cvar g_debug_items_start_unavailable armor_mega --cvar g_pickup_respawntime_long 600 \
+           --resolution 1280x720 --screenshot "$PWD/screenshots/armor-ghost.png"
+  ```
   (First proof of this caught stormkeep's **walls rendering as missing-texture magenta** — unsupported DDS
   textures — while the headless smoke test still reported `0 errors`; now fixed by `DdsDecoder` (S3TC/BC1-3 +
   uncompressed). The last couple of `_norm`/`_gloss` maps were pk3 **symlink** stubs from build-time dedup,

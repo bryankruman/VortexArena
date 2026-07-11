@@ -1623,14 +1623,25 @@ public partial class ClientWorld : Node3D
         if (st.ItemTintApplied == colormod && st.ItemTintMeshCount == meshes.Count)
             return;
         bool clear = colormod == Godot.Vector3.One;
+        // DP renders colormod as a multiply over the LIT surface (ambient+diffuse AND the glow via glowmod —
+        // QC sets both to the same vector in the item branches), so a DARK tint (the shipped cl_ghost_items_color
+        // '-1 -1 -1') comes out a flat near-black silhouette: no texture, no glow, no specular gleam. A
+        // per-surface albedo-multiplied variant can't reproduce that (Godot PBR keeps its specular/reflection
+        // terms, and a ModelAnimator-driven MD3 rebuilds its surfaces in place every frame, silently DROPPING
+        // per-surface overrides — the ghost mega armor kept its green glow). So a dark tint is applied as a
+        // whole-mesh MaterialOverride flat unshaded color — exactly the DP output, and MaterialOverride is the
+        // one channel that survives in-place surface rebuilds (see ModelAnimator's persistent-mesh note).
+        float cr = Mathf.Max(colormod.X, 0f), cg = Mathf.Max(colormod.Y, 0f), cb = Mathf.Max(colormod.Z, 0f);
+        bool darkFlat = !clear && MathF.Max(cr, MathF.Max(cg, cb)) <= GhostDarkMax;
         for (int i = 0; i < meshes.Count; i++)
         {
             MeshInstance3D mi = meshes[i];
             if (mi.Mesh is not Mesh mesh)
                 continue;
+            mi.MaterialOverride = darkFlat ? FlatGhostTint(colormod) : null;
             int surfaces = mesh.GetSurfaceCount();
             for (int s = 0; s < surfaces; s++)
-                mi.SetSurfaceOverrideMaterial(s, clear ? null : TintVariant(mesh.SurfaceGetMaterial(s), colormod));
+                mi.SetSurfaceOverrideMaterial(s, clear || darkFlat ? null : TintVariant(mesh.SurfaceGetMaterial(s), colormod));
         }
         st.ItemTintApplied = colormod;
         st.ItemTintMeshCount = meshes.Count;
@@ -1787,6 +1798,7 @@ public partial class ClientWorld : Node3D
             MeshInstance3D mi = meshes[i];
             if (mi.Mesh is not Mesh mesh)
                 continue;
+            mi.MaterialOverride = null; // undo a prior ghost's whole-mesh dark flat (weapon respawned)
             int surfaces = mesh.GetSurfaceCount();
             for (int s = 0; s < surfaces; s++)
                 mi.SetSurfaceOverrideMaterial(s,
@@ -1842,11 +1854,25 @@ public partial class ClientWorld : Node3D
     /// (built inside the ClientWorld drive).</summary>
     private static readonly Dictionary<(Material, Godot.Vector3), Material?> _itemTintVariants = new();
 
-    /// <summary>Cache of the flat DARK-ghost substitute materials used for ShaderMaterial surfaces, keyed by
-    /// colormod ALONE — the substitute depends only on the tint, not the source shader, so this stays a handful of
-    /// entries (≈1: the default ghost) instead of pinning a fresh per-match ShaderMaterial (and its compiled shader
-    /// + textures) for the process lifetime the way a (source, colormod) key would.</summary>
+    /// <summary>Cache of the flat DARK-ghost substitute materials (whole-mesh MaterialOverride), keyed by
+    /// colormod ALONE — the substitute depends only on the tint, not the source material, so this stays a handful
+    /// of entries (≈1: the default ghost). Unshaded flat color = DP's colormod-multiplied-lighting output for a
+    /// dark tint: no texture, no glow, no specular gleam; alpha rides the node transparency.</summary>
     private static readonly Dictionary<Godot.Vector3, StandardMaterial3D> _itemFlatGhostTints = new();
+
+    /// <summary>Get (or build) the flat dark-ghost whole-mesh override for a (clamped) dark colormod.</summary>
+    private static StandardMaterial3D FlatGhostTint(Godot.Vector3 colormod)
+    {
+        if (_itemFlatGhostTints.TryGetValue(colormod, out StandardMaterial3D? cached))
+            return cached;
+        var flat = new StandardMaterial3D
+        {
+            ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
+            AlbedoColor = new Color(Mathf.Max(colormod.X, 0f), Mathf.Max(colormod.Y, 0f), Mathf.Max(colormod.Z, 0f), 1f),
+        };
+        _itemFlatGhostTints[colormod] = flat;
+        return flat;
+    }
 
     /// <summary>Above this per-channel clamped-multiply value a colormod is NOT a dark ghost — a flat substitute
     /// would erase the shader's texture detail (the stay-weapon '2 0.5 0.5' tint), so we leave the live shader.</summary>
@@ -1863,27 +1889,13 @@ public partial class ClientWorld : Node3D
         if (source is not BaseMaterial3D src)
         {
             // [#54] ShaderMaterial (a compiled Q3/glow/skin shader — the POWERUP models are almost entirely
-            // these): an arbitrary shader's output can't be colormod-multiplied from here. DP applies colormod as
-            // a final clamped multiply over the WHOLE surface — with the shipped ghost default '-1 -1 -1' that
-            // lands on flat BLACK — so for a DARK tint we substitute a cached flat dark unshaded material (alpha
-            // still rides the node transparency, like DP's alpha *= cl_ghost_items). But a BRIGHT tint (the
-            // g_weapon_stay 'cl_weapon_stay_color 2 0.5 0.5' still-pickable weapon) would be turned into a flat
-            // opaque slab, erasing the model's texture/animation — so leave the live shader for those (return
-            // null = shared material stays live, alpha-only), the least-wrong option for a positive multiply.
-            if (source is null)
-                return null;
-            float fr = Mathf.Max(colormod.X, 0f), fg = Mathf.Max(colormod.Y, 0f), fb = Mathf.Max(colormod.Z, 0f);
-            if (MathF.Max(fr, MathF.Max(fg, fb)) > GhostDarkMax)
-                return null; // bright tint (stay-weapon): keep the textured shader, don't flatten it to a slab
-            if (_itemFlatGhostTints.TryGetValue(colormod, out StandardMaterial3D? scached))
-                return scached;
-            var flat = new StandardMaterial3D
-            {
-                ShadingMode = BaseMaterial3D.ShadingModeEnum.Unshaded,
-                AlbedoColor = new Color(fr, fg, fb, 1f),
-            };
-            _itemFlatGhostTints[colormod] = flat;
-            return flat;
+            // these): an arbitrary shader's output can't be colormod-multiplied from here. A DARK tint is now
+            // handled BEFORE this by SetTreeColormod's whole-mesh MaterialOverride flat (the DP black-silhouette
+            // path), so this only sees BRIGHT tints (the g_weapon_stay 'cl_weapon_stay_color 2 0.5 0.5'
+            // still-pickable weapon) — flattening those would erase the model's texture/animation, so leave the
+            // live shader (return null = shared material stays live, alpha-only), the least-wrong option for a
+            // positive multiply.
+            return null;
         }
         var key = (source!, colormod);
         if (_itemTintVariants.TryGetValue(key, out Material? cached))
