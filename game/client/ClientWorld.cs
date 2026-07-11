@@ -500,6 +500,14 @@ public partial class ClientWorld : Node3D
 
         // Free every cosmetic add-on node the layer is still holding (ice blocks / buff glows / spawn-loc markers).
         _cosmetics?.Clear();
+
+        // Drop the static item-tint material caches: their keys are PER-MAP Material instances (AssetSystem
+        // shared surface materials), so carrying them across sessions pins every visited map's weapon-item
+        // materials + tint/duotone duplicates (and their textures) for the process lifetime. The dropper
+        // shirt/pants palette alone is up to 16×16 variants per source material. Rebuilt on demand next map.
+        _itemTintVariants.Clear();
+        _itemDuotoneVariants.Clear();
+        _weaponsByItemModel.Clear();
     }
 
     // =================================================================================================
@@ -1668,10 +1676,15 @@ public partial class ClientWorld : Node3D
             && st.ItemTintSpecMeshCount == meshes.Count && st.ItemTintSpecFirstMeshId == FirstMeshId(meshes))
             return;
 
-        // Channel 1 — instance uniforms (change-rate: spec transitions only, so an unconditional push is cheap).
+        // Channel 1 — instance uniforms. ONLY touched when a Duotone is being painted or was the previously
+        // applied spec (the identity reset that un-paints it). Never write identity onto uniforms we never
+        // painted: other systems own that channel on some item-classified entities — the CTF flag's per-frame
+        // team ApplyColormap (step 1 of this same loop) would be overwritten to a gray banner on every frame
+        // this gate re-opens (spawn, model stream-in).
+        bool prevWasDuotone = st.ItemTintSpecValid && st.ItemTintSpecApplied.Kind == ItemTintKind.Duotone;
         if (spec.Kind == ItemTintKind.Duotone)
             ModelTint.Apply(meshes, spec.Paint.Colormod, spec.Paint.Glowmod, spec.Paint.Shirt, spec.Paint.Pants);
-        else
+        else if (prevWasDuotone)
             ModelTint.Apply(meshes, ModelTint.White, ModelTint.White, ModelTint.Black, ModelTint.Black);
 
         // Channel 2 — the dark-flat whole-mesh override (DP black-silhouette ghosts).
@@ -1791,24 +1804,16 @@ public partial class ClientWorld : Node3D
     {
         paint = default;
         // WEAPON pickups only. Preferred identity: the networked weapon registry id (Entity.ItemWeaponId,
-        // protocol v16 — explicit, survives a mapper overriding the pickup's model). Fallback: match the item
-        // MODEL filename against Weapon.ItemModel (listen-server shared edicts predating the decode, old
-        // demos). Ammo/health/armor/powerups — and colormapped map PROPS, which also arrive with the Item
-        // kind — keep their stock look.
-        Color icon;
-        if (e.ItemWeaponId >= 0 && e.ItemWeaponId < XonoticGodot.Common.Gameplay.Weapons.All.Count)
-        {
-            Weapon w = XonoticGodot.Common.Gameplay.Weapons.ById(e.ItemWeaponId);
-            icon = new Color(w.Color.X, w.Color.Y, w.Color.Z);
-        }
-        else if (WeaponIconColor(e.Model) is { } fromModel)
-        {
-            icon = fromModel;
-        }
-        else
-        {
+        // protocol v17 — explicit, survives a mapper overriding the pickup's model). Fallback: match the item
+        // MODEL filename against Weapon.ItemModel (proxies predating the decode, old demos). Ammo/health/
+        // armor/powerups — and colormapped map PROPS, which also arrive with the Item kind — keep their
+        // stock look. Either way ONE weapon def is resolved and the icon color derives from it in one place.
+        Weapon? weapon = e.ItemWeaponId >= 0 && e.ItemWeaponId < XonoticGodot.Common.Gameplay.Weapons.All.Count
+            ? XonoticGodot.Common.Gameplay.Weapons.ById(e.ItemWeaponId)
+            : WeaponForModel(e.Model);
+        if (weapon is not { } w)
             return false;
-        }
+        var icon = new Color(w.Color.X, w.Color.Y, w.Color.Z);
 
         // Dropped loot carrying the thrower's packed colormap (1024 + (shirt<<4) + pants | BIT(10)) — set by
         // the server at throw time and never rewritten, so the paint stays the DROPPER's until pickup/despawn.
@@ -1845,19 +1850,19 @@ public partial class ClientWorld : Node3D
     private static Color DarkenForBase(Color c)
         => Color.FromHsv(c.H, c.S * 0.8f, c.V * 0.5f);
 
-    /// <summary>Per-model HUD-icon color cache: the item model path (".../g_rl.md3") → the registry
-    /// <see cref="Weapon.Color"/> (the RGB derived from the weapon's HUD icon art), null for a non-weapon
-    /// item model. Keyed on the FULL networked model path; matched by filename against
-    /// <see cref="Weapon.ItemModel"/> (the registry stores the bare "g_rl.md3" name).</summary>
-    private static readonly Dictionary<string, Color?> _weaponIconColors = new();
+    /// <summary>Per-model weapon-lookup cache: the item model path (".../g_rl.md3") → the weapon whose
+    /// <see cref="Weapon.ItemModel"/> matches by filename (null = not a weapon item model). Keyed on the FULL
+    /// networked model path. The FALLBACK identity only — the networked <see cref="Entity.ItemWeaponId"/> is
+    /// preferred; the color derivation itself lives with the caller so both paths share it.</summary>
+    private static readonly Dictionary<string, Weapon?> _weaponsByItemModel = new();
 
-    private static Color? WeaponIconColor(string model)
+    private static Weapon? WeaponForModel(string model)
     {
         if (string.IsNullOrEmpty(model))
             return null;
-        if (_weaponIconColors.TryGetValue(model, out Color? cached))
+        if (_weaponsByItemModel.TryGetValue(model, out Weapon? cached))
             return cached;
-        Color? result = null;
+        Weapon? result = null;
         int slash = model.LastIndexOfAny(new[] { '/', '\\' });
         string file = slash >= 0 ? model[(slash + 1)..] : model;
         foreach (Weapon w in XonoticGodot.Common.Gameplay.Weapons.All)
@@ -1865,10 +1870,10 @@ public partial class ClientWorld : Node3D
             if (string.IsNullOrEmpty(w.ItemModel)
                 || !string.Equals(w.ItemModel, file, System.StringComparison.OrdinalIgnoreCase))
                 continue;
-            result = new Color(w.Color.X, w.Color.Y, w.Color.Z);
+            result = w;
             break;
         }
-        _weaponIconColors[model] = result;
+        _weaponsByItemModel[model] = result;
         return result;
     }
 
@@ -1963,15 +1968,9 @@ public partial class ClientWorld : Node3D
         if (Api.Services is null)
             return fallback;
         string s = Api.Cvars.GetString(name);
-        if (string.IsNullOrWhiteSpace(s))
+        if (!XonoticGodot.Common.Framework.VecParse.TryParseFloats(s, min: 3, out float[] v))
             return fallback;
-        string[] parts = s.Split((char[]?)null, System.StringSplitOptions.RemoveEmptyEntries);
-        if (parts.Length < 3
-            || !float.TryParse(parts[0], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float r)
-            || !float.TryParse(parts[1], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float g)
-            || !float.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float b))
-            return fallback;
-        return new Godot.Vector3(r, g, b);
+        return new Godot.Vector3(v[0], v[1], v[2]);
     }
 
     /// <summary>

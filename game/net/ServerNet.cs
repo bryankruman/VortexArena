@@ -2282,7 +2282,7 @@ public sealed class ServerNet : IDisposable
                 Colormap = (int)e.Team,
                 // RENDER_COLORMAPPED entities (a thrown/death-dropped weapon inheriting the thrower's packed
                 // shirt/pants — WeaponThrowing.ThrowerColormap — plus colormapped props/monsters): ship the
-                // FULL authoritative colormap in its own delta field (protocol v16), so the client repaints
+                // FULL authoritative colormap in its own delta field (protocol v17), so the client repaints
                 // the loot in the DROPPER's colors (frozen at throw time — the server never rewrites a loot
                 // colormap after spawn) and both QC encodings (packed 1024+ vs a sub-1024 slot reference)
                 // survive the wire. 0 on the overwhelming majority of entities → the delta bit stays clear.

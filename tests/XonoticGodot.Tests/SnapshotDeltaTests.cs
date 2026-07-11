@@ -73,10 +73,14 @@ public class SnapshotDeltaTests
         Assert.Equal(1024 + (7 << 4) + 12, got.ColorMapOverride);
         Assert.True((got.Flags & NetEntityFlags.ItemAnimate1) != 0);
 
-        // A plain item (no colormap) must keep the bit clear — the field costs nothing by default.
+        // A plain item (no colormap) must keep the bit clear even when OTHER fields delta — the field costs
+        // nothing by default. (Diffing Empty vs Empty would pass vacuously; change something real.)
+        var plainBase = NetEntityState.Empty(21);
+        var plain = plainBase;
+        plain.Frame = 3;
         var w2 = new BitWriter();
-        EntityField mask = EntityStateCodec.WriteDelta(w2, NetEntityState.Empty(21), NetEntityState.Empty(21));
-        Assert.Equal(EntityField.None, mask & EntityField.ColormapOverride);
+        EntityField mask = EntityStateCodec.WriteDelta(w2, plainBase, plain);
+        Assert.Equal(EntityField.Frame, mask & (EntityField.Frame | EntityField.ColormapOverride));
     }
 
     [Fact]

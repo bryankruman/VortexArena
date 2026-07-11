@@ -371,9 +371,6 @@ public static class MonsterAI
     // Team / skill colors (monster_setupcolors / monster_changeteam, sv_monsters.qc:172/200)
     // ====================================================================================
 
-    /// <summary>RENDER_COLORMAPPED (BIT(10)) — the render flag the csqcmodel reads to apply a colormap tint.</summary>
-    private const int RenderColormapped = 1 << 10;
-
     /// <summary>
     /// Port of <c>monster_setupcolors</c> (sv_monsters.qc:172): pick the monster's <c>.colormap</c> by team (in
     /// teamplay), by owner (a player-spawned monster), else by skill tier so monsters are tinted by difficulty.

@@ -51,8 +51,8 @@ public enum NetEntityFlags : ushort
 /// entity's delta; only the set fields follow on the wire, so an idle entity (mask 0) costs just its id.
 /// (Widened from 16-bit to 32-bit when <see cref="StatusEffects"/> was added — bit 16 overflowed the old
 /// <c>ushort</c>; <see cref="EntityStateCodec.WriteDelta"/>/<see cref="EntityStateCodec.ReadDelta"/> carry the
-/// mask as a 32-bit value accordingly.) Highest bit currently in use: bit 24 <see cref="VehicleView"/> (the 32-bit
-/// mask still has ample headroom).
+/// mask as a 32-bit value accordingly.) Highest bit currently in use: bit 26 <see cref="ColormapOverride"/> (the
+/// 32-bit mask still has ample headroom).
 /// </summary>
 [Flags]
 public enum EntityField : uint
@@ -198,7 +198,11 @@ public struct NetEntityState
     public int Alpha;
     public NetEntityFlags Flags;
     public int Owner;            // owning player's entnum (view-models / nameplates / projectiles); 0 = none
-    public int Weapon;           // active/held weapon registry id (−1 = none) — renders a remote player's weapon
+    // KIND-SELECTED semantics (mirror any change at ServerNet encode + ClientEntityView decode):
+    //   Player      → the raw active/held weapon registry id (−1 = none) — renders the remote held weapon.
+    //   non-player  → a weapon PICKUP's registry id + 1 (0 = not a weapon pickup; the +1 bias exists because
+    //                 RegistryId is 0-based, so id 0 is a real weapon) — decoded to Entity.ItemWeaponId.
+    public int Weapon;
     public string Model;         // model name / precache path (QC .model) — the client loads the mesh by name
 
     // [T41] client-feedback stats (QC STAT(HITSOUND_DAMAGE_DEALT_TOTAL) + the HUD_Draw objective rings). Only
