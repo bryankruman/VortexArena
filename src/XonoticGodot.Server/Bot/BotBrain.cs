@@ -100,6 +100,12 @@ public sealed class BotBrain
     private readonly List<(Waypoint Wp, float Cost)> _pendingSeeds = new();
     private GoalRating _pendingGoal;
     private bool _pendingGoalSet;
+
+    // Set by BeginGoalRating during the current role invocation: whether the role actually opened a rating
+    // pass this token frame (QC: whether navigation_goalrating_start ran), and the entry-seed set its flood
+    // produced (handed to the deferred SetGoal). Reset by the strategy block before each role call.
+    private bool _ratingRan;
+    private IReadOnlyList<(Waypoint Wp, float Cost)>? _frameSeeds;
     private bool _triggerHurtEscape; // QC trigger_hurt escape (skill>6): jetpack up / Devastator rocketjump out
 
     /// <summary>
@@ -164,6 +170,33 @@ public sealed class BotBrain
     public float KhRoleTimeout;
 
     /// <summary>
+    /// QC <c>.havocbot_role</c> CTF variant (sv_ctf.qc havocbot_role_ctf_*): which of the six CTF sub-roles
+    /// this bot is currently playing. <see cref="CtfBotRole.None"/> = unassigned — the first
+    /// <see cref="BotObjectiveRoles.RoleCtf"/> call runs the QC reset_role position balancing.
+    /// </summary>
+    public CtfBotRole CtfRole;
+
+    /// <summary>QC <c>.havocbot_previous_role</c>: the role Retriever/Escort revert to when their temporary
+    /// stint ends (flag returned / timeout).</summary>
+    public CtfBotRole CtfPreviousRole;
+
+    /// <summary>QC <c>.havocbot_role_timeout</c> CTF variant: absolute sim time the current CTF role expires
+    /// (0 = unset; each role stamps its own duration on first invocation).</summary>
+    public float CtfRoleTimeout;
+
+    /// <summary>QC <c>.havocbot_cantfindflag</c> (sv_ctf.qc:1830): carrier watchdog — absolute time by which
+    /// the carrier must have found a route home; QC suicides past it (the port clears the route and forces a
+    /// re-rate instead — there is no bot-layer suicide path yet).</summary>
+    public float CtfCantFindFlagTime;
+
+    /// <summary>QC <c>.havocbot_role</c> Freeze Tag variant (sv_freezetag.qc havocbot_role_ft_offense /
+    /// _freeing). <see cref="FtBotRole.None"/> = unassigned — first call picks randomly (QC HavocBot_ChooseRole).</summary>
+    public FtBotRole FtRole;
+
+    /// <summary>QC <c>.havocbot_role_timeout</c> FT variant: absolute sim time the current FT role expires.</summary>
+    public float FtRoleTimeout;
+
+    /// <summary>
     /// QC the pre-game movement holds (bot_think:80-83 campaign hold + :122-127 countdown): when this returns
     /// true the bot keeps its buttons but emits zero movement. Wired by <see cref="BotPopulation"/> to
     /// <c>time &lt; game_starttime || (g_campaign &amp;&amp; !campaign_bots_may_start)</c>; null = no hold.
@@ -211,6 +244,46 @@ public sealed class BotBrain
             if (!e.IsFreed)
                 yield return e;
     }
+
+    // ---- goal-rating clock API for the roles (QC navigation_goalrating_timeout family) ----
+
+    /// <summary>QC navigation_goalrating_timeout (navigation.qc:44-47): should the role re-rate goals now?
+    /// Roles call this each token frame and skip their rating block until it fires.</summary>
+    public bool GoalRatingTimedOut => _strategyForced || Now >= _strategyTime;
+
+    /// <summary>QC navigation_goalrating_timeout_force: discard the current goal decision — re-rate on the
+    /// next token hold.</summary>
+    public void ForceGoalRating() => _strategyForced = true;
+
+    /// <summary>QC navigation_goalrating_timeout_expire(seconds): keep the current goal at most
+    /// <paramref name="seconds"/> longer (only ever SHORTENS the clock).</summary>
+    public void ExpireGoalRating(float seconds)
+    {
+        if (seconds <= 0f) { _strategyForced = true; return; }
+        float t = Now + seconds;
+        if (_strategyTime > t) _strategyTime = t;
+    }
+
+    /// <summary>
+    /// QC navigation_goalrating_start (navigation.qc:1831 — markroutes + reset best): open a rating pass for
+    /// this token frame. Floods the waypoint graph from the bot's position ONCE so every subsequent
+    /// <see cref="GoalRater.Rate"/> reads the real Dijkstra path cost, and captures the flood's entry-seed set
+    /// for the deferred route build. Roles MUST call this before rating and only after checking
+    /// <see cref="GoalRatingTimedOut"/> — the brain finishes the pass (goal capture + timeout re-stamp,
+    /// QC navigation_goalrating_end + timeout_set) after the role returns.
+    /// </summary>
+    public void BeginGoalRating(GoalRater rater)
+    {
+        using (XonoticGodot.Common.Diagnostics.Prof.Sample("bot.seed")) // [profiling] entry-seed tracewalks + flood
+            _frameSeeds = rater.SeedRoute(Network, Bot.Origin);
+        rater.Start();
+        _ratingRan = true;
+    }
+
+    /// <summary>QC IS_MOVABLE (navigation_goalrating_timeout_set): a goal that can move — a player (enemy or
+    /// flag/ball/key carrier) or anything currently in motion — re-rates on the shorter movingtarget interval.</summary>
+    private static bool IsMovableGoal(Entity? e)
+        => e is Player || (e is not null && e.Velocity != Vector3.Zero);
 
     /// <summary>
     /// Advance the bot one frame (QC havocbot_ai + bot_think) AND apply the produced move via
@@ -350,37 +423,21 @@ public sealed class BotBrain
         }
 
         // 2) strategy (QC havocbot_ai:52-104): ONLY the strategy-token holder may run its role — one goal
-        // search per server frame across all bots. The role re-rates when the slow clock expired, the route is
-        // empty, or a clearroute forced a re-plan (QC navigation_goalrating_timeout/_force inside the roles).
+        // search per server frame across all bots. The ROLE runs on EVERY token hold (QC havocbot_ai:64 calls
+        // this.havocbot_role(this) each token frame) so role state machines (CTF carrier/retriever/escort,
+        // FT offense/freeing, KH, …) react at token cadence; the role itself decides whether to RE-RATE goals
+        // via the goal-rating timeout (QC navigation_goalrating_timeout inside each role → GoalRatingTimedOut
+        // here). [parity 2026-07-11: the old pass ran the WHOLE role on the 7s clock, so objective role
+        // switches — "I just grabbed the flag", "our flag was stolen" — lagged by up to a full interval.]
         if (StrategyTokenHeld)
         {
             using var _stratScope = XonoticGodot.Common.Diagnostics.Prof.Sample("bot.strategy"); // [profiling] flood + role rating
-            float strategyInterval = Cvars.FloatOr("bot_ai_strategyinterval", 7f);
-            // QC navigation_goalrating_timeout (navigation.qc:44-47): the re-rate is INTERVAL-gated ONLY — there is
-            // no "no goal → re-rate now" bypass; a goal-less bot waits out the timer (roaming meanwhile) and the
-            // forced path (navigation_goalrating_timeout_force → strategytime = 0) is _strategyForced. The old
-            // `!Nav.HasGoal` bypass here re-ran the full seed-flood + role rating EVERY THINK whenever routing
-            // failed (e.g. no tracewalk-reachable seed at the bot's spot) — with a few bots that was a
-            // 50-350ms/frame bot.strategy melt (the stormkeep "very slow with bots" report).
-            if (_strategyForced || now >= _strategyTime)
+            _ratingRan = false;
+            _frameSeeds = null;
+            using (XonoticGodot.Common.Diagnostics.Prof.Sample("bot.rate")) // [profiling] role state machine + goal-rating loop
+                Role(this, _rater);
+            if (_ratingRan)
             {
-                _strategyTime = now + strategyInterval;
-                _strategyForced = false;
-                // QC navigation_markroutes (navigation.qc): before the role rates goals, flood the waypoint graph
-                // ONCE from the bot's position so every navigation_routerating reads the real Dijkstra path cost
-                // (.wpcost) instead of straight-line distance — bots stop preferring goals that are geometrically
-                // near but graph-distant (across a wall/chasm), where GoalRater.Rate would otherwise fall back to
-                // straight-line. Token-gated + sim-thread, so the per-frame cost is paid by exactly one bot.
-                // Network == null (graphless tests/roaming) keeps the straight-line fallback.
-                // (perf 2026-07-03) The flood's entry-seed set is captured and handed to the deferred SetGoal so
-                // the tracewalk-heavy seed search runs ONCE per pass — see the _pendingSeeds field doc. The two
-                // sub-scopes split a strategy hitch into its halves (seed tracewalks vs the rating loop) so a
-                // census names the culprit directly.
-                IReadOnlyList<(Waypoint Wp, float Cost)>? seeds;
-                using (XonoticGodot.Common.Diagnostics.Prof.Sample("bot.seed")) // [profiling] entry-seed tracewalks + flood
-                    seeds = _rater.SeedRoute(Network, bot.Origin);
-                using (XonoticGodot.Common.Diagnostics.Prof.Sample("bot.rate")) // [profiling] role goal-rating loop
-                    Role(this, _rater);
                 bool captured = false;
                 if (_rater.HasGoal)
                 {
@@ -393,14 +450,22 @@ public sealed class BotBrain
                         _pendingGoalSet = true;
                         captured = true;
                         _pendingSeeds.Clear();
-                        if (seeds is not null)
-                            for (int i = 0; i < seeds.Count; i++)
-                                _pendingSeeds.Add(seeds[i]);
+                        if (_frameSeeds is not null)
+                            for (int i = 0; i < _frameSeeds.Count; i++)
+                                _pendingSeeds.Add(_frameSeeds[i]);
                     }
                 }
+                // QC navigation_goalrating_timeout_set (navigation.qc:20-26): a MOVABLE goal (a player — enemy,
+                // flag/ball/key carrier) re-rates on the shorter movingtarget interval; static goals on the
+                // full interval. Stamped AFTER the rating pass, exactly like the QC roles do.
+                _strategyForced = false;
+                _strategyTime = now + (captured && IsMovableGoal(_pendingGoal.Target)
+                    ? Cvars.FloatOr("bot_ai_strategyinterval_movingtarget", 5.5f)
+                    : Cvars.FloatOr("bot_ai_strategyinterval", 7f));
                 // QC navigation_goalrating_timeout_expire(2) idiom: a pass that produced nothing to build (no
                 // rated goal, or the winner is currently ignored and no route stands) retries SOON — on the
-                // timer, never per-think (see the gate above). A captured pass re-checks after its route build.
+                // timer, never per-think (the roles gate on GoalRatingTimedOut). A captured pass re-checks
+                // after its route build.
                 if (!captured && !Nav.HasGoal)
                     _strategyTime = now + 2f;
             }
