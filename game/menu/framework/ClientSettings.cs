@@ -163,6 +163,13 @@ public static class ClientSettings
         // bug — the spawn-stutter was the ENet throttle), so it's toggleable: `set cl_movement_hitch_hold 0` reverts
         // to immediate snapping. Rationale + the masking risk it carries: docs/TROUBLESHOOTING.md.
         c.Register("cl_movement_hitch_hold", "1");
+        // (r16) DP parity switches: cl_movement 0 = NO client-side movement prediction — the view rides the
+        // server-authoritative owner state (velocity-extrapolated over the sub-snapshot remainder); commands
+        // still go to the server. The settings-Misc dialog already Dependent-binds on cl_movement (QC parity)
+        // — this makes the cvar real. cl_nolerp 1 = remote entities render raw newest snapshots (no
+        // two-snapshot interpolation). Both live-toggle in-session; both DP-archived.
+        c.Register("cl_movement", "1", save);
+        c.Register("cl_nolerp", "0", save);
         // (r16) cl_smoothdt: condition the client MOTION path's per-frame dt (rolling-median predicted,
         // hitch-passthrough, drift-corrected to wall time) instead of Godot's previous-frame delta — with
         // frame-time variance the raw lagged delta puts a per-frame motion error into everything the eye
