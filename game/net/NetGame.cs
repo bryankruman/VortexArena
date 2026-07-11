@@ -2972,7 +2972,7 @@ public sealed partial class NetGame : Node3D
     private int _netTraceTick;             // throttle counter for the net_input_trace log
     private bool _hitchHoldCv = true;      // cl_movement_hitch_hold: Fix B post-hitch stall-aware reconcile (see docs/TROUBLESHOOTING.md)
     private bool _smoothDtCv = true;       // cl_smoothdt: conditioned client-motion dt (the r16 variance fix; see ConditionDt)
-    private bool _frameGovernorCv = true;  // cl_frame_governor: adaptive frame pacing (r16; see FrameGovernor)
+    private bool _frameGovernorCv = false; // cl_frame_governor: adaptive frame pacing (r16; default OFF — opt-in experiment)
     private bool _immediateButtonsCv = true; // cl_netimmediatebuttons: send fire/jump/impulse immediately past the rate gate (DP)
     // DP mouse pipeline (cl_input.c IN_Move → CL_Input): raw deltas accumulate per frame in _mouseDx/Dy
     // (_UnhandledInput), then FlushMouseLook applies the m_accelerate/m_filter block ONCE per render frame
@@ -3036,7 +3036,7 @@ public sealed partial class NetGame : Node3D
         // cl_smoothdt defaults ON (unset → on): the r16 conditioned-motion-dt fix; 0 = raw Godot delta (A/B).
         _smoothDtCv = (_sharedCvars?.GetString("cl_smoothdt") ?? "") != "0";
         // cl_frame_governor defaults ON (unset → on): adaptive frame pacing; 0 = off (A/B).
-        _frameGovernorCv = (_sharedCvars?.GetString("cl_frame_governor") ?? "") != "0";
+        _frameGovernorCv = (_sharedCvars?.GetString("cl_frame_governor") ?? "0") == "1"; // default OFF (r16: a workaround, not the fix — the variance program is)
         // cl_netimmediatebuttons defaults ON (unset → on): treat anything but "0" as enabled.
         _immediateButtonsCv = (_sharedCvars?.GetString("cl_netimmediatebuttons") ?? "") != "0";
         // The DP mouse pipeline params (cl_input.c:401-412 registration defaults for anything unset).
