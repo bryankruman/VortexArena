@@ -3910,9 +3910,12 @@ public sealed partial class NetGame : Node3D
         // The measured dt INCLUDES the limiter's own sleep once a cap is applied, so a percentile target
         // chases itself downward (the first build spiraled 137->83). React instead to the OVER-CAP TAIL —
         // frames whose dt exceeded the budget did real work past it; sleep can't fake those:
-        //   busy > 25%  -> the scene genuinely can't hold the cap: drop 6%.
-        //   busy <  5%  -> headroom: probe up 3% (the cap follows the workload back up).
-        //   else        -> hold (paced and sustainable — the desired steady state).
+        //   busy > 10%  -> the cap sits too close to the workload edge: drop 6%. (r16 field result: pacing
+        //                  only smooths when DEEPLY engaged — at the edge, cheap frames sleep but expensive
+        //                  ones still overrun, leaving residual delivery jitter. Converge near the slow
+        //                  tail with margin, like the hard-100 test that felt smooth.)
+        //   busy <  1%  -> real headroom: probe up 2% (the cap follows the workload back up, slowly).
+        //   else        -> hold (deeply paced and sustainable — the desired steady state).
         int target;
         if (_govApplied == 0)
         {
@@ -3929,8 +3932,8 @@ public sealed partial class NetGame : Node3D
             for (int i = 0; i < _govN; i++)
                 if (_govRing[i] > budget * 1.10f) busy++;
             float busyFrac = (float)busy / _govN;
-            if (busyFrac > 0.25f)      target = Math.Max((int)(_govApplied * 0.94f), 60);
-            else if (busyFrac < 0.05f) target = _govApplied + Math.Max(2, _govApplied * 3 / 100);
+            if (busyFrac > 0.10f)      target = Math.Max((int)(_govApplied * 0.94f), 60);
+            else if (busyFrac < 0.01f) target = _govApplied + Math.Max(2, _govApplied * 2 / 100);
             else                       target = _govApplied;
         }
 
