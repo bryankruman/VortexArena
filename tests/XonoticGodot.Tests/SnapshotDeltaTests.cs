@@ -53,6 +53,37 @@ public class SnapshotDeltaTests
     }
 
     [Fact]
+    public void EntityCodec_RoundTrips_ColorMapOverride()
+    {
+        // A dropped weapon carries the thrower's full packed colormap (1024 + (shirt<<4) + pants with
+        // RENDER_COLORMAPPED = the same 1024 bit — WeaponThrowing.ThrowerColormap) in its own delta field
+        // (protocol v16), so the client paints the dropper's colors on the loot. The value must round-trip
+        // VERBATIM — the earlier byte+flag squeeze collapsed sub-1024 slot-reference colormaps.
+        var baseline = NetEntityState.Empty(20);
+        var cur = baseline;
+        cur.Kind = NetEntityKind.Item;
+        cur.ColorMapOverride = 1024 + (7 << 4) + 12; // shirt 7, pants 12, RENDER_COLORMAPPED
+        cur.Flags = NetEntityFlags.ItemAnimate1;
+
+        var w = new BitWriter();
+        EntityStateCodec.WriteDelta(w, baseline, cur);
+        var r = new BitReader(w.WrittenSpan);
+        NetEntityState got = EntityStateCodec.ReadDelta(ref r, baseline);
+        Assert.False(r.BadRead);
+        Assert.Equal(1024 + (7 << 4) + 12, got.ColorMapOverride);
+        Assert.True((got.Flags & NetEntityFlags.ItemAnimate1) != 0);
+
+        // A plain item (no colormap) must keep the bit clear even when OTHER fields delta — the field costs
+        // nothing by default. (Diffing Empty vs Empty would pass vacuously; change something real.)
+        var plainBase = NetEntityState.Empty(21);
+        var plain = plainBase;
+        plain.Frame = 3;
+        var w2 = new BitWriter();
+        EntityField mask = EntityStateCodec.WriteDelta(w2, plainBase, plain);
+        Assert.Equal(EntityField.Frame, mask & (EntityField.Frame | EntityField.ColormapOverride));
+    }
+
+    [Fact]
     public void EntityCodec_Plain_Player_Leaves_Wepent_And_AnimAction_Clear()
     {
         // [W14a] a plain player (no action, switch ids at the -1 sentinel) must NOT set the new group bits — they

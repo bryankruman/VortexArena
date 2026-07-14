@@ -51,8 +51,8 @@ public enum NetEntityFlags : ushort
 /// entity's delta; only the set fields follow on the wire, so an idle entity (mask 0) costs just its id.
 /// (Widened from 16-bit to 32-bit when <see cref="StatusEffects"/> was added — bit 16 overflowed the old
 /// <c>ushort</c>; <see cref="EntityStateCodec.WriteDelta"/>/<see cref="EntityStateCodec.ReadDelta"/> carry the
-/// mask as a 32-bit value accordingly.) Highest bit currently in use: bit 24 <see cref="VehicleView"/> (the 32-bit
-/// mask still has ample headroom).
+/// mask as a 32-bit value accordingly.) Highest bit currently in use: bit 26 <see cref="ColormapOverride"/> (the
+/// 32-bit mask still has ample headroom).
 /// </summary>
 [Flags]
 public enum EntityField : uint
@@ -148,6 +148,15 @@ public enum EntityField : uint
     // this port's wire uses as the TEAM byte (shownames/radar compares) — repurposing it would break team logic.
     // 0 = colorless (bit stays clear, costs nothing; client falls back to the team path). Bit 25, verified free.
     Colors = 1 << 25,
+
+    // The FULL Entity.ColorMapOverride value for a RENDER_COLORMAPPED non-player entity (dropped-weapon loot
+    // inheriting the thrower's packed shirt/pants; colormapped props/monsters use the same seam). Networked as
+    // its OWN 16-bit field so the two QC encodings — a packed 1024+(shirt<<4)+pants colormap vs a sub-1024
+    // player-slot reference (the g_model random-colormap props) — survive the wire intact; the earlier design
+    // squeezed the low byte into Colors + a flag bit, which collapsed that distinction and overloaded a field
+    // documented as "player clientcolors". 0 = no colormap (the bit stays clear, costs nothing — the overwhelming
+    // majority of entities). Bit 26, verified free.
+    ColormapOverride = 1 << 26,
 }
 
 /// <summary>
@@ -173,6 +182,7 @@ public struct NetEntityState
     public int Effects;          // EF_* render flags bitfield
     public int Colormap;         // player colors (top/bottom) or team tint
     public int Colors;           // [r15 #43] packed 16*shirt+pants clientcolors (0 = colorless, bit stays clear)
+    public int ColorMapOverride; // full Entity.ColorMapOverride for RENDER_COLORMAPPED non-players (0 = none)
     public int Health;           // for nameplates / the owner HUD (0 when not applicable)
     public int Armor;            // [T68] QC entcs RES_ARMOR slice — the shownames teammate status bar (0 when N/A)
 
@@ -188,7 +198,11 @@ public struct NetEntityState
     public int Alpha;
     public NetEntityFlags Flags;
     public int Owner;            // owning player's entnum (view-models / nameplates / projectiles); 0 = none
-    public int Weapon;           // active/held weapon registry id (−1 = none) — renders a remote player's weapon
+    // KIND-SELECTED semantics (mirror any change at ServerNet encode + ClientEntityView decode):
+    //   Player      → the raw active/held weapon registry id (−1 = none) — renders the remote held weapon.
+    //   non-player  → a weapon PICKUP's registry id + 1 (0 = not a weapon pickup; the +1 bias exists because
+    //                 RegistryId is 0-based, so id 0 is a real weapon) — decoded to Entity.ItemWeaponId.
+    public int Weapon;
     public string Model;         // model name / precache path (QC .model) — the client loads the mesh by name
 
     // [T41] client-feedback stats (QC STAT(HITSOUND_DAMAGE_DEALT_TOTAL) + the HUD_Draw objective rings). Only
@@ -316,6 +330,7 @@ public struct NetEntityState
         if (baseline.Effects != current.Effects) m |= EntityField.Effects;
         if (baseline.Colormap != current.Colormap) m |= EntityField.Colormap;
         if (baseline.Colors != current.Colors) m |= EntityField.Colors;
+        if (baseline.ColorMapOverride != current.ColorMapOverride) m |= EntityField.ColormapOverride;
         if (baseline.Health != current.Health) m |= EntityField.Health;
         if (baseline.Armor != current.Armor) m |= EntityField.Armor;
         if (baseline.Alpha != current.Alpha) m |= EntityField.Alpha;
@@ -417,6 +432,7 @@ public static class EntityStateCodec
         if ((mask & EntityField.Effects) != 0) w.WriteLong(current.Effects);
         if ((mask & EntityField.Colormap) != 0) w.WriteByte(current.Colormap & 0xFF);
         if ((mask & EntityField.Colors) != 0) w.WriteByte(current.Colors & 0xFF);
+        if ((mask & EntityField.ColormapOverride) != 0) w.WriteUShort((ushort)(current.ColorMapOverride & 0xFFFF));
         if ((mask & EntityField.Health) != 0) w.WriteShort(current.Health);
         if ((mask & EntityField.Armor) != 0) w.WriteShort(current.Armor);
         if ((mask & EntityField.Alpha) != 0) w.WriteByte(current.Alpha & 0xFF); // 0 = opaque; 1..254 = alpha/255; 255 = hidden (-1)
@@ -506,6 +522,7 @@ public static class EntityStateCodec
         if ((mask & EntityField.Effects) != 0) s.Effects = r.ReadLong();
         if ((mask & EntityField.Colormap) != 0) s.Colormap = r.ReadByte();
         if ((mask & EntityField.Colors) != 0) s.Colors = r.ReadByte();
+        if ((mask & EntityField.ColormapOverride) != 0) s.ColorMapOverride = r.ReadUShort();
         if ((mask & EntityField.Health) != 0) s.Health = r.ReadShort();
         if ((mask & EntityField.Armor) != 0) s.Armor = r.ReadShort();
         if ((mask & EntityField.Alpha) != 0) s.Alpha = r.ReadByte();
